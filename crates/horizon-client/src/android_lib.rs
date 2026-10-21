@@ -86,6 +86,94 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
 }
 
+/// bionic's `struct mallinfo`: every field a `size_t`.
+#[repr(C)]
+struct Mallinfo {
+    arena: usize,
+    ordblks: usize,
+    smblks: usize,
+    hblks: usize,
+    hblkhd: usize,
+    usmblks: usize,
+    fsmblks: usize,
+    /// Bytes allocated and not freed.
+    uordblks: usize,
+    fordblks: usize,
+    keepcost: usize,
+}
+
+unsafe extern "C" {
+    fn mallinfo() -> Mallinfo;
+    fn dlopen(filename: *const std::ffi::c_char, flags: std::ffi::c_int) -> *mut std::ffi::c_void;
+    fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char)
+    -> *mut std::ffi::c_void;
+}
+
+/// The native heap in use (the Stats overlay's `heap`).
+fn heap_bytes() -> Option<u64> {
+    // SAFETY: mallinfo takes nothing and returns a plain struct.
+    Some(unsafe { mallinfo() }.uordblks as u64)
+}
+
+/// The NDK's thermal API (AThermal, Android 11; the headroom Android 12), looked up at run time
+/// so the library still loads on Android 8.
+struct Thermal {
+    manager: usize,
+    status: Option<unsafe extern "C" fn(usize) -> std::ffi::c_int>,
+    headroom: Option<unsafe extern "C" fn(usize, std::ffi::c_int) -> f32>,
+}
+
+fn thermal() -> Option<&'static Thermal> {
+    static THERMAL: OnceLock<Option<Thermal>> = OnceLock::new();
+    THERMAL
+        .get_or_init(|| {
+            // SAFETY: dlopen and dlsym get NUL-terminated names; each symbol found is cast to the
+            // signature the NDK headers give it (thermal.h), and the manager it acquires lives
+            // for the process.
+            unsafe {
+                let lib = dlopen(c"libandroid.so".as_ptr(), 2 /* RTLD_NOW */);
+                if lib.is_null() {
+                    return None;
+                }
+                let acquire = dlsym(lib, c"AThermal_acquireManager".as_ptr());
+                if acquire.is_null() {
+                    return None;
+                }
+                let acquire: unsafe extern "C" fn() -> usize = std::mem::transmute(acquire);
+                let manager = acquire();
+                if manager == 0 {
+                    return None;
+                }
+                let symbol = |name: &std::ffi::CStr| {
+                    let s = dlsym(lib, name.as_ptr());
+                    (!s.is_null()).then_some(s)
+                };
+                Some(Thermal {
+                    manager,
+                    status: symbol(c"AThermal_getCurrentThermalStatus")
+                        .map(|s| std::mem::transmute(s)),
+                    headroom: symbol(c"AThermal_getThermalHeadroom")
+                        .map(|s| std::mem::transmute(s)),
+                })
+            }
+        })
+        .as_ref()
+}
+
+fn thermal_status() -> Option<i32> {
+    let t = thermal()?;
+    // SAFETY: the function and the manager came from the NDK (`thermal`).
+    t.status.map(|f| unsafe { f(t.manager) })
+}
+
+fn thermal_headroom() -> Option<f32> {
+    let t = thermal()?;
+    // SAFETY: as `thermal_status`. The forecast is for 10 s ahead; NaN when asked too often.
+    t.headroom
+        .map(|f| unsafe { f(t.manager, 10) })
+        .filter(|h| h.is_finite())
+}
+
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     horizon_client::telemetry::mark_start();
@@ -108,6 +196,11 @@ fn android_main(app: AndroidApp) {
         );
     }
     logging::set_console(logcat);
+    horizon_client::system_stats::set_probes(horizon_client::system_stats::Probes {
+        heap_bytes,
+        thermal_status,
+        thermal_headroom,
+    });
     logging::init(&home, "Render thread");
     crash::install(home.clone(), "client");
     log::info!(

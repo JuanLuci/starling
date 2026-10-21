@@ -156,6 +156,7 @@ impl Game<'_> {
                 Action::AttackStart => self.pad.touch_trigger(1, 1.0),
                 Action::AttackStop => self.pad.touch_trigger(1, 0.0),
                 Action::Slot(slot) => self.selected = slot,
+                Action::ToggleStats => self.toggle_stats_overlay(),
             }
         }
     }

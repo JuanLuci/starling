@@ -102,6 +102,7 @@ mod pad;
 mod pad_menu;
 mod paintings;
 mod passengers;
+mod perf;
 mod persist;
 mod perspective;
 mod pickups;
@@ -1388,6 +1389,8 @@ struct Game<'a> {
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
+    /// The Stats overlay's sampler and caches (game/perf.rs).
+    stats_overlay: perf::Perf,
     /// Horizon's extras (zoom, FPS counter, keystrokes): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
@@ -4495,6 +4498,7 @@ impl Game<'_> {
         self.draw_debug_overlay(&mut batch, size);
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
+        self.draw_stats_overlay(&mut batch);
         self.draw_pad_cursor(&mut batch);
         batch
     }
@@ -11325,6 +11329,7 @@ impl<'a> Game<'a> {
             entity_culler: None,
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
+            stats_overlay: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             sky_darken_memo: Default::default(),

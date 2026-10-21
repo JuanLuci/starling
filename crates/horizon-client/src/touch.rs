@@ -60,7 +60,12 @@ pub enum Action {
     AttackStop,
     /// Select hotbar slot 0..8.
     Slot(usize),
+    /// Three fingers landing together: show or hide the Stats overlay.
+    ToggleStats,
 }
+
+/// Fingers landing within this of each other count as one three-finger tap.
+const CHORD: Duration = Duration::from_millis(350);
 
 /// Where the controls are on a window, in its pixels.
 #[derive(Clone, Debug)]
@@ -157,6 +162,8 @@ enum Role {
 #[derive(Default)]
 pub struct TouchControls {
     fingers: Vec<(u64, Role)>,
+    /// When the fingers down now landed, the latest last (for the three-finger tap).
+    landed: Vec<Instant>,
     /// Where the stick is drawn and how far it is pushed.
     pub stick: Option<([f32; 2], [f32; 2])>,
 }
@@ -202,6 +209,20 @@ impl TouchControls {
                 };
                 self.fingers.retain(|(f, _)| *f != id);
                 self.fingers.push((id, role));
+                self.landed.retain(|t| now.duration_since(*t) < CHORD);
+                self.landed.push(now);
+                if self.landed.len() >= 3 && self.fingers.len() >= 3 {
+                    // The three fingers stop whatever they began.
+                    self.landed.clear();
+                    let start = self.fingers.len() - 3;
+                    for i in start..self.fingers.len() {
+                        let role = std::mem::replace(&mut self.fingers[i].1, Role::Spent);
+                        out.retain(|a| !matches!(a, Action::Press(_) | Action::Slot(_)));
+                        out.extend(self.lift(role, false, now));
+                    }
+                    out.retain(|a| !matches!(a, Action::Use));
+                    out.push(Action::ToggleStats);
+                }
             }
             TouchPhase::Moved => {
                 let Some((_, role)) = self.fingers.iter_mut().find(|(f, _)| *f == id) else {
@@ -399,6 +420,29 @@ mod tests {
         assert!(!still.contains(&Action::Sprint(false)));
         let back = t.event(&l, 1, TouchPhase::Moved, [400.0, 1100.0 + r * 0.5], now);
         assert!(back.contains(&Action::Sprint(false)));
+    }
+
+    #[test]
+    fn three_fingers_together_toggle_the_stats_and_take_nothing_else() {
+        let (l, now) = (layout(), Instant::now());
+        let mut t = TouchControls::default();
+        t.event(&l, 1, TouchPhase::Started, [2000.0, 600.0], now);
+        t.event(&l, 2, TouchPhase::Started, [2200.0, 600.0], now + CHORD / 4);
+        let third = t.event(&l, 3, TouchPhase::Started, [2400.0, 600.0], now + CHORD / 2);
+        assert_eq!(third, vec![Action::ToggleStats]);
+        // Lifting them neither uses nor breaks.
+        assert!(t.frame(now + HOLD * 2).is_empty());
+        for id in 1..=3 {
+            assert!(
+                t.event(&l, id, TouchPhase::Ended, [0.0, 0.0], now + HOLD * 2)
+                    .is_empty()
+            );
+        }
+        // Fingers far apart in time are just fingers.
+        t.event(&l, 4, TouchPhase::Started, [2000.0, 600.0], now);
+        t.event(&l, 5, TouchPhase::Started, [2200.0, 600.0], now + CHORD * 2);
+        let late = t.event(&l, 6, TouchPhase::Started, [2400.0, 600.0], now + CHORD * 4);
+        assert!(late.is_empty());
     }
 
     #[test]

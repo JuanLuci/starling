@@ -154,6 +154,9 @@ pub enum Overlay {
     Fps,
     /// The numbers and a graph of recent frame times.
     Graph,
+    /// Everything that tells why a frame is slow: frame times with the 1% low, memory, chunks,
+    /// meshing, draw calls, temperatures and throttling (stats_overlay.rs).
+    Stats,
 }
 
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
@@ -296,6 +299,7 @@ impl Graphics {
                     g.overlay = match value {
                         "fps" => Overlay::Fps,
                         "graph" => Overlay::Graph,
+                        "stats" => Overlay::Stats,
                         _ => Overlay::Off,
                     }
                 }
@@ -328,6 +332,7 @@ impl Graphics {
                 Overlay::Off => "off",
                 Overlay::Fps => "fps",
                 Overlay::Graph => "graph",
+                Overlay::Stats => "stats",
             },
             self.resolution_scale,
             bool_text(self.fxaa),

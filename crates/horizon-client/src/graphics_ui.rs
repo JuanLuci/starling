@@ -377,6 +377,7 @@ impl H {
                     Overlay::Off => "Off",
                     Overlay::Fps => "FPS",
                     Overlay::Graph => "FPS and Graph",
+                    Overlay::Stats => "Full Stats",
                 },
             ),
         }
@@ -441,7 +442,7 @@ impl H {
             }
             H::Overlay => {
                 g.overlay = step(
-                    &[Overlay::Off, Overlay::Fps, Overlay::Graph],
+                    &[Overlay::Off, Overlay::Fps, Overlay::Graph, Overlay::Stats],
                     g.overlay,
                     back,
                 )

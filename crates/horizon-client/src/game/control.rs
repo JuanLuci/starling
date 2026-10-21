@@ -153,6 +153,9 @@ impl Game<'_> {
                 .ok_or_else(|| format!("missing argument {i} for {}", words[0]))
         };
         let ok = || Ok(Some(json!({ "ok": true })));
+        if let Some(value) = self.perf_command(&words)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.block_command(&words)? {
             return Ok(Some(value));
         }
@@ -192,6 +195,7 @@ impl Game<'_> {
                 .chain(super::options::CONTROL_HELP)
                 .chain(super::events::HELP)
                 .chain(super::pad::HELP)
+                .chain(super::perf::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {
