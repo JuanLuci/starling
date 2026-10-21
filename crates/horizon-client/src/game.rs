@@ -10087,7 +10087,16 @@ impl Game<'_> {
 }
 impl ApplicationHandler for Game<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background (Android): the same window, a new native surface.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            self.audio.resume_output();
+            window.request_redraw();
             return;
         }
         // The Window constructor: created fullscreen when options.txt says so.
@@ -10979,6 +10988,14 @@ impl ApplicationHandler for Game<'_> {
             event_loop.exit();
             return;
         }
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            // No window to draw in (Android in the background): wake now and then for the
+            // control socket instead of spinning.
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
+            return;
+        }
         if let Some(w) = &self.window {
             if self.options.offscreen {
                 // Offscreen frames don't wait for the window to be drawn: an
@@ -10994,6 +11011,19 @@ impl ApplicationHandler for Game<'_> {
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
     /// window turns it into a window close, so Minecraft.stop saves the world.
+    /// Android took the window away (the app went to the background, the screen went off): its
+    /// surface goes now, the sound stops, and the world is saved, since the system may end the
+    /// process at any time from here on.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
+        self.audio.suspend_output();
+        self.touch_release_all();
+        if let Err(e) = self.save_for_background() {
+            log::warn!("Horizon: failed to save the world for the background: {e}");
+        }
+    }
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
@@ -12249,7 +12279,15 @@ struct Loading {
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background (Android), as Game::resumed.
+            let size = window.inner_size();
+            if let Some(r) = &mut self.renderer
+                && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            window.request_redraw();
             return;
         }
         // The Window constructor: created fullscreen when options.txt says so.
@@ -12296,6 +12334,12 @@ impl Loading {
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
+    }
+    /// The window is going away (Android): its surface goes with it.
+    fn suspended(&mut self) {
+        if let Some(r) = &mut self.renderer {
+            r.suspend();
+        }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
@@ -12360,6 +12404,13 @@ impl Loading {
         if let Err(error) = self.poll_menu_resources() {
             self.error = Some(error);
             event_loop.exit();
+            return;
+        }
+        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+            // In the background (Android), as Game::about_to_wait.
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(100),
+            ));
             return;
         }
         if let Some(w) = &self.window {
@@ -12597,6 +12648,12 @@ impl ApplicationHandler for App {
                 }
                 event_loop.exit();
             }
+        }
+    }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            App::Loading(loading) => loading.suspended(),
+            App::Ready(game) => game.suspended(event_loop),
         }
     }
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {

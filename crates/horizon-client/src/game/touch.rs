@@ -219,6 +219,13 @@ impl Game<'_> {
         ui.finish();
     }
 
+    /// Let go of everything the fingers held (the app went to the background).
+    pub(super) fn touch_release_all(&mut self) {
+        let actions = self.touch.controls.reset();
+        self.touch_apply(actions);
+        self.touch.mouse = None;
+    }
+
     /// A key press and release from the touch side (the back key, the close button).
     fn touch_key_tap(&mut self, key: KeyCode) -> horizon_client::Result<()> {
         self.control_key_down(key)?;

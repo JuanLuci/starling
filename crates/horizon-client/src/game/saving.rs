@@ -82,6 +82,21 @@ impl Game<'_> {
 
     /// Control saves acknowledge only after durable completion, while their
     /// snapshot work is spread across event-loop turns too.
+    /// The world saved where it stands while the game goes on, before Android may end the
+    /// process in the background: what the `save` command does, at once.
+    pub(super) fn save_for_background(&mut self) -> Result<()> {
+        if self.title.is_some() || self.pending_save.is_some() {
+            return Ok(());
+        }
+        if let Some(server) = &self.integrated {
+            server
+                .call(|g| g.save_game().map_err(|e| e.to_string()))
+                .ok_or("the integrated server stopped")??;
+            return Ok(());
+        }
+        self.save_game()
+    }
+
     pub(super) fn begin_control_save(
         &mut self,
         all: bool,

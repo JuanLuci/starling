@@ -433,6 +433,8 @@ pub struct Renderer {
     menu_blur: Option<crate::menu_blur::MenuBlur>,
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
+    /// Suspended without a window at all (`suspend`), not just minimized.
+    pub detached: bool,
     pub drawn_sections: usize,
     /// Last frame's section draws (face ranges and translucent sections),
     /// and the draw calls the backend issued for them.
@@ -2149,6 +2151,7 @@ impl Renderer {
             menu_blur: None,
             info,
             suspended: size.width == 0 || size.height == 0,
+            detached: false,
             drawn_sections: 0,
             section_draws: 0,
             section_draw_calls: 0,
@@ -2201,6 +2204,29 @@ impl Renderer {
     /// Release the window surface before another renderer uses the same window.
     pub fn release_surface(&mut self) {
         self.surface = None;
+    }
+    /// The window is going away (Android destroys it in the background): drop its surface now,
+    /// while the window it was made from still exists, and draw nothing until `resume`.
+    pub fn suspend(&mut self) {
+        self.release_surface();
+        self.suspended = true;
+        self.detached = true;
+    }
+    /// The window is back, maybe at another size: a new surface on it.
+    pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        let resized = [width, height] != [self.config.width, self.config.height];
+        self.config.width = width;
+        self.config.height = height;
+        self.recreate_surface()?;
+        if resized {
+            self.depth = Self::depth(&self.device, &self.config);
+        }
+        self.suspended = false;
+        self.detached = false;
+        Ok(())
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {

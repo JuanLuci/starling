@@ -632,6 +632,26 @@ impl Audio {
     pub fn resume(&mut self) {
         self.engine.resume(&mut self.backend);
     }
+    /// The app went to the background (Android): the output stream stops until
+    /// `resume_output`, which plays on where it was.
+    pub fn suspend_output(&mut self) {
+        #[cfg(feature = "audio")]
+        if let Some(stream) = &self._stream {
+            use cpal::traits::StreamTrait;
+            if let Err(e) = stream.pause() {
+                log::warn!("Horizon: pausing the sound output: {e}");
+            }
+        }
+    }
+    pub fn resume_output(&mut self) {
+        #[cfg(feature = "audio")]
+        if let Some(stream) = &self._stream {
+            use cpal::traits::StreamTrait;
+            if let Err(e) = stream.play() {
+                log::warn!("Horizon: resuming the sound output: {e}");
+            }
+        }
+    }
     /// `SoundManager.stop()`: every sound.
     pub fn stop_all(&mut self) {
         self.engine.stop_all(&mut self.backend);
