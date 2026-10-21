@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- build_apk.py fills in @APPLICATION_ID@ and @LABEL@; aapt2 sets the SDK and version numbers. -->
+<!-- build_apk.py fills in @APPLICATION_ID@ and @LABEL@; aapt2 sets the SDK and version numbers.
+     HorizonActivity (java/) is NativeActivity plus the system bars, the keyboard height and the
+     process ending with the activity. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="@APPLICATION_ID@">
     <uses-permission android:name="android.permission.INTERNET" />
@@ -8,12 +10,12 @@
     <application
         android:label="@LABEL@"
         android:icon="@mipmap/ic_launcher"
-        android:hasCode="false"
+        android:hasCode="true"
         android:isGame="true"
         android:appCategory="game"
         android:extractNativeLibs="false">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="dev.horizon.android.HorizonActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"

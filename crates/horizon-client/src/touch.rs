@@ -1,36 +1,61 @@
 //! Touch controls for phones (horizon-android): a floating stick that walks, dragging anywhere
 //! else that turns the view (a tap there uses the held item, a still press breaks), buttons for
-//! jump, sneak, inventory, chat and pause, and the hotbar's slots to tap. Each finger is
-//! claimed by one control when it lands and keeps it until it lifts.
+//! every other action (jump, sneak, attack, use, inventory, chat, commands, pause, camera, drop,
+//! offhand), and the hotbar's slots to tap. Each finger is claimed by one control when it lands
+//! and keeps it until it lifts.
+//!
+//! Where the controls are is a [`LayoutConfig`] the player edits in place ([`LayoutEditor`]):
+//! a long press on pause opens it. It is kept as JSON beside options.txt (touch-layout.json).
 //!
 //! This is the state machine only: positions are window pixels, and the game turns the
 //! [`Action`]s into its virtual pad, mouse motion and hotbar (game/touch.rs). Off the playing
-//! screen touches are the mouse instead ([`as_mouse`]).
+//! screen the first finger is the pointer ([`TouchPointer`]).
+use serde_json::{Map, Value, json};
 use std::time::{Duration, Instant};
 use winit::{
     dpi::PhysicalPosition,
-    event::{ElementState, MouseButton, Touch, TouchPhase, WindowEvent},
+    event::{
+        DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+    },
 };
 
 /// A press that stays put this long breaks the block in view (Bedrock's touch default).
 pub const HOLD: Duration = Duration::from_millis(300);
+/// Holding pause this long opens the layout editor instead.
+pub const EDIT_HOLD: Duration = Duration::from_millis(800);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Button {
     Jump,
     Sneak,
     Inventory,
     Chat,
     Pause,
+    /// Held: key.attack (hit what is in view, break blocks).
+    Attack,
+    /// Held: key.use (eat, draw a bow, raise a shield, place).
+    Use,
+    Drop,
+    Offhand,
+    /// key.togglePerspective.
+    Camera,
+    /// key.command: the chat with a slash.
+    Command,
 }
 
 impl Button {
-    pub const ALL: [Button; 5] = [
+    pub const ALL: [Button; 11] = [
         Button::Jump,
         Button::Sneak,
         Button::Inventory,
         Button::Chat,
         Button::Pause,
+        Button::Attack,
+        Button::Use,
+        Button::Drop,
+        Button::Offhand,
+        Button::Camera,
+        Button::Command,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -39,6 +64,129 @@ impl Button {
             Button::Inventory => "Bag",
             Button::Chat => "Chat",
             Button::Pause => "II",
+            Button::Attack => "Hit",
+            Button::Use => "Use",
+            Button::Drop => "Drop",
+            Button::Offhand => "Swap",
+            Button::Camera => "Cam",
+            Button::Command => "/",
+        }
+    }
+    /// Its name in touch-layout.json.
+    pub fn id(self) -> &'static str {
+        match self {
+            Button::Jump => "jump",
+            Button::Sneak => "sneak",
+            Button::Inventory => "inventory",
+            Button::Chat => "chat",
+            Button::Pause => "pause",
+            Button::Attack => "attack",
+            Button::Use => "use",
+            Button::Drop => "drop",
+            Button::Offhand => "offhand",
+            Button::Camera => "camera",
+            Button::Command => "command",
+        }
+    }
+}
+
+/// Where one control is: its centre as a share of the window's width and height (so a layout
+/// fits any screen), its radius in units (a ninth of the shorter side), and whether it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub visible: bool,
+}
+
+const fn place(x: f32, y: f32, size: f32) -> Place {
+    Place {
+        x,
+        y,
+        size,
+        visible: true,
+    }
+}
+
+/// The player's layout: the stick's resting place and every button's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutConfig {
+    pub stick: Place,
+    pub buttons: Vec<(Button, Place)>,
+}
+
+impl Default for LayoutConfig {
+    /// Laid out on a 20:9 phone: the stick at the bottom left, jump, attack, use and sneak at the
+    /// bottom right, the menus along the top, drop and offhand beside the hotbar.
+    fn default() -> Self {
+        LayoutConfig {
+            stick: place(0.12, 0.733, 1.3),
+            buttons: vec![
+                (Button::Jump, place(0.905, 0.7556, 0.8)),
+                (Button::Sneak, place(0.805, 0.8556, 0.6)),
+                (Button::Attack, place(0.815, 0.611, 0.6)),
+                (Button::Use, place(0.92, 0.533, 0.6)),
+                (Button::Inventory, place(0.95, 0.111, 0.55)),
+                (Button::Chat, place(0.88, 0.111, 0.55)),
+                (Button::Command, place(0.81, 0.111, 0.5)),
+                (Button::Pause, place(0.5, 0.0833, 0.45)),
+                (Button::Camera, place(0.43, 0.0833, 0.45)),
+                (Button::Drop, place(0.711, 0.951, 0.4)),
+                (Button::Offhand, place(0.289, 0.951, 0.4)),
+            ],
+        }
+    }
+}
+
+impl LayoutConfig {
+    /// touch-layout.json; controls it does not name keep their default place (a layout from
+    /// before a button existed), and names it does not know are skipped.
+    pub fn from_json(text: &str) -> Self {
+        let mut config = LayoutConfig::default();
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return config;
+        };
+        let read = |v: &Value, into: &mut Place| {
+            let num = |k: &str, d: f32| v[k].as_f64().map_or(d, |n| n as f32);
+            *into = Place {
+                x: num("x", into.x).clamp(0.0, 1.0),
+                y: num("y", into.y).clamp(0.0, 1.0),
+                size: num("size", into.size).clamp(0.3, 2.5),
+                visible: v["visible"].as_bool().unwrap_or(into.visible),
+            };
+        };
+        if value["stick"].is_object() {
+            read(&value["stick"], &mut config.stick);
+            config.stick.visible = true;
+        }
+        for (button, place) in &mut config.buttons {
+            if value["buttons"][button.id()].is_object() {
+                read(&value["buttons"][button.id()], place);
+            }
+        }
+        config
+    }
+
+    pub fn to_json(&self) -> String {
+        let entry = |p: &Place| json!({ "x": p.x, "y": p.y, "size": p.size, "visible": p.visible });
+        let buttons: Map<String, Value> = self
+            .buttons
+            .iter()
+            .map(|(b, p)| (b.id().to_owned(), entry(p)))
+            .collect();
+        let value = json!({ "version": 1, "stick": entry(&self.stick), "buttons": buttons });
+        serde_json::to_string_pretty(&value).unwrap_or_default()
+    }
+
+    fn place_mut(&mut self, target: Target) -> Option<&mut Place> {
+        match target {
+            Target::Stick => Some(&mut self.stick),
+            Target::Button(button) => self
+                .buttons
+                .iter_mut()
+                .find(|(b, _)| *b == button)
+                .map(|(_, p)| p),
         }
     }
 }
@@ -54,6 +202,8 @@ pub enum Action {
     Look(f32, f32),
     Press(Button),
     Release(Button),
+    /// Pause held past [`EDIT_HOLD`]: open the layout editor.
+    EditLayout,
     /// A quick tap on the view: use the held item once.
     Use,
     AttackStart,
@@ -88,9 +238,14 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// `gui_scale` is the scale the HUD is drawn at (`HudBatch::scale`), not the option.
+    /// The default layout. `gui_scale` is the scale the HUD is drawn at (`HudBatch::scale`), not
+    /// the option.
     pub fn new(width: f32, height: f32, gui_scale: f32) -> Self {
-        let u = width.min(height) / 9.0;
+        Self::from_config(&LayoutConfig::default(), width, height, gui_scale)
+    }
+    /// `config` on a window of this size; hidden buttons take no fingers.
+    pub fn from_config(config: &LayoutConfig, width: f32, height: f32, gui_scale: f32) -> Self {
+        let u = unit(width, height);
         let (w, h) = (width, height);
         let s = gui_scale.max(1.0);
         // Gui.renderHotbar: guiWidth / 2 - 91, guiHeight - 22, in whole GUI pixels.
@@ -102,15 +257,14 @@ impl Layout {
             unit: u,
             stick_right: w * 0.4,
             stick_top: h * 0.3,
-            stick_home: [2.4 * u, h - 2.4 * u],
-            stick_radius: 1.3 * u,
-            buttons: vec![
-                (Button::Jump, [w - 1.9 * u, h - 2.2 * u], 0.8 * u),
-                (Button::Sneak, [w - 3.9 * u, h - 1.3 * u], 0.6 * u),
-                (Button::Inventory, [w - 1.0 * u, 1.0 * u], 0.55 * u),
-                (Button::Pause, [w / 2.0, 0.75 * u], 0.45 * u),
-                (Button::Chat, [w - 2.4 * u, 1.0 * u], 0.55 * u),
-            ],
+            stick_home: [config.stick.x * w, config.stick.y * h],
+            stick_radius: config.stick.size * u,
+            buttons: config
+                .buttons
+                .iter()
+                .filter(|(_, p)| p.visible)
+                .map(|(b, p)| (*b, [p.x * w, p.y * h], p.size * u))
+                .collect(),
             hotbar: [hotbar_left, (gui_h - 22.0) * s, 20.0 * s],
             close: ([w - 0.8 * u, 0.8 * u], 0.5 * u),
         }
@@ -137,6 +291,16 @@ impl Layout {
     }
 }
 
+/// The size unit: a ninth of the window's shorter side.
+pub fn unit(width: f32, height: f32) -> f32 {
+    width.min(height) / 9.0
+}
+
+/// How far a finger moves before it is no longer a tap, for a window of this size.
+pub fn slop(width: f32, height: f32) -> f32 {
+    unit(width, height) * 0.15
+}
+
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
@@ -154,7 +318,7 @@ enum Role {
         dragged: bool,
         attacking: bool,
     },
-    Button(Button),
+    Button(Button, Instant),
     /// A finger on the hotbar, or one that landed on nothing that takes it.
     Spent,
 }
@@ -181,8 +345,11 @@ impl TouchControls {
         match phase {
             TouchPhase::Started => {
                 let role = if let Some(button) = layout.button_at(p) {
-                    out.push(Action::Press(button));
-                    Role::Button(button)
+                    // Pause acts when it lifts: a long press is the layout editor.
+                    if button != Button::Pause {
+                        out.push(Action::Press(button));
+                    }
+                    Role::Button(button, now)
                 } else if let Some(slot) = layout.slot_at(p) {
                     out.push(Action::Slot(slot));
                     Role::Spent
@@ -264,7 +431,7 @@ impl TouchControls {
                         }
                         *last = p;
                     }
-                    Role::Button(_) | Role::Spent => {}
+                    Role::Button(..) | Role::Spent => {}
                 }
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
@@ -302,15 +469,25 @@ impl TouchControls {
                     Vec::new()
                 }
             }
-            Role::Button(button) => vec![Action::Release(button)],
+            Role::Button(Button::Pause, _) if ended => vec![Action::Press(Button::Pause)],
+            Role::Button(Button::Pause, _) => Vec::new(),
+            Role::Button(button, _) => vec![Action::Release(button)],
             Role::Spent => Vec::new(),
         }
     }
 
-    /// Each frame: a view press held still past [`HOLD`] starts breaking.
+    /// Each frame: a view press held still past [`HOLD`] starts breaking, pause held past
+    /// [`EDIT_HOLD`] opens the layout editor.
     pub fn frame(&mut self, now: Instant) -> Vec<Action> {
         let mut out = Vec::new();
         for (_, role) in &mut self.fingers {
+            if let Role::Button(Button::Pause, down) = role
+                && now - *down >= EDIT_HOLD
+            {
+                *role = Role::Spent;
+                out.push(Action::EditLayout);
+                continue;
+            }
             if let Role::Look {
                 down,
                 dragged: false,
@@ -340,34 +517,357 @@ impl TouchControls {
     pub fn held(&self, button: Button) -> bool {
         self.fingers
             .iter()
-            .any(|(_, r)| matches!(r, Role::Button(b) if *b == button))
+            .any(|(_, r)| matches!(r, Role::Button(b, _) if *b == button))
     }
 }
 
-/// A touch off the playing screen as the mouse: the first finger moves the pointer and holds the
-/// left button; other fingers are ignored.
-pub fn as_mouse(touch: &Touch, primary: &mut Option<u64>) -> Vec<WindowEvent> {
-    let (device_id, position) = (touch.device_id, touch.location);
-    let moved = || WindowEvent::CursorMoved {
-        device_id,
-        position: PhysicalPosition::new(position.x, position.y),
-    };
-    let button = |state| WindowEvent::MouseInput {
-        device_id,
-        state,
-        button: MouseButton::Left,
-    };
-    match touch.phase {
-        TouchPhase::Started if primary.is_none() => {
-            *primary = Some(touch.id);
-            vec![moved(), button(ElementState::Pressed)]
+/// A control the editor moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Stick,
+    Button(Button),
+}
+
+/// The buttons beside the control being edited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    Smaller,
+    Bigger,
+    /// Hide it, or show it again.
+    Visibility,
+}
+
+/// The editor's own buttons, at the top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorAction {
+    Done,
+    Reset,
+}
+
+/// The layout editor: drag a control to move it; the one last touched gets chips to make it
+/// smaller or bigger and to hide or show it; Done keeps the layout, Reset brings back the default.
+#[derive(Default)]
+pub struct LayoutEditor {
+    pub selected: Option<Target>,
+    /// The finger dragging the selected control, and the control's centre minus the finger.
+    drag: Option<(u64, [f32; 2])>,
+}
+
+const SIZE_STEP: f32 = 0.1;
+
+impl LayoutEditor {
+    /// Done and Reset, near the top centre, under the row of buttons the default layout puts there.
+    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 2] {
+        let u = unit(width, height);
+        [
+            (
+                EditorAction::Done,
+                [width / 2.0 - 1.4 * u, 2.6 * u],
+                0.6 * u,
+            ),
+            (
+                EditorAction::Reset,
+                [width / 2.0 + 1.4 * u, 2.6 * u],
+                0.6 * u,
+            ),
+        ]
+    }
+
+    /// Every control, hidden ones too, with its centre and radius in pixels.
+    pub fn targets(
+        config: &LayoutConfig,
+        width: f32,
+        height: f32,
+    ) -> Vec<(Target, Place, [f32; 2], f32)> {
+        let u = unit(width, height);
+        let at = |p: &Place| [p.x * width, p.y * height];
+        std::iter::once((
+            Target::Stick,
+            config.stick,
+            at(&config.stick),
+            config.stick.size * u,
+        ))
+        .chain(
+            config
+                .buttons
+                .iter()
+                .map(|(b, p)| (Target::Button(*b), *p, at(p), p.size * u)),
+        )
+        .collect()
+    }
+
+    /// The chips of the selected control: under it, or over it near the bottom edge.
+    pub fn chips(
+        &self,
+        config: &LayoutConfig,
+        width: f32,
+        height: f32,
+    ) -> Vec<(Chip, [f32; 2], f32)> {
+        let Some(selected) = self.selected else {
+            return Vec::new();
+        };
+        let u = unit(width, height);
+        let Some((_, _, c, r)) = Self::targets(config, width, height)
+            .into_iter()
+            .find(|(t, ..)| *t == selected)
+        else {
+            return Vec::new();
+        };
+        let below = c[1] + r + 0.7 * u;
+        let y = if below + 0.45 * u > height {
+            c[1] - r - 0.7 * u
+        } else {
+            below
+        };
+        let mut chips = vec![
+            (Chip::Smaller, [c[0] - 1.1 * u, y], 0.42 * u),
+            (Chip::Bigger, [c[0], y], 0.42 * u),
+        ];
+        if selected != Target::Stick {
+            chips.push((Chip::Visibility, [c[0] + 1.1 * u, y], 0.42 * u));
         }
-        TouchPhase::Moved if *primary == Some(touch.id) => vec![moved()],
-        TouchPhase::Ended | TouchPhase::Cancelled if *primary == Some(touch.id) => {
-            *primary = None;
-            vec![moved(), button(ElementState::Released)]
+        chips
+    }
+
+    /// A touch in the editor; Some when Done or Reset was pressed.
+    pub fn event(
+        &mut self,
+        config: &mut LayoutConfig,
+        width: f32,
+        height: f32,
+        id: u64,
+        phase: TouchPhase,
+        p: [f32; 2],
+    ) -> Option<EditorAction> {
+        let hit = |c: [f32; 2], r: f32| dist(p, c) <= r * 1.15;
+        match phase {
+            TouchPhase::Started => {
+                if let Some((action, ..)) = Self::bar(width, height)
+                    .into_iter()
+                    .find(|(_, c, r)| hit(*c, *r))
+                {
+                    if action == EditorAction::Reset {
+                        *config = LayoutConfig::default();
+                    }
+                    return Some(action);
+                }
+                if let Some((chip, ..)) = self
+                    .chips(config, width, height)
+                    .into_iter()
+                    .find(|(_, c, r)| hit(*c, *r))
+                {
+                    if let Some(place) = self.selected.and_then(|t| config.place_mut(t)) {
+                        let stick = self.selected == Some(Target::Stick);
+                        let (min, max) = if stick { (0.8, 2.5) } else { (0.3, 2.0) };
+                        match chip {
+                            Chip::Smaller => place.size = (place.size - SIZE_STEP).max(min),
+                            Chip::Bigger => place.size = (place.size + SIZE_STEP).min(max),
+                            Chip::Visibility => place.visible = !place.visible,
+                        }
+                    }
+                    return None;
+                }
+                // The topmost control under the finger (buttons are drawn over the stick).
+                let touched = Self::targets(config, width, height)
+                    .into_iter()
+                    .rev()
+                    .find(|(_, _, c, r)| hit(*c, *r));
+                match touched {
+                    Some((target, _, c, _)) => {
+                        self.selected = Some(target);
+                        self.drag = Some((id, [c[0] - p[0], c[1] - p[1]]));
+                    }
+                    None => self.selected = None,
+                }
+            }
+            TouchPhase::Moved => {
+                if let Some((finger, offset)) = self.drag
+                    && finger == id
+                    && let Some(place) = self.selected.and_then(|t| config.place_mut(t))
+                {
+                    place.x = ((p[0] + offset[0]) / width).clamp(0.0, 1.0);
+                    place.y = ((p[1] + offset[1]) / height).clamp(0.0, 1.0);
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                if self.drag.is_some_and(|(finger, _)| finger == id) {
+                    self.drag = None;
+                }
+            }
         }
-        _ => Vec::new(),
+        None
+    }
+}
+
+/// What the pointer finger does, before it becomes window events.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pointer {
+    Move([f32; 2]),
+    Press,
+    Release,
+    /// Wheel pixels: positive scrolls up (the content follows the finger down).
+    Scroll(f32),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Gesture {
+    /// Down, not yet a tap, a scroll or a drag.
+    #[default]
+    Undecided,
+    Scroll,
+    /// The button is held: a drag (sliders, carried items).
+    Drag,
+}
+
+/// Off the playing screen, the first finger is the pointer. It moves the cursor when it lands and
+/// decides later: lifted where it landed it clicks, moved up or down it scrolls, moved sideways
+/// (or held still past [`HOLD`] first) it drags with the button held. Other fingers are ignored.
+#[derive(Default)]
+pub struct TouchPointer {
+    finger: Option<u64>,
+    /// The touch device, for the window events made from it.
+    device: Option<DeviceId>,
+    start: [f32; 2],
+    last: [f32; 2],
+    down: Option<Instant>,
+    gesture: Gesture,
+}
+
+/// Wheel pixels per pixel dragged: the game turns 30 into one wheel step, which moves a list by
+/// about twice that at phone GUI scales.
+const SCROLL_SCALE: f32 = 0.5;
+
+impl TouchPointer {
+    /// Whether `finger` is the pointer.
+    pub fn owns(&self, finger: u64) -> bool {
+        self.finger == Some(finger)
+    }
+
+    /// Whether a finger is the pointer now.
+    pub fn down(&self) -> bool {
+        self.finger.is_some()
+    }
+
+    /// `slop`: how far the finger moves before a tap is a scroll or a drag, in pixels.
+    pub fn step(
+        &mut self,
+        id: u64,
+        phase: TouchPhase,
+        p: [f32; 2],
+        slop: f32,
+        now: Instant,
+    ) -> Vec<Pointer> {
+        match phase {
+            TouchPhase::Started if self.finger.is_none() => {
+                self.finger = Some(id);
+                self.start = p;
+                self.last = p;
+                self.down = Some(now);
+                self.gesture = Gesture::Undecided;
+                vec![Pointer::Move(p)]
+            }
+            TouchPhase::Moved if self.owns(id) => {
+                let mut out = Vec::new();
+                if self.gesture == Gesture::Undecided && dist(p, self.start) > slop {
+                    let (dx, dy) = (p[0] - self.start[0], p[1] - self.start[1]);
+                    if dy.abs() > dx.abs() {
+                        self.gesture = Gesture::Scroll;
+                        // Scrolling picks up from where the finger landed.
+                        self.last = self.start;
+                    } else {
+                        self.gesture = Gesture::Drag;
+                        out.push(Pointer::Press);
+                    }
+                }
+                match self.gesture {
+                    Gesture::Scroll => {
+                        out.push(Pointer::Scroll((p[1] - self.last[1]) * SCROLL_SCALE))
+                    }
+                    Gesture::Drag => out.push(Pointer::Move(p)),
+                    Gesture::Undecided => {}
+                }
+                self.last = p;
+                out
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled if self.owns(id) => {
+                self.finger = None;
+                match self.gesture {
+                    Gesture::Undecided if phase == TouchPhase::Ended => {
+                        vec![Pointer::Press, Pointer::Release]
+                    }
+                    Gesture::Drag => vec![Pointer::Move(p), Pointer::Release],
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Each frame: a pointer held still past [`HOLD`] presses (a long press, then a drag).
+    pub fn frame(&mut self, now: Instant) -> Vec<Pointer> {
+        if self.finger.is_some()
+            && self.gesture == Gesture::Undecided
+            && self.down.is_some_and(|d| now - d >= HOLD)
+        {
+            self.gesture = Gesture::Drag;
+            return vec![Pointer::Press];
+        }
+        Vec::new()
+    }
+
+    /// A touch as the window events a mouse would send.
+    pub fn event(&mut self, touch: &Touch, slop: f32, now: Instant) -> Vec<WindowEvent> {
+        if touch.phase == TouchPhase::Started && self.finger.is_none() {
+            self.device = Some(touch.device_id);
+        }
+        let p = [touch.location.x as f32, touch.location.y as f32];
+        let device = touch.device_id;
+        let steps = self.step(touch.id, touch.phase, p, slop, now);
+        steps.into_iter().map(|s| window_event(s, device)).collect()
+    }
+
+    /// `frame` as window events.
+    pub fn frame_events(&mut self, now: Instant) -> Vec<WindowEvent> {
+        let Some(device) = self.device else {
+            return Vec::new();
+        };
+        self.frame(now)
+            .into_iter()
+            .map(|s| window_event(s, device))
+            .collect()
+    }
+
+    /// Let go without a click (the app went to the background).
+    pub fn cancel(&mut self) -> Vec<WindowEvent> {
+        let held = self.finger.is_some() && self.gesture == Gesture::Drag;
+        self.finger = None;
+        match (held, self.device) {
+            (true, Some(device)) => vec![window_event(Pointer::Release, device)],
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn window_event(step: Pointer, device_id: DeviceId) -> WindowEvent {
+    match step {
+        Pointer::Move(p) => WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(f64::from(p[0]), f64::from(p[1])),
+        },
+        Pointer::Press | Pointer::Release => WindowEvent::MouseInput {
+            device_id,
+            state: if step == Pointer::Press {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+            button: MouseButton::Left,
+        },
+        Pointer::Scroll(y) => WindowEvent::MouseWheel {
+            device_id,
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, f64::from(y))),
+            phase: TouchPhase::Moved,
+        },
     }
 }
 
@@ -443,6 +943,157 @@ mod tests {
         t.event(&l, 5, TouchPhase::Started, [2200.0, 600.0], now + CHORD * 2);
         let late = t.event(&l, 6, TouchPhase::Started, [2400.0, 600.0], now + CHORD * 4);
         assert!(late.is_empty());
+    }
+
+    #[test]
+    fn the_pointer_clicks_on_a_tap_scrolls_up_and_down_and_drags_sideways() {
+        let now = Instant::now();
+        let mut p = TouchPointer::default();
+        // A tap: the cursor moves, then a click where it landed.
+        assert_eq!(
+            p.step(1, TouchPhase::Started, [100.0, 100.0], 20.0, now),
+            vec![Pointer::Move([100.0, 100.0])]
+        );
+        assert!(
+            p.step(1, TouchPhase::Moved, [105.0, 103.0], 20.0, now)
+                .is_empty()
+        );
+        assert_eq!(
+            p.step(1, TouchPhase::Ended, [105.0, 103.0], 20.0, now),
+            vec![Pointer::Press, Pointer::Release]
+        );
+        // Up and down: the wheel, no button.
+        p.step(2, TouchPhase::Started, [100.0, 500.0], 20.0, now);
+        let scroll = p.step(2, TouchPhase::Moved, [102.0, 400.0], 20.0, now);
+        assert_eq!(scroll, vec![Pointer::Scroll(-50.0)]);
+        assert!(
+            p.step(2, TouchPhase::Ended, [102.0, 400.0], 20.0, now)
+                .is_empty()
+        );
+        // Sideways: pressed, dragged, released (a slider).
+        p.step(3, TouchPhase::Started, [100.0, 100.0], 20.0, now);
+        assert_eq!(
+            p.step(3, TouchPhase::Moved, [160.0, 105.0], 20.0, now),
+            vec![Pointer::Press, Pointer::Move([160.0, 105.0])]
+        );
+        assert_eq!(
+            p.step(3, TouchPhase::Ended, [170.0, 105.0], 20.0, now),
+            vec![Pointer::Move([170.0, 105.0]), Pointer::Release]
+        );
+        // Held still: pressed by the frame, then free to drag up or down (an item).
+        p.step(4, TouchPhase::Started, [100.0, 100.0], 20.0, now);
+        assert_eq!(p.frame(now + HOLD), vec![Pointer::Press]);
+        assert_eq!(
+            p.step(4, TouchPhase::Moved, [100.0, 200.0], 20.0, now + HOLD),
+            vec![Pointer::Move([100.0, 200.0])]
+        );
+        // A second finger is ignored while the first is down.
+        assert!(
+            p.step(5, TouchPhase::Started, [300.0, 300.0], 20.0, now)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pause_acts_on_release_and_a_long_press_opens_the_editor() {
+        let (l, now) = (layout(), Instant::now());
+        let pause = l
+            .buttons
+            .iter()
+            .find(|(b, ..)| *b == Button::Pause)
+            .unwrap()
+            .1;
+        let mut t = TouchControls::default();
+        assert!(t.event(&l, 1, TouchPhase::Started, pause, now).is_empty());
+        assert_eq!(
+            t.event(&l, 1, TouchPhase::Ended, pause, now + HOLD),
+            vec![Action::Press(Button::Pause)]
+        );
+        t.event(&l, 2, TouchPhase::Started, pause, now);
+        assert_eq!(t.frame(now + EDIT_HOLD), vec![Action::EditLayout]);
+        assert!(
+            t.event(&l, 2, TouchPhase::Ended, pause, now + EDIT_HOLD)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn layouts_round_trip_and_fill_in_controls_they_lack() {
+        let mut config = LayoutConfig::default();
+        config.buttons[1].1 = Place {
+            x: 0.5,
+            y: 0.5,
+            size: 1.1,
+            visible: false,
+        };
+        let back = LayoutConfig::from_json(&config.to_json());
+        assert_eq!(back, config);
+        // A layout written before attack existed, with a name from the future.
+        let old = r#"{"stick":{"x":0.2,"y":0.7,"size":1.5},"buttons":{"jump":{"x":0.9,"y":0.8,"size":0.9},"laser":{"x":0}}}"#;
+        let read = LayoutConfig::from_json(old);
+        assert_eq!(
+            read.stick,
+            Place {
+                x: 0.2,
+                y: 0.7,
+                size: 1.5,
+                visible: true
+            }
+        );
+        assert_eq!(
+            read.buttons[0],
+            (
+                Button::Jump,
+                Place {
+                    x: 0.9,
+                    y: 0.8,
+                    size: 0.9,
+                    visible: true
+                }
+            )
+        );
+        assert_eq!(read.buttons[2], LayoutConfig::default().buttons[2]);
+        assert_eq!(LayoutConfig::from_json("not json"), LayoutConfig::default());
+        // Hidden buttons take no fingers.
+        let layout = Layout::from_config(&config, 3200.0, 1440.0, 6.0);
+        assert!(!layout.buttons.iter().any(|(b, ..)| *b == Button::Sneak));
+    }
+
+    #[test]
+    fn the_editor_drags_resizes_hides_and_resets() {
+        let (w, h) = (3200.0, 1440.0);
+        let mut config = LayoutConfig::default();
+        let mut editor = LayoutEditor::default();
+        let jump = LayoutEditor::targets(&config, w, h)
+            .into_iter()
+            .find(|(t, ..)| *t == Target::Button(Button::Jump))
+            .unwrap()
+            .2;
+        assert_eq!(
+            editor.event(&mut config, w, h, 1, TouchPhase::Started, jump),
+            None
+        );
+        assert_eq!(editor.selected, Some(Target::Button(Button::Jump)));
+        editor.event(&mut config, w, h, 1, TouchPhase::Moved, [1600.0, 720.0]);
+        editor.event(&mut config, w, h, 1, TouchPhase::Ended, [1600.0, 720.0]);
+        assert_eq!((config.buttons[0].1.x, config.buttons[0].1.y), (0.5, 0.5));
+        let chips = editor.chips(&config, w, h);
+        let bigger = chips.iter().find(|(c, ..)| *c == Chip::Bigger).unwrap().1;
+        let hide = chips
+            .iter()
+            .find(|(c, ..)| *c == Chip::Visibility)
+            .unwrap()
+            .1;
+        editor.event(&mut config, w, h, 2, TouchPhase::Started, bigger);
+        editor.event(&mut config, w, h, 3, TouchPhase::Started, hide);
+        assert!((config.buttons[0].1.size - 0.9).abs() < 1e-6);
+        assert!(!config.buttons[0].1.visible);
+        let reset = LayoutEditor::bar(w, h)[1].1;
+        assert_eq!(
+            editor.event(&mut config, w, h, 4, TouchPhase::Started, reset),
+            Some(EditorAction::Reset)
+        );
+        assert_eq!(config, LayoutConfig::default());
     }
 
     #[test]

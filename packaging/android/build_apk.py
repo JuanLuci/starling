@@ -9,7 +9,7 @@ horizon-prepare makes from the player's own copy are copied to the app's folder 
     python3 packaging/android/build_apk.py --install       # and adb install it
 
 Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
-NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (keytool,
+NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (javac, keytool,
 apksigner). Without HORIZON_ANDROID_KEYSTORE it signs with a debug key kept in target/android.
 """
 
@@ -85,6 +85,21 @@ def build_library(profile, ndk, sdk):
     )
 
 
+def compile_java(build_tools, android_jar, out):
+    """HorizonActivity (java/) as classes.dex."""
+    classes, dex = out / "classes", out / "dex"
+    for folder in (classes, dex):
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir()
+    sources = sorted((HERE / "java").rglob("*.java"))
+    run("javac", "--release", "8", "-nowarn", "-classpath", android_jar, "-d", classes, *sources)
+    run(
+        tool(build_tools, "d8"), "--release", "--min-api", MIN_SDK, "--lib", android_jar,
+        "--output", dex, *sorted(classes.rglob("*.class")),
+    )
+    return dex / "classes.dex"
+
+
 def link_resources(aapt2, android_jar, out):
     """The manifest and the launcher icon, compiled and linked into `out/base.apk`."""
     manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
@@ -114,10 +129,12 @@ def link_resources(aapt2, android_jar, out):
     )
 
 
-def add_library(base, library, unsigned):
-    """`base` plus the library, stored uncompressed so Android maps it straight from the APK."""
+def add_code(base, library, dex, unsigned):
+    """`base` plus the activity's dex and the library, stored uncompressed so Android maps it
+    straight from the APK."""
     shutil.copyfile(base, unsigned)
     with zipfile.ZipFile(unsigned, "a") as apk:
+        apk.write(dex, "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
         apk.write(library, f"lib/{ABI}/lib{LIBRARY}.so", compress_type=zipfile.ZIP_STORED)
 
 
@@ -178,7 +195,8 @@ def main():
         run(ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, built)
 
     link_resources(tool(build_tools, "aapt2"), android_jar, out)
-    add_library(out / "base.apk", library, out / "unsigned.apk")
+    dex = compile_java(build_tools, android_jar, out)
+    add_code(out / "base.apk", library, dex, out / "unsigned.apk")
     aligned = out / "aligned.apk"
     run(tool(build_tools, "zipalign"), "-P", "16", "-f", "4", out / "unsigned.apk", aligned)
     apk = out / f"horizon-{VERSION_NAME}-{ABI}.apk"

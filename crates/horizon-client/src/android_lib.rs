@@ -18,6 +18,24 @@ use winit::platform::android::activity::AndroidApp;
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 static ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
+/// The on-screen keyboard's height in window pixels, from HorizonActivity's insets listener.
+static IME_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// `HorizonActivity.onImeHeight` (packaging/android/java), called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_horizon_android_HorizonActivity_onImeHeight(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    pixels: i32,
+) {
+    IME_HEIGHT.store(pixels.max(0) as u32, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How far the on-screen keyboard covers the window from the bottom, in pixels.
+pub(crate) fn ime_height() -> u32 {
+    IME_HEIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The activity, for the event loop (`EventLoopBuilderExtAndroid::with_android_app`).
 pub(crate) fn android_app() -> AndroidApp {
     APP.get().expect("android_main sets the app first").clone()

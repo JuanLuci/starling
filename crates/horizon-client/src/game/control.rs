@@ -156,6 +156,9 @@ impl Game<'_> {
         if let Some(value) = self.perf_command(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.touch_command(&words)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.block_command(&words)? {
             return Ok(Some(value));
         }
@@ -196,6 +199,7 @@ impl Game<'_> {
                 .chain(super::events::HELP)
                 .chain(super::pad::HELP)
                 .chain(super::perf::HELP)
+                .chain(super::touch::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {

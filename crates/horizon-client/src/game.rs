@@ -4500,6 +4500,7 @@ impl Game<'_> {
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_stats_overlay(&mut batch);
         self.draw_pad_cursor(&mut batch);
+        self.lift_over_keyboard(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -10985,7 +10986,7 @@ impl ApplicationHandler for Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
-        self.touch_frame();
+        self.touch_frame(event_loop);
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
@@ -12279,8 +12280,8 @@ struct Loading {
     /// Why the resources did not load, kept on screen instead of quitting where no terminal
     /// shows the error (Android).
     failure: Option<String>,
-    /// The finger acting as the mouse (horizon_client::touch::as_mouse).
-    touch_mouse: Option<u64>,
+    /// The finger acting as the mouse (horizon_client::touch::TouchPointer).
+    touch_pointer: horizon_client::touch::TouchPointer,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -12352,7 +12353,12 @@ impl Loading {
         }
         let events = match &event {
             WindowEvent::Touch(touch) => {
-                horizon_client::touch::as_mouse(touch, &mut self.touch_mouse)
+                let size = self.window.as_ref().map_or([1, 1], |w| {
+                    let s = w.inner_size();
+                    [s.width, s.height]
+                });
+                let slop = horizon_client::touch::slop(size[0] as f32, size[1] as f32);
+                self.touch_pointer.event(touch, slop, Instant::now())
             }
             _ => vec![event],
         };
@@ -12701,7 +12707,7 @@ fn run_loading(
         menu,
         error: None,
         failure: None,
-        touch_mouse: None,
+        touch_pointer: Default::default(),
     };
     let mut app = App::Loading(Box::new(loading));
     event_loop()?.run_app(&mut app)?;

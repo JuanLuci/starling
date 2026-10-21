@@ -697,7 +697,7 @@ mod tests {
             menu: StartupMenu::default(),
             error: None,
             failure: None,
-            touch_mouse: None,
+            touch_pointer: Default::default(),
         }
     }
 

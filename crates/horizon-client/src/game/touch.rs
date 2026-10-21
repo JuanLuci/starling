@@ -1,14 +1,20 @@
 //! Touch input (horizon_client::touch): on the playing screen the touch controls, drawn over the
-//! HUD and turned into the virtual pad, mouse motion and the hotbar; on every other screen the
-//! first finger is the mouse, with a close button over the screens a world opens. Android's back
-//! key is Escape, and the chat raises the on-screen keyboard.
+//! HUD and turned into the virtual pad, mouse motion and the hotbar, laid out as the player's
+//! touch-layout.json says (edited in place: a long press on pause); on every other screen the
+//! first finger is the pointer, with a close button over the screens a world opens. Android's
+//! back key is Escape, and the chat raises the on-screen keyboard and moves above it.
 use super::{Game, Screen};
 use horizon_client::{
+    Result,
     gamepad::Button as Pad,
     hud::HudBatch,
-    touch::{self, Action, Button, Layout, TouchControls},
+    touch::{
+        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Target,
+        TouchControls,
+    },
     ui_theme::{Face, Ui, color},
 };
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
@@ -18,14 +24,20 @@ use winit::{
     window::WindowId,
 };
 
+pub(super) const HELP: &[&str] = &[
+    "touch-layout [edit|done|reset]  the touch controls' layout (touch-layout.json): show it, edit it in place, save, or go back to the default",
+];
+
 /// How long a tap holds the use trigger: vanilla samples input once a tick.
 const USE_PULSE: Duration = Duration::from_millis(60);
+/// The layout's file, beside options.txt.
+const LAYOUT_FILE: &str = "touch-layout.json";
 
 #[derive(Default)]
 pub(super) struct Touch {
     controls: TouchControls,
     /// The finger acting as the mouse off the playing screen.
-    mouse: Option<u64>,
+    pointer: touch::TouchPointer,
     /// A touch was seen: draw the controls (always on Android).
     seen: bool,
     /// The controls were live last frame (the playing screen).
@@ -33,6 +45,10 @@ pub(super) struct Touch {
     use_until: Option<Instant>,
     /// The on-screen keyboard was asked for.
     keyboard: bool,
+    /// The player's layout, read from touch-layout.json on the first frame.
+    config: Option<LayoutConfig>,
+    /// The layout editor, while it is open.
+    editor: Option<LayoutEditor>,
 }
 
 impl Game<'_> {
@@ -47,15 +63,39 @@ impl Game<'_> {
 
     /// The touch controls turn the view as a grabbed pointer does (mouse.rs).
     pub(super) fn touch_turns(&self) -> bool {
-        self.touch.live
+        self.touch.live && self.touch.editor.is_none()
+    }
+
+    fn touch_size(&self) -> [u32; 2] {
+        self.window.as_ref().map_or([1, 1], |w| {
+            let s = w.inner_size();
+            [s.width.max(1), s.height.max(1)]
+        })
     }
 
     fn touch_layout(&self) -> Layout {
-        let size = self.window.as_ref().map(|w| w.inner_size());
-        let (w, h) = size.map_or((1, 1), |s| (s.width.max(1), s.height.max(1)));
+        let [w, h] = self.touch_size();
         // The scale the HUD is drawn at, which the GUI Scale option only caps.
         let scale = HudBatch::new([w, h]).scale;
-        Layout::new(w as f32, h as f32, scale)
+        match &self.touch.config {
+            Some(config) => Layout::from_config(config, w as f32, h as f32, scale),
+            None => Layout::new(w as f32, h as f32, scale),
+        }
+    }
+
+    fn touch_layout_path() -> Result<std::path::PathBuf> {
+        Ok(std::env::current_dir()?.join(LAYOUT_FILE))
+    }
+
+    fn save_touch_layout(&self) {
+        let Some(config) = &self.touch.config else {
+            return;
+        };
+        let saved =
+            Self::touch_layout_path().and_then(|path| Ok(std::fs::write(path, config.to_json())?));
+        if let Err(e) = saved {
+            log::warn!("Horizon: the touch layout was not saved: {e}");
+        }
     }
 
     /// A touch event; true when it was taken (the caller passes the rest on).
@@ -70,10 +110,29 @@ impl Game<'_> {
         };
         self.touch.seen = true;
         self.last_input = Instant::now();
+        // A touch in the chat brings back a keyboard the back key put away.
+        if t.phase == TouchPhase::Started
+            && self.screen == Screen::Chat
+            && let Some(window) = &self.window
+        {
+            window.set_ime_allowed(true);
+        }
         let p = [t.location.x as f32, t.location.y as f32];
+        if self.touch.editor.is_some() && self.touch_playing() {
+            let [w, h] = self.touch_size();
+            let config = self.touch.config.get_or_insert_with(LayoutConfig::default);
+            let editor = self.touch.editor.as_mut().unwrap();
+            if editor.event(config, w as f32, h as f32, t.id, t.phase, p)
+                == Some(EditorAction::Done)
+            {
+                self.touch.editor = None;
+                self.save_touch_layout();
+            }
+            return true;
+        }
         let layout = self.touch_layout();
         if t.phase == TouchPhase::Started
-            && self.touch.mouse.is_none()
+            && !self.touch.pointer.down()
             && self.touch_closable()
             && layout.close_at(p)
         {
@@ -81,8 +140,9 @@ impl Game<'_> {
             return true;
         }
         // The mouse finger stays the mouse until it lifts, even if the screen closed under it.
-        if !self.touch_playing() || self.touch.mouse == Some(t.id) {
-            for mouse in touch::as_mouse(t, &mut self.touch.mouse) {
+        if !self.touch_playing() || self.touch.pointer.owns(t.id) {
+            let slop = touch::slop(layout.width, layout.height);
+            for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
                 self.window_event(event_loop, id, mouse);
             }
             return true;
@@ -95,25 +155,44 @@ impl Game<'_> {
         true
     }
 
-    /// Android's back key: Escape (pause, close a screen).
+    /// Android's back key: Escape (pause, close a screen), or Done in the layout editor.
     pub(super) fn touch_back_key(&mut self, event: &KeyEvent) -> bool {
         if event.logical_key != Key::Named(NamedKey::BrowserBack) {
             return false;
         }
         if event.state == ElementState::Pressed && !event.repeat {
-            let _ = self.touch_key_tap(KeyCode::Escape);
+            if self.touch.editor.take().is_some() {
+                self.save_touch_layout();
+            } else {
+                let _ = self.touch_key_tap(KeyCode::Escape);
+            }
         }
         true
     }
 
     /// Once per loop iteration, before the pads are read.
-    pub(super) fn touch_frame(&mut self) {
+    pub(super) fn touch_frame(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        if self.touch.config.is_none() {
+            let text = Self::touch_layout_path()
+                .ok()
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            self.touch.config =
+                Some(text.map_or_else(LayoutConfig::default, |t| LayoutConfig::from_json(&t)));
+        }
+        if let Some(id) = self.window.as_ref().map(|w| w.id()) {
+            for mouse in self.touch.pointer.frame_events(now) {
+                self.window_event(event_loop, id, mouse);
+            }
+        }
         let live = self.touch_playing();
         if self.touch.live && !live {
             // A screen opened over the world: let go of everything the fingers held.
             let actions = self.touch.controls.reset();
             self.touch_apply(actions);
+            if self.touch.editor.take().is_some() {
+                self.save_touch_layout();
+            }
         }
         self.touch.live = live;
         let actions = self.touch.controls.frame(now);
@@ -143,25 +222,50 @@ impl Game<'_> {
                 Action::Look(dx, dy) => self.mouse.add_motion(dx as f64, dy as f64),
                 Action::Press(Button::Jump) => self.pad.touch_hold(Pad::South, true),
                 Action::Release(Button::Jump) => self.pad.touch_hold(Pad::South, false),
-                // The right stick's click toggles sneaking.
+                Action::Press(Button::Attack) | Action::AttackStart => {
+                    self.pad.touch_trigger(1, 1.0)
+                }
+                Action::Release(Button::Attack) | Action::AttackStop => {
+                    self.pad.touch_trigger(1, 0.0)
+                }
+                Action::Press(Button::Use) => {
+                    self.touch.use_until = None;
+                    self.pad.touch_trigger(0, 1.0);
+                }
+                Action::Release(Button::Use) => self.pad.touch_trigger(0, 0.0),
+                // The pad's buttons for the rest (docs/controllers.md); the right stick's click
+                // toggles sneaking.
                 Action::Press(Button::Sneak) => self.pad.touch_tap(Pad::RightStick),
                 Action::Press(Button::Inventory) => self.pad.touch_tap(Pad::North),
                 Action::Press(Button::Chat) => self.pad.touch_tap(Pad::DPadRight),
                 Action::Press(Button::Pause) => self.pad.touch_tap(Pad::Start),
+                Action::Press(Button::Drop) => self.pad.touch_tap(Pad::East),
+                Action::Press(Button::Offhand) => self.pad.touch_tap(Pad::West),
+                Action::Press(Button::Camera) => self.pad.touch_tap(Pad::DPadUp),
+                Action::Press(Button::Command) => {
+                    // key.command: the chat opened with a slash.
+                    let _ = self.touch_key_tap(KeyCode::Slash);
+                }
                 Action::Release(_) => {}
                 Action::Use => {
                     self.pad.touch_trigger(0, 1.0);
                     self.touch.use_until = Some(Instant::now() + USE_PULSE);
                 }
-                Action::AttackStart => self.pad.touch_trigger(1, 1.0),
-                Action::AttackStop => self.pad.touch_trigger(1, 0.0),
                 Action::Slot(slot) => self.selected = slot,
                 Action::ToggleStats => self.toggle_stats_overlay(),
+                Action::EditLayout => self.open_touch_editor(),
             }
         }
     }
 
-    /// The controls over the HUD while playing, the close button over screens.
+    fn open_touch_editor(&mut self) {
+        let actions = self.touch.controls.reset();
+        self.touch_apply(actions);
+        self.touch.editor = Some(LayoutEditor::default());
+    }
+
+    /// The controls over the HUD while playing (or the layout editor), the close button over
+    /// screens.
     pub(super) fn draw_touch(&self, batch: &mut HudBatch) {
         if !(self.touch.seen || cfg!(target_os = "android")) {
             return;
@@ -186,7 +290,7 @@ impl Game<'_> {
                 fill,
             );
         };
-        let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str| {
+        let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str, ink: u32| {
             let size = (r / d * 0.5).clamp(9.0, 16.0);
             ui.text_centered(
                 Face::Semibold,
@@ -200,7 +304,61 @@ impl Game<'_> {
         if closable {
             let (c, r) = layout.close;
             circle(&mut ui, c, r, color::with_alpha(color::BG, 0.7));
-            label(&mut ui, c, r, "X");
+            label(&mut ui, c, r, "X", ink);
+        } else if let (Some(editor), Some(config)) = (&self.touch.editor, &self.touch.config) {
+            let (w, h) = (layout.width, layout.height);
+            ui.fill(0.0, 0.0, w / d, h / d, color::with_alpha(color::BG, 0.45));
+            for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
+                let fill = if place.visible { pressed } else { plate };
+                circle(&mut ui, c, r, fill);
+                if editor.selected == Some(target) {
+                    ui.border(
+                        (c[0] - r) / d,
+                        (c[1] - r) / d,
+                        2.0 * r / d,
+                        2.0 * r / d,
+                        r / d,
+                        color::ACCENT,
+                    );
+                }
+                let text = match target {
+                    Target::Stick => "Move",
+                    Target::Button(b) => b.label(),
+                };
+                let tint = if place.visible {
+                    ink
+                } else {
+                    color::with_alpha(ink, 0.4)
+                };
+                label(&mut ui, c, r, text, tint);
+            }
+            let selected_visible = editor.selected.is_none_or(|t| {
+                LayoutEditor::targets(config, w, h)
+                    .iter()
+                    .any(|(x, p, ..)| *x == t && p.visible)
+            });
+            for (chip, c, r) in editor.chips(config, w, h) {
+                circle(&mut ui, c, r, color::with_alpha(color::BG, 0.85));
+                let text = match chip {
+                    Chip::Smaller => "-",
+                    Chip::Bigger => "+",
+                    Chip::Visibility if selected_visible => "Hide",
+                    Chip::Visibility => "Show",
+                };
+                label(&mut ui, c, r, text, ink);
+            }
+            for (action, c, r) in LayoutEditor::bar(w, h) {
+                let fill = match action {
+                    EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
+                    EditorAction::Reset => color::with_alpha(color::BG, 0.85),
+                };
+                circle(&mut ui, c, r, fill);
+                let text = match action {
+                    EditorAction::Done => "Done",
+                    EditorAction::Reset => "Reset",
+                };
+                label(&mut ui, c, r, text, ink);
+            }
         } else {
             let (base, knob) = self
                 .touch
@@ -214,7 +372,7 @@ impl Game<'_> {
                 let on =
                     self.touch.controls.held(*button) || (*button == Button::Sneak && sneaking);
                 circle(&mut ui, *c, *r, if on { pressed } else { plate });
-                label(&mut ui, *c, *r, button.label());
+                label(&mut ui, *c, *r, button.label(), ink);
             }
         }
         ui.finish();
@@ -224,11 +382,74 @@ impl Game<'_> {
     pub(super) fn touch_release_all(&mut self) {
         let actions = self.touch.controls.reset();
         self.touch_apply(actions);
-        self.touch.mouse = None;
+        // No window events here: the screen gets them back when the app returns.
+        let _ = self.touch.pointer.cancel();
+        // The system put the keyboard away: ask for it again when the chat is back.
+        self.touch.keyboard = false;
+    }
+
+    /// How far the on-screen keyboard covers the window, in pixels (Android).
+    fn keyboard_height(&self) -> u32 {
+        #[cfg(target_os = "android")]
+        if self.touch.keyboard {
+            return crate::ime_height();
+        }
+        0
+    }
+
+    /// With the chat open over the on-screen keyboard, the HUD moves up above it.
+    pub(super) fn lift_over_keyboard(&self, batch: &mut HudBatch) {
+        let height = self.keyboard_height();
+        if self.screen != Screen::Chat || height == 0 {
+            return;
+        }
+        let lift = height as f32 / batch.scale;
+        for vertex in &mut batch.vertices {
+            vertex.pos[1] -= lift;
+        }
+        for (_, blend) in &mut batch.blends {
+            if let horizon_client::hud::Blend::Depth(rect) = blend {
+                rect[1] = rect[1].saturating_sub(height);
+            }
+        }
+    }
+
+    /// `touch-layout`: the layout, or open, close (saving) or reset its editor.
+    pub(super) fn touch_command(&mut self, words: &[&str]) -> Result<Option<Value>> {
+        if words.first() != Some(&"touch-layout") {
+            return Ok(None);
+        }
+        match words.get(1).copied() {
+            None => {}
+            Some("edit") => self.open_touch_editor(),
+            Some("done") => {
+                if self.touch.editor.take().is_some() {
+                    self.save_touch_layout();
+                }
+            }
+            Some("reset") => {
+                self.touch.config = Some(LayoutConfig::default());
+                self.save_touch_layout();
+            }
+            Some(other) => {
+                return Err(format!("touch-layout takes edit, done or reset, not {other}").into());
+            }
+        }
+        let config = self.touch.config.clone().unwrap_or_default();
+        let layout: Value = serde_json::from_str(&config.to_json()).unwrap_or(Value::Null);
+        Ok(Some(json!({
+            "ok": true,
+            "editing": self.touch.editor.is_some(),
+            "selected": self.touch.editor.as_ref().and_then(|e| e.selected).map(|t| match t {
+                Target::Stick => "stick",
+                Target::Button(b) => b.id(),
+            }),
+            "layout": layout,
+        })))
     }
 
     /// A key press and release from the touch side (the back key, the close button).
-    fn touch_key_tap(&mut self, key: KeyCode) -> horizon_client::Result<()> {
+    fn touch_key_tap(&mut self, key: KeyCode) -> Result<()> {
         self.control_key_down(key)?;
         self.keys.remove(&key);
         self.physical_keys.remove(&key);
