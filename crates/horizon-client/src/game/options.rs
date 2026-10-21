@@ -230,6 +230,19 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                // The editor works over the world: the menus close for it.
+                Event::TouchLayout if self.title.is_none() => {
+                    self.settings.save(&Self::options_path());
+                    self.screen = Screen::Playing;
+                    self.dragging = false;
+                    self.open_touch_editor();
+                }
+                Event::TouchLayout => {
+                    self.message = Some((
+                        "Open a world to edit the touch controls".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
             }
         }
         Ok(())

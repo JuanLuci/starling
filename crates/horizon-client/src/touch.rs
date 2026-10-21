@@ -90,14 +90,50 @@ impl Button {
     }
 }
 
+/// Whether a control shows and works.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Show {
+    On,
+    /// Not drawn, still works where it is (for players who know where it is).
+    Ghost,
+    /// Neither drawn nor working.
+    Off,
+}
+
+impl Show {
+    pub fn id(self) -> &'static str {
+        match self {
+            Show::On => "on",
+            Show::Ghost => "ghost",
+            Show::Off => "off",
+        }
+    }
+    fn from_id(id: &str) -> Option<Self> {
+        [Show::On, Show::Ghost, Show::Off]
+            .into_iter()
+            .find(|s| s.id() == id)
+    }
+    /// The editor's next state; the stick is never off.
+    fn next(self, stick: bool) -> Self {
+        match self {
+            Show::On => Show::Ghost,
+            Show::Ghost if stick => Show::On,
+            Show::Ghost => Show::Off,
+            Show::Off => Show::On,
+        }
+    }
+}
+
 /// Where one control is: its centre as a share of the window's width and height (so a layout
-/// fits any screen), its radius in units (a ninth of the shorter side), and whether it shows.
+/// fits any screen), its radius in units (a ninth of the shorter side), whether it shows, and
+/// how opaque it is drawn (times the layout's own opacity).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Place {
     pub x: f32,
     pub y: f32,
     pub size: f32,
-    pub visible: bool,
+    pub show: Show,
+    pub opacity: f32,
 }
 
 const fn place(x: f32, y: f32, size: f32) -> Place {
@@ -105,15 +141,21 @@ const fn place(x: f32, y: f32, size: f32) -> Place {
         x,
         y,
         size,
-        visible: true,
+        show: Show::On,
+        opacity: 1.0,
     }
 }
 
-/// The player's layout: the stick's resting place and every button's.
+/// The lowest opacity the editor sets: an invisible control is a ghost.
+pub const MIN_OPACITY: f32 = 0.1;
+
+/// The player's layout: the stick's resting place and every button's, and the opacity of them
+/// all.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutConfig {
     pub stick: Place,
     pub buttons: Vec<(Button, Place)>,
+    pub opacity: f32,
 }
 
 impl Default for LayoutConfig {
@@ -135,6 +177,7 @@ impl Default for LayoutConfig {
                 (Button::Drop, place(0.711, 0.951, 0.4)),
                 (Button::Offhand, place(0.289, 0.951, 0.4)),
             ],
+            opacity: 1.0,
         }
     }
 }
@@ -149,16 +192,30 @@ impl LayoutConfig {
         };
         let read = |v: &Value, into: &mut Place| {
             let num = |k: &str, d: f32| v[k].as_f64().map_or(d, |n| n as f32);
+            // The first layouts said `visible` before ghosts existed.
+            let legacy = v["visible"]
+                .as_bool()
+                .map(|on| if on { Show::On } else { Show::Off });
             *into = Place {
                 x: num("x", into.x).clamp(0.0, 1.0),
                 y: num("y", into.y).clamp(0.0, 1.0),
                 size: num("size", into.size).clamp(0.3, 2.5),
-                visible: v["visible"].as_bool().unwrap_or(into.visible),
+                show: v["show"]
+                    .as_str()
+                    .and_then(Show::from_id)
+                    .or(legacy)
+                    .unwrap_or(into.show),
+                opacity: num("opacity", into.opacity).clamp(MIN_OPACITY, 1.0),
             };
         };
+        if let Some(opacity) = value["opacity"].as_f64() {
+            config.opacity = (opacity as f32).clamp(MIN_OPACITY, 1.0);
+        }
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick);
-            config.stick.visible = true;
+            if config.stick.show == Show::Off {
+                config.stick.show = Show::On;
+            }
         }
         for (button, place) in &mut config.buttons {
             if value["buttons"][button.id()].is_object() {
@@ -169,14 +226,27 @@ impl LayoutConfig {
     }
 
     pub fn to_json(&self) -> String {
-        let entry = |p: &Place| json!({ "x": p.x, "y": p.y, "size": p.size, "visible": p.visible });
+        let entry = |p: &Place| json!({ "x": p.x, "y": p.y, "size": p.size, "show": p.show.id(), "opacity": p.opacity });
         let buttons: Map<String, Value> = self
             .buttons
             .iter()
             .map(|(b, p)| (b.id().to_owned(), entry(p)))
             .collect();
-        let value = json!({ "version": 1, "stick": entry(&self.stick), "buttons": buttons });
+        let value = json!({
+            "version": 2,
+            "opacity": self.opacity,
+            "stick": entry(&self.stick),
+            "buttons": buttons,
+        });
         serde_json::to_string_pretty(&value).unwrap_or_default()
+    }
+
+    /// How opaque a control is drawn while playing: 0 for a ghost.
+    pub fn alpha(&self, place: &Place) -> f32 {
+        match place.show {
+            Show::On => place.opacity * self.opacity,
+            Show::Ghost | Show::Off => 0.0,
+        }
     }
 
     fn place_mut(&mut self, target: Target) -> Option<&mut Place> {
@@ -227,10 +297,12 @@ pub struct Layout {
     /// The stick takes fingers landing left of this and below `stick_top`.
     pub stick_right: f32,
     pub stick_top: f32,
-    /// Where the stick rests before a finger moves it, and its reach.
+    /// Where the stick rests before a finger moves it, its reach, and how opaque it is drawn.
     pub stick_home: [f32; 2],
     pub stick_radius: f32,
-    pub buttons: Vec<(Button, [f32; 2], f32)>,
+    pub stick_alpha: f32,
+    /// The buttons that work: centre, radius, and how opaque they are drawn (0 for a ghost).
+    pub buttons: Vec<(Button, [f32; 2], f32, f32)>,
     /// The hotbar: its left edge, top, slot width (vanilla's 182x22 at the GUI scale).
     pub hotbar: [f32; 3],
     /// The close button over screens opened in a world (they have none for touch).
@@ -243,7 +315,7 @@ impl Layout {
     pub fn new(width: f32, height: f32, gui_scale: f32) -> Self {
         Self::from_config(&LayoutConfig::default(), width, height, gui_scale)
     }
-    /// `config` on a window of this size; hidden buttons take no fingers.
+    /// `config` on a window of this size; buttons that are off take no fingers.
     pub fn from_config(config: &LayoutConfig, width: f32, height: f32, gui_scale: f32) -> Self {
         let u = unit(width, height);
         let (w, h) = (width, height);
@@ -259,11 +331,12 @@ impl Layout {
             stick_top: h * 0.3,
             stick_home: [config.stick.x * w, config.stick.y * h],
             stick_radius: config.stick.size * u,
+            stick_alpha: config.alpha(&config.stick),
             buttons: config
                 .buttons
                 .iter()
-                .filter(|(_, p)| p.visible)
-                .map(|(b, p)| (*b, [p.x * w, p.y * h], p.size * u))
+                .filter(|(_, p)| p.show != Show::Off)
+                .map(|(b, p)| (*b, [p.x * w, p.y * h], p.size * u, config.alpha(p)))
                 .collect(),
             hotbar: [hotbar_left, (gui_h - 22.0) * s, 20.0 * s],
             close: ([w - 0.8 * u, 0.8 * u], 0.5 * u),
@@ -276,7 +349,7 @@ impl Layout {
     fn button_at(&self, p: [f32; 2]) -> Option<Button> {
         self.buttons
             .iter()
-            .find(|(_, c, r)| dist(p, *c) <= r * 1.15)
+            .find(|(_, c, r, _)| dist(p, *c) <= r * 1.15)
             .map(|(b, ..)| *b)
     }
     fn slot_at(&self, p: [f32; 2]) -> Option<usize> {
@@ -533,7 +606,7 @@ pub enum Target {
 pub enum Chip {
     Smaller,
     Bigger,
-    /// Hide it, or show it again.
+    /// On, ghost, off ([`Show`]).
     Visibility,
 }
 
@@ -545,12 +618,16 @@ pub enum EditorAction {
 }
 
 /// The layout editor: drag a control to move it; the one last touched gets chips to make it
-/// smaller or bigger and to hide or show it; Done keeps the layout, Reset brings back the default.
+/// smaller or bigger and to turn it on, ghost or off; the opacity slider sets the selected
+/// control's opacity, or every control's with none selected; Done keeps the layout, Reset brings
+/// back the default.
 #[derive(Default)]
 pub struct LayoutEditor {
     pub selected: Option<Target>,
     /// The finger dragging the selected control, and the control's centre minus the finger.
     drag: Option<(u64, [f32; 2])>,
+    /// The finger on the opacity slider.
+    slider: Option<u64>,
 }
 
 const SIZE_STEP: f32 = 0.1;
@@ -573,7 +650,37 @@ impl LayoutEditor {
         ]
     }
 
-    /// Every control, hidden ones too, with its centre and radius in pixels.
+    /// The opacity slider's track: its left and right ends.
+    pub fn opacity_track(width: f32, height: f32) -> ([f32; 2], [f32; 2]) {
+        let u = unit(width, height);
+        let y = 3.9 * u;
+        ([width / 2.0 - 3.2 * u, y], [width / 2.0 + 3.2 * u, y])
+    }
+
+    /// What the slider shows: the selected control's opacity, or the layout's.
+    pub fn opacity(&self, config: &LayoutConfig) -> f32 {
+        match self.selected {
+            Some(Target::Stick) => config.stick.opacity,
+            Some(Target::Button(b)) => config
+                .buttons
+                .iter()
+                .find(|(x, _)| *x == b)
+                .map_or(config.opacity, |(_, p)| p.opacity),
+            None => config.opacity,
+        }
+    }
+
+    fn set_opacity(&self, config: &mut LayoutConfig, width: f32, height: f32, x: f32) {
+        let ([x0, _], [x1, _]) = Self::opacity_track(width, height);
+        let value = (((x - x0) / (x1 - x0)).clamp(0.0, 1.0) * 20.0).round() / 20.0;
+        let value = value.max(MIN_OPACITY);
+        match self.selected.and_then(|t| config.place_mut(t)) {
+            Some(place) => place.opacity = value,
+            None => config.opacity = value,
+        }
+    }
+
+    /// Every control, ghosts and those off too, with its centre and radius in pixels.
     pub fn targets(
         config: &LayoutConfig,
         width: f32,
@@ -651,6 +758,13 @@ impl LayoutEditor {
                     }
                     return Some(action);
                 }
+                let u = unit(width, height);
+                let ([x0, y0], [x1, _]) = Self::opacity_track(width, height);
+                if (p[1] - y0).abs() <= 0.45 * u && p[0] >= x0 - 0.3 * u && p[0] <= x1 + 0.3 * u {
+                    self.slider = Some(id);
+                    self.set_opacity(config, width, height, p[0]);
+                    return None;
+                }
                 if let Some((chip, ..)) = self
                     .chips(config, width, height)
                     .into_iter()
@@ -662,7 +776,7 @@ impl LayoutEditor {
                         match chip {
                             Chip::Smaller => place.size = (place.size - SIZE_STEP).max(min),
                             Chip::Bigger => place.size = (place.size + SIZE_STEP).min(max),
-                            Chip::Visibility => place.visible = !place.visible,
+                            Chip::Visibility => place.show = place.show.next(stick),
                         }
                     }
                     return None;
@@ -681,6 +795,10 @@ impl LayoutEditor {
                 }
             }
             TouchPhase::Moved => {
+                if self.slider == Some(id) {
+                    self.set_opacity(config, width, height, p[0]);
+                    return None;
+                }
                 if let Some((finger, offset)) = self.drag
                     && finger == id
                     && let Some(place) = self.selected.and_then(|t| config.place_mut(t))
@@ -692,6 +810,9 @@ impl LayoutEditor {
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 if self.drag.is_some_and(|(finger, _)| finger == id) {
                     self.drag = None;
+                }
+                if self.slider == Some(id) {
+                    self.slider = None;
                 }
             }
         }
@@ -1024,12 +1145,15 @@ mod tests {
             x: 0.5,
             y: 0.5,
             size: 1.1,
-            visible: false,
+            show: Show::Off,
+            opacity: 0.6,
         };
+        config.buttons[2].1.show = Show::Ghost;
+        config.opacity = 0.75;
         let back = LayoutConfig::from_json(&config.to_json());
         assert_eq!(back, config);
-        // A layout written before attack existed, with a name from the future.
-        let old = r#"{"stick":{"x":0.2,"y":0.7,"size":1.5},"buttons":{"jump":{"x":0.9,"y":0.8,"size":0.9},"laser":{"x":0}}}"#;
+        // A layout from before ghosts and attack existed, with a name from the future.
+        let old = r#"{"stick":{"x":0.2,"y":0.7,"size":1.5,"visible":false},"buttons":{"jump":{"x":0.9,"y":0.8,"size":0.9},"sneak":{"visible":false},"laser":{"x":0}}}"#;
         let read = LayoutConfig::from_json(old);
         assert_eq!(
             read.stick,
@@ -1037,30 +1161,42 @@ mod tests {
                 x: 0.2,
                 y: 0.7,
                 size: 1.5,
-                visible: true
+                show: Show::On,
+                opacity: 1.0
             }
         );
         assert_eq!(
-            read.buttons[0],
-            (
-                Button::Jump,
-                Place {
-                    x: 0.9,
-                    y: 0.8,
-                    size: 0.9,
-                    visible: true
-                }
-            )
+            read.buttons[0].1,
+            Place {
+                x: 0.9,
+                y: 0.8,
+                size: 0.9,
+                show: Show::On,
+                opacity: 1.0
+            }
         );
+        assert_eq!(read.buttons[1].1.show, Show::Off);
         assert_eq!(read.buttons[2], LayoutConfig::default().buttons[2]);
         assert_eq!(LayoutConfig::from_json("not json"), LayoutConfig::default());
-        // Hidden buttons take no fingers.
+        // Off takes no fingers; a ghost does, and is not drawn; opacities multiply.
         let layout = Layout::from_config(&config, 3200.0, 1440.0, 6.0);
         assert!(!layout.buttons.iter().any(|(b, ..)| *b == Button::Sneak));
+        let attack = layout
+            .buttons
+            .iter()
+            .find(|(b, ..)| *b == Button::Attack)
+            .unwrap();
+        assert_eq!(attack.3, 0.0);
+        let jump = layout
+            .buttons
+            .iter()
+            .find(|(b, ..)| *b == Button::Jump)
+            .unwrap();
+        assert_eq!(jump.3, 0.75);
     }
 
     #[test]
-    fn the_editor_drags_resizes_hides_and_resets() {
+    fn the_editor_drags_resizes_cycles_shows_sets_opacity_and_resets() {
         let (w, h) = (3200.0, 1440.0);
         let mut config = LayoutConfig::default();
         let mut editor = LayoutEditor::default();
@@ -1079,18 +1215,48 @@ mod tests {
         assert_eq!((config.buttons[0].1.x, config.buttons[0].1.y), (0.5, 0.5));
         let chips = editor.chips(&config, w, h);
         let bigger = chips.iter().find(|(c, ..)| *c == Chip::Bigger).unwrap().1;
-        let hide = chips
+        let show = chips
             .iter()
             .find(|(c, ..)| *c == Chip::Visibility)
             .unwrap()
             .1;
         editor.event(&mut config, w, h, 2, TouchPhase::Started, bigger);
-        editor.event(&mut config, w, h, 3, TouchPhase::Started, hide);
         assert!((config.buttons[0].1.size - 0.9).abs() < 1e-6);
-        assert!(!config.buttons[0].1.visible);
+        let mut seen = Vec::new();
+        for id in 3..6 {
+            editor.event(&mut config, w, h, id, TouchPhase::Started, show);
+            seen.push(config.buttons[0].1.show);
+        }
+        assert_eq!(seen, [Show::Ghost, Show::Off, Show::On]);
+        // The slider: the selected control's opacity, then with nothing selected, everyone's.
+        let ([x0, y], [x1, _]) = LayoutEditor::opacity_track(w, h);
+        editor.event(
+            &mut config,
+            w,
+            h,
+            6,
+            TouchPhase::Started,
+            [x0 + (x1 - x0) * 0.5, y],
+        );
+        assert_eq!(config.buttons[0].1.opacity, 0.5);
+        editor.event(&mut config, w, h, 6, TouchPhase::Moved, [x0 - 100.0, y]);
+        assert_eq!(config.buttons[0].1.opacity, MIN_OPACITY);
+        assert_eq!(editor.opacity(&config), MIN_OPACITY);
+        editor.event(&mut config, w, h, 6, TouchPhase::Ended, [x0, y]);
+        editor.event(&mut config, w, h, 7, TouchPhase::Started, [10.0, 700.0]);
+        assert_eq!(editor.selected, None);
+        editor.event(
+            &mut config,
+            w,
+            h,
+            8,
+            TouchPhase::Started,
+            [x0 + (x1 - x0) * 0.8, y],
+        );
+        assert_eq!(config.opacity, 0.8);
         let reset = LayoutEditor::bar(w, h)[1].1;
         assert_eq!(
-            editor.event(&mut config, w, h, 4, TouchPhase::Started, reset),
+            editor.event(&mut config, w, h, 9, TouchPhase::Started, reset),
             Some(EditorAction::Reset)
         );
         assert_eq!(config, LayoutConfig::default());
@@ -1136,7 +1302,7 @@ mod tests {
     fn buttons_and_slots_take_their_fingers() {
         let (l, now) = (layout(), Instant::now());
         let mut t = TouchControls::default();
-        let (_, jump, _) = l.buttons[0];
+        let (_, jump, ..) = l.buttons[0];
         assert_eq!(
             t.event(&l, 5, TouchPhase::Started, jump, now),
             vec![Action::Press(Button::Jump)]

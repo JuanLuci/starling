@@ -888,6 +888,8 @@ enum Act {
     HorizonMenus,
     ToggleMod(usize),
     OpenModFolder,
+    /// The touch layout editor (phones).
+    TouchLayout,
 }
 enum WKind {
     Button {
@@ -935,6 +937,8 @@ pub enum Event {
     Packs(Vec<String>),
     OpenPackFolder,
     OpenModFolder,
+    /// Close the options and edit the touch controls' layout over the world.
+    TouchLayout,
 }
 /// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
 /// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
@@ -1336,6 +1340,19 @@ impl OptionsUi {
                     ),
                     None,
                 ));
+                // The touch controls' layout, where there is a touch screen to play on.
+                if cfg!(target_os = "android") {
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            Text::literal("Touch Controls..."),
+                            Act::TouchLayout,
+                        ),
+                        None,
+                    ));
+                }
                 self.filter_option_rows(rows)
             }
             Page::Controller => {
@@ -2358,6 +2375,7 @@ impl OptionsUi {
                             events.push(Event::Changed);
                         }
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::None => {}
                     }
                 }

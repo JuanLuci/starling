@@ -9,7 +9,7 @@ use horizon_client::{
     gamepad::Button as Pad,
     hud::HudBatch,
     touch::{
-        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Target,
+        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Show, Target,
         TouchControls,
     },
     ui_theme::{Face, Ui, color},
@@ -201,9 +201,12 @@ impl Game<'_> {
             self.touch.use_until = None;
             self.pad.touch_trigger(0, 0.0);
         }
-        // The on-screen keyboard while the chat is open (its keys arrive as key events).
-        let keyboard =
-            (self.touch.seen || cfg!(target_os = "android")) && self.screen == Screen::Chat;
+        // The on-screen keyboard while the chat is open (its keys arrive as key events). Android
+        // shows it only to a focused window: back from the background, it is asked for again once
+        // the focus has come back.
+        let keyboard = (self.touch.seen || cfg!(target_os = "android"))
+            && self.screen == Screen::Chat
+            && self.focused;
         if keyboard != self.touch.keyboard
             && let Some(window) = &self.window
         {
@@ -258,7 +261,7 @@ impl Game<'_> {
         }
     }
 
-    fn open_touch_editor(&mut self) {
+    pub(super) fn open_touch_editor(&mut self) {
         let actions = self.touch.controls.reset();
         self.touch_apply(actions);
         self.touch.editor = Some(LayoutEditor::default());
@@ -277,9 +280,10 @@ impl Game<'_> {
         let layout = self.touch_layout();
         let mut ui = Ui::new(&self.gui.atlas, batch, (-1.0, -1.0));
         let d = ui.density;
-        let plate = color::with_alpha(color::WHITE, 0.16);
-        let pressed = color::with_alpha(color::WHITE, 0.38);
-        let ink = color::with_alpha(color::WHITE, 0.85);
+        // A plate, a pressed plate and a label, at a control's opacity.
+        let plate = |a: f32| color::with_alpha(color::WHITE, 0.16 * a);
+        let pressed = |a: f32| color::with_alpha(color::WHITE, 0.38 * a);
+        let ink = |a: f32| color::with_alpha(color::WHITE, 0.85 * a);
         let circle = |ui: &mut Ui, c: [f32; 2], r: f32, fill: u32| {
             ui.rounded(
                 (c[0] - r) / d,
@@ -290,63 +294,109 @@ impl Game<'_> {
                 fill,
             );
         };
-        let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str, ink: u32| {
+        let ring = |ui: &mut Ui, c: [f32; 2], r: f32, line: u32| {
+            ui.border(
+                (c[0] - r) / d,
+                (c[1] - r) / d,
+                2.0 * r / d,
+                2.0 * r / d,
+                r / d,
+                line,
+            );
+        };
+        let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str, tint: u32| {
             let size = (r / d * 0.5).clamp(9.0, 16.0);
             ui.text_centered(
                 Face::Semibold,
                 size,
                 c[0] / d,
                 c[1] / d - size * 0.62,
-                ink,
+                tint,
                 text,
             );
         };
         if closable {
             let (c, r) = layout.close;
             circle(&mut ui, c, r, color::with_alpha(color::BG, 0.7));
-            label(&mut ui, c, r, "X", ink);
+            label(&mut ui, c, r, "X", ink(1.0));
         } else if let (Some(editor), Some(config)) = (&self.touch.editor, &self.touch.config) {
             let (w, h) = (layout.width, layout.height);
             ui.fill(0.0, 0.0, w / d, h / d, color::with_alpha(color::BG, 0.45));
             for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
-                let fill = if place.visible { pressed } else { plate };
-                circle(&mut ui, c, r, fill);
+                // As it will look (at least faintly, to be found again), outlined if a ghost.
+                let a = (place.opacity * config.opacity).max(0.35);
+                match place.show {
+                    Show::On => circle(&mut ui, c, r, pressed(a)),
+                    Show::Ghost => ring(&mut ui, c, r, ink(0.5)),
+                    Show::Off => circle(&mut ui, c, r, plate(0.5)),
+                }
                 if editor.selected == Some(target) {
-                    ui.border(
-                        (c[0] - r) / d,
-                        (c[1] - r) / d,
-                        2.0 * r / d,
-                        2.0 * r / d,
-                        r / d,
-                        color::ACCENT,
-                    );
+                    ring(&mut ui, c, r, color::ACCENT);
                 }
                 let text = match target {
                     Target::Stick => "Move",
                     Target::Button(b) => b.label(),
                 };
-                let tint = if place.visible {
-                    ink
+                let tint = if place.show == Show::Off {
+                    ink(0.4)
                 } else {
-                    color::with_alpha(ink, 0.4)
+                    ink(1.0)
                 };
                 label(&mut ui, c, r, text, tint);
             }
-            let selected_visible = editor.selected.is_none_or(|t| {
+            let shown = editor.selected.and_then(|t| {
                 LayoutEditor::targets(config, w, h)
-                    .iter()
-                    .any(|(x, p, ..)| *x == t && p.visible)
+                    .into_iter()
+                    .find(|(x, ..)| *x == t)
+                    .map(|(_, p, ..)| p.show)
             });
             for (chip, c, r) in editor.chips(config, w, h) {
                 circle(&mut ui, c, r, color::with_alpha(color::BG, 0.85));
                 let text = match chip {
                     Chip::Smaller => "-",
                     Chip::Bigger => "+",
-                    Chip::Visibility if selected_visible => "Hide",
-                    Chip::Visibility => "Show",
+                    Chip::Visibility => match shown {
+                        Some(Show::Ghost) => "Ghost",
+                        Some(Show::Off) => "Off",
+                        _ => "On",
+                    },
                 };
-                label(&mut ui, c, r, text, ink);
+                label(&mut ui, c, r, text, ink(1.0));
             }
+            // The opacity slider: the selected control's, or everyone's.
+            let ([x0, y], [x1, _]) = LayoutEditor::opacity_track(w, h);
+            let value = editor.opacity(config);
+            let u = layout.unit;
+            ui.rounded(
+                x0 / d,
+                (y - 0.08 * u) / d,
+                (x1 - x0) / d,
+                0.16 * u / d,
+                0.08 * u / d,
+                color::with_alpha(color::BG, 0.85),
+            );
+            ui.rounded(
+                x0 / d,
+                (y - 0.08 * u) / d,
+                (x1 - x0) * value / d,
+                0.16 * u / d,
+                0.08 * u / d,
+                color::ACCENT,
+            );
+            circle(&mut ui, [x0 + (x1 - x0) * value, y], 0.28 * u, ink(1.0));
+            let whose = match editor.selected {
+                Some(Target::Stick) => "Move",
+                Some(Target::Button(b)) => b.label(),
+                None => "all",
+            };
+            ui.text_centered(
+                Face::Semibold,
+                12.0,
+                (x0 + x1) / 2.0 / d,
+                (y - 0.75 * u) / d,
+                ink(1.0),
+                &format!("Opacity ({whose}): {:.0}%", value * 100.0),
+            );
             for (action, c, r) in LayoutEditor::bar(w, h) {
                 let fill = match action {
                     EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
@@ -357,7 +407,7 @@ impl Game<'_> {
                     EditorAction::Done => "Done",
                     EditorAction::Reset => "Reset",
                 };
-                label(&mut ui, c, r, text, ink);
+                label(&mut ui, c, r, text, ink(1.0));
             }
         } else {
             let (base, knob) = self
@@ -365,14 +415,25 @@ impl Game<'_> {
                 .controls
                 .stick
                 .unwrap_or((layout.stick_home, layout.stick_home));
-            circle(&mut ui, base, layout.stick_radius, plate);
-            circle(&mut ui, knob, layout.stick_radius * 0.45, pressed);
+            // A ghost stick shows only while a finger holds it.
+            let a = if self.touch.controls.stick.is_some() {
+                layout.stick_alpha.max(0.6)
+            } else {
+                layout.stick_alpha
+            };
+            if a > 0.0 {
+                circle(&mut ui, base, layout.stick_radius, plate(a));
+                circle(&mut ui, knob, layout.stick_radius * 0.45, pressed(a));
+            }
             let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
-            for (button, c, r) in &layout.buttons {
+            for (button, c, r, a) in &layout.buttons {
+                if *a <= 0.0 {
+                    continue;
+                }
                 let on =
                     self.touch.controls.held(*button) || (*button == Button::Sneak && sneaking);
-                circle(&mut ui, *c, *r, if on { pressed } else { plate });
-                label(&mut ui, *c, *r, button.label(), ink);
+                circle(&mut ui, *c, *r, if on { pressed(*a) } else { plate(*a) });
+                label(&mut ui, *c, *r, button.label(), ink(*a));
             }
         }
         ui.finish();

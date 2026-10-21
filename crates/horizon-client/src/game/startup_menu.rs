@@ -373,7 +373,8 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
-                Event::ButtonClick => {}
+                // Over a world only: the title has no controls to lay out.
+                Event::ButtonClick | Event::TouchLayout => {}
             }
         }
     }
