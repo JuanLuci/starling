@@ -9,6 +9,9 @@
 //! path ends in `.json`, the game listens on a random localhost TCP port and
 //! writes `{"transport":"tcp","port":N,"token":"..."}` to the path, readable
 //! only by its user; a client's first line must then be `auth TOKEN`.
+//! `HORIZON_CONTROL_PORT` fixes the port, for a forward to another machine
+//! (`adb forward` to a phone): a client there writes the same file with
+//! `"remote": true` and gets screenshots back in the reply (`screenshot -`).
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
@@ -88,6 +91,57 @@ fn read_endpoint(path: &Path) -> io::Result<(u16, String)> {
     Ok((port, token))
 }
 
+/// Whether the endpoint file at `path` names a game on another machine through a forwarded port
+/// (`"remote": true`): files the game writes are not on this one.
+pub fn is_remote(path: &Path) -> bool {
+    uses_tcp(path)
+        && std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|v| v["remote"] == true)
+}
+
+/// Standard base64 (RFC 4648): screenshots in replies and MCP image content.
+pub fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Decodes [`base64`]'s output; None on anything else.
+pub fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let text = text.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    for chunk in text.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= u32::from(value(c)?) << (18 - 6 * i);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
+    }
+    Some(out)
+}
+
 /// Connect to a running game's control endpoint (and authenticate over TCP).
 pub fn connect(path: &Path) -> io::Result<Stream> {
     #[cfg(unix)]
@@ -154,10 +208,14 @@ pub struct Server {
 }
 
 /// `$HORIZON_CONTROL`, else `horizon-control.sock` in the user's runtime
-/// directory (`horizon-control.json` in the temporary directory on Windows).
+/// directory (`horizon-control.json` in the temporary directory on Windows,
+/// in the game folder on Android, whose apps have no shared temporary one).
 pub fn default_path() -> PathBuf {
     if let Some(path) = std::env::var_os("HORIZON_CONTROL") {
         return path.into();
+    }
+    if cfg!(target_os = "android") {
+        return crate::logging::game_home().join("horizon-control.json");
     }
     if !cfg!(unix) {
         return std::env::temp_dir().join("horizon-control.json");
@@ -175,7 +233,11 @@ impl Server {
         let (sender, requests) = mpsc::channel();
         let local = sender.clone();
         if uses_tcp(path) {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            let port = std::env::var("HORIZON_CONTROL_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(0);
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
             let token = random_token();
             let port = listener.local_addr()?.port();
             write_private(
@@ -353,6 +415,28 @@ mod tests {
         let mut reply = String::new();
         BufReader::new(stream).read_line(&mut reply).unwrap();
         assert!(reply.contains("error"));
+    }
+
+    #[test]
+    fn base64_round_trips_and_remote_endpoints_are_marked() {
+        for bytes in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"foobar",
+            &[0, 255, 128, 7, 64],
+        ] {
+            assert_eq!(unbase64(&base64(bytes)).as_deref(), Some(bytes));
+        }
+        assert_eq!(unbase64("Zm9v!"), None);
+        let path =
+            std::env::temp_dir().join(format!("horizon-ctl-remote-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"port":47800,"token":"t","remote":true}"#).unwrap();
+        assert!(is_remote(&path));
+        std::fs::write(&path, r#"{"port":47800,"token":"t"}"#).unwrap();
+        assert!(!is_remote(&path));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

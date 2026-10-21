@@ -461,7 +461,14 @@ impl Game<'_> {
                 if self.pending_screenshot.is_some() {
                     return Err("a screenshot is already pending".into());
                 }
-                renderer.screenshot = Some(arg(1)?.into());
+                // `screenshot -`: a file in the game folder, sent back in the reply as
+                // `png_base64` to a client on another machine (control::is_remote).
+                let path = match arg(1)? {
+                    "-" => std::env::current_dir()?.join("horizon-ctl-screenshot.png"),
+                    path => path.into(),
+                };
+                self.inline_screenshot = (arg(1)? == "-").then(|| path.clone());
+                renderer.screenshot = Some(path);
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
             }
@@ -672,7 +679,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
+    pub(super) fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
         self.physical_keys.insert(key);
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);

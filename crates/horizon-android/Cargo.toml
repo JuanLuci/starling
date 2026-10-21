@@ -1,0 +1,47 @@
+[package]
+name = "horizon-android"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "Horizon on Android: the client's game loop in a NativeActivity library"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+# Beside horizon-client's main.rs, whose `game` module it compiles (android_lib.rs).
+path = "../horizon-client/src/android_lib.rs"
+
+# Everything is Android-only: on other targets the library is empty, so workspace builds and
+# lints don't compile the game module a second time.
+[target.'cfg(target_os = "android")'.dependencies]
+horizon-client = { path = "../horizon-client", default-features = false }
+horizon-assets = { path = "../horizon-assets" }
+horizon-bench = { path = "../horizon-bench" }
+horizon-core = { path = "../horizon-core" }
+horizon-friends = { path = "../horizon-friends" }
+horizon-mods = { path = "../horizon-mods" }
+horizon-protocol = { path = "../horizon-protocol" }
+horizon-shaderpack = { path = "../horizon-shaderpack" }
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
+horizon-threads = { path = "../horizon-threads" }
+horizon-world = { path = "../horizon-world" }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+# The NativeActivity glue (android-activity): `android_main` gets the app, the event loop is
+# built from it.
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+pollster = "0.4"
+glam = "0.30"
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+log = "0.4"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+
+[features]
+default = ["audio"]
+audio = ["horizon-client/audio"]
+# Named by the game module's cfgs. Never on here: gilrs has no Android backend and hidapi does not
+# build for it, so phones get the touch controls and `horizon-ctl pad`'s virtual pad.
+controllers = []
+
+[lints]
+workspace = true

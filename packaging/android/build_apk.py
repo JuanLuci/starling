@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Build Horizon's arm64-v8a Android APK: horizon-android as a NativeActivity library.
+
+The APK holds the game library and the launcher icon, nothing of Minecraft: the resources
+horizon-prepare makes from the player's own copy are copied to the app's folder separately.
+
+    python3 packaging/android/build_apk.py                 # build the library, then the APK
+    python3 packaging/android/build_apk.py --no-build      # package the library built last
+    python3 packaging/android/build_apk.py --install       # and adb install it
+
+Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
+NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (keytool,
+apksigner). Without HORIZON_ANDROID_KEYSTORE it signs with a debug key kept in target/android.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = Path(__file__).resolve().parent
+
+APPLICATION_ID = "dev.horizon.mobile"
+LABEL = "Horizon"
+VERSION_NAME = "0.1.0"
+VERSION_CODE = 1
+MIN_SDK = 26  # AAudio (cpal)
+TARGET_SDK = 35
+PLATFORM = 36
+BUILD_TOOLS = "35.0.0"
+NDK = "28.2.13676358"
+ABI = "arm64-v8a"
+TRIPLE = "aarch64-linux-android"
+LIBRARY = "horizon_android"
+# Every LOAD segment aligned for 16 KB pages, which Android 15 devices may use.
+PAGE_FLAGS = "-C link-arg=-Wl,-z,max-page-size=16384"
+ICONS = {
+    "mipmap-mdpi": "48x48",
+    "mipmap-xxhdpi": "128x128",
+    "mipmap-xxxhdpi": "256x256",
+}
+
+
+def sdk_dir():
+    env = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if env:
+        return Path(env)
+    if sys.platform == "win32":
+        return Path(os.environ["LOCALAPPDATA"]) / "Android" / "Sdk"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Android" / "sdk"
+    return Path.home() / "Android" / "Sdk"
+
+
+def tool(directory, name):
+    """An SDK tool, with Windows' .exe or .bat suffix."""
+    for suffix in ("", ".exe", ".bat", ".cmd"):
+        path = directory / (name + suffix)
+        if path.is_file():
+            return path
+    sys.exit(f"build_apk: {name} not found in {directory}")
+
+
+def run(*args, **kwargs):
+    print("+", " ".join(str(a) for a in args), flush=True)
+    subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def ndk_tool(ndk, name):
+    host = {"win32": "windows-x86_64", "darwin": "darwin-x86_64"}.get(sys.platform, "linux-x86_64")
+    return tool(ndk / "toolchains" / "llvm" / "prebuilt" / host / "bin", name)
+
+
+def build_library(profile, ndk, sdk):
+    env = dict(os.environ, ANDROID_NDK_HOME=str(ndk), ANDROID_HOME=str(sdk))
+    env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " " + PAGE_FLAGS).strip()
+    run(
+        "cargo", "ndk", "-t", ABI, "--platform", MIN_SDK,
+        "build", "--profile", profile, "-p", "horizon-android",
+        cwd=ROOT, env=env,
+    )
+
+
+def link_resources(aapt2, android_jar, out):
+    """The manifest and the launcher icon, compiled and linked into `out/base.apk`."""
+    manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
+    manifest = manifest.replace("@APPLICATION_ID@", APPLICATION_ID).replace("@LABEL@", LABEL)
+    (out / "AndroidManifest.xml").write_text(manifest, encoding="utf-8")
+    res = out / "res"
+    shutil.rmtree(res, ignore_errors=True)
+    for folder, size in ICONS.items():
+        target = res / folder
+        target.mkdir(parents=True)
+        shutil.copyfile(
+            ROOT / "packaging" / "icons" / "hicolor" / size / "apps" / "horizon.png",
+            target / "ic_launcher.png",
+        )
+    compiled = out / "compiled"
+    shutil.rmtree(compiled, ignore_errors=True)
+    compiled.mkdir()
+    run(aapt2, "compile", "--dir", res, "-o", compiled)
+    run(
+        aapt2, "link", "-o", out / "base.apk",
+        "--manifest", out / "AndroidManifest.xml",
+        "-I", android_jar,
+        "--min-sdk-version", MIN_SDK, "--target-sdk-version", TARGET_SDK,
+        "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
+        "--debug-mode",
+        *sorted(compiled.glob("*.flat")),
+    )
+
+
+def add_library(base, library, unsigned):
+    """`base` plus the library, stored uncompressed so Android maps it straight from the APK."""
+    shutil.copyfile(base, unsigned)
+    with zipfile.ZipFile(unsigned, "a") as apk:
+        apk.write(library, f"lib/{ABI}/lib{LIBRARY}.so", compress_type=zipfile.ZIP_STORED)
+
+
+def sign(build_tools, aligned, apk, out):
+    keystore = os.environ.get("HORIZON_ANDROID_KEYSTORE")
+    alias = os.environ.get("HORIZON_ANDROID_KEY_ALIAS", "horizon-debug")
+    env = dict(os.environ)
+    if not keystore:
+        keystore = out / "debug.keystore"
+        env["HORIZON_ANDROID_STORE_PASSWORD"] = env["HORIZON_ANDROID_KEY_PASSWORD"] = "android"
+        if not keystore.exists():
+            run(
+                "keytool", "-genkeypair", "-keystore", keystore, "-storepass", "android",
+                "-keypass", "android", "-alias", alias, "-keyalg", "RSA", "-keysize", "2048",
+                "-validity", "10000", "-dname", "CN=Horizon Android debug",
+            )
+    apksigner = tool(build_tools, "apksigner")
+    run(
+        apksigner, "sign", "--ks", keystore, "--ks-key-alias", alias,
+        "--ks-pass", "env:HORIZON_ANDROID_STORE_PASSWORD",
+        "--key-pass", "env:HORIZON_ANDROID_KEY_PASSWORD",
+        "--out", apk, aligned, env=env,
+    )
+    run(apksigner, "verify", apk)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--profile", default="fast", help="Cargo profile (default: fast)")
+    parser.add_argument("--no-build", action="store_true", help="package the library built last")
+    parser.add_argument("--install", action="store_true", help="adb install the APK")
+    parser.add_argument(
+        "--keep-symbols", action="store_true", help="ship the library unstripped (backtraces)"
+    )
+    args = parser.parse_args()
+
+    sdk = sdk_dir()
+    ndk = Path(os.environ.get("ANDROID_NDK_HOME") or sdk / "ndk" / NDK)
+    build_tools = sdk / "build-tools" / BUILD_TOOLS
+    android_jar = sdk / "platforms" / f"android-{PLATFORM}" / "android.jar"
+    for path in (ndk, build_tools, android_jar):
+        if not path.exists():
+            sys.exit(f"build_apk: missing {path}")
+
+    if not args.no_build:
+        build_library(args.profile, ndk, sdk)
+    profile_dir = "debug" if args.profile == "dev" else args.profile
+    built = ROOT / "target" / TRIPLE / profile_dir / f"lib{LIBRARY}.so"
+    if not built.is_file():
+        sys.exit(f"build_apk: {built} not built")
+
+    out = ROOT / "target" / "android"
+    out.mkdir(parents=True, exist_ok=True)
+    library = out / f"lib{LIBRARY}.so"
+    if args.keep_symbols:
+        shutil.copyfile(built, library)
+    else:
+        run(ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, built)
+
+    link_resources(tool(build_tools, "aapt2"), android_jar, out)
+    add_library(out / "base.apk", library, out / "unsigned.apk")
+    aligned = out / "aligned.apk"
+    run(tool(build_tools, "zipalign"), "-P", "16", "-f", "4", out / "unsigned.apk", aligned)
+    apk = out / f"horizon-{VERSION_NAME}-{ABI}.apk"
+    sign(build_tools, aligned, apk, out)
+    print(apk)
+    if args.install:
+        adb = tool(sdk / "platform-tools", "adb")
+        run(adb, "install", "-r", apk)
+
+
+if __name__ == "__main__":
+    main()

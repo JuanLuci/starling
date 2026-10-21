@@ -35,24 +35,7 @@ fn capital(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Standard base64 (RFC 4648) for image content.
-pub fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+pub use horizon_client::control::base64;
 
 impl Session {
     /// One tool call: (content blocks, is_error).
@@ -69,16 +52,19 @@ impl Session {
         };
         if cmd.name == "screenshot" {
             let path = std::env::temp_dir().join(format!("horizon-ctl-{}.png", std::process::id()));
-            let result = self
-                .run(&["screenshot".to_owned(), path.display().to_string()])
-                .and_then(|reply| {
-                    std::fs::read(&path)
-                        .map(|png| (reply, png))
-                        .map_err(|e| crate::Failure {
-                            reply: json!({ "error": format!("{}: {e}", path.display()) }),
-                            status: 1,
-                        })
-                });
+            let result = if horizon_client::control::is_remote(&self.socket) {
+                self.remote_screenshot()
+            } else {
+                self.run(&["screenshot".to_owned(), path.display().to_string()])
+                    .and_then(|reply| {
+                        std::fs::read(&path)
+                            .map(|png| (reply, png))
+                            .map_err(|e| crate::Failure {
+                                reply: json!({ "error": format!("{}: {e}", path.display()) }),
+                                status: 1,
+                            })
+                    })
+            };
             let _ = std::fs::remove_file(&path);
             return match result {
                 Ok((reply, png)) => (

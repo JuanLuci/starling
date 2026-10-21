@@ -1382,6 +1382,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-android"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "glam",
+ "horizon-assets",
+ "horizon-bench",
+ "horizon-client",
+ "horizon-core",
+ "horizon-friends",
+ "horizon-mods",
+ "horizon-protocol",
+ "horizon-shaderpack",
+ "horizon-telemetry",
+ "horizon-threads",
+ "horizon-world",
+ "log",
+ "pollster",
+ "serde_json",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "horizon-assets"
 version = "0.1.0"
 dependencies = [

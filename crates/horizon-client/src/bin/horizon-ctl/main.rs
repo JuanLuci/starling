@@ -193,6 +193,19 @@ impl Session {
                 self.wait_ready(limit)
             }
             "help" if words.get(1).is_some_and(|w| w == "--game") => self.game("help"),
+            // A game on another machine writes its file there: it sends the image back.
+            "screenshot" if horizon_client::control::is_remote(&self.socket) => {
+                let path = words
+                    .get(1)
+                    .ok_or_else(|| Failure::usage(format!("usage: {}", usage(name))))?;
+                let (mut reply, png) = self.remote_screenshot()?;
+                std::fs::write(path, png).map_err(|e| Failure {
+                    reply: json!({ "error": format!("{path}: {e}") }),
+                    status: 1,
+                })?;
+                reply["path"] = path.as_str().into();
+                Ok(reply)
+            }
             _ => {
                 let mut words = words.to_vec();
                 if let Some(cmd) = commands::find(name) {
@@ -209,6 +222,20 @@ impl Session {
                 self.game(&words.join(" "))
             }
         }
+    }
+
+    /// `screenshot -` on a remote game: its reply without the image, and the PNG.
+    pub fn remote_screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
+        let mut reply = self.game("screenshot -")?;
+        let png = reply
+            .as_object_mut()
+            .and_then(|o| o.remove("png_base64"))
+            .and_then(|v| v.as_str().and_then(horizon_client::control::unbase64))
+            .ok_or_else(|| Failure {
+                reply: json!({ "error": "the game sent no image (an older game?)" }),
+                status: GAME_ERROR,
+            })?;
+        Ok((reply, png))
     }
 
     fn wait_ready(&mut self, limit: f64) -> Result<Value, Failure> {

@@ -143,6 +143,7 @@ mod sulfur_cubes;
 mod titles;
 mod tnt;
 mod totem;
+mod touch;
 mod trading;
 mod trial_spawner;
 mod trial_visuals;
@@ -327,7 +328,11 @@ impl Options {
             integrated: false,
         };
         let mut session_file = std::env::var("HORIZON_SESSION_FILE").ok();
+        // An Android activity has no command line: horizon-android builds one.
+        #[cfg(not(target_os = "android"))]
         let mut args = std::env::args().skip(1);
+        #[cfg(target_os = "android")]
+        let mut args = crate::args().into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--help" | "-h" => {
@@ -1163,6 +1168,8 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    /// The touch controls (game/touch.rs).
+    touch: touch::Touch,
     frames: u64,
     /// Frames drawn with the player in the world, for `--world-frames`.
     world_frames: u64,
@@ -1376,6 +1383,8 @@ struct Game<'a> {
     perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
+    /// The pending screenshot's file, when its reply carries the image (`screenshot -`).
+    inline_screenshot: Option<PathBuf>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
@@ -4250,9 +4259,10 @@ impl Game<'_> {
     fn apply_mouse_look(&mut self) {
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
-        let pointer = self.captured || self.agent_pointer;
+        // The touch controls turn the view as a grabbed pointer does (game/touch.rs).
+        let pointer = self.captured || self.agent_pointer || self.touch_turns();
         let grabbed = pointer && self.screen == Screen::Playing && self.player.is_some();
-        let active = self.focused || self.agent_pointer;
+        let active = self.focused || self.agent_pointer || self.touch_turns();
         if let Some((xo, yo)) = self
             .mouse
             .handle_accumulated_movement(time, active, grabbed, look)
@@ -4479,6 +4489,7 @@ impl Game<'_> {
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
+        self.draw_touch(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -10121,6 +10132,14 @@ impl ApplicationHandler for Game<'_> {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        if self.touch_event(event_loop, id, &event) {
+            return;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && self.touch_back_key(event)
+        {
+            return;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
@@ -10844,12 +10863,26 @@ impl ApplicationHandler for Game<'_> {
                     if let Some(result) = finished
                         && let Some(reply) = self.pending_screenshot.take()
                     {
+                        let inline = self.inline_screenshot.take().map(|path| {
+                            let png = std::fs::read(&path);
+                            let _ = std::fs::remove_file(&path);
+                            png
+                        });
                         let _ = reply.send(
-                            match result {
-                                Ok([w, h]) => {
+                            match (result, inline) {
+                                (Ok([w, h]), None) => {
                                     serde_json::json!({ "ok": true, "width": w, "height": h })
                                 }
-                                Err(e) => serde_json::json!({ "error": e }),
+                                (Ok([w, h]), Some(Ok(png))) => serde_json::json!({
+                                    "ok": true,
+                                    "width": w,
+                                    "height": h,
+                                    "png_base64": horizon_client::control::base64(&png),
+                                }),
+                                (Ok(_), Some(Err(e))) => {
+                                    serde_json::json!({ "error": e.to_string() })
+                                }
+                                (Err(e), _) => serde_json::json!({ "error": e }),
                             }
                             .to_string(),
                         );
@@ -10939,6 +10972,7 @@ impl ApplicationHandler for Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
+        self.touch_frame();
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
@@ -11102,6 +11136,7 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            touch: Default::default(),
             frames: 0,
             world_frames: 0,
             fps: 0.0,
@@ -11250,6 +11285,7 @@ impl<'a> Game<'a> {
             frame_stats: Default::default(),
             perf: Default::default(),
             pending_screenshot: None,
+            inline_screenshot: None,
             pending_bench: None,
             flight: None,
             ui_wait: Default::default(),
@@ -12164,8 +12200,21 @@ fn write_report(game: &Game<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The event loop; on Android, the activity's (horizon-android).
+fn event_loop() -> Result<EventLoop<()>> {
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        Ok(EventLoop::builder()
+            .with_android_app(crate::android_app())
+            .build()?)
+    }
+    #[cfg(not(target_os = "android"))]
+    Ok(EventLoop::new()?)
+}
+
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    EventLoop::new()?.run_app(&mut game)?;
+    event_loop()?.run_app(&mut game)?;
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);
@@ -12192,6 +12241,11 @@ struct Loading {
     shown: bool,
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
+    /// Why the resources did not load, kept on screen instead of quitting where no terminal
+    /// shows the error (Android).
+    failure: Option<String>,
+    /// The finger acting as the mouse (horizon_client::touch::as_mouse).
+    touch_mouse: Option<u64>,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -12247,9 +12301,18 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        if let Err(error) = self.menu_event(event_loop, event) {
-            self.error = Some(error);
-            event_loop.exit();
+        let events = match &event {
+            WindowEvent::Touch(touch) => {
+                horizon_client::touch::as_mouse(touch, &mut self.touch_mouse)
+            }
+            _ => vec![event],
+        };
+        for event in events {
+            if let Err(error) = self.menu_event(event_loop, event) {
+                self.error = Some(error);
+                event_loop.exit();
+                return;
+            }
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
@@ -12287,6 +12350,13 @@ impl Loading {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.failure.is_some() {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         if let Err(error) = self.poll_menu_resources() {
             self.error = Some(error);
             event_loop.exit();
@@ -12310,7 +12380,11 @@ impl Loading {
             return;
         };
         let mut batch = HudBatch::new(size);
-        self.draw_menu(&mut batch);
+        if let Some(failure) = &self.failure {
+            self.draw_failure(&mut batch, failure);
+        } else {
+            self.draw_menu(&mut batch);
+        }
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
@@ -12332,6 +12406,50 @@ impl Loading {
                 self.started.elapsed().as_millis()
             );
         }
+    }
+    /// The loading failure and where the resources were looked for, in the embedded Horizon
+    /// font: the vanilla one is part of the resources that did not load.
+    fn draw_failure(&self, batch: &mut HudBatch, failure: &str) {
+        use horizon_client::ui_theme::{Face, Ui, color};
+        let Some(gui) = &self.gui else { return };
+        let mut ui = Ui::new(&gui.atlas, batch, (0.0, 0.0));
+        let (w, h) = (ui.w, ui.h);
+        ui.fill(0.0, 0.0, w, h, color::BG);
+        let (left, max) = (32.0, w - 64.0);
+        let mut y = h * 0.25;
+        ui.text(
+            Face::Semibold,
+            22.0,
+            left,
+            y,
+            color::TEXT,
+            "Horizon could not start",
+        );
+        y += 40.0;
+        let detail = format!(
+            "{failure}\n\nResources are read from {}: copy the folder horizon-prepare made there.",
+            self.vanilla_root.display()
+        );
+        for paragraph in detail.lines() {
+            let mut line = String::new();
+            for word in paragraph.split(' ') {
+                let next = if line.is_empty() {
+                    word.to_owned()
+                } else {
+                    format!("{line} {word}")
+                };
+                if !line.is_empty() && ui.measure(Face::Regular, 14.0, &next) > max {
+                    ui.text(Face::Regular, 14.0, left, y, color::MUTED, &line);
+                    y += 20.0;
+                    line = word.to_owned();
+                } else {
+                    line = next;
+                }
+            }
+            ui.text(Face::Regular, 14.0, left, y, color::MUTED, &line);
+            y += 20.0;
+        }
+        ui.finish();
     }
     fn finish(&mut self, loaded: Loaded) -> Result<Option<Game<'static>>> {
         let handoff_at = Instant::now();
@@ -12470,6 +12588,11 @@ impl ApplicationHandler for App {
             Step::Done => event_loop.exit(),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {
+                    if cfg!(target_os = "android") {
+                        log::error!("Horizon: {e}");
+                        loading.failure = Some(e.to_string());
+                        return;
+                    }
                     loading.error = Some(e);
                 }
                 event_loop.exit();
@@ -12515,9 +12638,11 @@ fn run_loading(
         shown: false,
         menu,
         error: None,
+        failure: None,
+        touch_mouse: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    EventLoop::new()?.run_app(&mut app)?;
+    event_loop()?.run_app(&mut app)?;
     match app {
         App::Ready(mut game) => {
             write_report(&game)?;

@@ -797,6 +797,15 @@ async fn open_device(
             .await
         {
             Ok((device, queue)) => {
+                // Errors on a lost device are dropped by wgpu: say why it was lost.
+                device.set_device_lost_callback(|reason, message| {
+                    // Called from the wgpu call that lost it: the backtrace names the pipeline
+                    // or resource a driver could not make.
+                    log::error!(
+                        "Horizon renderer: the GPU device was lost ({reason:?}): {message}\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                });
                 return Ok(Opened {
                     instance,
                     surface,

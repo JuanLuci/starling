@@ -34,6 +34,10 @@ pub(super) struct Pads {
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
+    /// The touch controls' pad (game/touch.rs), and its taps: it plays like a pad but does not
+    /// make the pad the active input, so menus stay pointer-driven.
+    touch: PadState,
+    touch_taps: Vec<Button>,
     edges: Edges,
     /// The game tick each button went down in, and releases held back until
     /// a tick has passed: vanilla samples keys once per tick, so a click
@@ -87,6 +91,21 @@ impl Pads {
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
+    /// The touch controls (game/touch.rs) play through their own pad.
+    pub(super) fn touch_hold(&mut self, button: Button, down: bool) {
+        self.touch.set(button, down);
+    }
+    pub(super) fn touch_tap(&mut self, button: Button) {
+        self.touch.set(button, true);
+        self.touch_taps.push(button);
+    }
+    pub(super) fn touch_stick(&mut self, stick: [f32; 2]) {
+        self.touch.left = stick;
+    }
+    /// 0: use (left trigger), 1: attack (right trigger).
+    pub(super) fn touch_trigger(&mut self, trigger: usize, value: f32) {
+        self.touch.triggers[trigger] = value;
+    }
 }
 
 impl Game<'_> {
@@ -110,12 +129,16 @@ impl Game<'_> {
         for button in std::mem::take(&mut self.pad.taps) {
             self.pad.injected.set(button, false);
         }
-        let threshold = self.settings.controller.trigger_threshold;
-        let edges = self.pad.edges.update(&state, threshold);
         if state.active(&self.settings.controller) {
             self.last_input = Instant::now();
             self.pad.in_use = true;
         }
+        let state = state.merge(&self.pad.touch);
+        for button in std::mem::take(&mut self.pad.touch_taps) {
+            self.pad.touch.set(button, false);
+        }
+        let threshold = self.settings.controller.trigger_threshold;
+        let edges = self.pad.edges.update(&state, threshold);
         self.pad.state = state;
         self.pad_output_frame();
         // Damage from any source, here or on a server; nothing counts on

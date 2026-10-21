@@ -218,6 +218,16 @@ struct Logger {
 
 static LOGGER: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
 
+/// Where messages are printed instead of stderr, which a platform may discard (Android's
+/// logcat, set by horizon-android). It gets every message the file gets, and other crates'
+/// warnings too (the graphics driver's, wgpu's), since nothing else shows them there.
+static CONSOLE: std::sync::OnceLock<fn(log::Level, &str)> = std::sync::OnceLock::new();
+
+/// Prints messages with `console` from now on (before `init`).
+pub fn set_console(console: fn(log::Level, &str)) {
+    let _ = CONSOLE.set(console);
+}
+
 fn ours(target: &str) -> bool {
     target.starts_with("horizon")
 }
@@ -229,11 +239,22 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
+        let console = CONSOLE.get();
         if !self.enabled(record.metadata()) {
+            if let Some(console) = console
+                && record.level() <= log::Level::Warn
+            {
+                console(
+                    record.level(),
+                    &format!("[{}] {}", record.target(), record.args()),
+                );
+            }
             return;
         }
         let message = record.args().to_string();
-        if ours(record.target()) {
+        if let Some(console) = console {
+            console(record.level(), &message);
+        } else if ours(record.target()) {
             eprintln!("{message}");
         }
         let current = std::thread::current();
