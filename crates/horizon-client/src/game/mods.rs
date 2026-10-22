@@ -894,18 +894,23 @@ impl Game<'_> {
         }
         let binds = self.mods.mods.keybinds();
         for (id, bind) in binds.iter().filter(|(_, b)| b.key == name) {
-            let full = format!("{id}:{}", bind.id);
-            let held = self.mods.keys_down.contains(&full);
-            if pressed == held {
-                continue;
-            }
-            if pressed {
-                self.mods.keys_down.push(full);
-            } else {
-                self.mods.keys_down.retain(|k| *k != full);
-            }
-            self.mods.mods.key(id, &bind.id, pressed);
+            self.mod_bind(id, &bind.id, pressed);
         }
+        self.show_mod_output();
+    }
+    /// Mod `id`'s keybind `bind` held or let go (a key, or its touch button).
+    pub(super) fn mod_bind(&mut self, id: &str, bind: &str, pressed: bool) {
+        let full = format!("{id}:{bind}");
+        let held = self.mods.keys_down.contains(&full);
+        if pressed == held {
+            return;
+        }
+        if pressed {
+            self.mods.keys_down.push(full);
+        } else {
+            self.mods.keys_down.retain(|k| *k != full);
+        }
+        self.mods.mods.key(id, bind, pressed);
         self.show_mod_output();
     }
     /// Minecraft.startAttack: whether the mods let it go ahead, on the entity or block under

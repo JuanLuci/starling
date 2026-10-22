@@ -61,6 +61,8 @@ pub(super) struct Touch {
     chat_key: Option<(usize, Instant)>,
     /// The finger on the chat bar: its moves and lift are the bar's.
     chat_finger: Option<u64>,
+    /// Fingers on the mods' keybind buttons: (finger, mod id, keybind id).
+    mod_keys: Vec<(u64, String, String)>,
 }
 
 /// The chat bar's keys, left to right: history up and down, completion, the cursor.
@@ -196,6 +198,21 @@ impl Game<'_> {
         if self.touch.chat_finger == Some(t.id) {
             if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
                 self.touch.chat_finger = None;
+            }
+            return true;
+        }
+        // The mods' keybinds: held while a finger is on their button.
+        if t.phase == TouchPhase::Started
+            && let Some((id, bind)) = self.mod_key_at(p)
+        {
+            self.touch.mod_keys.push((t.id, id.clone(), bind.clone()));
+            self.mod_bind(&id, &bind, true);
+            return true;
+        }
+        if let Some(i) = self.touch.mod_keys.iter().position(|(f, ..)| *f == t.id) {
+            if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                let (_, id, bind) = self.touch.mod_keys.remove(i);
+                self.mod_bind(&id, &bind, false);
             }
             return true;
         }
@@ -651,6 +668,58 @@ impl Game<'_> {
         self.touch.keyboard = false;
     }
 
+    /// The mods' keybinds as a row of buttons while playing on a touch screen (there are no
+    /// keys to press): (x, y, w, h) in GUI pixels, mod id, keybind id, label.
+    fn mod_key_buttons(&self, batch: &HudBatch) -> Vec<([f32; 4], String, String, String)> {
+        if !self.touch_playing() || !(self.touch.seen || cfg!(target_os = "android")) {
+            return Vec::new();
+        }
+        let binds = self.mods.mods.keybinds();
+        if binds.is_empty() {
+            return Vec::new();
+        }
+        let atlas = &self.gui.atlas;
+        let labels: Vec<String> = binds
+            .iter()
+            .map(|(_, b)| b.name.chars().take(14).collect())
+            .collect();
+        let widths: Vec<f32> = labels
+            .iter()
+            .map(|l| HudBatch::text_width(atlas, l) + 10.0)
+            .collect();
+        // At the left, under the top row of the default layout and over the stick.
+        let y = (batch.height * 0.2).floor();
+        let mut x = 4.0;
+        let mut out = Vec::new();
+        for (((id, bind), label), w) in binds.into_iter().zip(labels).zip(widths) {
+            out.push(([x, y, w, 16.0], id, bind.id, label));
+            x += w + 3.0;
+        }
+        out
+    }
+    /// The mod keybind button under window pixel `p`.
+    fn mod_key_at(&self, p: [f32; 2]) -> Option<(String, String)> {
+        let batch = HudBatch::new(self.touch_size());
+        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
+        self.mod_key_buttons(&batch)
+            .into_iter()
+            .find(|(r, ..)| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+            .map(|(_, id, bind, _)| (id, bind))
+    }
+    /// The mods' keybind buttons, lit while held.
+    pub(super) fn draw_mod_keys(&self, batch: &mut HudBatch) {
+        let atlas = &self.gui.atlas;
+        for (r, id, bind, label) in self.mod_key_buttons(batch) {
+            let held = self.mods.keys_down.contains(&format!("{id}:{bind}"));
+            let sprite = if held {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            };
+            horizon_client::ui::nine_slice(batch, atlas, sprite, r[0], r[1], r[2], r[3], u32::MAX);
+            batch.text(atlas, &label, r[0] + 5.0, r[1] + 4.0, u32::MAX, true);
+        }
+    }
     /// Whether the chat bar shows: the chat open on a touch screen.
     fn chat_bar_shown(&self) -> bool {
         self.screen == Screen::Chat && (self.touch.seen || cfg!(target_os = "android"))
