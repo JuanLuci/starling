@@ -476,7 +476,7 @@ fn waypoints_screen_keeps_and_points() {
             .collect()
     };
     let ops = mods.screen_render(&screen, context());
-    assert_eq!(labels(&ops), ["Add here", "Close"]);
+    assert_eq!(labels(&ops), ["Add here", "Rename", "Close"]);
     // The panel is 220x176 in the middle of 320x240: "Add here" at (60, 178).
     let press = |x, y| MouseEvent {
         action: MouseAction::Press,
@@ -487,7 +487,10 @@ fn waypoints_screen_keeps_and_points() {
     };
     assert!(mods.screen_mouse(&screen, press(70.0, 185.0)));
     let ops = mods.screen_render(&screen, context());
-    assert_eq!(labels(&ops), ["Place 1 (0 m)", "x", "Add here", "Close"]);
+    assert_eq!(
+        labels(&ops),
+        ["Place 1 (0 m)", "x", "Add here", "Rename", "Close"]
+    );
     assert!(mods.hud_render(context()).is_empty());
     // Pick it: the HUD points at it.
     assert!(mods.screen_mouse(&screen, press(70.0, 62.0)));
@@ -496,13 +499,37 @@ fn waypoints_screen_keeps_and_points() {
         hud.iter()
             .any(|o| matches!(o, DrawOp::Text { text, .. } if text.contains("Place 1 0 m")))
     );
+    // Rename it: the keyboard comes up, typed text and Enter name it.
+    assert!(mods.screen_mouse(&screen, press(140.0, 185.0)));
+    assert_eq!(
+        mods.drain(),
+        [Output::Keyboard {
+            id: "waypoints".into(),
+            shown: true
+        }]
+    );
+    let key = |key: &str, text: &str| horizon_mods::KeyEvent {
+        key: key.into(),
+        pressed: true,
+        text: text.into(),
+        shift: false,
+        control: false,
+        alt: false,
+    };
+    for _ in 0.."Place 1".len() {
+        assert!(mods.screen_key(&screen, &key("key.keyboard.backspace", "")));
+    }
+    assert!(mods.screen_key(&screen, &key("key.keyboard.h", "Home")));
+    assert!(mods.screen_key(&screen, &key("key.keyboard.enter", "")));
+    let ops = mods.screen_render(&screen, context());
+    assert_eq!(labels(&ops)[0], "> Home (0 m)");
     // Kept on disk: a reload has it.
     let entries = Mods::load(&[dir.join("waypoints.hmod")], |_| true, |_| false);
     let mut reloaded = entries;
     reloaded.set_snapshot(player());
     reloaded.key("waypoints", "open", true);
     let ops = reloaded.screen_render(&screen, context());
-    assert!(labels(&ops).iter().any(|l| l.starts_with("Place 1")));
+    assert!(labels(&ops).iter().any(|l| l.starts_with("Home")));
 }
 
 #[test]

@@ -147,6 +147,8 @@ pub enum Output {
     OpenScreen { screen: String },
     /// `screens.close`: the mod's screen, if one is open.
     CloseScreen { id: String },
+    /// `screens.keyboard`: the on-screen keyboard over the mod's screen.
+    Keyboard { id: String, shown: bool },
 }
 
 /// One drawing call of a mod's render hook, in GUI pixels.
@@ -1413,6 +1415,12 @@ impl screens::Host for State {
     fn close(&mut self) {
         self.out.push(Output::CloseScreen {
             id: self.id.clone(),
+        });
+    }
+    fn keyboard(&mut self, shown: bool) {
+        self.out.push(Output::Keyboard {
+            id: self.id.clone(),
+            shown,
         });
     }
 }

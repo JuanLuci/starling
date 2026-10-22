@@ -318,6 +318,10 @@ interface screens {
     open: func(name: string);
     /// Closes the mod's screen if one is open.
     close: func();
+    /// Shows (or hides) the on-screen keyboard over the mod's open screen, for a text field it
+    /// draws: on a phone there is no keyboard otherwise. Its keys come to `screen-key` with
+    /// their text. Closing the screen hides it.
+    keyboard: func(shown: bool);
 }
 
 /// Capability `keys`: whether the mod's keybinds (from its registration) are held.

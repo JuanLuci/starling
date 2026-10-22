@@ -38,6 +38,8 @@ pub(super) struct ModsState {
     pub(super) shown: Option<String>,
     /// The mouse button held on a screen, for drag events.
     pub(super) held: Option<u8>,
+    /// The mod screen asked for the on-screen keyboard (`screens.keyboard`).
+    pub(super) keyboard: bool,
     /// The world the mods were last told of: None out of a world, Some(server address).
     joined: Option<Option<String>>,
     dimension: Option<String>,
@@ -1050,6 +1052,17 @@ impl Game<'_> {
                 }
                 Output::OpenScreen { screen } => {
                     self.open_mod_screen(screen);
+                    continue;
+                }
+                Output::Keyboard { id, shown } => {
+                    if self
+                        .mods
+                        .screen
+                        .as_ref()
+                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
+                    {
+                        self.mods.keyboard = shown;
+                    }
                     continue;
                 }
                 Output::CloseScreen { id } => {

@@ -1,9 +1,11 @@
 //! Example Horizon mod (`docs/mods.md`) for the screen API: J (or its touch button) opens a
 //! screen of saved places drawn with vanilla buttons; "Add here" saves where the player stands,
-//! a place's button picks it and "x" forgets it. The chosen place's distance and direction show
-//! at the top of the HUD. Places are kept with `storage`, one per line.
+//! a place's button picks it, "x" forgets it and "Rename" names the picked one (bringing up the
+//! on-screen keyboard on a phone; Enter keeps the name). The chosen place's distance and
+//! direction show at the top of the HUD. Places are kept with `storage`, one per line.
 use horizon_mod_sdk::{
-    Mod, MouseAction, MouseEvent, Registration, RenderContext, draw, game, screens, storage,
+    KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, draw, game, screens,
+    storage,
 };
 
 struct Place {
@@ -15,6 +17,8 @@ struct Place {
 struct Waypoints {
     places: Vec<Place>,
     chosen: Option<usize>,
+    /// The new name being typed for the chosen place.
+    renaming: Option<String>,
 }
 
 const SCREEN: &str = "waypoints:list";
@@ -28,6 +32,7 @@ enum Hit {
     Pick(usize),
     Forget(usize),
     Add,
+    Rename,
     Close,
 }
 
@@ -80,8 +85,9 @@ impl Waypoints {
             out.push(([ox + PANEL[0] - 30.0, y, 20.0, 20.0], Hit::Forget(i)));
         }
         let y = oy + PANEL[1] - 30.0;
-        out.push(([ox + 10.0, y, 96.0, 20.0], Hit::Add));
-        out.push(([ox + PANEL[0] - 106.0, y, 96.0, 20.0], Hit::Close));
+        out.push(([ox + 10.0, y, 64.0, 20.0], Hit::Add));
+        out.push(([ox + 78.0, y, 64.0, 20.0], Hit::Rename));
+        out.push(([ox + PANEL[0] - 74.0, y, 64.0, 20.0], Hit::Close));
         out
     }
     fn distance(p: &Place, x: f64, z: f64) -> f64 {
@@ -102,6 +108,7 @@ impl Mod for Waypoints {
             Waypoints {
                 places: Self::load(),
                 chosen: None,
+                renaming: None,
             },
             hooks,
         ))
@@ -136,9 +143,18 @@ impl Mod for Waypoints {
                 }
                 Hit::Forget(_) => "x".into(),
                 Hit::Add => "Add here".into(),
+                Hit::Rename => "Rename".into(),
                 Hit::Close => "Close".into(),
             };
-            draw::button(r[0], r[1], r[2], r[3], &label, hovered, true);
+            let active = !matches!(hit, Hit::Rename) || self.chosen.is_some();
+            draw::button(r[0], r[1], r[2], r[3], &label, hovered && active, active);
+        }
+        // The name being typed, in a box over the bottom buttons.
+        if let Some(name) = &self.renaming {
+            let y = oy + PANEL[1] - 54.0;
+            draw::fill(ox + 10.0, y, PANEL[0] - 20.0, 18.0, 0xFF_000000);
+            draw::fill(ox + 11.0, y + 1.0, PANEL[0] - 22.0, 16.0, 0xFF_202020);
+            draw::text(ox + 15.0, y + 5.0, &format!("{name}_"), 0xFFFFFF, true);
         }
     }
 
@@ -183,10 +199,52 @@ impl Mod for Waypoints {
                     self.save();
                 }
             }
+            Some(Hit::Rename) => {
+                if let Some(i) = self.chosen {
+                    self.renaming = Some(self.places[i].name.clone());
+                    screens::keyboard(true);
+                }
+            }
             Some(Hit::Close) => screens::close(),
             None => {}
         }
         true
+    }
+
+    fn screen_key(&mut self, screen: &str, event: &KeyEvent) -> bool {
+        let (Some(name), true) = (self.renaming.as_mut(), screen == SCREEN && event.pressed) else {
+            return screen == SCREEN;
+        };
+        match event.key.as_str() {
+            "key.keyboard.backspace" => {
+                name.pop();
+            }
+            "key.keyboard.enter" | "key.keyboard.keypad.enter" => {
+                if let Some(i) = self.chosen
+                    && !name.trim().is_empty()
+                {
+                    // `|` and new lines would break the stored line.
+                    self.places[i].name = name.trim().replace(['|', '\n'], " ");
+                    self.save();
+                }
+                self.renaming = None;
+                screens::keyboard(false);
+            }
+            _ => {
+                for c in event.text.chars().filter(|c| !c.is_control()) {
+                    if name.chars().count() < 24 {
+                        name.push(c);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn screen_closed(&mut self, screen: &str) {
+        if screen == SCREEN {
+            self.renaming = None;
+        }
     }
 
     fn hud_render(&mut self, context: RenderContext) {

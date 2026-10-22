@@ -375,11 +375,13 @@ impl Game<'_> {
     /// `screens.open`: the mod's screen over everything, the mouse freed.
     pub(super) fn open_mod_screen(&mut self, screen: String) {
         self.mods.screen = Some(screen);
+        self.mods.keyboard = false;
         self.capture(false);
     }
     pub(super) fn close_mod_screen(&mut self) {
         self.mods.screen = None;
         self.mods.held = None;
+        self.mods.keyboard = false;
         if self.screen == Screen::Playing
             && self.title.is_none()
             && self.player.is_some()

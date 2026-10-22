@@ -328,7 +328,8 @@ impl Game<'_> {
         let context = self.text_context();
         if context != self.touch.context {
             self.touch.context = context;
-            self.touch.wanted = matches!(context, Some("chat" | "sign" | "book" | "command"));
+            self.touch.wanted =
+                matches!(context, Some("chat" | "sign" | "book" | "command" | "mod"));
         }
         #[cfg(target_os = "android")]
         if self.touch.keyboard {
@@ -359,7 +360,10 @@ impl Game<'_> {
     /// The text field shown now, by name: the chat, a sign, a book, a command block, the anvil's
     /// name, the creative and recipe searches, the title's forms, the options' searches.
     fn text_context(&mut self) -> Option<&'static str> {
-        if self.screen == Screen::Chat {
+        if self.mods.screen.is_some() {
+            // A mod's screen is over everything: its text field, when it asked for the keyboard.
+            self.mods.keyboard.then_some("mod")
+        } else if self.screen == Screen::Chat {
             Some("chat")
         } else if self.sign_edit.is_some() {
             Some("sign")
