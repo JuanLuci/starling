@@ -67,6 +67,9 @@ pub enum Screen {
         name: String,
         address: String,
         focus: u8,
+        /// `ServerData.ResourcePackStatus`: Some(true) enabled, Some(false) disabled, None
+        /// prompt.
+        packs: Option<bool>,
     },
     Direct {
         address: String,
@@ -468,7 +471,28 @@ impl Screen {
                     ),
                 ]
             }
-            Self::Edit { address, .. } => vec![
+            Self::Edit { address, packs, .. } => vec![
+                // ManageServerScreen's CycleButton of the server's resource pack status.
+                b(
+                    w / 2.0 - 100.0,
+                    h / 4.0 + 72.0,
+                    200.0,
+                    &format!(
+                        "{}: {}",
+                        crate::lang::get_or("addServer.resourcePack", "Server Resource Packs"),
+                        match packs {
+                            Some(true) => {
+                                crate::lang::get_or("addServer.resourcePack.enabled", "Enabled")
+                            }
+                            Some(false) => {
+                                crate::lang::get_or("addServer.resourcePack.disabled", "Disabled")
+                            }
+                            None => crate::lang::get_or("addServer.resourcePack.prompt", "Prompt"),
+                        }
+                    ),
+                    true,
+                    60,
+                ),
                 b(
                     w / 2.0 - 100.0,
                     h / 4.0 + 96.0 + 18.0,
@@ -854,6 +878,7 @@ impl Screen {
                 name,
                 address,
                 focus,
+                ..
             } => {
                 centered(
                     batch,
@@ -1003,6 +1028,7 @@ impl Screen {
                     name: "Minecraft Server".into(),
                     address: String::new(),
                     focus: 1,
+                    packs: None,
                 }
             }
             (
@@ -1018,6 +1044,7 @@ impl Screen {
                         name: s.name,
                         address: s.ip,
                         focus: 0,
+                        packs: s.accept_textures,
                     };
                 }
             }
@@ -1132,21 +1159,32 @@ impl Screen {
                     *selected = Some(index);
                 }
             }
+            // CycleButton: enabled, disabled, prompt, round again.
+            (Self::Edit { packs, .. }, Some(60)) => {
+                *packs = match packs {
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                    None => Some(true),
+                };
+            }
             (
                 Self::Edit {
                     index,
                     name,
                     address,
+                    packs,
                     ..
                 },
                 Some(50),
             ) => {
                 let mut list = servers::load(&servers_file(saves));
-                let entry = ServerEntry::new(name.trim(), address.trim());
+                let mut entry = ServerEntry::new(name.trim(), address.trim());
+                entry.accept_textures = *packs;
                 match index.and_then(|i| list.get_mut(i)) {
                     Some(e) => {
                         e.name = entry.name;
                         e.ip = entry.ip;
+                        e.accept_textures = entry.accept_textures;
                     }
                     None => list.push(entry),
                 }
@@ -1545,6 +1583,46 @@ mod tests {
             Outcome::Connect(address) => assert_eq!(address, list[2].ip),
             _ => panic!("the join arrow connects"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_cycles_and_saves_the_resource_pack_status() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-packs-{}", std::process::id()));
+        let saves = dir.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        let file = servers_file(&saves);
+        servers::save(&file, &[ServerEntry::new("Pack", "127.0.0.1:4")]).unwrap();
+        let size = (427.0, 240.0);
+        let mut screen = Screen::list(&saves);
+        if let Screen::List { selected, .. } = &mut screen {
+            *selected = Some(0);
+        }
+        screen.click(Some(43), 0.0, 0.0, size, &saves);
+        let label = |screen: &Screen| {
+            screen
+                .buttons(size.0, size.1)
+                .into_iter()
+                .find(|b| b.5 == 60)
+                .map(|b| b.3)
+        };
+        assert_eq!(
+            label(&screen).as_deref(),
+            Some("Server Resource Packs: Prompt")
+        );
+        // Prompt, then enabled, then disabled (CycleButton goes round).
+        screen.click(Some(60), 0.0, 0.0, size, &saves);
+        assert_eq!(
+            label(&screen).as_deref(),
+            Some("Server Resource Packs: Enabled")
+        );
+        screen.click(Some(60), 0.0, 0.0, size, &saves);
+        assert_eq!(
+            label(&screen).as_deref(),
+            Some("Server Resource Packs: Disabled")
+        );
+        screen.click(Some(50), 0.0, 0.0, size, &saves);
+        assert_eq!(servers::load(&file)[0].accept_textures, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

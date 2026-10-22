@@ -913,6 +913,7 @@ fn multiplayer_page(ui: &mut Ui, x: f32, w: f32, screen: &Screen, caret: bool) {
             name,
             address,
             focus,
+            ..
         } => {
             let title = if index.is_some() {
                 "Edit server"
