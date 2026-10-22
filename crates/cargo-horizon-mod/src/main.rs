@@ -122,6 +122,9 @@ fn build(release: bool) -> Result<PathBuf, String> {
     if release {
         cmd.arg("--release");
     }
+    // Panic messages keep the source paths of every crate built: the home folder (and cargo's
+    // registry in it) is renamed in them.
+    cmd.env("CARGO_ENCODED_RUSTFLAGS", rustflags_without_home());
     let out = cmd
         .stderr(Stdio::inherit())
         .output()
@@ -140,6 +143,11 @@ fn build(release: bool) -> Result<PathBuf, String> {
         .rfind(|f| f.extension().is_some_and(|e| e == "wasm"))
         .ok_or("the build made no .wasm: is the crate a cdylib?")?;
     let wasm = componentize(&std::fs::read(&core).map_err(|e| e.to_string())?)?;
+    if let Some(found) = personal(&wasm) {
+        return Err(format!(
+            "the mod would carry {found} (a path of this computer): build it outside your home folder"
+        ));
+    }
     // The game refuses a component importing capabilities the manifest lacks.
     manifest.check_imports(component_imports(&wasm)?.iter().map(String::as_str))?;
     let target_dir = core.ancestors().nth(3).ok_or("unexpected target folder")?;
@@ -176,6 +184,44 @@ fn run(args: &[String]) -> Result<(), String> {
         .success()
         .then_some(())
         .ok_or_else(|| format!("the game exited with {status}"))
+}
+
+/// The user's home folder and the cargo home (in it, usually).
+fn home_paths() -> Vec<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let cargo = std::env::var("CARGO_HOME")
+        .unwrap_or_else(|_| Path::new(&home).join(".cargo").display().to_string());
+    [home, cargo].into_iter().filter(|s| s.len() >= 3).collect()
+}
+
+/// The rustflags cargo would use, plus `--remap-path-prefix` for the home folder and the cargo
+/// home (the later, more precise one wins), in `CARGO_ENCODED_RUSTFLAGS`' form.
+fn rustflags_without_home() -> String {
+    let mut flags: Vec<String> = match std::env::var("CARGO_ENCODED_RUSTFLAGS") {
+        Ok(encoded) if !encoded.is_empty() => encoded.split('\x1f').map(str::to_owned).collect(),
+        _ => std::env::var("RUSTFLAGS")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+    };
+    let paths = home_paths();
+    for (path, name) in paths.iter().zip(["home", "cargo-home"]) {
+        flags.push(format!("--remap-path-prefix={path}={name}"));
+    }
+    flags.join("\x1f")
+}
+
+/// A path of this computer found in a built mod: the home or cargo home folder, either slash.
+fn personal(wasm: &[u8]) -> Option<String> {
+    let mut found = home_paths();
+    found.extend(found.clone().iter().map(|p| p.replace('\\', "/")));
+    found.into_iter().find(|s| {
+        wasm.windows(s.len())
+            .any(|w| w.eq_ignore_ascii_case(s.as_bytes()))
+    })
 }
 
 /// Starling's mods folder on a phone (its game folder in shared storage).
@@ -241,6 +287,19 @@ fn push(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_paths_are_found_in_a_mod() {
+        let Some(home) = home_paths().into_iter().next() else {
+            return;
+        };
+        let mut wasm = b"\0asm panicked at ".to_vec();
+        wasm.extend(home.replace('\\', "/").as_bytes());
+        wasm.extend(b"/src/lib.rs");
+        assert!(personal(&wasm).is_some());
+        assert_eq!(personal(b"\0asm crates/my-mod/src/lib.rs"), None);
+        assert!(rustflags_without_home().contains(&format!("--remap-path-prefix={home}=home")));
+    }
 
     #[test]
     fn the_template_is_a_valid_mod() {
