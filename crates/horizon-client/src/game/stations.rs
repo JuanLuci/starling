@@ -1866,7 +1866,15 @@ impl Game<'_> {
 
     /// `ItemStack.getTooltipLines` subset: name in rarity colour, potion
     /// effects, enchantments (gray, curses red), stored enchantments, trims.
-    pub(super) fn stack_tooltip(&self, stack: &ItemStack) -> Vec<(String, u32)> {
+    /// The tooltip with the lines mods add (ItemTooltipCallback).
+    pub(super) fn stack_tooltip(&mut self, stack: &ItemStack) -> Vec<(String, u32)> {
+        let mut lines = self.vanilla_stack_tooltip(stack);
+        for line in self.mods_tooltip(stack) {
+            lines.push((line.resolve_legacy().plain(), rgba(170, 170, 170, 255)));
+        }
+        lines
+    }
+    pub(super) fn vanilla_stack_tooltip(&self, stack: &ItemStack) -> Vec<(String, u32)> {
         let e: &Enchantments = &self.res.stations().enchantments;
         let props = e.props(&stack.item);
         let rarity = horizon_client::item_tooltip::rarity(

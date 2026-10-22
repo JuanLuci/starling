@@ -130,9 +130,9 @@ pub(super) struct Remote {
     /// only replace the remembered state; then the block takes it.
     predictions: HashMap<[i32; 3], (i32, i32)>,
     /// Open container: (window id, menu name).
-    menu: Option<(i32, String)>,
+    pub(super) menu: Option<(i32, String)>,
     /// The open menu's title as the server named it.
-    menu_title: Option<String>,
+    pub(super) menu_title: Option<String>,
     state_id: i32,
     use_target: Option<[i32; 3]>,
     entities: HashMap<i32, Tracked>,
@@ -167,7 +167,7 @@ pub(super) struct Remote {
     /// Player entities in the level: entity id to profile UUID.
     level_players: HashMap<i32, u128>,
     /// The local player's profile UUID (always in the level).
-    profile: u128,
+    pub(super) profile: u128,
     destroying: Option<([i32; 3], u8, f32)>,
     destroy_delay: u32,
     input: horizon_client::interaction_input::InteractionInput,
@@ -736,8 +736,12 @@ impl Game<'_> {
     }
     /// A line in the connection's chat, styled as the server sent it.
     pub(super) fn chat_line(&mut self, text: horizon_client::text::Text) {
+        log::info!("[chat] {}", text.plain());
+        // ClientReceiveMessageEvents: a mod may hide or change it.
+        let Some(text) = self.mods_chat(text) else {
+            return;
+        };
         let plain = text.plain();
-        log::info!("[chat] {plain}");
         self.ui.chat.add(
             &self.gui.atlas,
             text,
@@ -745,9 +749,6 @@ impl Game<'_> {
             self.ticks,
             self.screen == Screen::Chat,
         );
-        if self.mods.mods.is_running() {
-            self.mods_chat(&plain);
-        }
         if let Some(r) = self.remote.as_mut() {
             r.chat.push((plain, Instant::now()));
             r.chat_received += 1;
@@ -801,6 +802,7 @@ impl Game<'_> {
                         r.profile = uuid;
                         r.status = format!("Joined as {name}; loading terrain...");
                     }
+                    self.register_mod_channels();
                 }
                 Event::Brand(brand) => {
                     if let Some(remote) = &mut self.remote {
@@ -823,6 +825,7 @@ impl Game<'_> {
                         r.status = "Loading terrain...".into();
                     }
                     self.merge_remote_commands();
+                    self.register_mod_channels();
                 }
                 Event::Transfer(address) => {
                     if let Some(r) = self.remote.as_mut() {
@@ -2235,6 +2238,7 @@ impl Game<'_> {
             {
                 self.handle_command_suggestions(&data);
             }
+            C::CustomPayload(p) => self.mods_payload(&p.channel, &p.data),
             C::Unknown(id, data) if id == horizon_protocol::ids::play::clientbound::BOSS_EVENT => {
                 if let Err(e) = self.handle_boss_event(&data) {
                     log::warn!("Horizon: skipped undecodable packet boss_event: {e}");
@@ -3497,6 +3501,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
+        self.mods_block_broken(pos, state);
         // BlockStatePredictionHandler.retainKnownServerState.
         if let Some(r) = self.remote.as_mut() {
             r.predictions
@@ -4656,9 +4661,17 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.using = None;
     }
     fn start_attack(&mut self) -> bool {
+        // AttackEntityCallback / AttackBlockCallback.
+        if !self.0.mods_allow_attack() {
+            return false;
+        }
         self.0.remote_start_attack()
     }
     fn start_use(&mut self) {
+        // UseBlockCallback / UseItemCallback.
+        if !self.0.mods_allow_use() {
+            return;
+        }
         self.0.remote_use();
     }
     fn pick(&mut self) {

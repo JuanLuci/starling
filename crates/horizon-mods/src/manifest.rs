@@ -6,13 +6,16 @@ use std::{fmt, io::Read, path::Path};
 pub const MANIFEST: &str = "horizon-mod.toml";
 /// The component's file name in a `.hmod` or a mod folder.
 pub const WASM: &str = "mod.wasm";
-/// The API (WIT package `horizon:mods`) versions this build runs: a mod
-/// built for any 0.1.x SDK.
-pub const API: &str = "0.1";
+/// The API (WIT package `horizon:mods`) this build's SDK targets. Components built for any
+/// 0.1.x or 0.3.x SDK run.
+pub const API: &str = "0.3";
+/// The WIT package versions a component may link: `0.1.` and `0.3.` (0.3 is 0.1's interfaces
+/// and more; a 0.1 mod keeps 0.1's hooks).
+const LINKED: [&str; 2] = ["0.1.", "0.3."];
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
 /// `assets/` and `data/` in the `.hmod`, with blocks and items declared in
-/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
-pub const APIS: [&str; 2] = [API, "0.2"];
+/// `data/<id>/horizon/` (docs/modpacks.md); 0.3 adds the 0.3 interfaces and keeps content.
+pub const APIS: [&str; 3] = ["0.1", "0.2", API];
 /// Namespaces no mod may claim: vanilla's, the convention tags' (mods add
 /// to those, docs/mods.md) and the game's own.
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
@@ -62,37 +65,65 @@ pub enum Side {
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
     GameRead,
+    WorldRead,
+    InventoryRead,
     Chat,
+    ChatSend,
     Hud,
+    Ui,
+    Keys,
+    Sound,
+    Net,
     Storage,
     /// New blocks and items from the mod's `data/` (API 0.2): no WIT
     /// interface, the game reads them before the world loads.
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 5] = [
+    pub const ALL: [Capability; 12] = [
         Capability::GameRead,
+        Capability::WorldRead,
+        Capability::InventoryRead,
         Capability::Chat,
+        Capability::ChatSend,
         Capability::Hud,
+        Capability::Ui,
+        Capability::Keys,
+        Capability::Sound,
+        Capability::Net,
         Capability::Storage,
         Capability::Registries,
     ];
-    /// The WIT interface it grants, in `horizon:mods`.
-    pub fn interface(self) -> &'static str {
+    /// The WIT interfaces it grants, in `horizon:mods`.
+    pub fn interfaces(self) -> &'static [&'static str] {
         match self {
-            Capability::GameRead => "game",
-            Capability::Chat => "chat",
-            Capability::Hud => "hud",
-            Capability::Storage => "storage",
-            Capability::Registries => "registries",
+            Capability::GameRead => &["game"],
+            Capability::WorldRead => &["level"],
+            Capability::InventoryRead => &["inventory"],
+            Capability::Chat => &["chat"],
+            Capability::ChatSend => &["chat-send"],
+            Capability::Hud => &["hud", "draw"],
+            Capability::Ui => &["screens"],
+            Capability::Keys => &["keys"],
+            Capability::Sound => &["sound"],
+            Capability::Net => &["net"],
+            Capability::Storage => &["storage"],
+            Capability::Registries => &[],
         }
     }
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
         match self {
-            Capability::GameRead => "see your position, health and the time",
+            Capability::GameRead => "see your position, health, effects and the time",
+            Capability::WorldRead => "see the blocks and creatures around you",
+            Capability::InventoryRead => "see your items",
             Capability::Chat => "show you chat messages",
-            Capability::Hud => "draw text on your screen",
+            Capability::ChatSend => "send chat messages and commands as you",
+            Capability::Hud => "draw on your screen",
+            Capability::Ui => "open its own screens",
+            Capability::Keys => "use keys you press",
+            Capability::Sound => "play sounds",
+            Capability::Net => "talk to servers on its own channels",
             Capability::Storage => "save its own settings to disk",
             Capability::Registries => "add blocks and items to your worlds",
         }
@@ -103,16 +134,15 @@ impl Capability {
         let unknown = || format!("imports {name}, which Horizon does not offer");
         let rest = name.strip_prefix("horizon:mods/").ok_or_else(unknown)?;
         let (interface, version) = rest.split_once('@').ok_or_else(unknown)?;
-        if !version.starts_with("0.1.") {
+        if !LINKED.iter().any(|v| version.starts_with(v)) {
             return Err(format!("needs API {version}; this Horizon runs {API}"));
         }
-        if interface == "log" {
+        if interface == "log" || interface == "types" {
             return Ok(None);
         }
         Capability::ALL
             .into_iter()
-            .filter(|c| *c != Capability::Registries)
-            .find(|c| c.interface() == interface)
+            .find(|c| c.interfaces().contains(&interface))
             .map(Some)
             .ok_or_else(unknown)
     }
@@ -121,8 +151,15 @@ impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Capability::GameRead => "game-read",
+            Capability::WorldRead => "world-read",
+            Capability::InventoryRead => "inventory-read",
             Capability::Chat => "chat",
+            Capability::ChatSend => "chat-send",
             Capability::Hud => "hud",
+            Capability::Ui => "ui",
+            Capability::Keys => "keys",
+            Capability::Sound => "sound",
+            Capability::Net => "net",
             Capability::Storage => "storage",
             Capability::Registries => "registries",
         };
@@ -150,9 +187,9 @@ impl Manifest {
                 APIS.join(" and ")
             ));
         }
-        if m.capabilities.contains(&Capability::Registries) && m.api == API {
+        if m.capabilities.contains(&Capability::Registries) && m.api == "0.1" {
             return Err(format!(
-                "{MANIFEST}: capability registries needs api = \"0.2\""
+                "{MANIFEST}: capability registries needs api = \"0.2\" or later"
             ));
         }
         if !m.namespaces.is_empty() && !m.capabilities.contains(&Capability::Registries) {
@@ -357,8 +394,8 @@ capabilities = ["game-read", "hud"]
     fn refuses_bad_ids_and_apis() {
         let bad_id = EXAMPLE.replace("coords_hud", "Coords HUD");
         assert!(Manifest::parse(&bad_id).unwrap_err().contains("is not"));
-        let bad_api = EXAMPLE.replace("api = \"0.1\"", "api = \"0.3\"");
-        assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.3"));
+        let bad_api = EXAMPLE.replace("api = \"0.1\"", "api = \"0.4\"");
+        assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.4"));
         let unknown = format!("{EXAMPLE}network = true\n");
         assert!(Manifest::parse(&unknown).is_err());
     }

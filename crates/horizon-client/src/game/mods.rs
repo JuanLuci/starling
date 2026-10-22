@@ -1,19 +1,25 @@
-//! Horizon mods in the game (`docs/mods.md`): loading the ones turned on,
-//! their tick, frame, chat and command hooks, their HUD panels and what
-//! they print. With no mod on, `horizon_mods::Mods` holds no engine and
-//! every hook here returns after one check.
+//! Horizon mods in the game (`docs/mods.md`): loading the ones turned on, the snapshot they
+//! read each tick, their hooks (tick, frame, chat, commands, connection, keys, payloads, damage)
+//! and what they ask for (chat lines, sounds, payloads, screens). With no mod on,
+//! `horizon_mods::Mods` holds no engine and every hook here returns after one check. Drawing
+//! and screens are in `mod_ui.rs`.
 use super::{Game, Screen};
 use horizon_client::{
     command::{Dispatcher, vanilla},
     extras::Corner,
     extras_hud::{self, Corners},
     hud::HudBatch,
+    items::ItemStack,
     mod_list::{self, Installed},
     text::{self, Text},
 };
-use horizon_mods::{Clock, Mods, Output, Player, Snapshot, Status};
+use horizon_mods::{
+    Capability, ChatVerdict, Clock, Effect, Entity, GameMode, Gui, ItemCatalog, ItemInfo, Measure,
+    Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
+};
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -26,6 +32,24 @@ pub(super) struct ModsState {
     checked: Option<Instant>,
     /// The chat's command tree while a running mod owns commands.
     tree: Option<Dispatcher>,
+    /// The mod screen open now, `<mod id>:<name>`, over everything else.
+    pub(super) screen: Option<String>,
+    /// The screen the mods were last told of (`screen-opened` / `screen-closed`).
+    pub(super) shown: Option<String>,
+    /// The mouse button held on a screen, for drag events.
+    pub(super) held: Option<u8>,
+    /// The world the mods were last told of: None out of a world, Some(server address).
+    joined: Option<Option<String>>,
+    dimension: Option<String>,
+    /// The player's health last tick, for `player-hurt`.
+    health: Option<f32>,
+    /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
+    pub(super) keys_down: Vec<String>,
+    /// Every block state's name, for `world-read` (made once).
+    states: Option<Arc<Vec<String>>>,
+    biomes: Option<Arc<Vec<String>>>,
+    items: Option<Arc<dyn ItemCatalog>>,
+    measure: Option<Measure>,
 }
 impl ModsState {
     /// The chat's command tree: vanilla's, plus the running mods' commands.
@@ -37,6 +61,8 @@ impl ModsState {
 }
 /// How often dev mods are checked for a rebuild.
 const RELOAD_CHECK: Duration = Duration::from_secs(1);
+/// How far around the player `world-read` mods see blocks.
+const LEVEL_CHUNKS: i32 = 2;
 
 /// A vanilla command name: mods may not take it.
 fn vanilla_command(name: &str) -> bool {
@@ -45,6 +71,52 @@ fn vanilla_command(name: &str) -> bool {
         .children
         .iter()
         .any(|&c| d.nodes[c].name() == name)
+}
+
+/// The loaded chunks around the player, for `world-read` mods.
+struct LevelView {
+    chunks: Vec<((i32, i32), Arc<horizon_client::chunk::Chunk>)>,
+    states: Arc<Vec<String>>,
+    biomes: Arc<Vec<String>>,
+}
+impl LevelView {
+    fn chunk(&self, pos: [i32; 3]) -> Option<&horizon_client::chunk::Chunk> {
+        let key = (pos[0] >> 4, pos[2] >> 4);
+        self.chunks
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, c)| &**c)
+    }
+}
+impl horizon_mods::LevelView for LevelView {
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        let state = self.chunk(pos)?.block(pos[0] & 15, pos[1], pos[2] & 15);
+        self.states.get(state.0 as usize).cloned()
+    }
+    fn biome(&self, pos: [i32; 3]) -> Option<String> {
+        let biome = self.chunk(pos)?.biome(pos[0], pos[1], pos[2]);
+        self.biomes.get(biome as usize).cloned()
+    }
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
+        let light = self.chunk(pos)?.light(pos[0] & 15, pos[1], pos[2] & 15);
+        Some((light & 15, light >> 4))
+    }
+}
+
+/// The game's items, for `inventory.get-item-info`.
+struct Catalog(Vec<(String, ItemInfo)>);
+impl ItemCatalog for Catalog {
+    fn info(&self, id: &str) -> Option<ItemInfo> {
+        let id = if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        };
+        self.0
+            .binary_search_by(|(k, _)| k.as_str().cmp(&id))
+            .ok()
+            .map(|i| self.0[i].1.clone())
+    }
 }
 
 /// `root` with the content mods that are on layered over it
@@ -57,7 +129,7 @@ pub(super) fn content_root(
     dev: &[std::path::PathBuf],
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
-    use horizon_mods::{Capability, Content, Package};
+    use horizon_mods::{Content, Package};
     let here = std::env::current_dir().unwrap_or_default();
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
@@ -112,6 +184,35 @@ pub(super) fn content_root(
     }
 }
 
+/// A UUID as text, with dashes.
+fn uuid_text(id: u128) -> String {
+    let h = format!("{id:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Rich text from a mod: a JSON text component when it starts with `{` or `[`, else plain text
+/// with legacy `§` codes.
+pub(super) fn rich_text(text: &str) -> Text {
+    let t = text.trim_start();
+    if (t.starts_with('{') || t.starts_with('['))
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(t)
+    {
+        return horizon_client::scoreboard::comp_text(&v);
+    }
+    if text.contains('§') {
+        Text::legacy(text)
+    } else {
+        Text::literal(text)
+    }
+}
+
 impl Game<'_> {
     /// Reads `horizon-mods/` and the dev mods, and starts the ones turned on.
     pub(super) fn start_mods(&mut self) {
@@ -130,8 +231,11 @@ impl Game<'_> {
         let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
         let mods = Mods::load(&paths, on, vanilla_command);
         self.mods.mods = mods;
+        self.mods.screen = None;
+        self.mods.joined = None;
         self.list_mods();
         self.sync_mod_commands();
+        self.register_mod_channels();
         self.show_mod_output();
     }
     /// The Mods page's rows, from what loaded.
@@ -213,6 +317,20 @@ impl Game<'_> {
             .is_some_and(|tree| tree.find(name).is_some());
         !server_has && self.mod_command(command)
     }
+    /// On a server, tells it the mods' payload channels (`minecraft:register`, NUL-separated),
+    /// so its plugins send on them.
+    pub(super) fn register_mod_channels(&mut self) {
+        let channels = self.mods.mods.channels();
+        if channels.is_empty() || self.remote.is_none() {
+            return;
+        }
+        self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+            horizon_protocol::packets::configuration::CustomPayload {
+                channel: "minecraft:register".into(),
+                data: channels.join("\0").into_bytes(),
+            },
+        ));
+    }
     /// After the options changed: restart the mods if the list of the ones
     /// turned on did.
     pub(super) fn sync_mods(&mut self) {
@@ -237,31 +355,458 @@ impl Game<'_> {
             self.start_mods();
         }
     }
-    /// What mods read this tick.
-    fn mod_snapshot(&self) -> Snapshot {
+    /// A game stack as mods see it.
+    pub(super) fn mod_stack(&self, s: &ItemStack) -> horizon_mods::ItemStack {
+        let components = horizon_client::item_data::encode_components(s)
+            .map(|c| horizon_client::item_data::canon_tag(&c))
+            .unwrap_or_default();
+        horizon_mods::ItemStack {
+            id: s.item.to_string(),
+            count: s.count,
+            damage: s.damage,
+            max_damage: self
+                .res
+                .items()
+                .items
+                .get(&*s.item)
+                .map_or(0, |i| i.max_damage),
+            name: self.stack_name(s).plain(),
+            components,
+        }
+    }
+    /// A mod's stack as a game stack (its saved components read back).
+    pub(super) fn game_stack(&self, s: &horizon_mods::ItemStack) -> Option<ItemStack> {
+        let components = if s.components.is_empty() {
+            String::new()
+        } else {
+            format!(",components:{}", s.components)
+        };
+        let snbt = format!(
+            "{{id:\"{}\",count:{}{components}}}",
+            s.id.replace('"', ""),
+            s.count.max(1)
+        );
+        horizon_client::item_data::parse_stack(&snbt)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                self.res
+                    .items()
+                    .items
+                    .contains_key(s.id.as_str())
+                    .then(|| ItemStack::new(&s.id, s.count.max(1)))
+            })
+    }
+    /// What mods read this tick: the parts their capabilities reach.
+    fn mod_snapshot(&mut self) -> Snapshot {
+        let mods = &self.mods.mods;
+        let (inventory_read, world_read, game_read) = (
+            mods.uses(Capability::InventoryRead),
+            mods.uses(Capability::WorldRead),
+            mods.uses(Capability::GameRead) || mods.uses(Capability::Net),
+        );
+        let remote = self.remote.as_ref();
+        let (name, uuid) = match remote {
+            Some(r) => (r.session.name.clone(), uuid_text(r.profile)),
+            None => (
+                super::chat::PLAYER_NAME.to_owned(),
+                self.level
+                    .player_uuid
+                    .map(|u| {
+                        uuid_text(
+                            u.iter()
+                                .fold(0u128, |acc, &w| acc << 32 | u128::from(w as u32)),
+                        )
+                    })
+                    .unwrap_or_default(),
+            ),
+        };
+        // LivingEntity.getMaxHealth / getArmorValue (attributes read through the live map).
+        let (max_health, armor) = self.player.as_mut().map_or((20.0, 0.0), |p| {
+            (
+                p.attribute("minecraft:max_health").unwrap_or(20.0),
+                p.attribute("minecraft:armor")
+                    .or_else(|_| p.attribute("armor"))
+                    .unwrap_or(0.0),
+            )
+        });
         let player = self.player.as_ref().map(|p| Player {
             x: p.position.x,
             y: p.position.y,
             z: p.position.z,
+            velocity_x: p.velocity.x,
+            velocity_y: p.velocity.y,
+            velocity_z: p.velocity.z,
             yaw: self.yaw,
             pitch: self.pitch,
             health: p.health.health(),
+            max_health: max_health as f32,
+            absorption: p.health.absorption(),
             food: p.health.food.food.max(0) as u32,
+            saturation: p.health.food.saturation,
+            exhaustion: if remote.is_some() {
+                0.0
+            } else {
+                p.health.food.exhaustion
+            },
+            air: p.air,
+            max_air: 300,
+            armor: armor.max(0.0) as u32,
+            experience_level: self.experience.level.max(0) as u32,
+            experience_progress: self.experience.progress,
+            selected_slot: self.selected as u32,
+            game_mode: match self.mode_id() {
+                1 => GameMode::Creative,
+                2 => GameMode::Adventure,
+                3 => GameMode::Spectator,
+                _ => GameMode::Survival,
+            },
+            on_ground: p.ground.on_ground,
+            sneaking: p.shift_key_down,
+            sprinting: p.sprinting,
+            swimming: p.swimming,
+            flying: p.flying,
+            gliding: p.fall_flying,
             dimension: self.dim.id().to_owned(),
+            name,
+            uuid,
         });
-        let clock = player.is_some().then(|| Clock {
+        let in_world = player.is_some();
+        let clock = in_world.then(|| Clock {
             game_time: self.world.game_time.max(0) as u64,
             day_time: self.world.day_time.max(0) as u64,
         });
-        Snapshot { player, clock }
+        let effects = if game_read && in_world {
+            self.potions
+                .effects
+                .list
+                .iter()
+                .map(|e| Effect {
+                    id: format!("minecraft:{}", e.id),
+                    amplifier: e.amplifier.max(0) as u32,
+                    duration: e.duration,
+                    ambient: e.ambient,
+                    visible: e.visible,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let weather = &self.world.weather;
+        let world = in_world.then(|| WorldInfo {
+            multiplayer: remote.is_some() && self.integrated.is_none(),
+            server: remote
+                .filter(|_| self.integrated.is_none())
+                .map(|r| r.session.address.clone()),
+            difficulty: u32::from(self.ui.difficulty),
+            hardcore: self.level.hardcore,
+            raining: weather.rain_level.1 > 0.2,
+            thundering: weather.thunder_level.1 > 0.9,
+        });
+        let target = (game_read && in_world).then(|| self.mod_target()).flatten();
+        let (gw, gh) = self.gui_size();
+        let gui = Gui {
+            width: gw as u32,
+            height: gh as u32,
+            scale: self.renderer.as_ref().map_or(1.0, |r| {
+                HudBatch::new([r.config.width, r.config.height]).scale
+            }),
+        };
+        let mut snapshot = Snapshot {
+            player,
+            effects,
+            clock,
+            world,
+            target,
+            screen: self.mod_screen_name(),
+            gui: Some(gui),
+            fps: self.fps.round().max(0.0) as u32,
+            keys_down: self.mods.keys_down.clone(),
+            measure: Some(self.mod_measure()),
+            ..Snapshot::default()
+        };
+        if inventory_read {
+            let mut slots: Vec<Option<horizon_mods::ItemStack>> = self.inventory[..36]
+                .iter()
+                .map(|s| s.as_ref().map(|s| self.mod_stack(s)))
+                .collect();
+            slots.extend(
+                self.armor
+                    .iter()
+                    .map(|s| s.as_ref().map(|s| self.mod_stack(s))),
+            );
+            slots.push(self.offhand.as_ref().map(|s| self.mod_stack(s)));
+            snapshot.inventory = slots;
+            snapshot.cursor = self.carried.as_ref().map(|s| self.mod_stack(s));
+            snapshot.hovered = self.hovered_stack().map(|s| self.mod_stack(&s));
+            snapshot.container = self.mod_container();
+            snapshot.items = Some(self.mod_items());
+        }
+        if world_read && in_world {
+            snapshot.level = Some(self.mod_level());
+            snapshot.entities = self.mod_entities();
+        }
+        snapshot
     }
-    /// A game tick.
+    /// What the crosshair is on, for mods.
+    fn mod_target(&self) -> Option<Target> {
+        use horizon_mods::{BlockHit, BlockPos, Direction, EntityHit};
+        let block = self.pick().map(|hit| {
+            let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let face = match hit.face {
+                [0, -1, 0] => Direction::Down,
+                [0, 1, 0] => Direction::Up,
+                [0, 0, -1] => Direction::North,
+                [0, 0, 1] => Direction::South,
+                [-1, 0, 0] => Direction::West,
+                _ => Direction::East,
+            };
+            let eye = self.eye_position().unwrap_or(hit.point);
+            let d = ((hit.point[0] - eye[0]).powi(2)
+                + (hit.point[1] - eye[1]).powi(2)
+                + (hit.point[2] - eye[2]).powi(2))
+            .sqrt();
+            (
+                BlockHit {
+                    pos: BlockPos {
+                        x: hit.pos[0],
+                        y: hit.pos[1],
+                        z: hit.pos[2],
+                    },
+                    face,
+                    block: self.state_string(state),
+                },
+                d,
+            )
+        });
+        let entity = self.mob_hit().map(|(i, d)| {
+            let m = &self.mobs[i];
+            (
+                EntityHit {
+                    id: m.id as i32,
+                    kind: m.kind.id.to_string(),
+                    x: m.position.x,
+                    y: m.position.y,
+                    z: m.position.z,
+                },
+                d,
+            )
+        });
+        match (block, entity) {
+            (Some((_, bd)), Some((e, ed))) if ed <= bd => Some(Target::Entity(e)),
+            (None, Some((e, _))) => Some(Target::Entity(e)),
+            (Some((b, _)), _) => Some(Target::Block(b)),
+            (None, None) => None,
+        }
+    }
+    /// The open container's own slots, for mods.
+    fn mod_container(&mut self) -> Option<horizon_mods::Container> {
+        if self.screen != Screen::Inventory {
+            return None;
+        }
+        let (kind, title) = match self.remote.as_ref().and_then(|r| r.menu.clone()) {
+            Some((_, menu)) => (
+                format!("minecraft:{menu}"),
+                self.remote
+                    .as_ref()
+                    .and_then(|r| r.menu_title.clone())
+                    .unwrap_or_default(),
+            ),
+            None if self.container.is_some() => ("minecraft:generic_9x3".to_owned(), String::new()),
+            None => return None,
+        };
+        let own: Vec<usize> = self
+            .slots()
+            .into_iter()
+            .filter(|i| (300..500).contains(i))
+            .collect();
+        let mut slots = Vec::with_capacity(own.len());
+        for i in own {
+            let stack = self.slot_view(i);
+            slots.push(stack.map(|s| self.mod_stack(&s)));
+        }
+        Some(horizon_mods::Container { kind, title, slots })
+    }
+    /// The stack under the cursor in a screen.
+    fn hovered_stack(&mut self) -> Option<ItemStack> {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative) {
+            return None;
+        }
+        let renderer = self.renderer.as_ref()?;
+        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
+        let slot = self.slot_at(&batch, self.cursor.0, self.cursor.1)?;
+        self.slot_view(slot)
+    }
+    fn mod_items(&mut self) -> Arc<dyn ItemCatalog> {
+        if let Some(items) = &self.mods.items {
+            return items.clone();
+        }
+        let mut list: Vec<(String, ItemInfo)> = self
+            .res
+            .items()
+            .items
+            .iter()
+            .map(|(id, info)| {
+                let food = info.food.map(|(nutrition, saturation)| horizon_mods::Food {
+                    nutrition,
+                    saturation,
+                    can_always_eat: info.can_always_eat,
+                });
+                (
+                    id.to_string(),
+                    ItemInfo {
+                        id: id.to_string(),
+                        name: self.item_display_name(id).plain(),
+                        max_stack_size: info.max_stack.max(1),
+                        max_damage: info.max_damage,
+                        food,
+                    },
+                )
+            })
+            .collect();
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        let items: Arc<dyn ItemCatalog> = Arc::new(Catalog(list));
+        self.mods.items = Some(items.clone());
+        items
+    }
+    fn mod_measure(&mut self) -> Measure {
+        if let Some(m) = &self.mods.measure {
+            return m.clone();
+        }
+        // The font is the render thread's: mods measure with a copy of its advances
+        // (Basic Multilingual Plane), bold adding a pixel as Font.width does.
+        let font = &self.gui.atlas.font;
+        let advances: Vec<f32> = (0..0x3000u32)
+            .map(|c| char::from_u32(c).map_or(0.0, |ch| font.width(ch.encode_utf8(&mut [0; 4]))))
+            .collect();
+        let measure: Measure = Arc::new(move |s: &str| {
+            rich_text(s)
+                .resolve_legacy()
+                .chars()
+                .map(|(ch, style)| {
+                    let advance = advances.get(ch as usize).copied().unwrap_or(6.0);
+                    advance + if style.is_bold() { 1.0 } else { 0.0 }
+                })
+                .sum()
+        });
+        self.mods.measure = Some(measure.clone());
+        measure
+    }
+    fn mod_level(&mut self) -> Arc<dyn horizon_mods::LevelView> {
+        let states = match &self.mods.states {
+            Some(s) => s.clone(),
+            None => {
+                let registry = &self.pack.assets.registry;
+                let names: Vec<String> = (0..registry.len())
+                    .map(|i| self.state_string(horizon_world::registry::BlockStateId(i as u32)))
+                    .collect();
+                let names = Arc::new(names);
+                self.mods.states = Some(names.clone());
+                names
+            }
+        };
+        let biomes = self
+            .mods
+            .biomes
+            .get_or_insert_with(|| {
+                Arc::new(
+                    self.res
+                        .biomes()
+                        .list
+                        .iter()
+                        .map(|b| b.name.clone())
+                        .collect(),
+                )
+            })
+            .clone();
+        let (cx, cz) = self.player.as_ref().map_or((0, 0), |p| {
+            (
+                (p.position.x.floor() as i32) >> 4,
+                (p.position.z.floor() as i32) >> 4,
+            )
+        });
+        let mut chunks = Vec::new();
+        for x in cx - LEVEL_CHUNKS..=cx + LEVEL_CHUNKS {
+            for z in cz - LEVEL_CHUNKS..=cz + LEVEL_CHUNKS {
+                if let Some(c) = self.world.chunks.get(&(x, z)) {
+                    chunks.push(((x, z), c.clone()));
+                }
+            }
+        }
+        Arc::new(LevelView {
+            chunks,
+            states,
+            biomes,
+        })
+    }
+    /// Entities near the player, nearest first, for mods.
+    fn mod_entities(&self) -> Vec<Entity> {
+        let Some(p) = self.player.as_ref() else {
+            return Vec::new();
+        };
+        let mut list: Vec<(f64, Entity)> = self
+            .mobs
+            .iter()
+            .map(|m| {
+                let d = m.position.distance_squared(p.position);
+                (
+                    d,
+                    Entity {
+                        id: m.id as i32,
+                        kind: m.kind.id.to_string(),
+                        x: m.position.x,
+                        y: m.position.y,
+                        z: m.position.z,
+                        yaw: m.yaw,
+                        health: Some(m.health),
+                        name: m.custom_name.clone(),
+                    },
+                )
+            })
+            .filter(|(d, _)| *d <= 64.0 * 64.0)
+            .collect();
+        list.sort_by(|a, b| a.0.total_cmp(&b.0));
+        list.truncate(128);
+        list.into_iter().map(|(_, e)| e).collect()
+    }
+    /// A game tick: the snapshot, the connection and damage events, then the tick hook.
     pub(super) fn tick_mods(&mut self) {
         if !self.mods.mods.is_running() {
             return;
         }
         let snapshot = self.mod_snapshot();
+        let joined = snapshot
+            .player
+            .as_ref()
+            .map(|_| snapshot.world.as_ref().and_then(|w| w.server.clone()));
+        let dimension = snapshot.player.as_ref().map(|p| p.dimension.clone());
+        let health = snapshot.player.as_ref().map(|p| p.health);
         self.mods.mods.set_snapshot(snapshot);
+        // ClientPlayConnectionEvents: the world entered or left, a dimension changed.
+        if joined != self.mods.joined {
+            if self.mods.joined.is_some() {
+                self.mods.mods.left();
+            }
+            if let Some(server) = &joined {
+                self.mods.mods.joined(server.as_deref());
+            }
+            self.mods.joined = joined;
+            self.mods.dimension = None;
+        }
+        if dimension.is_some() && dimension != self.mods.dimension {
+            if self.mods.dimension.is_some()
+                && let Some(d) = &dimension
+            {
+                self.mods.mods.dimension_changed(d);
+            }
+            self.mods.dimension = dimension;
+        }
+        if let (Some(before), Some(now)) = (self.mods.health, health)
+            && now < before
+        {
+            self.mods.mods.player_hurt(before - now);
+        }
+        self.mods.health = health;
         self.mods.mods.tick(self.ticks);
         self.show_mod_output();
     }
@@ -283,6 +828,7 @@ impl Game<'_> {
         if !self.mods.mods.is_running() {
             return;
         }
+        self.mods_screen_events();
         self.mods.mods.frame(elapsed.as_secs_f32());
         self.show_mod_output();
     }
@@ -300,18 +846,168 @@ impl Game<'_> {
         self.show_mod_output();
         true
     }
-    /// A chat line the player received.
-    pub(super) fn mods_chat(&mut self, line: &str) {
-        self.mods.mods.chat(line);
+    /// A chat line the player receives: what the mods make of it (None: hidden).
+    pub(super) fn mods_chat(&mut self, line: Text) -> Option<Text> {
+        if !self.mods.mods.is_running() {
+            return Some(line);
+        }
+        let component = line.component().to_string();
+        let verdict = self.mods.mods.chat(&line.plain(), &component);
+        self.show_mod_output();
+        match verdict {
+            ChatVerdict::Keep => Some(line),
+            ChatVerdict::Hide => None,
+            ChatVerdict::Replace(text) => Some(rich_text(&text)),
+        }
+    }
+    /// A line the player is about to send: what the mods make of it (None: cancelled).
+    pub(super) fn mods_chat_sending(&mut self, message: &str) -> Option<String> {
+        if !self.mods.mods.is_running() {
+            return Some(message.to_owned());
+        }
+        let out = self.mods.mods.chat_sending(message);
+        self.show_mod_output();
+        out
+    }
+    /// A custom payload from the server, for the mods on its channel.
+    pub(super) fn mods_payload(&mut self, channel: &str, data: &[u8]) {
+        if !self.mods.mods.is_running() {
+            return;
+        }
+        self.mods.mods.payload(channel, data);
         self.show_mod_output();
     }
-    /// Chat lines, command feedback and stopped mods, into the chat.
-    fn show_mod_output(&mut self) {
+    /// Lines the mods add under `stack`'s tooltip.
+    pub(super) fn mods_tooltip(&mut self, stack: &ItemStack) -> Vec<Text> {
+        if !self.mods.mods.is_running() || !self.mods.mods.wants(|h| h.tooltips) {
+            return Vec::new();
+        }
+        let stack = self.mod_stack(stack);
+        let lines = self.mods.mods.tooltip(&stack);
+        self.show_mod_output();
+        lines.iter().map(|l| rich_text(l)).collect()
+    }
+    /// A key or mouse button for the mods' keybinds (while playing): pressed or released.
+    pub(super) fn mods_key(&mut self, name: &str, pressed: bool) {
+        if !self.mods.mods.is_running() {
+            return;
+        }
+        let binds = self.mods.mods.keybinds();
+        for (id, bind) in binds.iter().filter(|(_, b)| b.key == name) {
+            let full = format!("{id}:{}", bind.id);
+            let held = self.mods.keys_down.contains(&full);
+            if pressed == held {
+                continue;
+            }
+            if pressed {
+                self.mods.keys_down.push(full);
+            } else {
+                self.mods.keys_down.retain(|k| *k != full);
+            }
+            self.mods.mods.key(id, &bind.id, pressed);
+        }
+        self.show_mod_output();
+    }
+    /// Minecraft.startAttack: whether the mods let it go ahead, on the entity or block under
+    /// the crosshair.
+    pub(super) fn mods_allow_attack(&mut self) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        if let Some((i, distance)) = self.mob_hit()
+            && self.before_block(distance)
+        {
+            let id = self.mobs[i].id as i32;
+            return self.mods_attack_entity(id);
+        }
+        match self.pick() {
+            Some(hit) => self.mods_attack_block(hit.pos, hit.face),
+            None => true,
+        }
+    }
+    /// Minecraft.startUseItem: whether the mods let it go ahead, on the block under the
+    /// crosshair or with the held item.
+    pub(super) fn mods_allow_use(&mut self) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        if let Some(hit) = self.pick()
+            && !self.entity_targeted()
+            && !self.mods_use_block(hit.pos, hit.face, false)
+        {
+            return false;
+        }
+        self.mods_use_item(false)
+    }
+    /// `UseItemCallback`: false when a mod cancels it.
+    pub(super) fn mods_use_item(&mut self, off_hand: bool) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        let hand = if off_hand {
+            horizon_mods::Hand::OffHand
+        } else {
+            horizon_mods::Hand::MainHand
+        };
+        let allowed = self.mods.mods.use_item(hand);
+        self.show_mod_output();
+        allowed
+    }
+    /// `UseBlockCallback`.
+    pub(super) fn mods_use_block(&mut self, pos: [i32; 3], face: [i32; 3], off_hand: bool) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        let hand = if off_hand {
+            horizon_mods::Hand::OffHand
+        } else {
+            horizon_mods::Hand::MainHand
+        };
+        let allowed = self
+            .mods
+            .mods
+            .use_block(block_pos(pos), direction(face), hand);
+        self.show_mod_output();
+        allowed
+    }
+    /// `AttackEntityCallback`.
+    pub(super) fn mods_attack_entity(&mut self, id: i32) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        let allowed = self.mods.mods.attack_entity(id);
+        self.show_mod_output();
+        allowed
+    }
+    /// `AttackBlockCallback`.
+    pub(super) fn mods_attack_block(&mut self, pos: [i32; 3], face: [i32; 3]) -> bool {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return true;
+        }
+        let allowed = self.mods.mods.attack_block(block_pos(pos), direction(face));
+        self.show_mod_output();
+        allowed
+    }
+    /// `ClientPlayerBlockBreakEvents.AFTER`.
+    pub(super) fn mods_block_broken(
+        &mut self,
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+    ) {
+        if !self.mods.mods.wants(|h| h.interaction) {
+            return;
+        }
+        let block = self.state_string(state);
+        self.mods.mods.block_broken(block_pos(pos), &block);
+        self.show_mod_output();
+    }
+    /// Chat lines, command feedback, stopped mods, and what mods asked for.
+    pub(super) fn show_mod_output(&mut self) {
         for output in self.mods.mods.drain() {
             let line = match output {
                 Output::Chat { name, text } => {
                     let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
-                    line.push(Text::literal(text));
+                    line.push(rich_text(&text));
                     line
                 }
                 Output::Feedback { text, error: false } => Text::literal(text),
@@ -319,7 +1015,48 @@ impl Game<'_> {
                 Output::Stopped { name, reason } => {
                     self.list_mods();
                     self.sync_mod_commands();
+                    if self
+                        .mods
+                        .screen
+                        .as_ref()
+                        .is_some_and(|s| !self.mods.mods.wants(|_| true) || s.is_empty())
+                    {
+                        self.mods.screen = None;
+                    }
                     Text::literal(format!("Mod {name} stopped: {reason}")).with_color(text::RED)
+                }
+                Output::Overlay { text } => {
+                    self.titles.set_overlay(rich_text(&text), false);
+                    continue;
+                }
+                Output::Send { message } => {
+                    self.mod_send(&message);
+                    continue;
+                }
+                Output::Sound { id, volume, pitch } => {
+                    self.audio.play(&id, None, volume, pitch);
+                    continue;
+                }
+                Output::Payload { channel, data } => {
+                    self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                        horizon_protocol::packets::configuration::CustomPayload { channel, data },
+                    ));
+                    continue;
+                }
+                Output::OpenScreen { screen } => {
+                    self.open_mod_screen(screen);
+                    continue;
+                }
+                Output::CloseScreen { id } => {
+                    if self
+                        .mods
+                        .screen
+                        .as_ref()
+                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
+                    {
+                        self.close_mod_screen();
+                    }
+                    continue;
                 }
             };
             // Not through system_message: a mod must not hear its own lines.
@@ -327,6 +1064,16 @@ impl Game<'_> {
             self.ui
                 .chat
                 .add(&self.gui.atlas, line, None, self.ticks, focused);
+        }
+    }
+    /// `chat-send.send`: a line or `/command` as the player typed it, past the chat hooks.
+    fn mod_send(&mut self, message: &str) {
+        if self.remote.is_some() {
+            self.send_chat(message);
+        } else if let Some(command) = message.strip_prefix('/') {
+            self.run_command(command);
+        } else {
+            self.handle_chat_input(message);
         }
     }
     /// The mods' HUD panels, stacked with the extras in their corners.
@@ -349,5 +1096,24 @@ impl Game<'_> {
                 .collect();
             extras_hud::draw_lines(batch, &self.gui.atlas, corners, corner, &lines);
         }
+    }
+}
+
+fn block_pos(p: [i32; 3]) -> horizon_mods::BlockPos {
+    horizon_mods::BlockPos {
+        x: p[0],
+        y: p[1],
+        z: p[2],
+    }
+}
+fn direction(face: [i32; 3]) -> horizon_mods::Direction {
+    use horizon_mods::Direction;
+    match face {
+        [0, -1, 0] => Direction::Down,
+        [0, 1, 0] => Direction::Up,
+        [0, 0, -1] => Direction::North,
+        [0, 0, 1] => Direction::South,
+        [-1, 0, 0] => Direction::West,
+        _ => Direction::East,
     }
 }

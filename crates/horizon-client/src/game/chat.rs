@@ -454,7 +454,9 @@ impl Game<'_> {
             return;
         }
         let focused = self.screen == Screen::Chat;
-        let heard = self.mods.mods.is_running().then(|| text.plain());
+        let Some(text) = self.mods_chat(text) else {
+            return;
+        };
         self.ui.chat.add(
             &self.gui.atlas,
             text,
@@ -462,9 +464,6 @@ impl Game<'_> {
             self.ticks,
             focused,
         );
-        if let Some(line) = heard {
-            self.mods_chat(&line);
-        }
     }
     /// Keys while the chat screen is open.
     pub(super) fn chat_key(&mut self, event: &KeyEvent) {
@@ -570,6 +569,11 @@ impl Game<'_> {
     /// ChatScreen.handleChatInput: history, then a command or a chat line.
     pub(super) fn handle_chat_input(&mut self, message: &str) {
         self.ui.chat.add_recent(message);
+        // ClientSendMessageEvents: a mod may cancel or change it.
+        let Some(message) = self.mods_chat_sending(message) else {
+            return;
+        };
+        let message = message.as_str();
         // On a server (single player's own included) the server runs it, but for a mod's command
         // the server does not have (as Fabric's client commands).
         if self.remote.is_some() {
@@ -589,12 +593,10 @@ impl Game<'_> {
                 &[Text::literal(PLAYER_NAME), Text::literal(message)],
             );
             let focused = self.screen == Screen::Chat;
-            let heard = self.mods.mods.is_running().then(|| line.plain());
-            self.ui
-                .chat
-                .add(&self.gui.atlas, line, None, self.ticks, focused);
-            if let Some(line) = heard {
-                self.mods_chat(&line);
+            if let Some(line) = self.mods_chat(line) {
+                self.ui
+                    .chat
+                    .add(&self.gui.atlas, line, None, self.ticks, focused);
             }
             self.lan_host_chat(message);
         }

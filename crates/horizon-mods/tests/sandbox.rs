@@ -1,7 +1,9 @@
 //! Loads real mods built with the SDK: the coords-hud example and a guest
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
-    Clock, Corner, Mods, Output, Package, Player, Snapshot, Status, manifest::componentize,
+    ChatVerdict, Clock, Corner, DrawOp, GameMode, Hand, HudPart, ItemStack, Mods, MouseAction,
+    MouseEvent, Output, Package, Placement, Player, RenderContext, Snapshot, Status, WorldInfo,
+    manifest::componentize,
 };
 use std::{
     path::{Path, PathBuf},
@@ -14,8 +16,8 @@ const GUEST_MANIFEST: &str = r#"
 id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
-api = "0.1"
-capabilities = ["chat", "storage"]
+api = "0.3"
+capabilities = ["chat", "storage", "hud", "ui", "chat-send", "net", "game-read"]
 "#;
 
 /// Builds both mods once and writes their `.hmod` files; returns the folder.
@@ -31,6 +33,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "coords-hud",
                 "-p",
+                "food-info",
+                "-p",
                 "horizon-mods-test-guest",
                 "--target-dir",
             ])
@@ -44,9 +48,13 @@ fn mods_dir() -> &'static Path {
         let built = target.join("wasm32-unknown-unknown/release");
         let dir = target.join("mods");
         std::fs::create_dir_all(&dir).unwrap();
-        let example = root.join("crates/horizon-mod-sdk/examples/coords-hud/horizon-mod.toml");
+        let example = |name: &str| {
+            let path = format!("crates/horizon-mod-sdk/examples/{name}/horizon-mod.toml");
+            std::fs::read_to_string(root.join(path)).unwrap()
+        };
         let mods = [
-            ("coords_hud", std::fs::read_to_string(example).unwrap()),
+            ("coords_hud", example("coords-hud")),
+            ("food_info", example("food-info")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
@@ -68,16 +76,49 @@ fn player() -> Snapshot {
             x: 12.5,
             y: 64.0,
             z: -3.25,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            velocity_z: 0.0,
             yaw: 180.0,
             pitch: 0.0,
             health: 20.0,
+            max_health: 20.0,
+            absorption: 0.0,
             food: 20,
+            saturation: 5.0,
+            exhaustion: 0.0,
+            air: 300,
+            max_air: 300,
+            armor: 0,
+            experience_level: 0,
+            experience_progress: 0.0,
+            selected_slot: 0,
+            game_mode: GameMode::Survival,
+            on_ground: true,
+            sneaking: false,
+            sprinting: false,
+            swimming: false,
+            flying: false,
+            gliding: false,
             dimension: "minecraft:overworld".into(),
+            name: "Player".into(),
+            uuid: "00000000-0000-0000-0000-000000000000".into(),
         }),
         clock: Some(Clock {
             game_time: 100,
             day_time: 24000 + 6000,
         }),
+        ..Snapshot::default()
+    }
+}
+
+fn context() -> RenderContext {
+    RenderContext {
+        width: 320,
+        height: 240,
+        mouse_x: 20.0,
+        mouse_y: 15.0,
+        delta: 0.016,
     }
 }
 
@@ -115,6 +156,284 @@ fn coords_hud_draws_and_answers() {
     };
     assert_eq!(mods.drain(), [hidden]);
     assert!(!mods.command("gamemode creative"));
+}
+
+/// A mod built with the 0.1 SDK (the fixture is coords-hud as API 0.1 built it) runs on the
+/// 0.1 interfaces, as before.
+#[test]
+fn api_0_1_mods_still_run() {
+    let dir = mods_dir().join("api_0_1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("coords_hud.hmod");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/coords_hud-api-0.1.hmod"),
+        &path,
+    )
+    .unwrap();
+    let mut mods = Mods::load(&[path], |_| true, |c| c == "give");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.commands().collect::<Vec<_>>(), ["where", "coords"]);
+    mods.set_snapshot(player());
+    mods.tick(1);
+    let panel = mods.panels().next().expect("a panel after a tick");
+    let lines: Vec<&str> = panel.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        lines,
+        [
+            "XYZ 12.5 / 64.0 / -3.2",
+            "Facing North (-Z)",
+            "Day 2, 12:00"
+        ]
+    );
+    assert!(mods.command("where"));
+    let chat = Output::Chat {
+        name: "Coordinates HUD".into(),
+        text: "12, 64, -4 in minecraft:overworld".into(),
+    };
+    assert_eq!(mods.drain(), [chat]);
+    // 0.3's hooks are not 0.1's: nothing to draw, every action allowed.
+    assert!(mods.hud_render(context()).is_empty());
+    assert!(mods.use_item(Hand::OffHand));
+}
+
+#[test]
+fn hud_and_element_hooks_draw() {
+    let mut mods = load("horizon_mods_test_guest.hmod");
+    mods.set_snapshot(player());
+    let ops = mods.hud_render(context());
+    assert!(matches!(
+        ops[0],
+        DrawOp::Fill {
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+            color: 0xFF0000
+        }
+    ));
+    assert!(matches!(&ops[1], DrawOp::Text { text, shadow: true, .. } if text == "hi"));
+    // Without the game's font, a character is 6 pixels.
+    assert!(matches!(
+        ops[2],
+        DrawOp::Fill {
+            x: 12.0,
+            w: 320.0,
+            ..
+        }
+    ));
+    assert!(mods.has_hud_element(HudPart::Hotbar, Placement::After));
+    assert!(mods.has_hud_element(HudPart::Food, Placement::Replace));
+    assert!(!mods.has_hud_element(HudPart::Food, Placement::Before));
+    let ops = mods.hud_elements(HudPart::Hotbar, Placement::After, context());
+    assert!(matches!(&ops[..], [DrawOp::Sprite { sprite, .. }] if sprite == "hud/after_hotbar"));
+    // Drawing outside a render hook draws nothing.
+    assert!(mods.command("hello"));
+    assert!(
+        mods.hud_elements(HudPart::Health, Placement::After, context())
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_mod_screen_draws_and_takes_clicks() {
+    let mut mods = load("horizon_mods_test_guest.hmod");
+    assert!(mods.command("open"));
+    let screen = "test_guest:menu".to_string();
+    assert_eq!(
+        mods.drain(),
+        [Output::OpenScreen {
+            screen: screen.clone()
+        }]
+    );
+    let ops = mods.screen_render(&screen, context());
+    assert!(matches!(
+        ops[0],
+        DrawOp::Panel {
+            w: 320.0,
+            h: 240.0,
+            ..
+        }
+    ));
+    assert!(matches!(&ops[1], DrawOp::Button { label, hovered: true, .. } if *label == screen));
+    let click = |x, y| MouseEvent {
+        action: MouseAction::Press,
+        x,
+        y,
+        button: 0,
+        scroll: 0.0,
+    };
+    assert!(!mods.screen_mouse(&screen, click(100.0, 100.0)));
+    assert!(mods.screen_mouse(&screen, click(20.0, 15.0)));
+    assert_eq!(
+        mods.drain(),
+        [Output::CloseScreen {
+            id: "test_guest".into()
+        }]
+    );
+    // The game's own screens go only to mods asking for screen events.
+    assert!(mods.screen_render("inventory", context()).is_empty());
+}
+
+#[test]
+fn chat_hooks_filter_lines() {
+    let mut mods = load("horizon_mods_test_guest.hmod");
+    assert_eq!(mods.chat("a secret word", "{}"), ChatVerdict::Hide);
+    assert_eq!(
+        mods.chat("swap it", "{}"),
+        ChatVerdict::Replace("swapped it".into())
+    );
+    assert_eq!(mods.chat("plain", "{}"), ChatVerdict::Keep);
+    assert_eq!(mods.chat_sending("/blocked"), None);
+    assert_eq!(mods.chat_sending("lower").as_deref(), Some("LOWER"));
+    assert_eq!(mods.chat_sending("hi").as_deref(), Some("hi"));
+}
+
+#[test]
+fn tooltips_keys_sends_and_payloads() {
+    let mut mods = load("horizon_mods_test_guest.hmod");
+    let mut snapshot = player();
+    snapshot.world = Some(WorldInfo {
+        multiplayer: true,
+        server: Some("example.org".into()),
+        difficulty: 2,
+        hardcore: false,
+        raining: false,
+        thundering: false,
+    });
+    mods.set_snapshot(snapshot);
+    let apple = ItemStack {
+        id: "minecraft:apple".into(),
+        count: 3,
+        damage: 0,
+        max_damage: 0,
+        name: "Apple".into(),
+        components: String::new(),
+    };
+    assert_eq!(mods.tooltip(&apple), ["minecraft:apple x3 at 20"]);
+    let binds = mods.keybinds();
+    assert_eq!(binds.len(), 1);
+    assert_eq!(
+        (binds[0].0.as_str(), binds[0].1.id.as_str()),
+        ("test_guest", "zoom")
+    );
+    assert_eq!(binds[0].1.key, "key.keyboard.c");
+    mods.key("test_guest", "zoom", true);
+    assert!(mods.command("send hello there"));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::Send {
+                message: "hello there".into()
+            },
+            Output::Feedback {
+                text: "keys zoom:true".into(),
+                error: false
+            }
+        ]
+    );
+    // At most 4 a second.
+    for _ in 0..3 {
+        assert!(mods.command("send again"));
+    }
+    mods.drain();
+    assert!(mods.command("send one too many"));
+    assert!(matches!(
+        &mods.drain()[..],
+        [Output::Feedback { error: true, .. }]
+    ));
+    // The badly named channel was dropped.
+    assert_eq!(mods.channels(), ["test:echo"]);
+    mods.payload("test:echo", b"ping");
+    assert_eq!(
+        mods.drain(),
+        [Output::Payload {
+            channel: "test:echo".into(),
+            data: b"ping".to_vec()
+        }]
+    );
+    mods.payload("test:other", b"ping");
+    assert!(mods.drain().is_empty());
+    assert!(mods.use_item(Hand::MainHand));
+    assert!(!mods.use_item(Hand::OffHand));
+}
+
+/// The game's apple, for `inventory.get-item-info`.
+struct Apples;
+impl horizon_mods::ItemCatalog for Apples {
+    fn info(&self, id: &str) -> Option<horizon_mods::ItemInfo> {
+        (id == "minecraft:apple").then(|| horizon_mods::ItemInfo {
+            id: id.into(),
+            name: "Apple".into(),
+            max_stack_size: 64,
+            max_damage: 0,
+            food: Some(horizon_mods::Food {
+                nutrition: 4,
+                saturation: 2.4,
+                can_always_eat: false,
+            }),
+        })
+    }
+}
+
+/// The AppleSkin-style example: saturation outlines and the held food on the hunger bar, food
+/// values in tooltips.
+#[test]
+fn food_info_draws_around_the_hunger_bar() {
+    let mut mods = load("food_info.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.has_hud_element(HudPart::Food, Placement::After));
+    assert!(mods.has_hud_element(HudPart::Food, Placement::Before));
+    let apple = ItemStack {
+        id: "minecraft:apple".into(),
+        count: 1,
+        damage: 0,
+        max_damage: 0,
+        name: "Apple".into(),
+        components: String::new(),
+    };
+    let mut snapshot = player();
+    if let Some(p) = snapshot.player.as_mut() {
+        p.food = 10;
+        p.saturation = 3.0;
+        p.exhaustion = 2.0;
+    }
+    snapshot.inventory = vec![None; 41];
+    snapshot.inventory[0] = Some(apple.clone());
+    snapshot.items = Some(std::sync::Arc::new(Apples));
+    mods.set_snapshot(snapshot);
+    let mut context = context();
+    context.delta = 0.0;
+    // Exhaustion 2 of 4: half the bar's 81 pixels, from its right end (320 / 2 + 91).
+    let behind = mods.hud_elements(HudPart::Food, Placement::Before, context);
+    assert!(matches!(
+        behind[..],
+        [DrawOp::Fill {
+            x: 210.5,
+            w: 40.5,
+            h: 9.0,
+            ..
+        }]
+    ));
+    let over = mods.hud_elements(HudPart::Food, Placement::After, context);
+    // Saturation 3: one full outline (4 fills) and half of the next (3), then the two
+    // icons the apple fills (food 10 to 14).
+    let fills = over
+        .iter()
+        .filter(|o| matches!(o, DrawOp::Fill { .. }))
+        .count();
+    assert_eq!(fills, 7);
+    let sprites: Vec<&str> = over
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Sprite { sprite, .. } => Some(sprite.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sprites, ["hud/food_full", "hud/food_full"]);
+    assert_eq!(
+        mods.tooltip(&apple),
+        [r#"{"text":"+4 hunger, +2.4 saturation","color":"gold"}"#]
+    );
 }
 
 #[test]

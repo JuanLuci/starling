@@ -294,7 +294,7 @@ impl Game<'_> {
             },
         }
     }
-    fn stack_name(&self, s: &ItemStack) -> Text {
+    pub(in crate::game) fn stack_name(&self, s: &ItemStack) -> Text {
         self.stack_display_name(s)
     }
     fn item_from_input(&self, ctx: &Context) -> R<Option<ItemStack>> {

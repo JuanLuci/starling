@@ -89,6 +89,7 @@ mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
+mod mod_ui;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -203,6 +204,7 @@ use horizon_core::{
     position::BlockPos,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_mods::HudPart;
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
     collision_context::{CollisionContext, CollisionEntity, CollisionItem},
@@ -2958,6 +2960,7 @@ impl Game<'_> {
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         // ServerPlayerGameMode.destroyBlock.
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.mods_block_broken(pos, state);
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
         // Block.playerWillDestroy: mining their gold angers all nearby piglins.
@@ -3047,7 +3050,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`: the main hand, then the off hand.
     fn use_item_as_player(&mut self) -> Result<Option<Hand>> {
         // Spectators only look (MultiPlayerGameMode.useItemOn/useItem pass).
-        if self.spectator() {
+        if self.spectator() || !self.mods_allow_use() {
             return Ok(None);
         }
         // A carrot or warped fungus on a stick boosts the ridden pig or strider.
@@ -4520,6 +4523,7 @@ impl Game<'_> {
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
+        self.draw_mod_screens(&mut batch);
         self.draw_touch(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
@@ -4596,7 +4600,9 @@ impl Game<'_> {
                     hud_layout::full_attack_indicator(a, delay, self.crosshair_living())
                 });
                 let draws = hud_layout::crosshair(wi, hi, attack, full);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
+                self.mod_hud_part(&mut batch, HudPart::Crosshair, |game, batch| {
+                    hud_layout::paint(batch, &game.gui.atlas, &draws);
+                });
             }
             if !spectator {
                 let inputs = hud_layout::HotbarInputs {
@@ -4608,23 +4614,29 @@ impl Game<'_> {
                     attack: (indicator == 2).then_some(strength),
                 };
                 let draws = hud_layout::hotbar(wi, hi, &inputs);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-                for d in &draws {
-                    if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
-                        let stack = if slot == 40 {
-                            self.offhand.clone()
-                        } else {
-                            self.inventory[slot as usize].clone()
-                        };
-                        if let Some(stack) = stack {
-                            self.draw_item(&mut batch, &stack, x as f32, y as f32);
+                self.mod_hud_part(&mut batch, HudPart::Hotbar, |game, batch| {
+                    hud_layout::paint(batch, &game.gui.atlas, &draws);
+                    for d in &draws {
+                        if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
+                            let stack = if slot == 40 {
+                                game.offhand.clone()
+                            } else {
+                                game.inventory[slot as usize].clone()
+                            };
+                            if let Some(stack) = stack {
+                                game.draw_item(batch, &stack, x as f32, y as f32);
+                            }
                         }
                     }
-                }
+                });
             }
-            self.draw_effect_icons(&mut batch);
+            self.mod_hud_part(&mut batch, HudPart::Effects, |game, batch| {
+                game.draw_effect_icons(batch);
+            });
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
-            self.draw_boss_bars(&mut batch);
+            self.mod_hud_part(&mut batch, HudPart::BossBars, |game, batch| {
+                game.draw_boss_bars(batch);
+            });
             self.draw_extras(&mut batch);
         }
         if show_hud {
@@ -4634,13 +4646,14 @@ impl Game<'_> {
             } else {
                 self.draw_mount_hud(&mut batch, wi, hi)
             };
+            let mut health_draws = None;
             if !self.creative
                 && !spectator
                 && let Some(p) = &mut self.player
             {
                 let atlas = &self.gui.atlas;
                 let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                let draws = hud_layout::experience(
+                let xp_draws = hud_layout::experience(
                     wi,
                     hi,
                     self.experience.progress,
@@ -4648,7 +4661,6 @@ impl Game<'_> {
                     !jump_bar,
                     &width,
                 );
-                hud_layout::paint(&mut batch, atlas, &draws);
                 let effects = &self.potions.effects;
                 let kind = if effects.get("poison").is_some() {
                     hud_layout::HeartKind::Poisoned
@@ -4693,10 +4705,19 @@ impl Game<'_> {
                     vehicle_hearts,
                 };
                 let draws = self.health_hud.layout(&inputs, wi, hi);
-                hud_layout::paint(&mut batch, atlas, &draws);
+                health_draws = Some((xp_draws, draws));
+            }
+            if let Some((xp_draws, draws)) = health_draws {
+                self.mod_hud_part(&mut batch, HudPart::Experience, |game, batch| {
+                    hud_layout::paint(batch, &game.gui.atlas, &xp_draws);
+                });
+                self.paint_health_parts(&mut batch, draws);
             }
             if !spectator {
-                self.draw_selected_name(&mut batch, !self.creative);
+                let can_hurt = !self.creative;
+                self.mod_hud_part(&mut batch, HudPart::SelectedItemName, |game, batch| {
+                    game.draw_selected_name(batch, can_hurt);
+                });
             }
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
@@ -4704,8 +4725,12 @@ impl Game<'_> {
         hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
         if show_hud {
             self.draw_titles(&mut batch);
-            self.draw_scoreboard(&mut batch);
+            self.mod_hud_part(&mut batch, HudPart::Scoreboard, |game, batch| {
+                game.draw_scoreboard(batch);
+            });
             self.draw_subtitles(&mut batch);
+            // HudRenderCallback: the mods draw over the HUD, under the chat and screens.
+            self.draw_mod_hud(&mut batch);
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -4716,7 +4741,9 @@ impl Game<'_> {
             batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
         }
         if !horizon_pause {
-            self.draw_chat(&mut batch);
+            self.mod_hud_part(&mut batch, HudPart::Chat, |game, batch| {
+                game.draw_chat(batch);
+            });
             self.draw_tab_list(&mut batch);
         }
         match self.screen {
@@ -6716,7 +6743,7 @@ impl Game<'_> {
     }
     /// Player.attack with the attack-strength charge, crits and knockback.
     fn attack(&mut self) -> bool {
-        if self.spectator() {
+        if self.spectator() || !self.mods_allow_attack() {
             return false;
         }
         // A painting nearer than the targeted block and mob breaks instead.
@@ -10299,6 +10326,10 @@ impl ApplicationHandler for Game<'_> {
                 }
                 _ => {}
             }
+            return;
+        }
+        // The mods' turn: their screens, the game's screens' events, their keybinds.
+        if self.mods_window_event(&event) {
             return;
         }
         let result: Result<()> = (|| {

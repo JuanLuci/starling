@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = []
 # The Horizon mod API the SDK targets.
-api = "0.1"
+api = "0.3"
 # client: runs in the player's game.
 side = "client"
 # What the mod may do, shown to players before they turn it on:

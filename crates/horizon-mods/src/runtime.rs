@@ -1,6 +1,9 @@
-//! Loading and calling mods with wasmtime's component model.
-use crate::manifest::{Manifest, Package, Side};
+//! Loading and calling mods with wasmtime's component model. A component built for API 0.3
+//! links `horizon:mods@0.3.0`; one built for 0.1 links the 0.1 interfaces, which this host still
+//! offers (`wit-0.1/`), and keeps 0.1's hooks.
+use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -10,20 +13,35 @@ use wasmtime::{
     component::{Component, HasSelf, Linker},
 };
 
-mod bindings {
+mod v3 {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
     });
 }
-pub use bindings::horizon::mods::{
-    game::{Clock, Player},
-    hud::{Corner, Line},
+mod v1 {
+    wasmtime::component::bindgen!({
+        path: "wit-0.1",
+        world: "horizon-mod",
+    });
+}
+pub use v3::exports::horizon::mods::events::{
+    ChatAction, HudElement, HudPart, KeyEvent, Keybind, MouseAction, MouseEvent, Placement,
+    RenderContext, SendAction,
 };
-use bindings::{
-    HorizonMod,
+pub use v3::horizon::mods::{
+    game::{BlockHit, Clock, Effect, EntityHit, Gui, Player, Target, WorldInfo},
+    hud::{Corner, Line},
+    inventory::{Container, Food, ItemInfo},
+    level::Entity,
+    types::{BlockPos, Direction, GameMode, Hand, ItemStack},
+};
+use v3::{
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, game, hud, log as mod_log, storage},
+    horizon::mods::{
+        chat, chat_send, draw, game, hud, inventory, keys, level, log as mod_log, net, screens,
+        sound, storage, types,
+    },
 };
 
 /// A mod's linear memory cap.
@@ -33,11 +51,23 @@ const MEMORY: usize = 64 << 20;
 const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
+const FUEL_RENDER: u64 = 20_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
 /// Chat lines a mod may show per call, HUD lines and their length.
 const CHAT_PER_CALL: usize = 8;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
+/// Longer texts: chat components, tooltips, drawn text.
+const TEXT_CHARS: usize = 4096;
+/// Draw calls one render hook may make.
+const DRAW_OPS: usize = 4096;
+/// `chat-send.send`: messages per second, and their length (the server's limit).
+const SENDS_PER_SECOND: usize = 4;
+const SEND_CHARS: usize = 256;
+/// `net.send`'s payload limit (ServerboundCustomPayloadPacket's).
+const PAYLOAD_BYTES: usize = 32 << 10;
+/// `level.get-entities`' cap.
+const ENTITIES: usize = 128;
 /// Total bytes a mod's `storage` may hold on disk, across all its keys.
 const STORAGE_QUOTA: u64 = 4 << 20;
 /// Distinct keys a mod's `storage` may hold: `STORAGE_QUOTA` alone doesn't
@@ -53,22 +83,140 @@ const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 /// never has a manifest there, so `find` never mistakes it for a mod).
 const STORAGE_DIR: &str = ".horizon-mod-data";
 
-/// What mods may read of the game, copied once per tick by the game.
-#[derive(Clone, Debug, Default)]
+/// What `world-read` mods see of the level: the loaded chunks around the player, taken once a
+/// tick by the game.
+pub trait LevelView: Send + Sync {
+    /// `minecraft:oak_log[axis=y]`.
+    fn block(&self, pos: [i32; 3]) -> Option<String>;
+    fn biome(&self, pos: [i32; 3]) -> Option<String>;
+    /// Block light, sky light.
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)>;
+}
+/// The game's items by id, for `inventory.get-item-info`.
+pub trait ItemCatalog: Send + Sync {
+    fn info(&self, id: &str) -> Option<ItemInfo>;
+}
+/// A text's width in GUI pixels.
+pub type Measure = Arc<dyn Fn(&str) -> f32 + Send + Sync>;
+
+/// What mods may read of the game, copied once per tick by the game (the parts a running mod's
+/// capabilities reach).
+#[derive(Clone, Default)]
 pub struct Snapshot {
     pub player: Option<Player>,
+    pub effects: Vec<Effect>,
     pub clock: Option<Clock>,
+    pub world: Option<WorldInfo>,
+    /// None: the crosshair is on nothing.
+    pub target: Option<Target>,
+    pub screen: Option<String>,
+    pub gui: Option<Gui>,
+    pub fps: u32,
+    /// 41 slots: hotbar, main, armour (feet to head), offhand.
+    pub inventory: Vec<Option<ItemStack>>,
+    pub cursor: Option<ItemStack>,
+    pub hovered: Option<ItemStack>,
+    pub container: Option<Container>,
+    /// Nearest first.
+    pub entities: Vec<Entity>,
+    pub level: Option<Arc<dyn LevelView>>,
+    pub items: Option<Arc<dyn ItemCatalog>>,
+    pub measure: Option<Measure>,
+    /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
+    pub keys_down: Vec<String>,
 }
 
-/// What mods asked the game to show since the last [`Mods::drain`].
+/// What mods asked the game to do since the last [`Mods::drain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
-    /// `chat.show`: a line after the mod's name.
+    /// `chat.show`: a line after the mod's name (rich text).
     Chat { name: String, text: String },
+    /// `chat.show-overlay`: the action bar.
+    Overlay { text: String },
     /// A mod command's feedback, red when `error`.
     Feedback { text: String, error: bool },
     /// The mod was turned off: it trapped, overran or failed to start.
     Stopped { name: String, reason: String },
+    /// `chat-send.send`: a chat line or `/command` as the player.
+    Send { message: String },
+    /// `sound.play`.
+    Sound { id: String, volume: f32, pitch: f32 },
+    /// `net.send`.
+    Payload { channel: String, data: Vec<u8> },
+    /// `screens.open`: `<mod id>:<name>`.
+    OpenScreen { screen: String },
+    /// `screens.close`: the mod's screen, if one is open.
+    CloseScreen { id: String },
+}
+
+/// One drawing call of a mod's render hook, in GUI pixels.
+#[derive(Clone, Debug)]
+pub enum DrawOp {
+    Fill {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: u32,
+    },
+    Gradient {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top: u32,
+        bottom: u32,
+    },
+    Text {
+        x: f32,
+        y: f32,
+        text: String,
+        color: u32,
+        shadow: bool,
+    },
+    Item {
+        x: f32,
+        y: f32,
+        stack: ItemStack,
+    },
+    ItemId {
+        x: f32,
+        y: f32,
+        id: String,
+    },
+    Sprite {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        sprite: String,
+    },
+    Tooltip {
+        x: f32,
+        y: f32,
+        lines: Vec<String>,
+    },
+    Button {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        label: String,
+        hovered: bool,
+        active: bool,
+    },
+    Panel {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
+    Push {
+        x: f32,
+        y: f32,
+        scale: f32,
+    },
+    Pop,
 }
 
 /// A mod's text panel, drawn every frame until it changes.
@@ -99,10 +247,67 @@ pub struct Entry {
     modified: Option<SystemTime>,
 }
 
+/// The hooks a mod asked for, whichever API it was built for.
+#[derive(Clone, Default)]
+pub struct Hooks {
+    pub commands: Vec<String>,
+    pub tick: bool,
+    pub frame: bool,
+    pub chat: bool,
+    pub chat_send: bool,
+    pub hud: bool,
+    pub hud_elements: Vec<HudElement>,
+    pub screens: bool,
+    pub tooltips: bool,
+    pub keybinds: Vec<Keybind>,
+    pub channels: Vec<String>,
+    pub connection: bool,
+    pub interaction: bool,
+    pub damage: bool,
+}
+impl From<Registration> for Hooks {
+    fn from(r: Registration) -> Self {
+        Hooks {
+            commands: r.commands,
+            tick: r.tick,
+            frame: r.frame,
+            chat: r.chat,
+            chat_send: r.chat_send,
+            hud: r.hud,
+            hud_elements: r.hud_elements,
+            screens: r.screens,
+            tooltips: r.tooltips,
+            keybinds: r.keybinds,
+            channels: r.channels,
+            connection: r.connection,
+            interaction: r.interaction,
+            damage: r.damage,
+        }
+    }
+}
+impl From<v1::exports::horizon::mods::events::Registration> for Hooks {
+    fn from(r: v1::exports::horizon::mods::events::Registration) -> Self {
+        Hooks {
+            commands: r.commands,
+            tick: r.tick,
+            frame: r.frame,
+            chat: r.chat,
+            ..Hooks::default()
+        }
+    }
+}
+
+/// The component's exports, by the API it was built for.
+enum Guest {
+    V1(v1::HorizonMod),
+    V3(v3::HorizonMod),
+}
+
 struct Running {
     store: Store<State>,
-    exports: HorizonMod,
-    hooks: Registration,
+    guest: Guest,
+    hooks: Hooks,
+    capabilities: Vec<Capability>,
 }
 
 struct State {
@@ -111,6 +316,12 @@ struct State {
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     panel: Option<Panel>,
+    /// Some while a render hook runs: what it drew.
+    draw: Option<Vec<DrawOp>>,
+    /// The mod's payload channels.
+    channels: Vec<String>,
+    /// When `chat-send.send` last sent, within the last second.
+    sent: VecDeque<Instant>,
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
     /// Bytes `storage::set` may still write before this hook call ends
@@ -146,6 +357,15 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
         .collect();
     found.sort();
     found
+}
+
+/// What the chat hooks made of a received line.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChatVerdict {
+    Keep,
+    Hide,
+    /// Shown instead (rich text).
+    Replace(String),
 }
 
 impl Mods {
@@ -202,7 +422,9 @@ impl Mods {
             config.wasm_component_model(true).consume_fuel(true);
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
-            HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+            v3::HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            v1::HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -251,6 +473,9 @@ impl Mods {
             .map(|(name, _)| name.to_string())
             .collect();
         m.check_imports(imports.iter().map(String::as_str))?;
+        let api3 = ty
+            .exports(engine)
+            .any(|(name, _)| name.starts_with("horizon:mods/events@0.3."));
         let data_dir = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -262,6 +487,9 @@ impl Mods {
             snapshot,
             out: Vec::new(),
             panel: None,
+            draw: None,
+            channels: Vec::new(),
+            sent: VecDeque::new(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             limits: StoreLimitsBuilder::new()
@@ -272,12 +500,23 @@ impl Mods {
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-        let exports =
-            HorizonMod::instantiate(&mut store, &component, linker).map_err(|e| reason(&e))?;
-        let mut hooks = exports
-            .horizon_mods_events()
-            .call_init(&mut store)
-            .map_err(|e| reason(&e))??;
+        let (guest, mut hooks): (Guest, Hooks) = if api3 {
+            let exports = v3::HorizonMod::instantiate(&mut store, &component, linker)
+                .map_err(|e| reason(&e))?;
+            let hooks = exports
+                .horizon_mods_events()
+                .call_init(&mut store)
+                .map_err(|e| reason(&e))??;
+            (Guest::V3(exports), hooks.into())
+        } else {
+            let exports = v1::HorizonMod::instantiate(&mut store, &component, linker)
+                .map_err(|e| reason(&e))?;
+            let hooks = exports
+                .horizon_mods_events()
+                .call_init(&mut store)
+                .map_err(|e| reason(&e))??;
+            (Guest::V1(exports), hooks.into())
+        };
         hooks.commands.retain(|c| {
             let free = !reserved(c) && !taken.contains(c);
             if !free {
@@ -285,11 +524,22 @@ impl Mods {
             }
             free
         });
+        hooks.channels.retain(|c| {
+            let ok = channel_ok(c);
+            if !ok {
+                log::warn!("Horizon: mod {} cannot use channel {c:?}", m.id);
+            }
+            ok
+        });
+        hooks.hud_elements.truncate(64);
+        hooks.keybinds.truncate(64);
+        store.data_mut().channels = hooks.channels.clone();
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
             store,
-            exports,
+            guest,
             hooks,
+            capabilities: m.capabilities.clone(),
         }))
     }
 
@@ -300,27 +550,45 @@ impl Mods {
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
+    fn running(&self) -> impl Iterator<Item = &Running> {
+        self.entries.iter().filter_map(|e| e.run.as_ref())
+    }
+    /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
+    pub fn uses(&self, c: Capability) -> bool {
+        self.running().any(|r| r.capabilities.contains(&c))
+    }
+    /// Whether a running mod's hooks say `wants`.
+    pub fn wants(&self, wants: impl Fn(&Hooks) -> bool) -> bool {
+        self.running().any(|r| wants(&r.hooks))
+    }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.snapshot = Arc::new(snapshot);
     }
+    /// The snapshot mods read now.
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
 
-    /// Calls `f` on every running mod whose hooks `wants`, with `fuel`.
-    fn each(
+    /// Calls `f` on every running mod whose hooks `wants`, with `fuel`; the results in order.
+    fn each<R>(
         &mut self,
         fuel: u64,
-        wants: impl Fn(&Registration) -> bool,
-        mut f: impl FnMut(&HorizonMod, &mut Store<State>) -> wasmtime::Result<()>,
-    ) {
+        wants: impl Fn(&Hooks) -> bool,
+        mut f: impl FnMut(&Guest, &mut Store<State>) -> wasmtime::Result<R>,
+    ) -> Vec<R> {
+        let mut out = Vec::new();
         for i in 0..self.entries.len() {
             if self.entries[i]
                 .run
                 .as_ref()
                 .is_some_and(|r| wants(&r.hooks))
+                && let Some(r) = self.call(i, fuel, &mut f)
             {
-                self.call(i, fuel, &mut f);
+                out.push(r);
             }
         }
+        out
     }
 
     /// One call into mod `i`; a trap or an overrun turns the mod off.
@@ -328,7 +596,7 @@ impl Mods {
         &mut self,
         i: usize,
         fuel: u64,
-        f: impl FnOnce(&HorizonMod, &mut Store<State>) -> wasmtime::Result<R>,
+        f: impl FnOnce(&Guest, &mut Store<State>) -> wasmtime::Result<R>,
     ) -> Option<R> {
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
@@ -338,7 +606,7 @@ impl Mods {
         let result = run
             .store
             .set_fuel(fuel)
-            .and_then(|()| f(&run.exports, &mut run.store));
+            .and_then(|()| f(&run.guest, &mut run.store));
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         self.out.append(&mut run.store.data_mut().out);
@@ -359,12 +627,53 @@ impl Mods {
         }
     }
 
+    /// A render hook's call into mod `i`: what it drew.
+    fn render(
+        &mut self,
+        i: usize,
+        f: impl FnOnce(&v3::HorizonMod, &mut Store<State>) -> wasmtime::Result<()>,
+    ) -> Vec<DrawOp> {
+        if let Some(run) = self.entries[i].run.as_mut() {
+            run.store.data_mut().draw = Some(Vec::new());
+        }
+        self.call(i, FUEL_RENDER, |g, s| match g {
+            Guest::V3(m) => f(m, s),
+            Guest::V1(_) => Ok(()),
+        });
+        self.entries[i]
+            .run
+            .as_mut()
+            .and_then(|r| r.store.data_mut().draw.take())
+            .unwrap_or_default()
+    }
+
+    /// The running mods' indices whose hooks say `wants`.
+    fn indices(&self, wants: impl Fn(&Hooks) -> bool) -> Vec<usize> {
+        (0..self.entries.len())
+            .filter(|&i| {
+                self.entries[i]
+                    .run
+                    .as_ref()
+                    .is_some_and(|r| wants(&r.hooks))
+            })
+            .collect()
+    }
+    /// The index of the running mod with id `id`.
+    fn by_id(&self, id: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.run.is_some() && e.manifest.as_ref().is_some_and(|m| m.id == id))
+    }
+
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
         self.each(
             FUEL_TICK,
             |h| h.tick,
-            |m, s| m.horizon_mods_events().call_tick(s, tick),
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_tick(s, tick),
+                Guest::V1(m) => m.horizon_mods_events().call_tick(s, tick),
+            },
         );
     }
     /// A rendered frame, `seconds` after the last.
@@ -372,15 +681,311 @@ impl Mods {
         self.each(
             FUEL_FRAME,
             |h| h.frame,
-            |m, s| m.horizon_mods_events().call_frame(s, seconds),
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_frame(s, seconds),
+                Guest::V1(m) => m.horizon_mods_events().call_frame(s, seconds),
+            },
         );
     }
-    /// A chat line the player received, as plain text.
-    pub fn chat(&mut self, text: &str) {
+    /// A chat line the player receives: its plain text and its JSON component. Each mod sees
+    /// what the ones before it made of it; a hidden line goes no further.
+    pub fn chat(&mut self, plain: &str, component: &str) -> ChatVerdict {
+        let mut verdict = ChatVerdict::Keep;
+        let (mut plain, mut component) = (plain.to_owned(), component.to_owned());
+        for i in self.indices(|h| h.chat) {
+            let result = self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m
+                    .horizon_mods_events()
+                    .call_chat_received(s, &plain, &component),
+                Guest::V1(m) => m
+                    .horizon_mods_events()
+                    .call_chat(s, &plain)
+                    .map(|()| ChatAction::Keep),
+            });
+            match result {
+                Some(ChatAction::Hide) => return ChatVerdict::Hide,
+                Some(ChatAction::Replace(text)) => {
+                    let text = clip_to(text, TEXT_CHARS);
+                    plain = text.clone();
+                    component = text.clone();
+                    verdict = ChatVerdict::Replace(text);
+                }
+                Some(ChatAction::Keep) | None => {}
+            }
+        }
+        verdict
+    }
+    /// A line the player is about to send: None when a mod cancelled it.
+    pub fn chat_sending(&mut self, message: &str) -> Option<String> {
+        let mut message = message.to_owned();
+        for i in self.indices(|h| h.chat_send) {
+            let result = self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_chat_sending(s, &message),
+                Guest::V1(_) => Ok(SendAction::Send),
+            });
+            match result {
+                Some(SendAction::Cancel) => return None,
+                Some(SendAction::Replace(text)) => message = clip_to(text, SEND_CHARS),
+                Some(SendAction::Send) | None => {}
+            }
+        }
+        Some(message)
+    }
+    /// Over the HUD: what the `hud` hooks drew.
+    pub fn hud_render(&mut self, context: RenderContext) -> Vec<DrawOp> {
+        let mut ops = Vec::new();
+        for i in self.indices(|h| h.hud) {
+            ops.extend(self.render(i, |m, s| {
+                m.horizon_mods_events().call_hud_render(s, context)
+            }));
+        }
+        ops
+    }
+    /// Whether a running mod draws an element at `part` with `placement`.
+    pub fn has_hud_element(&self, part: HudPart, placement: Placement) -> bool {
+        self.wants(|h| {
+            h.hud_elements
+                .iter()
+                .any(|e| e.part == part && e.placement == placement)
+        })
+    }
+    /// The elements at `part` with `placement`, drawn.
+    pub fn hud_elements(
+        &mut self,
+        part: HudPart,
+        placement: Placement,
+        context: RenderContext,
+    ) -> Vec<DrawOp> {
+        let mut ops = Vec::new();
+        for i in 0..self.entries.len() {
+            let ids: Vec<String> = self.entries[i]
+                .run
+                .as_ref()
+                .map(|r| {
+                    r.hooks
+                        .hud_elements
+                        .iter()
+                        .filter(|e| e.part == part && e.placement == placement)
+                        .map(|e| e.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for id in ids {
+                ops.extend(self.render(i, |m, s| {
+                    m.horizon_mods_events()
+                        .call_render_hud_element(s, &id, context)
+                }));
+            }
+        }
+        ops
+    }
+    /// The mods a screen's events go to: a mod's own screen to that mod, the game's to the
+    /// mods asking for screen events.
+    fn screen_mods(&self, screen: &str) -> Vec<usize> {
+        match screen.split_once(':').filter(|(id, _)| !id.contains('/')) {
+            Some((id, _)) if self.by_id(id).is_some() => self.by_id(id).into_iter().collect(),
+            _ => self.indices(|h| h.screens),
+        }
+    }
+    pub fn screen_opened(&mut self, screen: &str) {
+        for i in self.screen_mods(screen) {
+            self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_screen_opened(s, screen),
+                Guest::V1(_) => Ok(()),
+            });
+        }
+    }
+    pub fn screen_closed(&mut self, screen: &str) {
+        for i in self.screen_mods(screen) {
+            self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_screen_closed(s, screen),
+                Guest::V1(_) => Ok(()),
+            });
+        }
+    }
+    /// After a screen drew: what the mods drew over it.
+    pub fn screen_render(&mut self, screen: &str, context: RenderContext) -> Vec<DrawOp> {
+        let mut ops = Vec::new();
+        for i in self.screen_mods(screen) {
+            ops.extend(self.render(i, |m, s| {
+                m.horizon_mods_events()
+                    .call_screen_render(s, screen, context)
+            }));
+        }
+        ops
+    }
+    /// True when a mod used the event.
+    pub fn screen_mouse(&mut self, screen: &str, event: MouseEvent) -> bool {
+        for i in self.screen_mods(screen) {
+            let used = self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_screen_mouse(s, screen, event),
+                Guest::V1(_) => Ok(false),
+            });
+            if used == Some(true) {
+                return true;
+            }
+        }
+        false
+    }
+    pub fn screen_key(&mut self, screen: &str, event: &KeyEvent) -> bool {
+        for i in self.screen_mods(screen) {
+            let used = self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_screen_key(s, screen, event),
+                Guest::V1(_) => Ok(false),
+            });
+            if used == Some(true) {
+                return true;
+            }
+        }
+        false
+    }
+    /// Lines the mods add under `stack`'s tooltip (rich text).
+    pub fn tooltip(&mut self, stack: &ItemStack) -> Vec<String> {
+        let mut lines = Vec::new();
+        for i in self.indices(|h| h.tooltips) {
+            if let Some(more) = self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_tooltip(s, stack),
+                Guest::V1(_) => Ok(Vec::new()),
+            }) {
+                lines.extend(more.into_iter().take(32).map(|l| clip_to(l, TEXT_CHARS)));
+            }
+        }
+        lines
+    }
+    /// Every running mod's keybinds, with the mod's id.
+    pub fn keybinds(&self) -> Vec<(String, Keybind)> {
+        self.entries
+            .iter()
+            .filter_map(|e| Some((e.manifest.as_ref()?.id.clone(), e.run.as_ref()?)))
+            .flat_map(|(id, r)| {
+                r.hooks
+                    .keybinds
+                    .iter()
+                    .map(move |k| (id.clone(), k.clone()))
+            })
+            .collect()
+    }
+    /// Mod `id`'s keybind `key` pressed or released.
+    pub fn key(&mut self, id: &str, key: &str, pressed: bool) {
+        if let Some(i) = self.by_id(id) {
+            self.call(i, FUEL_EVENT, |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_key(s, key, pressed),
+                Guest::V1(_) => Ok(()),
+            });
+        }
+    }
+    /// Every channel a running mod uses, for the server's `minecraft:register`.
+    pub fn channels(&self) -> Vec<String> {
+        let mut all: Vec<String> = self
+            .running()
+            .filter(|r| r.capabilities.contains(&Capability::Net))
+            .flat_map(|r| r.hooks.channels.iter().cloned())
+            .collect();
+        all.sort();
+        all.dedup();
+        all
+    }
+    /// A payload the server sent on `channel`.
+    pub fn payload(&mut self, channel: &str, data: &[u8]) {
+        let wanted = |h: &Hooks| h.channels.iter().any(|c| c == channel);
+        self.each(FUEL_EVENT, wanted, |g, s| match g {
+            Guest::V3(m) => m.horizon_mods_events().call_payload(s, channel, data),
+            Guest::V1(_) => Ok(()),
+        });
+    }
+    pub fn joined(&mut self, server: Option<&str>) {
         self.each(
             FUEL_EVENT,
-            |h| h.chat,
-            |m, s| m.horizon_mods_events().call_chat(s, text),
+            |h| h.connection,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_joined(s, server),
+                Guest::V1(_) => Ok(()),
+            },
+        );
+    }
+    pub fn left(&mut self) {
+        self.each(
+            FUEL_EVENT,
+            |h| h.connection,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_left(s),
+                Guest::V1(_) => Ok(()),
+            },
+        );
+    }
+    pub fn dimension_changed(&mut self, dimension: &str) {
+        self.each(
+            FUEL_EVENT,
+            |h| h.connection,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_dimension_changed(s, dimension),
+                Guest::V1(_) => Ok(()),
+            },
+        );
+    }
+    /// False when a mod cancels it.
+    pub fn use_item(&mut self, hand: Hand) -> bool {
+        let allowed = self.each(
+            FUEL_EVENT,
+            |h| h.interaction,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_use_item(s, hand),
+                Guest::V1(_) => Ok(true),
+            },
+        );
+        allowed.into_iter().all(|a| a)
+    }
+    pub fn use_block(&mut self, pos: BlockPos, face: Direction, hand: Hand) -> bool {
+        let allowed = self.each(
+            FUEL_EVENT,
+            |h| h.interaction,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_use_block(s, pos, face, hand),
+                Guest::V1(_) => Ok(true),
+            },
+        );
+        allowed.into_iter().all(|a| a)
+    }
+    pub fn attack_entity(&mut self, entity: i32) -> bool {
+        let allowed = self.each(
+            FUEL_EVENT,
+            |h| h.interaction,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_attack_entity(s, entity),
+                Guest::V1(_) => Ok(true),
+            },
+        );
+        allowed.into_iter().all(|a| a)
+    }
+    pub fn attack_block(&mut self, pos: BlockPos, face: Direction) -> bool {
+        let allowed = self.each(
+            FUEL_EVENT,
+            |h| h.interaction,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_attack_block(s, pos, face),
+                Guest::V1(_) => Ok(true),
+            },
+        );
+        allowed.into_iter().all(|a| a)
+    }
+    pub fn block_broken(&mut self, pos: BlockPos, block: &str) {
+        self.each(
+            FUEL_EVENT,
+            |h| h.interaction,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_block_broken(s, pos, block),
+                Guest::V1(_) => Ok(()),
+            },
+        );
+    }
+    pub fn player_hurt(&mut self, amount: f32) {
+        self.each(
+            FUEL_EVENT,
+            |h| h.damage,
+            |g, s| match g {
+                Guest::V3(m) => m.horizon_mods_events().call_player_hurt(s, amount),
+                Guest::V1(_) => Ok(()),
+            },
         );
     }
     /// Whether a running mod owns `/name`.
@@ -401,8 +1006,9 @@ impl Mods {
         let Some(i) = self.command_owner(name) else {
             return false;
         };
-        let result = self.call(i, FUEL_EVENT, |m, s| {
-            m.horizon_mods_events().call_command(s, name, args)
+        let result = self.call(i, FUEL_EVENT, |g, s| match g {
+            Guest::V3(m) => m.horizon_mods_events().call_command(s, name, args),
+            Guest::V1(m) => m.horizon_mods_events().call_command(s, name, args),
         });
         match result {
             Some(Ok(Some(text))) => self.out.push(Output::Feedback { text, error: false }),
@@ -413,17 +1019,13 @@ impl Mods {
     }
     /// The commands running mods own, for suggestions.
     pub fn commands(&self) -> impl Iterator<Item = &str> {
-        self.entries
-            .iter()
-            .filter_map(|e| e.run.as_ref())
+        self.running()
             .flat_map(|r| r.hooks.commands.iter().map(String::as_str))
     }
 
     /// The running mods' HUD panels.
     pub fn panels(&self) -> impl Iterator<Item = &Panel> {
-        self.entries
-            .iter()
-            .filter_map(|e| e.run.as_ref()?.store.data().panel.as_ref())
+        self.running().filter_map(|r| r.store.data().panel.as_ref())
     }
     /// What mods asked to show since the last call.
     pub fn drain(&mut self) -> Vec<Output> {
@@ -490,12 +1092,58 @@ fn reason(e: &wasmtime::Error) -> String {
 }
 
 fn clip(text: String) -> String {
-    match text.char_indices().nth(LINE_CHARS) {
+    clip_to(text, LINE_CHARS)
+}
+fn clip_to(text: String, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
         Some((at, _)) => text[..at].to_string(),
         None => text,
     }
 }
 
+/// A payload channel: `namespace:path`, lowercase identifier characters, not vanilla's.
+fn channel_ok(c: &str) -> bool {
+    let Some((ns, path)) = c.split_once(':') else {
+        return false;
+    };
+    let ok = |s: &str, extra: &[u8]| {
+        !s.is_empty()
+            && s.bytes().all(|b| {
+                b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || b"_-.".contains(&b)
+                    || extra.contains(&b)
+            })
+    };
+    c.len() <= 128 && ns != "minecraft" && ok(ns, b"") && ok(path, b"/")
+}
+
+/// A mod screen's name: `[a-z0-9_./-]{1,64}`.
+fn screen_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b))
+}
+
+impl State {
+    /// Records a drawing call while a render hook runs.
+    fn draw(&mut self, op: DrawOp) {
+        if let Some(ops) = self.draw.as_mut()
+            && ops.len() < DRAW_OPS
+        {
+            ops.push(op);
+        }
+    }
+    fn measure(&self, text: &str) -> f32 {
+        match &self.snapshot.measure {
+            Some(m) => m(text),
+            None => text.chars().count() as f32 * 6.0,
+        }
+    }
+}
+
+impl types::Host for State {}
 impl mod_log::Host for State {
     fn write(&mut self, level: mod_log::Level, message: String) {
         let level = match level {
@@ -511,8 +1159,82 @@ impl game::Host for State {
     fn get_player(&mut self) -> Option<Player> {
         self.snapshot.player.clone()
     }
+    fn get_effects(&mut self) -> Vec<Effect> {
+        self.snapshot.effects.clone()
+    }
     fn get_clock(&mut self) -> Option<Clock> {
         self.snapshot.clock
+    }
+    fn get_world_info(&mut self) -> Option<WorldInfo> {
+        self.snapshot.world.clone()
+    }
+    fn get_target(&mut self) -> Target {
+        self.snapshot.target.clone().unwrap_or(Target::Miss)
+    }
+    fn get_screen(&mut self) -> Option<String> {
+        self.snapshot.screen.clone()
+    }
+    fn get_gui(&mut self) -> Gui {
+        self.snapshot.gui.unwrap_or(Gui {
+            width: 0,
+            height: 0,
+            scale: 1.0,
+        })
+    }
+    fn get_fps(&mut self) -> u32 {
+        self.snapshot.fps
+    }
+}
+impl level::Host for State {
+    fn get_block(&mut self, pos: BlockPos) -> Option<String> {
+        self.snapshot.level.as_ref()?.block([pos.x, pos.y, pos.z])
+    }
+    fn get_biome(&mut self, pos: BlockPos) -> Option<String> {
+        self.snapshot.level.as_ref()?.biome([pos.x, pos.y, pos.z])
+    }
+    fn get_light(&mut self, pos: BlockPos) -> Option<(u8, u8)> {
+        self.snapshot.level.as_ref()?.light([pos.x, pos.y, pos.z])
+    }
+    fn get_entities(&mut self, radius: f32) -> Vec<Entity> {
+        let Some(p) = &self.snapshot.player else {
+            return Vec::new();
+        };
+        let r2 = f64::from(radius.max(0.0)).powi(2);
+        self.snapshot
+            .entities
+            .iter()
+            .filter(|e| (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2) <= r2)
+            .take(ENTITIES)
+            .cloned()
+            .collect()
+    }
+}
+impl inventory::Host for State {
+    fn get_slot(&mut self, slot: u32) -> Option<ItemStack> {
+        self.snapshot
+            .inventory
+            .get(slot as usize)
+            .cloned()
+            .flatten()
+    }
+    fn get_held(&mut self, hand: Hand) -> Option<ItemStack> {
+        let slot = match hand {
+            Hand::MainHand => self.snapshot.player.as_ref()?.selected_slot,
+            Hand::OffHand => 40,
+        };
+        self.get_slot(slot)
+    }
+    fn get_cursor(&mut self) -> Option<ItemStack> {
+        self.snapshot.cursor.clone()
+    }
+    fn get_hovered(&mut self) -> Option<ItemStack> {
+        self.snapshot.hovered.clone()
+    }
+    fn get_container(&mut self) -> Option<Container> {
+        self.snapshot.container.clone()
+    }
+    fn get_item_info(&mut self, id: String) -> Option<ItemInfo> {
+        self.snapshot.items.as_ref()?.info(&id)
     }
 }
 impl chat::Host for State {
@@ -526,9 +1248,136 @@ impl chat::Host for State {
             let name = self.name.clone();
             self.out.push(Output::Chat {
                 name,
-                text: clip(text),
+                text: clip_to(text, TEXT_CHARS),
             });
         }
+    }
+    fn show_overlay(&mut self, text: String) {
+        self.out.retain(|o| !matches!(o, Output::Overlay { .. }));
+        self.out.push(Output::Overlay {
+            text: clip_to(text, TEXT_CHARS),
+        });
+    }
+}
+impl chat_send::Host for State {
+    fn send(&mut self, message: String) -> Result<(), String> {
+        let now = Instant::now();
+        while self
+            .sent
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1))
+        {
+            self.sent.pop_front();
+        }
+        if self.sent.len() >= SENDS_PER_SECOND {
+            return Err(format!("at most {SENDS_PER_SECOND} messages per second"));
+        }
+        let message = message.trim();
+        if message.is_empty() || message.chars().any(|c| c.is_control() || c == '§') {
+            return Err("an empty message, or one with control or § characters".into());
+        }
+        self.sent.push_back(now);
+        self.out.push(Output::Send {
+            message: clip_to(message.to_owned(), SEND_CHARS),
+        });
+        Ok(())
+    }
+}
+impl draw::Host for State {
+    fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, color: u32) {
+        self.draw(DrawOp::Fill {
+            x,
+            y,
+            w: width,
+            h: height,
+            color,
+        });
+    }
+    fn gradient(&mut self, x: f32, y: f32, width: f32, height: f32, top: u32, bottom: u32) {
+        self.draw(DrawOp::Gradient {
+            x,
+            y,
+            w: width,
+            h: height,
+            top,
+            bottom,
+        });
+    }
+    fn text(&mut self, x: f32, y: f32, text: String, color: u32, shadow: bool) -> f32 {
+        let text = clip_to(text, TEXT_CHARS);
+        let width = self.measure(&text);
+        self.draw(DrawOp::Text {
+            x,
+            y,
+            text,
+            color,
+            shadow,
+        });
+        width
+    }
+    fn text_width(&mut self, text: String) -> f32 {
+        self.measure(&clip_to(text, TEXT_CHARS))
+    }
+    fn item(&mut self, x: f32, y: f32, stack: ItemStack) {
+        self.draw(DrawOp::Item { x, y, stack });
+    }
+    fn item_id(&mut self, x: f32, y: f32, id: String) {
+        self.draw(DrawOp::ItemId { x, y, id: clip(id) });
+    }
+    fn sprite(&mut self, x: f32, y: f32, width: f32, height: f32, sprite: String) {
+        self.draw(DrawOp::Sprite {
+            x,
+            y,
+            w: width,
+            h: height,
+            sprite: clip(sprite),
+        });
+    }
+    fn tooltip(&mut self, x: f32, y: f32, lines: Vec<String>) {
+        let lines = lines
+            .into_iter()
+            .take(64)
+            .map(|l| clip_to(l, TEXT_CHARS))
+            .collect();
+        self.draw(DrawOp::Tooltip { x, y, lines });
+    }
+    fn button(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        label: String,
+        hovered: bool,
+        active: bool,
+    ) {
+        self.draw(DrawOp::Button {
+            x,
+            y,
+            w: width,
+            h: height,
+            label: clip_to(label, TEXT_CHARS),
+            hovered,
+            active,
+        });
+    }
+    fn panel(&mut self, x: f32, y: f32, width: f32, height: f32) {
+        self.draw(DrawOp::Panel {
+            x,
+            y,
+            w: width,
+            h: height,
+        });
+    }
+    fn push(&mut self, x: f32, y: f32, scale: f32) {
+        self.draw(DrawOp::Push {
+            x,
+            y,
+            scale: scale.clamp(0.05, 20.0),
+        });
+    }
+    fn pop(&mut self) {
+        self.draw(DrawOp::Pop);
     }
 }
 impl hud::Host for State {
@@ -545,6 +1394,64 @@ impl hud::Host for State {
     }
     fn clear(&mut self) {
         self.panel = None;
+    }
+}
+impl screens::Host for State {
+    fn open(&mut self, name: String) {
+        if screen_name_ok(&name) {
+            self.out.push(Output::OpenScreen {
+                screen: format!("{}:{name}", self.id),
+            });
+        } else {
+            log::warn!(
+                "[mod {}] screen name {:?} is not [a-z0-9_./-]{{1,64}}",
+                self.id,
+                clip(name)
+            );
+        }
+    }
+    fn close(&mut self) {
+        self.out.push(Output::CloseScreen {
+            id: self.id.clone(),
+        });
+    }
+}
+impl keys::Host for State {
+    fn is_down(&mut self, id: String) -> bool {
+        let full = format!("{}:{id}", self.id);
+        self.snapshot.keys_down.contains(&full)
+    }
+}
+impl sound::Host for State {
+    fn play(&mut self, id: String, volume: f32, pitch: f32) {
+        if self
+            .out
+            .iter()
+            .filter(|o| matches!(o, Output::Sound { .. }))
+            .count()
+            < CHAT_PER_CALL
+        {
+            self.out.push(Output::Sound {
+                id: clip(id),
+                volume: volume.clamp(0.0, 1.0),
+                pitch: pitch.clamp(0.5, 2.0),
+            });
+        }
+    }
+}
+impl net::Host for State {
+    fn send(&mut self, channel: String, data: Vec<u8>) -> Result<(), String> {
+        if !self.channels.contains(&channel) {
+            return Err(format!("{channel} is not one of the mod's channels"));
+        }
+        if !self.snapshot.world.as_ref().is_some_and(|w| w.multiplayer) {
+            return Err("not on a server".into());
+        }
+        if data.len() > PAYLOAD_BYTES {
+            return Err(format!("over {} KiB", PAYLOAD_BYTES >> 10));
+        }
+        self.out.push(Output::Payload { channel, data });
+        Ok(())
     }
 }
 impl storage::Host for State {
@@ -592,6 +1499,85 @@ impl storage::Host for State {
             let _ = std::fs::remove_file(self.data_dir.join(&key));
         }
     }
+}
+
+/// API 0.1's interfaces, for mods built with a 0.1 SDK: the same state, older shapes.
+mod legacy {
+    use super::{Output, Panel, State, v1::horizon::mods as old};
+    impl old::log::Host for State {
+        fn write(&mut self, level: old::log::Level, message: String) {
+            use super::mod_log::{Host, Level};
+            let level = match level {
+                old::log::Level::Debug => Level::Debug,
+                old::log::Level::Info => Level::Info,
+                old::log::Level::Warn => Level::Warn,
+                old::log::Level::Error => Level::Error,
+            };
+            Host::write(self, level, message);
+        }
+    }
+    impl old::game::Host for State {
+        fn get_player(&mut self) -> Option<old::game::Player> {
+            let p = self.snapshot.player.as_ref()?;
+            Some(old::game::Player {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                yaw: p.yaw,
+                pitch: p.pitch,
+                health: p.health,
+                food: p.food,
+                dimension: p.dimension.clone(),
+            })
+        }
+        fn get_clock(&mut self) -> Option<old::game::Clock> {
+            self.snapshot.clock.map(|c| old::game::Clock {
+                game_time: c.game_time,
+                day_time: c.day_time,
+            })
+        }
+    }
+    impl old::chat::Host for State {
+        fn show(&mut self, text: String) {
+            super::chat::Host::show(self, text);
+        }
+    }
+    impl old::hud::Host for State {
+        fn set_panel(&mut self, corner: old::hud::Corner, lines: Vec<old::hud::Line>) {
+            use super::{Corner, Line};
+            let corner = match corner {
+                old::hud::Corner::TopLeft => Corner::TopLeft,
+                old::hud::Corner::TopRight => Corner::TopRight,
+                old::hud::Corner::BottomLeft => Corner::BottomLeft,
+                old::hud::Corner::BottomRight => Corner::BottomRight,
+            };
+            let lines = lines
+                .into_iter()
+                .map(|l| Line {
+                    text: l.text,
+                    color: l.color,
+                })
+                .collect();
+            super::hud::Host::set_panel(self, corner, lines);
+        }
+        fn clear(&mut self) {
+            super::hud::Host::clear(self);
+        }
+    }
+    impl old::storage::Host for State {
+        fn get(&mut self, key: String) -> Option<Vec<u8>> {
+            super::storage::Host::get(self, key)
+        }
+        fn set(&mut self, key: String, value: Vec<u8>) -> Result<(), String> {
+            super::storage::Host::set(self, key, value)
+        }
+        fn delete(&mut self, key: String) {
+            super::storage::Host::delete(self, key);
+        }
+    }
+    // Keeps the imports used when a build has no 0.1 shapes left to convert.
+    #[allow(dead_code)]
+    fn _types(_: Output, _: Panel) {}
 }
 
 /// A storage key: one path segment of `[a-z0-9_.-]{1,64}`, not `.` or `..`.
