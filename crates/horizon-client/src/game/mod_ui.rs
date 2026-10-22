@@ -22,6 +22,29 @@ fn color(c: u32) -> u32 {
     };
     rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, a)
 }
+/// Whether a draw call's numbers are usable: finite, sizes positive and at most a few screens.
+fn sane(op: &DrawOp) -> bool {
+    let ok = |v: &[f32]| v.iter().all(|v| v.is_finite() && v.abs() < 100_000.0);
+    match op {
+        DrawOp::Fill { x, y, w, h, .. } | DrawOp::Gradient { x, y, w, h, .. } => {
+            ok(&[*x, *y, *w, *h]) && *w >= 0.0 && *h >= 0.0
+        }
+        // Nine-slices tile their middle: a bounded size keeps the quads bounded.
+        DrawOp::Sprite { x, y, w, h, .. } | DrawOp::Panel { x, y, w, h } => {
+            ok(&[*x, *y]) && (1.0..=4096.0).contains(w) && (1.0..=4096.0).contains(h)
+        }
+        DrawOp::Button { x, y, w, h, .. } => {
+            ok(&[*x, *y]) && (8.0..=4096.0).contains(w) && (4.0..=4096.0).contains(h)
+        }
+        DrawOp::Text { x, y, .. } | DrawOp::Item { x, y, .. } | DrawOp::ItemId { x, y, .. } => {
+            ok(&[*x, *y])
+        }
+        DrawOp::Tooltip { x, y, lines } => ok(&[*x, *y]) && !lines.is_empty(),
+        DrawOp::Push { x, y, scale } => ok(&[*x, *y, *scale]),
+        DrawOp::Pop => true,
+    }
+}
+
 /// Which HUD part a vanilla health-bar sprite belongs to.
 fn health_part(d: &GuiDraw) -> HudPart {
     let GuiDraw::Sprite { sprite, .. } = d else {
@@ -63,6 +86,10 @@ impl Game<'_> {
         let mut poses: Vec<(f32, f32, f32)> = vec![(0.0, 0.0, 1.0)];
         for op in ops {
             let (tx, ty, s) = *poses.last().expect("the base pose stays");
+            // A mod's numbers are not trusted: nothing it draws may stop the game.
+            if !sane(op) {
+                continue;
+            }
             let start = batch.vertices.len();
             match op {
                 DrawOp::Fill {
@@ -158,17 +185,16 @@ impl Game<'_> {
                     active,
                 } => {
                     let atlas = &self.gui.atlas;
+                    let m = Measure(&atlas.font);
+                    // Button lays out a label that fits (vanilla's never overflow): cut it.
+                    let mut label = rich_text(label);
+                    if m.width(&label) > *w as i32 - 4 {
+                        label = m.head(&label, *w as i32 - 4);
+                    }
                     let mut draws = Vec::new();
                     screen_draw::button(
-                        &mut draws,
-                        &Measure(&atlas.font),
-                        &rich_text(label),
-                        *x as i32,
-                        *y as i32,
-                        *w as i32,
-                        *h as i32,
-                        *active,
-                        *hovered,
+                        &mut draws, &m, &label, *x as i32, *y as i32, *w as i32, *h as i32,
+                        *active, *hovered,
                     );
                     screen_draw::paint(batch, atlas, &draws);
                 }
