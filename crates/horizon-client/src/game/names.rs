@@ -169,9 +169,110 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete,
+                through: true,
             });
         }
+        self.remote_name_tags(camera, alpha, &mut tags);
         tags
+    }
+    /// On a server: the visible custom names of objects and mobs (holograms are armor stands
+    /// with one) and the text displays, styled as the server sent them.
+    fn remote_name_tags(&self, camera: glam::DVec3, alpha: f64, tags: &mut Vec<NameTag>) {
+        let Some(r) = &self.remote else {
+            return;
+        };
+        let lerp = |a: f64, b: f64| a + (b - a) * alpha;
+        for (id, (name, visible)) in &r.names {
+            let (Some(name), true) = (name, *visible) else {
+                continue;
+            };
+            let id = *id as u32;
+            // EntityAttachment.NAME_TAG: the entity's height, then 0.5 up.
+            let at = if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
+                let height = if a.marker {
+                    0.0
+                } else if a.small {
+                    0.9875
+                } else {
+                    1.975
+                };
+                glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z)
+            } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+                glam::DVec3::new(
+                    lerp(m.previous.x, m.position.x),
+                    lerp(m.previous.y, m.position.y) + f64::from(m.height()) + 0.5,
+                    lerp(m.previous.z, m.position.z),
+                )
+            } else if let Some(t) = r.entities.get(&(id as i32))
+                && t.kind != "minecraft:text_display"
+            {
+                glam::DVec3::new(t.position[0], t.position[1] + 0.5, t.position[2])
+            } else {
+                continue;
+            };
+            if at.distance_squared(camera) >= 64.0 * 64.0 {
+                continue;
+            }
+            let light = self.world.light(
+                at.x.floor() as i32,
+                at.y.floor() as i32,
+                at.z.floor() as i32,
+            );
+            tags.push(NameTag {
+                at,
+                lines: vec![(name.resolve_legacy(), 0.0)],
+                light,
+                discrete: false,
+                through: true,
+            });
+        }
+        // TextDisplayRenderer, facing the camera (most holograms' billboard): the lines wrapped
+        // at the display's width, the last at its position.
+        let m = horizon_client::screen_draw::Measure(&self.gui.atlas.font);
+        for (id, d) in &r.text_displays {
+            let Some(t) = r.entities.get(id) else {
+                continue;
+            };
+            let base = glam::DVec3::new(
+                t.position[0] + f64::from(d.translation[0]),
+                t.position[1] + f64::from(d.translation[1]),
+                t.position[2] + f64::from(d.translation[2]),
+            );
+            if base.distance_squared(camera) >= 64.0 * 64.0 || d.text.is_empty() {
+                continue;
+            }
+            let text = d.text.resolve_legacy();
+            let mut lines: Vec<Text> = Vec::new();
+            // Split on new lines first (keeping styles), then wrap each.
+            let mut start = 0;
+            let count = text.char_count();
+            let chars: Vec<char> = text.chars().map(|(c, _)| c).collect();
+            for (i, c) in chars.iter().enumerate() {
+                if *c == '\n' {
+                    lines.extend(m.split(&text.slice(start, i), d.line_width));
+                    start = i + 1;
+                }
+            }
+            lines.extend(m.split(&text.slice(start, count), d.line_width));
+            let n = lines.len();
+            let step = 0.25;
+            let light = self.world.light(
+                base.x.floor() as i32,
+                base.y.floor() as i32,
+                base.z.floor() as i32,
+            );
+            tags.push(NameTag {
+                at: base + glam::DVec3::new(0.0, 0.2, 0.0),
+                lines: lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, l)| (l, (n - 1 - i) as f64 * step))
+                    .collect(),
+                light,
+                discrete: false,
+                through: d.flags & 2 != 0,
+            });
+        }
     }
     /// `SubmitNodeCollection.submitNameTag`: a discrete name is drawn once,
     /// faded, on its background; any other in full over the world, its faded
@@ -196,7 +297,9 @@ impl Game<'_> {
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
             self.name_tag_quads(o, &tag.lines, 0xFF, false, 0, vertex_light(lit), out);
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through);
+            if tag.through {
+                self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through);
+            }
         }
     }
     /// The lines of one name tag, `o` from the camera: the text at
@@ -304,4 +407,6 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
+    /// Its faded copy shows through walls (a text display only when it says so).
+    through: bool,
 }

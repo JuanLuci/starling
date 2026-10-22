@@ -88,10 +88,32 @@ impl RemoteBoss {
     }
 }
 
+/// `Display.TextDisplay` as its entity data sets it (DATA_TEXT_ID and the rest).
+#[derive(Clone)]
+pub(super) struct TextDisplay {
+    pub(super) text: horizon_client::text::Text,
+    /// DATA_LINE_WIDTH_ID: lines wrap at this many pixels.
+    pub(super) line_width: i32,
+    /// DATA_TRANSLATION_ID.
+    pub(super) translation: [f32; 3],
+    /// DATA_STYLE_FLAGS_ID: shadow 1, see through 2, default background 4.
+    pub(super) flags: u8,
+}
+impl Default for TextDisplay {
+    fn default() -> Self {
+        Self {
+            text: horizon_client::text::Text::empty(),
+            line_width: 200,
+            translation: [0.0; 3],
+            flags: 0,
+        }
+    }
+}
+
 /// A server entity the client tracks (position as last sent).
-struct Tracked {
-    kind: String,
-    position: [f64; 3],
+pub(super) struct Tracked {
+    pub(super) kind: String,
+    pub(super) position: [f64; 3],
 }
 /// Smooth an entity toward a new position over three ticks (InterpolationHandler).
 #[derive(Clone, Copy)]
@@ -135,7 +157,7 @@ pub(super) struct Remote {
     pub(super) menu_title: Option<String>,
     state_id: i32,
     use_target: Option<[i32; 3]>,
-    entities: HashMap<i32, Tracked>,
+    pub(super) entities: HashMap<i32, Tracked>,
     lerps: HashMap<i32, Lerp>,
     /// `LivingEntity.lerpHeadTo`: the head yaw and the ticks left to reach it.
     head_lerps: HashMap<i32, (f32, u32)>,
@@ -155,6 +177,11 @@ pub(super) struct Remote {
     pub(super) boss_bars: Vec<(u128, RemoteBoss)>,
     /// ClientboundTransferPacket: the server sent the player to this address.
     transfer: Option<String>,
+    /// Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE as the server set them, by entity
+    /// (holograms are armor stands with a visible name).
+    pub(super) names: HashMap<i32, (Option<horizon_client::text::Text>, bool)>,
+    /// The text displays in the level, by entity.
+    pub(super) text_displays: HashMap<i32, TextDisplay>,
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and
     /// which of them are listed.
@@ -368,6 +395,8 @@ impl Remote {
         self.commands = None;
         self.server_commands = None;
         self.boss_bars.clear();
+        self.names.clear();
+        self.text_displays.clear();
         self.players.clear();
         self.tab_players.clear();
         self.skin_textures.clear();
@@ -560,6 +589,8 @@ impl Game<'_> {
             server_commands: None,
             boss_bars: Vec::new(),
             transfer: None,
+            names: HashMap::new(),
+            text_displays: HashMap::new(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -897,6 +928,32 @@ impl Game<'_> {
     }
     /// ClientboundCommandSuggestionsPacket: id, range start and length, then
     /// each suggestion's text and optional tooltip.
+    /// Entity.DATA_CUSTOM_NAME (2) and DATA_CUSTOM_NAME_VISIBLE (3) of any entity, and a text
+    /// display's own data (Display 8 to 22, TextDisplay 23 to 27).
+    fn remote_names_and_displays(&mut self, id: i32, values: &[(u8, i32, Value)]) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        for (index, _, value) in values {
+            match (index, value) {
+                (2, Value::OptText(t)) => {
+                    r.names.entry(id).or_insert((None, false)).0 = t.as_ref().map(remote_text);
+                }
+                (3, Value::Bool(v)) => r.names.entry(id).or_insert((None, false)).1 = *v,
+                _ => {}
+            }
+            let Some(d) = r.text_displays.get_mut(&id) else {
+                continue;
+            };
+            match (index, value) {
+                (11, Value::Floats(v)) if v.len() == 3 => d.translation = [v[0], v[1], v[2]],
+                (23, Value::Text(t)) => d.text = remote_text(t),
+                (24, Value::Int(w)) => d.line_width = (*w).max(1),
+                (27, Value::Byte(f)) => d.flags = *f as u8,
+                _ => {}
+            }
+        }
+    }
     /// ClientboundBossEventPacket: a bar added, removed or changed (BossHealthOverlay.update).
     fn handle_boss_event(&mut self, data: &[u8]) -> horizon_protocol::Result<()> {
         use horizon_client::hud_overlays::BossBar;
@@ -1440,6 +1497,9 @@ impl Game<'_> {
             if kind == "minecraft:item" {
                 r.pending_items.insert(id, position);
             }
+            if kind == "minecraft:text_display" {
+                r.text_displays.insert(id, TextDisplay::default());
+            }
             r.entities.insert(
                 id,
                 Tracked {
@@ -1495,6 +1555,8 @@ impl Game<'_> {
             r.lerps.remove(&id);
             r.head_lerps.remove(&id);
             r.pending_items.remove(&id);
+            r.names.remove(&id);
+            r.text_displays.remove(&id);
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.
@@ -1836,6 +1898,7 @@ impl Game<'_> {
                 }
             }
             C::SetEntityData(p) => {
+                self.remote_names_and_displays(p.id, &p.values);
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32)
                     && m.species() == horizon_client::mobs::Species::Rabbit
                 {
