@@ -35,6 +35,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "food-info",
                 "-p",
+                "waypoints",
+                "-p",
                 "horizon-mods-test-guest",
                 "--target-dir",
             ])
@@ -55,6 +57,7 @@ fn mods_dir() -> &'static Path {
         let mods = [
             ("coords_hud", example("coords-hud")),
             ("food_info", example("food-info")),
+            ("waypoints", example("waypoints")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
@@ -434,6 +437,72 @@ fn food_info_draws_around_the_hunger_bar() {
         mods.tooltip(&apple),
         [r#"{"text":"+4 hunger, +2.4 saturation","color":"gold"}"#]
     );
+}
+
+/// The screen example: its keybind opens its screen, "Add here" keeps the place (storage), a
+/// press on the place picks it and the HUD then points at it.
+#[test]
+fn waypoints_screen_keeps_and_points() {
+    let dir = mods_dir().join("waypoints_run");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("waypoints.hmod");
+    std::fs::copy(mods_dir().join("waypoints.hmod"), &path).unwrap();
+    let mut mods = Mods::load(&[path], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut snapshot = player();
+    snapshot.gui = Some(horizon_mods::Gui {
+        width: 320,
+        height: 240,
+        scale: 2.0,
+    });
+    mods.set_snapshot(snapshot);
+    let binds = mods.keybinds();
+    assert_eq!(binds[0].1.key, "key.keyboard.j");
+    mods.key("waypoints", "open", true);
+    let screen = "waypoints:list".to_string();
+    assert_eq!(
+        mods.drain(),
+        [Output::OpenScreen {
+            screen: screen.clone()
+        }]
+    );
+    let labels = |ops: &[DrawOp]| -> Vec<String> {
+        ops.iter()
+            .filter_map(|o| match o {
+                DrawOp::Button { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let ops = mods.screen_render(&screen, context());
+    assert_eq!(labels(&ops), ["Add here", "Close"]);
+    // The panel is 220x176 in the middle of 320x240: "Add here" at (60, 178).
+    let press = |x, y| MouseEvent {
+        action: MouseAction::Press,
+        x,
+        y,
+        button: 0,
+        scroll: 0.0,
+    };
+    assert!(mods.screen_mouse(&screen, press(70.0, 185.0)));
+    let ops = mods.screen_render(&screen, context());
+    assert_eq!(labels(&ops), ["Place 1 (0 m)", "x", "Add here", "Close"]);
+    assert!(mods.hud_render(context()).is_empty());
+    // Pick it: the HUD points at it.
+    assert!(mods.screen_mouse(&screen, press(70.0, 62.0)));
+    let hud = mods.hud_render(context());
+    assert!(
+        hud.iter()
+            .any(|o| matches!(o, DrawOp::Text { text, .. } if text.contains("Place 1 0 m")))
+    );
+    // Kept on disk: a reload has it.
+    let entries = Mods::load(&[dir.join("waypoints.hmod")], |_| true, |_| false);
+    let mut reloaded = entries;
+    reloaded.set_snapshot(player());
+    reloaded.key("waypoints", "open", true);
+    let ops = reloaded.screen_render(&screen, context());
+    assert!(labels(&ops).iter().any(|l| l.starts_with("Place 1")));
 }
 
 #[test]

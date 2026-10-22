@@ -254,6 +254,17 @@ impl Game<'_> {
                 if action == "tap" {
                     self.extras_key(physical, false, false);
                 }
+                // The mods' keybinds see the key too, as from the keyboard (mods_window_event).
+                if self.screen == Screen::Playing
+                    && self.title.is_none()
+                    && let Some(name) = horizon_client::keybinds::key_name(physical)
+                {
+                    let name = name.to_owned();
+                    self.mods_key(&name, action != "up");
+                    if action == "tap" {
+                        self.mods_key(&name, false);
+                    }
+                }
                 // Text screens consume raw presses; releases follow key binds.
                 let typing = matches!(self.screen, Screen::Chat | Screen::Options);
                 let key = if typing && arg(2)? != "up" {

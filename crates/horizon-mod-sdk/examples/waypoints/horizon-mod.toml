@@ -1,0 +1,8 @@
+id = "waypoints"
+name = "Waypoints"
+version = "0.1.0"
+description = "Save places and find your way back: a screen to keep them (J, or its touch button), and where the chosen one is on the HUD."
+authors = ["Starling"]
+api = "0.3"
+side = "client"
+capabilities = ["game-read", "hud", "ui", "keys", "storage"]
