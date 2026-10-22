@@ -295,7 +295,9 @@ impl Game<'_> {
             }
             // LightCoordsUtil.lightCoordsWithEmission(lightCoords, 2).
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
-            self.name_tag_quads(o, &tag.lines, 0xFF, false, 0, vertex_light(lit), out);
+            // A text display that does not show through walls has its background here
+            // (TextDisplay's default, 0x40000000), as a name tag has it in the see-through copy.
+            self.name_tag_quads(o, &tag.lines, 0xFF, !tag.through, 0, vertex_light(lit), out);
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
             if tag.through {
                 self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through);

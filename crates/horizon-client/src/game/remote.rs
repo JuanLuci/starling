@@ -1066,6 +1066,7 @@ impl Game<'_> {
         };
         let dimension = r.registries.dimension(spawn.dimension_type);
         let same = r.dimension.name == dimension.name && keep_world;
+        self.flat_world = spawn.flat;
         r.dimension = dimension;
         r.game_mode = spawn.game_type;
         r.loaded_sent = false;

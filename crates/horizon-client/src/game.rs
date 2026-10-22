@@ -1423,6 +1423,9 @@ struct Game<'a> {
     events: events::Events,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
+    /// `ClientLevelData.isFlat`: a Superflat world (its spawn info on a server), where the
+    /// horizon is the world's floor and the void does not darken.
+    flat_world: bool,
     persist: persist::EntityMemory,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
@@ -7140,6 +7143,7 @@ impl Game<'_> {
         book.to_be_displayed.retain(|r| index.contains(r));
         self.dim = dim;
         self.world_root = save_root.clone();
+        self.flat_world = horizon_client::save::WorldGen::read(&save_root).is_some_and(|w| w.flat);
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
         self.clear_entities();
@@ -11428,6 +11432,7 @@ impl<'a> Game<'a> {
             mods: Default::default(),
             server_packs: Default::default(),
             sky_darken_memo: Default::default(),
+            flat_world: false,
             persist: Default::default(),
             remote: None,
             lan: None,
