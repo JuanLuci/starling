@@ -147,7 +147,7 @@ impl Stats {
             "DataVersion": horizon_world::DATA_VERSION,
         });
         if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = horizon_client::save::write_file(&path, text.into_bytes());
+            let _ = horizon_client::save::write_file(path, text.into_bytes());
         }
     }
 }
