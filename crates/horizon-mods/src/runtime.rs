@@ -342,7 +342,15 @@ pub struct Mods {
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
+    /// Where compiled mods are kept ([`Mods::load_cached`]).
+    cache: Option<PathBuf>,
 }
+
+// The game loads mods on a thread of their own: compiling one can take seconds.
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Mods>();
+};
 
 /// The `.hmod` files and mod folders in `dir`, by name.
 pub fn find(dir: &Path) -> Vec<PathBuf> {
@@ -379,7 +387,25 @@ impl Mods {
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        let mut mods = Mods::default();
+        Self::load_cached(paths, enabled, reserved, None)
+    }
+
+    /// [`Mods::load`], keeping each mod's compiled code in `cache` (a folder only the game
+    /// writes) for the next start: compiling a large mod, such as one carrying a JavaScript
+    /// engine, takes seconds on a computer and more on a phone. Compiled code no installed mod
+    /// is made of any more is removed.
+    pub fn load_cached(
+        paths: &[PathBuf],
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+        cache: Option<&Path>,
+    ) -> Mods {
+        let mut mods = Mods {
+            cache: cache.map(Path::to_path_buf),
+            ..Mods::default()
+        };
+        // The digests of every installed mod's code, on or off, kept in the cache.
+        let mut digests = Vec::new();
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -395,6 +421,9 @@ impl Mods {
                 Ok(package) => {
                     let on = enabled(&package.manifest.id);
                     entry.manifest = Some(package.manifest.clone());
+                    if let (Some(_), Some(wasm)) = (cache, &package.wasm) {
+                        digests.push(digest(wasm));
+                    }
                     if on {
                         // Content is read before the world loads; a mod whose
                         // content is refused stays off, with the reason.
@@ -414,6 +443,9 @@ impl Mods {
                 log::warn!("Horizon: mod {} did not start: {reason}", m.id);
             }
             mods.entries.push(entry);
+        }
+        if let (Some(dir), Some((engine, _))) = (cache, &mods.engine) {
+            prune(dir, engine, &digests);
         }
         mods
     }
@@ -466,9 +498,9 @@ impl Mods {
             .flat_map(|r| r.hooks.commands.iter().cloned())
             .collect();
         let snapshot = self.snapshot.clone();
+        let cache = self.cache.clone();
         let (engine, linker) = self.engine()?;
-        let component =
-            Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
+        let component = compile(engine, wasm, cache.as_deref())?;
         let ty = component.component_type();
         let imports: Vec<String> = ty
             .imports(engine)
@@ -1068,6 +1100,83 @@ impl Mods {
             }
         }
         any
+    }
+}
+
+/// A mod's component compiled, or read back from `cache` where it was compiled before.
+fn compile(engine: &Engine, wasm: &[u8], cache: Option<&Path>) -> Result<Component, String> {
+    let fresh = || Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"));
+    let Some(dir) = cache else {
+        return fresh();
+    };
+    let file = dir.join(cached_name(&digest(wasm), engine));
+    if file.is_file() {
+        // SAFETY: the cache is the game's own folder and holds only what `Component::serialize`
+        // wrote below (renamed into place once whole); deserializing checks the file was made
+        // by this build of wasmtime with this engine's settings.
+        match unsafe { Component::deserialize_file(engine, &file) } {
+            Ok(component) => return Ok(component),
+            Err(e) => log::warn!("Horizon: compiling {} again: {e}", file.display()),
+        }
+    }
+    let started = Instant::now();
+    let component = fresh()?;
+    log::info!("Horizon: compiled a mod in {:?}", started.elapsed());
+    if let Err(e) = keep_compiled(&component, &file) {
+        log::warn!("Horizon: could not keep {}: {e}", file.display());
+    }
+    Ok(component)
+}
+
+fn keep_compiled(component: &Component, file: &Path) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Two loads at once (the player turning mods on and off quickly) each write their own.
+    static PART: AtomicU32 = AtomicU32::new(0);
+    let bytes = component.serialize().map_err(std::io::Error::other)?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let part = file.with_extension(format!(
+        "{}-{}.part",
+        std::process::id(),
+        PART.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&part, bytes)?;
+    std::fs::rename(&part, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&part);
+    })
+}
+
+/// SHA-256 of a mod's code, in hex.
+fn digest(wasm: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(wasm)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The cache's name for a mod's code compiled by `engine` (its build and settings).
+fn cached_name(digest: &str, engine: &Engine) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    engine.precompile_compatibility_hash().hash(&mut hasher);
+    format!("{digest}-{:016x}.cwasm", hasher.finish())
+}
+
+/// Removes the compiled code in `dir` that is not one of `digests` compiled by `engine`: an
+/// updated or removed mod, or another build of the game.
+fn prune(dir: &Path, engine: &Engine, digests: &[String]) {
+    let keep: Vec<String> = digests.iter().map(|d| cached_name(d, engine)).collect();
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for file in read.flatten() {
+        let name = file.file_name().to_string_lossy().into_owned();
+        let compiled = name.ends_with(".cwasm") || name.ends_with(".part");
+        if compiled && !keep.contains(&name) {
+            let _ = std::fs::remove_file(file.path());
+        }
     }
 }
 

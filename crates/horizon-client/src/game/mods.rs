@@ -19,7 +19,10 @@ use horizon_mods::{
 };
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        mpsc::{Receiver, TryRecvError},
+    },
     time::{Duration, Instant},
 };
 
@@ -52,6 +55,10 @@ pub(super) struct ModsState {
     biomes: Option<Arc<Vec<String>>>,
     items: Option<Arc<dyn ItemCatalog>>,
     measure: Option<Measure>,
+    /// Mods loading on their own thread ([`Game::start_mods`]), and since when.
+    loading: Option<(Receiver<Mods>, Instant)>,
+    /// The "Starting mods" note is up.
+    announced: bool,
 }
 impl ModsState {
     /// The chat's command tree: vanilla's, plus the running mods' commands.
@@ -63,6 +70,8 @@ impl ModsState {
 }
 /// How often dev mods are checked for a rebuild.
 const RELOAD_CHECK: Duration = Duration::from_secs(1);
+/// How long mods may take to start before a note says so (a large one compiling the first time).
+const SLOW_START: Duration = Duration::from_millis(700);
 /// How far around the player `world-read` mods see blocks.
 const LEVEL_CHUNKS: i32 = 2;
 
@@ -216,22 +225,67 @@ pub(super) fn rich_text(text: &str) -> Text {
 }
 
 impl Game<'_> {
-    /// Reads `horizon-mods/` and the dev mods, and starts the ones turned on.
+    /// Reads `horizon-mods/` and the dev mods, and starts the ones turned on, on a thread of
+    /// their own: compiling a mod takes seconds the first time (its code is kept in the cache
+    /// after), which on the render thread would freeze the game and get it closed on Android.
+    /// The mods running until then keep running; [`Game::poll_mods`] puts the new ones in place.
     pub(super) fn start_mods(&mut self) {
         let dir = Self::options_path().with_file_name(mod_list::DIR);
-        let dev = &self.mods.dev;
-        let mut paths = horizon_mods::find(&dir);
-        paths.retain(|p| !dev.contains(p));
-        paths.extend(dev.iter().cloned());
-        // A dev mod is on whatever the list says.
-        let dev_ids: Vec<String> = dev
-            .iter()
-            .filter_map(|p| horizon_mods::Package::read(p).ok())
-            .map(|p| p.manifest.id)
-            .collect();
-        let enabled = &self.settings.mods.enabled;
-        let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
-        let mods = Mods::load(&paths, on, vanilla_command);
+        let dev = self.mods.dev.clone();
+        let enabled = self.settings.mods.enabled.clone();
+        let cache = horizon_client::logging::cache_dir().join("compiled-mods");
+        let (send, receive) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("mods".into())
+            .spawn(move || {
+                let mut paths = horizon_mods::find(&dir);
+                paths.retain(|p| !dev.contains(p));
+                paths.extend(dev.iter().cloned());
+                // A dev mod is on whatever the list says.
+                let dev_ids: Vec<String> = dev
+                    .iter()
+                    .filter_map(|p| horizon_mods::Package::read(p).ok())
+                    .map(|p| p.manifest.id)
+                    .collect();
+                let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
+                let _ = send.send(Mods::load_cached(&paths, on, vanilla_command, Some(&cache)));
+            });
+        match spawned {
+            // A load already running is dropped: this one reads the newer list.
+            Ok(_) => self.mods.loading = Some((receive, Instant::now())),
+            Err(e) => log::error!("Horizon: could not start mods: {e}"),
+        }
+    }
+    /// Each frame: the mods a load finished, in place of the ones running.
+    pub(super) fn poll_mods(&mut self) {
+        let Some((receive, started)) = &self.mods.loading else {
+            return;
+        };
+        let mods = match receive.try_recv() {
+            Ok(mods) => mods,
+            Err(TryRecvError::Empty) => {
+                if !self.mods.announced && started.elapsed() > SLOW_START {
+                    self.mods.announced = true;
+                    self.imports.working("Starting mods...".into());
+                }
+                return;
+            }
+            Err(TryRecvError::Disconnected) => {
+                log::error!("Horizon: the mods' thread stopped");
+                self.mods.loading = None;
+                return;
+            }
+        };
+        log::info!(
+            "Horizon: mods started in {:?}",
+            self.mods
+                .loading
+                .take()
+                .map_or(Duration::ZERO, |(_, t)| t.elapsed())
+        );
+        if std::mem::take(&mut self.mods.announced) {
+            self.imports.say("Mods started".into());
+        }
         self.mods.mods = mods;
         self.mods.screen = None;
         self.mods.joined = None;

@@ -14,6 +14,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
 # The 36 LTS line: security fixes until August 2027, and it builds on the client's Rust.
 wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "cranelift", "component-model", "std"], optional = true }
+# Names a mod's compiled code in the cache by its WebAssembly.
+sha2 = { version = "0.10.9", optional = true }
 # Turns a mod's core module into a component (cargo horizon-mod build, the tests).
 wit-component = { version = "0.239", optional = true }
 wit-parser = { version = "0.239", optional = true }
@@ -21,7 +23,7 @@ wit-parser = { version = "0.239", optional = true }
 [features]
 default = ["runtime"]
 # Loads and runs mods; without it only manifests and packaging (cargo horizon-mod).
-runtime = ["dep:wasmtime"]
+runtime = ["dep:wasmtime", "dep:sha2"]
 pack = ["dep:wit-component", "dep:wit-parser"]
 
 [dev-dependencies]

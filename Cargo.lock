@@ -1530,6 +1530,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
  "wasmtime",
  "wit-component 0.239.0",

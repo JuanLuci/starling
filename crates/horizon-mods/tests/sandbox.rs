@@ -623,6 +623,41 @@ fn hot_reload_restarts_a_changed_mod() {
 }
 
 #[test]
+fn compiled_mods_are_kept_for_the_next_start() {
+    let cache = mods_dir().join("compiled");
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&cache).unwrap();
+    // A build of a mod since removed.
+    let stale = cache.join("0000-0000.cwasm");
+    std::fs::write(&stale, b"old").unwrap();
+    let path = mods_dir().join("horizon_mods_test_guest.hmod");
+    let start = || {
+        let mut mods = Mods::load_cached(
+            std::slice::from_ref(&path),
+            |_| true,
+            |_| false,
+            Some(&cache),
+        );
+        assert_eq!(mods.entries()[0].status, Status::Running);
+        assert!(mods.command("hello cached"));
+        mods.drain();
+    };
+    start();
+    let kept: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].extension().is_some_and(|e| e == "cwasm"));
+    // The second start reads it back; a damaged file is compiled again.
+    start();
+    std::fs::write(&kept[0], b"damaged").unwrap();
+    start();
+    assert!(std::fs::metadata(&kept[0]).unwrap().len() > 1000);
+}
+
+#[test]
 fn storage_persists_across_reload() {
     let dir = mods_dir().join("storage_reload");
     std::fs::create_dir_all(&dir).unwrap();

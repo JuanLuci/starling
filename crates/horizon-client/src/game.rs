@@ -11083,6 +11083,7 @@ impl ApplicationHandler for Game<'_> {
         }
         self.touch_frame(event_loop);
         self.poll_imports();
+        self.poll_mods();
         #[cfg(target_os = "android")]
         self.poll_files_offer();
         self.poll_pads(event_loop);
