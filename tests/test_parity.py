@@ -2,7 +2,8 @@ import re
 import unittest
 from pathlib import Path
 
-README = Path(__file__).resolve().parents[1] / 'README.md'
+# Horizon's audit, kept beside Starling's README (docs/horizon-parity.md).
+README = Path(__file__).resolve().parents[1] / 'docs' / 'horizon-parity.md'
 
 
 class ParityTests(unittest.TestCase):

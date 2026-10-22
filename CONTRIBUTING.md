@@ -1,86 +1,34 @@
-# Contributing to Horizon
+# Contributing to Starling
 
-Thanks for helping. Horizon is Minecraft: Java Edition 26.3 rewritten in Rust, and the one rule that shapes
-everything is that **it plays exactly like vanilla**. This page is the short version of how we work; questions are
-welcome on [Discord](https://discord.gg/HcTeMZxe5E).
+Thanks for helping. Starling is the Android port of [Horizon](https://github.com/ludovic111/horizon), Minecraft: Java Edition 26.3 rewritten in Rust. This page is the short version of how we work.
 
-This repository holds the game, the launcher and the website, plus the tools, tests and docs that build, check and
-release them. Anything else (videos, Discord and other community material) lives elsewhere.
+## Where a change goes
+
+- **The game itself** (gameplay, world generation, rendering shared with the desktop, menus) belongs upstream, in Horizon, where it is checked against vanilla. Follow [Horizon's contributing guide](https://github.com/ludovic111/horizon/blob/main/CONTRIBUTING.md): vanilla is the specification, and gameplay changes come with a parity harness.
+- **The Android app** belongs here: the packaging (`packaging/android/`), the app's entry (`crates/horizon-client/src/android_lib.rs`), touch controls (`touch.rs`, `game/touch.rs`), the Starling folder and imports (`import.rs`, `game/imports.rs`, `game/files_offer.rs`) and anything that only matters on a phone.
 
 ## Build it
 
-You need Rust (stable), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers (`libasound2-dev libudev-dev`).
-Horizon never downloads the game: it prepares its resources from your own copy of Minecraft 26.3, as described in
-[Build from source](README.md#build-from-source).
+You need Rust (stable) with the `aarch64-linux-android` target, [cargo-ndk](https://github.com/bbqsrc/cargo-ndk), the Android SDK (build-tools 35.0.0, platform 36, NDK r28c), a JDK and Python 3.10+.
 
 ```sh
-cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
-cargo run --release -p horizon-client
+python packaging/android/build_apk.py            # build the library, then the APK
+python packaging/android/build_apk.py --install  # and install it over adb
 ```
 
-The launcher is its own Cargo workspace in `launcher/` (`cd launcher && cargo run`; on NixOS, `nix-shell` first).
+Starling never downloads the game: prepare its resources from your own copy of Minecraft 26.3 as described in [Build from source](README.md#build-from-source), zip them as a `.starling` file and open it with the app.
 
-## Vanilla first
+## Test on a phone
 
-Wherever vanilla has a feature, vanilla is the specification, down to the order of random calls. "Parity" here
-means Horizon gives the same results as the pinned 26.3 client and server for the same inputs, checked by a
-**harness**: a `tools/test_*_parity.py` script that runs a small Java oracle against the real game and a Rust
-probe against Horizon, and compares their outputs. There are about 290 of them.
+Say what you checked on a real device, and on which one. A `horizon-args.txt` in the app's own files adds command-line arguments and environment variables at launch (one per line, `NAME=value` for the environment); with `--control-socket` and `HORIZON_CONTROL_PORT`, `horizon-ctl` drives the game over `adb forward`. Empty the file afterwards so the app starts normally.
 
-- **Read the vanilla code before writing Horizon's.** `tools/rea_vanilla.py` queries the pinned game bytecode:
-  `python3 tools/rea_vanilla.py method net.minecraft.world.level.block.DispenserBlock dispenseFrom`.
-  Say in your pull request which vanilla classes and methods you followed.
-- **Gameplay changes come with a harness**, new or extended, so the next change can't silently break them.
-  [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
-- **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
-  off by default wherever they would change the vanilla look.
-- **Everything players run is Rust.** Python and Java are fine for dev tools and harness drivers in `tools/`, never
-  for player-facing code.
-
-Never commit game files, decompiled source or prepared resources (`.local/`): `tools/check_public_tree.py` rejects
-them (`git config core.hooksPath .githooks` runs it before every commit).
-
-## Before asking for review
-
-Run the self-check and paste the block it prints into your pull request:
+## Before a pull request
 
 ```sh
-python3 tools/pr_ready.py --base upstream/main   # or origin/main if you work on the main repository
+git config core.hooksPath .githooks
+python3 tools/pr_ready.py
 ```
 
-It looks at what your branch changes and runs what matters: rustfmt, clippy with warnings denied, the tests of the
-crates you touched (and the launcher's), generated files, `Cargo.lock`, the Python tests, and the vanilla harnesses
-your change can affect. Without the vanilla data on your machine it lists those harnesses instead; CI runs them.
-`--quick` skips the harnesses. It exits non-zero when something fails.
+It runs rustfmt, clippy with warnings denied, the tests of the crates you touched, the Python tests and the public-tree check. Keep pull requests small, and write commit messages in English.
 
-For the game workspace, Clippy checks all targets of the touched crates and their transitive workspace dependents,
-including examples. The dependency scope includes optional, platform, build and development dependencies.
-Tests run library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
-configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
-
-## Pull requests
-
-- **Small.** One change per pull request, under about 500 lines of code where you can; split bigger work into
-  pieces that each make sense alone. Small pull requests get reviewed and merged the same day.
-- **Fill in the template**: what and why, the vanilla reference, the pr_ready block, screenshots for anything you
-  can see.
-- **Tick "Allow edits by maintainers".** When something small is left (a lint, a rebase, a nit) we push the fixup
-  ourselves instead of sending it back to you; only design questions come back.
-- **Labels** (we set them if you can't): `feature` when players get something new (it appears under "New" in the
-  release notes), `skip-release` when players see no change (tooling, docs, tests), nothing for a fix.
-  `release-now` is for crash fixes that shouldn't wait. pr_ready suggests one.
-
-Every merge to main is released automatically ([release flow](docs/release-flow.md)), so main always stays playable.
-How agents, checks, releases and signed updates keep this safe: [security](docs/security.md).
-
-## Parity checks on forks
-
-The `verify` check (formatting, lints, tests) runs on every pull request. The `parity` check runs the affected
-harnesses on a maintainer's machine, which holds the game files, so it never runs a fork's code on its own: a
-maintainer reads your change, then adds the `run-parity` label, which runs it once on your current commit. After
-new pushes, we add it again.
-
-## Talk to us
-
-[Discord](https://discord.gg/HcTeMZxe5E) for questions and ideas, [issues](https://github.com/ludovic111/horizon/issues)
-for bugs. If you want to take something on, say so in its issue so nobody else starts the same work.
+Never commit game files, decompiled source or prepared resources (`.local/`): `tools/check_public_tree.py` rejects them.
