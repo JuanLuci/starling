@@ -182,6 +182,16 @@ pub(super) struct Remote {
     was_sprinting: bool,
     carried: Option<usize>,
     loaded_sent: bool,
+    /// Ticks the player has waited for the chunk under it (logged when long: the player
+    /// cannot move meanwhile).
+    waiting_ticks: u32,
+    /// Server teleports of the player that took it back a short way (an anti-cheat's or the
+    /// server's correction), logged so a player who "cannot walk" shows why.
+    setbacks: u32,
+    /// The player's attributes as the server last sent them (ClientboundUpdateAttributesPacket):
+    /// movement speed, jump strength, gravity, step height... kept for a LocalPlayer made
+    /// after the packet came, and across respawns.
+    player_attributes: Vec<play::AttributeSnapshot>,
     /// The abilities the server last sent for this player (ClientboundPlayerAbilitiesPacket);
     /// None after a respawn, until it sends them, when they follow the game mode.
     pub(super) abilities: Option<play::PlayerAbilities>,
@@ -615,7 +625,10 @@ impl Game<'_> {
             was_sprinting: false,
             carried: None,
             loaded_sent: false,
+            waiting_ticks: 0,
+            setbacks: 0,
             abilities: None,
+            player_attributes: Vec::new(),
             sent_view: view,
             predictions: HashMap::new(),
             menu: None,
@@ -890,6 +903,7 @@ impl Game<'_> {
                 // ClientPacketListener.handleConfigurationStart: the level goes, and a new
                 // listener starts from nothing when the configuration ends.
                 Event::Configuring => {
+                    log::info!("Horizon: the server is reconfiguring the connection");
                     self.clear_remote_world();
                     if let Some(r) = self.remote.as_mut() {
                         r.reset_listener();
@@ -1812,7 +1826,13 @@ impl Game<'_> {
             }
             C::Login(p) => {
                 self.level.hardcore = p.hardcore;
+                log::info!(
+                    "Horizon: joined as entity {}, game mode {}",
+                    p.player_id,
+                    p.spawn.game_type
+                );
                 if let Some(r) = self.remote.as_mut() {
+                    r.player_attributes.clear();
                     r.online_mode = p.online_mode;
                     r.entity_id = p.player_id;
                     r.view_distance = p.chunk_radius;
@@ -2384,6 +2404,16 @@ impl Game<'_> {
                 }
                 _ => {}
             },
+            C::UpdateAttributes(p) if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) => {
+                if let Some(r) = self.remote.as_mut() {
+                    for snapshot in p.values {
+                        r.player_attributes
+                            .retain(|s| s.attribute != snapshot.attribute);
+                        r.player_attributes.push(snapshot);
+                    }
+                }
+                self.apply_remote_attributes();
+            }
             C::PlayerAbilities(p) => {
                 self.creative = p.flags & 8 != 0;
                 if let Some(r) = self.remote.as_mut() {
@@ -3043,6 +3073,38 @@ impl Game<'_> {
             }
         }
     }
+    /// ClientPacketListener.handleUpdateAttributes for the player, also for a LocalPlayer made
+    /// after the packet came.
+    fn apply_remote_attributes(&mut self) {
+        let Some(snapshots) = self
+            .remote
+            .as_ref()
+            .map(|r| r.player_attributes.clone())
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let catalog = self.motion.attributes.clone();
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        for s in &snapshots {
+            let Some((_, attribute)) = catalog
+                .attributes()
+                .find(|(id, _)| id.registry_id() == s.attribute)
+            else {
+                continue;
+            };
+            let modifiers: Vec<(&str, f64, i32)> = s
+                .modifiers
+                .iter()
+                .map(|m| (m.id.as_str(), m.amount, m.operation))
+                .collect();
+            if let Err(e) = player.apply_snapshot(&attribute.name, s.base, &modifiers) {
+                log::warn!("Horizon: attribute {} from the server: {e}", attribute.name);
+            }
+        }
+    }
     /// ClientPacketListener.handleMovePlayer.
     fn remote_teleport(&mut self, p: &play::PlayerPosition) -> Result<()> {
         use play::relative as rel;
@@ -3081,6 +3143,24 @@ impl Game<'_> {
         );
         match self.player.as_mut() {
             Some(player) => {
+                // A short teleport back is a correction: the server would not take the move.
+                let back = player.position.distance(position);
+                if back > 0.0
+                    && back < 8.0
+                    && let Some(r) = self.remote.as_mut()
+                {
+                    r.setbacks += 1;
+                    if r.setbacks <= 5 || r.setbacks % 50 == 0 {
+                        log::info!(
+                            "Horizon: the server moved the player back {back:.2} blocks to \
+                             {:.2} {:.2} {:.2} ({} times)",
+                            position.x,
+                            position.y,
+                            position.z,
+                            r.setbacks
+                        );
+                    }
+                }
                 player.position = position;
                 player.velocity = delta;
             }
@@ -3089,6 +3169,7 @@ impl Game<'_> {
                 player.velocity = delta;
                 self.player = Some(player);
                 self.apply_remote_abilities();
+                self.apply_remote_attributes();
                 self.pad.player_replaced();
                 self.sway = Default::default();
                 self.eye = 1.62;
@@ -3182,7 +3263,30 @@ impl Game<'_> {
             (player.position.x.floor() as i32) >> 4,
             (player.position.z.floor() as i32) >> 4,
         );
-        if !self.streaming.is_lit(cx, cz) {
+        let lit = self.streaming.is_lit(cx, cz);
+        let chunks = self.world.chunks.len();
+        if let Some(r) = self.remote.as_mut() {
+            if lit {
+                if r.waiting_ticks >= 100 {
+                    log::info!(
+                        "Horizon: the chunk under the player came after {} s",
+                        r.waiting_ticks / 20
+                    );
+                }
+                r.waiting_ticks = 0;
+            } else {
+                r.waiting_ticks += 1;
+                if r.waiting_ticks % 600 == 100 {
+                    log::warn!(
+                        "Horizon: waiting {} s for the chunk under the player ({cx}, {cz}): {chunks} \
+                         chunks here, {} packets skipped",
+                        r.waiting_ticks / 20,
+                        r.decode_errors
+                    );
+                }
+            }
+        }
+        if !lit {
             // LocalPlayer.tick can wait for chunks, but Minecraft.tick still
             // calls sendChanges: rotations and the 20-tick position reminder
             // must continue, as well as moves into the unloaded area.
