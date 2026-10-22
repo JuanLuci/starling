@@ -515,6 +515,10 @@ impl Game<'_> {
                     self.book_type(text);
                     return ok();
                 }
+                if self.sign_edit.is_some() {
+                    self.sign_input(None, Some(text));
+                    return ok();
+                }
                 match self.screen {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
@@ -531,7 +535,7 @@ impl Game<'_> {
                     }
                     _ => {
                         return Err(
-                            "type needs the chat screen (key t tap), the language search, the creative search or World Options".into(),
+                            "type needs the chat screen (key t tap), a sign, the language search, the creative search or World Options".into(),
                         );
                     }
                 }
@@ -713,6 +717,11 @@ impl Game<'_> {
             }
         }
         self.physical_keys.insert(key);
+        // The sign editor takes its keys (Escape and the back key close it, sending the text).
+        if self.sign_edit.is_some() {
+            self.sign_input(Some(key), None);
+            return Ok(());
+        }
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);
             return Ok(());

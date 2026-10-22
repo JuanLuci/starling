@@ -40,7 +40,12 @@ impl Game<'_> {
         });
         Some(FovPlayer {
             flying: p.flying,
-            walking_speed: WALKING_SPEED,
+            // Abilities.walkingSpeed: a server may change it.
+            walking_speed: self
+                .remote
+                .as_ref()
+                .and_then(|r| r.abilities.as_ref())
+                .map_or(WALKING_SPEED, |a| a.walking_speed),
             // Player.aiStep keeps `speed` as the float movement speed attribute.
             movement_speed: f64::from(p.speed),
             using,

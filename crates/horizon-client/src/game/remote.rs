@@ -182,6 +182,9 @@ pub(super) struct Remote {
     was_sprinting: bool,
     carried: Option<usize>,
     loaded_sent: bool,
+    /// The abilities the server last sent for this player (ClientboundPlayerAbilitiesPacket);
+    /// None after a respawn, until it sends them, when they follow the game mode.
+    pub(super) abilities: Option<play::PlayerAbilities>,
     /// The view distance last sent in ClientInformation.
     sent_view: i8,
     /// BlockStatePredictionHandler: blocks changed ahead of the server (a predicted break),
@@ -612,6 +615,7 @@ impl Game<'_> {
             was_sprinting: false,
             carried: None,
             loaded_sent: false,
+            abilities: None,
             sent_view: view,
             predictions: HashMap::new(),
             menu: None,
@@ -1176,6 +1180,7 @@ impl Game<'_> {
         r.dimension = dimension;
         r.game_mode = spawn.game_type;
         r.loaded_sent = false;
+        r.abilities = None;
         // A replacement LocalPlayer has a fresh sendPosition baseline.
         r.position_sender = Default::default();
         r.predictions.clear();
@@ -2341,9 +2346,10 @@ impl Game<'_> {
             },
             C::PlayerAbilities(p) => {
                 self.creative = p.flags & 8 != 0;
-                if let Some(player) = &mut self.player {
-                    player.flying_speed = p.flying_speed;
+                if let Some(r) = self.remote.as_mut() {
+                    r.abilities = Some(p);
                 }
+                self.apply_remote_abilities();
             }
             C::SetHeldSlot(p) => {
                 self.selected = p.slot.clamp(0, 8) as usize;
@@ -2407,6 +2413,25 @@ impl Game<'_> {
                 }
             }
             C::OpenScreen(p) => self.remote_open_screen(p),
+            // ClientPacketListener.handleOpenSignEditor: a sign the level has no entity for yet
+            // gets one for its block.
+            C::OpenSignEditor(p) => {
+                let key = (p.pos[0], p.pos[1], p.pos[2]);
+                if !matches!(
+                    self.world.block_entities.get(&key),
+                    Some(BlockEntity::Sign(_))
+                ) {
+                    let state = self.world.block(key.0, key.1, key.2);
+                    let name = self.res.facts().get(state).name.clone();
+                    match BlockEntity::for_block(&name) {
+                        Some(sign @ BlockEntity::Sign(_)) => {
+                            self.world.block_entities.insert(key, sign);
+                        }
+                        _ => return Ok(()),
+                    }
+                }
+                self.open_sign_editor(key, p.front);
+            }
             C::RecipeBookAdd(p) => self.remote_recipe_book_add(p),
             C::RecipeBookRemove(p) => self.remote_recipe_book_remove(p),
             C::RecipeBookSettings(p) => self.remote_recipe_book_settings(p),
@@ -2951,6 +2976,30 @@ impl Game<'_> {
             p.health.food.saturation = saturation;
         }
     }
+    /// ClientPacketListener.handlePlayerAbilities, also for a LocalPlayer made after the packet
+    /// came (it follows Login): without one since the last respawn, the game mode's
+    /// (GameType.updatePlayerAbilities).
+    fn apply_remote_abilities(&mut self) {
+        let abilities = self.remote.as_ref().and_then(|r| r.abilities.clone());
+        let spectator = self.spectator();
+        let creative = self.creative;
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        match abilities {
+            Some(a) => {
+                player.invulnerable = a.flags & 1 != 0;
+                player.flying = a.flags & 2 != 0;
+                player.may_fly = a.flags & 4 != 0;
+                player.flying_speed = a.flying_speed;
+            }
+            None => {
+                player.invulnerable = creative || spectator;
+                player.may_fly = creative || spectator;
+                player.flying = spectator;
+            }
+        }
+    }
     /// ClientPacketListener.handleMovePlayer.
     fn remote_teleport(&mut self, p: &play::PlayerPosition) -> Result<()> {
         use play::relative as rel;
@@ -2996,6 +3045,7 @@ impl Game<'_> {
                 let mut player = PlayerMotion::new(self.motion, position)?;
                 player.velocity = delta;
                 self.player = Some(player);
+                self.apply_remote_abilities();
                 self.pad.player_replaced();
                 self.sway = Default::default();
                 self.eye = 1.62;
@@ -3134,6 +3184,7 @@ impl Game<'_> {
             | u8::from(keys.shift) << 5
             | u8::from(keys.sprint) << 6;
         self.previous_position = player.position;
+        let flying = player.flying;
         let before = (
             player.ground.on_ground,
             [player.velocity.x, player.velocity.y, player.velocity.z],
@@ -3161,7 +3212,18 @@ impl Game<'_> {
             }
             .controlled_simulation_tick(keys)?;
         }
+        // LocalPlayer.onUpdateAbilities: the player took off or landed.
+        let toggled = player.flying != flying;
+        let flying = player.flying;
         let events = std::mem::take(&mut player.events);
+        if toggled {
+            self.send(S::PlayerAbilities(play::PlayerAbilitiesUpdate {
+                flags: if flying { 2 } else { 0 },
+            }));
+        }
+        let Some(player) = self.player.as_mut() else {
+            return Ok(());
+        };
         self.previous_eye = self.eye;
         self.eye += (player.dimensions.eye_height - self.eye) * 0.5;
         let crouching = player.pose == horizon_client::pose::Pose::Crouching;

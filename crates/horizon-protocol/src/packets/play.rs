@@ -396,6 +396,11 @@ move_entity!(MoveEntityPos, pos: true, rot: false);
 move_entity!(MoveEntityPosRot, pos: true, rot: true);
 move_entity!(MoveEntityRot, pos: false, rot: true);
 packet!(OpenScreen { container: i32 => VarInt, menu: i32 => VarInt, title: Tag => Nbt });
+packet!(
+    /// ClientboundOpenSignEditorPacket: the sign at `pos` to edit, and which side (SignTextSlot's
+    /// id, 0 back and 1 front).
+    OpenSignEditor { pos: [i32; 3] => Pos, front: bool => Bool }
+);
 packet!(PlayerAbilities { flags: i8 => Byte, flying_speed: f32 => Float, walking_speed: f32 => Float });
 /// MessageSignature.Packed: an index into the last-seen cache or a full signature.
 pub struct PackedSignature;
@@ -1430,6 +1435,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     MoveEntityRot(MoveEntityRot) = MOVE_ENTITY_ROT,
     MerchantOffers(MerchantOffers) = MERCHANT_OFFERS,
     OpenScreen(OpenScreen) = OPEN_SCREEN,
+    OpenSignEditor(OpenSignEditor) = OPEN_SIGN_EDITOR,
     Ping(Ping) = PING,
     PongResponse(crate::packets::status::Ping) = PONG_RESPONSE,
     PlayerAbilities(PlayerAbilities) = PLAYER_ABILITIES,
@@ -1734,7 +1740,31 @@ packet!(
     /// Input flags: forward 1, backward 2, left 4, right 8, jump 16, shift 32, sprint 64.
     PlayerInput { flags: u8 => UByte }
 );
+packet!(
+    /// ServerboundPlayerAbilitiesPacket: the player started (flag 2) or stopped flying.
+    PlayerAbilitiesUpdate { flags: u8 => UByte }
+);
 packet!(SetCarriedItem { slot: i16 => Short });
+packet!(
+    /// ServerboundSignUpdatePacket: a sign side's four lines as typed, then the side
+    /// (SignTextSlot's id, 0 back and 1 front: one byte, as a Bool writes it).
+    SignUpdate { pos: [i32; 3] => Pos, lines: [String; 4] => SignLines, front: bool => Bool }
+);
+/// The four lines of ServerboundSignUpdatePacket (the server reads at most 384 characters each).
+pub struct SignLines;
+impl Codec<[String; 4]> for SignLines {
+    fn read(r: &mut Reader) -> Result<[String; 4]> {
+        Ok([
+            r.string(384)?,
+            r.string(384)?,
+            r.string(384)?,
+            r.string(384)?,
+        ])
+    }
+    fn write(v: &[String; 4], w: &mut Writer) {
+        v.iter().for_each(|line| w.string(line));
+    }
+}
 packet!(SetCreativeModeSlot { slot: i16 => Short, item: Option<Stack> => Slot });
 packet!(UseItem { hand: i32 => VarInt, sequence: i32 => VarInt, yaw: f32 => Float, pitch: f32 => Float });
 packet!(UseItemOn {
@@ -1786,6 +1816,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     MovePlayerStatus(MovePlayerStatus) = MOVE_PLAYER_STATUS_ONLY,
     PickItemFromBlock(PickItemFromBlock) = PICK_ITEM_FROM_BLOCK,
     PingRequest(crate::packets::status::Ping) = PING_REQUEST,
+    PlayerAbilities(PlayerAbilitiesUpdate) = PLAYER_ABILITIES,
     PlayerAction(PlayerAction) = PLAYER_ACTION,
     PlayerCommand(PlayerCommand) = PLAYER_COMMAND,
     PlayerInput(PlayerInput) = PLAYER_INPUT,
@@ -1796,6 +1827,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     SelectTrade(SelectTrade) = SELECT_TRADE,
     SetCarriedItem(SetCarriedItem) = SET_CARRIED_ITEM,
     SetCreativeModeSlot(SetCreativeModeSlot) = SET_CREATIVE_MODE_SLOT,
+    SignUpdate(SignUpdate) = SIGN_UPDATE,
     UseItem(UseItem) = USE_ITEM,
     UseItemOn(UseItemOn) = USE_ITEM_ON,
 });
@@ -1804,6 +1836,39 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
 mod tests {
     use super::*;
     use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
+
+    #[test]
+    fn sign_and_flight_packets_match_vanilla_stream_codecs() {
+        // 26.3: BlockPos, four UTF-8 strings with no count, then SignTextSlot's VarInt id.
+        let sign = Serverbound::SignUpdate(SignUpdate {
+            pos: [1, 2, 3],
+            lines: ["a".into(), String::new(), "bc".into(), String::new()],
+            front: true,
+        });
+        let mut expected = crate::buf::pack_block_pos([1, 2, 3]).to_be_bytes().to_vec();
+        expected.extend_from_slice(&[1, b'a', 0, 2, b'b', b'c', 0, 1]);
+        assert_eq!(&sign.encode()[1..], &expected[..]);
+        round_trip(sign, Serverbound::encode, Serverbound::decode);
+        let editor = Clientbound::decode(
+            crate::ids::play::clientbound::OPEN_SIGN_EDITOR,
+            &[
+                &crate::buf::pack_block_pos([4, 5, 6]).to_be_bytes()[..],
+                &[0],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            editor,
+            Clientbound::OpenSignEditor(OpenSignEditor {
+                pos: [4, 5, 6],
+                front: false
+            })
+        );
+        // ServerboundPlayerAbilitiesPacket: one byte, 2 while flying.
+        let flying = Serverbound::PlayerAbilities(PlayerAbilitiesUpdate { flags: 2 });
+        assert_eq!(&flying.encode()[1..], &[2]);
+    }
 
     #[test]
     fn world_options_packets_match_vanilla_stream_codecs() {

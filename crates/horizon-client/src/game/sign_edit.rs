@@ -76,6 +76,20 @@ impl Game<'_> {
             self.world
                 .modified
                 .insert((edit.pos.0 >> 4, edit.pos.2 >> 4));
+            // SignEditScreen.removed: on a server the lines go to it, which writes the sign.
+            if self.remote.is_some()
+                && let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&edit.pos)
+            {
+                let text = if edit.front { &sign.front } else { &sign.back };
+                let lines = text.lines.clone();
+                self.send(horizon_protocol::packets::play::Serverbound::SignUpdate(
+                    horizon_protocol::packets::play::SignUpdate {
+                        pos: [edit.pos.0, edit.pos.1, edit.pos.2],
+                        front: edit.front,
+                        lines,
+                    },
+                ));
+            }
         }
         self.capture(true);
     }
