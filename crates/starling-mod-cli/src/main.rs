@@ -6,7 +6,9 @@
 //! JSON on stdout, for a person or a program (an AI fixing the mod) to read.
 //!
 //! A scenario is `{"player": {...}, "gui": {"width": 427, "height": 240}, "steps": [...]}` (the
-//! GUI's size in GUI pixels, the HUD and screens drawn at it); a step is one of:
+//! GUI's size in GUI pixels, the HUD and screens drawn at it), and what the crosshair is on
+//! (`"target"`), the block being broken (`"mining"`) and blocks around (`"blocks"`): see
+//! `world::world`. A step is one of:
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
 //! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
@@ -15,19 +17,21 @@
 //! Without steps it ticks once and draws the HUD.
 //!
 //! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
+//! `--watch` runs it again whenever the mod (a `.hmod`, or a folder's files) or the scenario
+//! changes, with a `{"event": "changed"}` line before each new run, until stopped.
 //! `--resources <dir>` is a prepared resources folder (the one holding `items.json` and
 //! `assets/minecraft`): the pretend world gets its items and its font's text widths.
 //! `--png <dir>` also draws each step that drew something to `<dir>/step<N>.png` (its path in the
 //! step's line), with that folder's font and sprites, or plain shapes without one.
 mod render;
+mod world;
 
 use horizon_mods::{
-    Clock, DrawOp, Food, GameMode, Gui, ItemCatalog, ItemInfo, ItemStack, KeyEvent, Mods,
-    MouseAction, MouseEvent, Output, Player, RenderContext, Snapshot, Status,
+    DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output,
+    RenderContext, Status,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
@@ -35,7 +39,7 @@ use std::{
 };
 
 const USAGE: &str = "usage: starling-mod run <mod folder or .hmod> [--scenario <file.json>] \
-    [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>]";
+    [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>] [--watch]";
 
 fn main() -> ExitCode {
     log::set_logger(&JSON_LOG).expect("the only logger");
@@ -78,44 +82,137 @@ impl log::Log for JsonLog {
     fn flush(&self) {}
 }
 
+/// What `run` was asked.
+struct Options {
+    path: PathBuf,
+    scenario: Option<PathBuf>,
+    steps: Vec<Value>,
+    png: Option<PathBuf>,
+    resources: Option<PathBuf>,
+    storage: Option<PathBuf>,
+    watch: bool,
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     let path = args
         .first()
         .filter(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .ok_or(USAGE)?;
-    let mut scenario = json!({});
-    let mut steps: Vec<Value> = Vec::new();
-    let (mut png, mut resources, mut storage) = (None, None, None);
+    let mut options = Options {
+        path,
+        scenario: None,
+        steps: Vec::new(),
+        png: None,
+        resources: None,
+        storage: None,
+        watch: false,
+    };
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
+        if flag == "--watch" {
+            options.watch = true;
+            continue;
+        }
         let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
-            "--scenario" => {
-                let text = std::fs::read_to_string(value).map_err(|e| format!("{value}: {e}"))?;
-                scenario = serde_json::from_str(&text).map_err(|e| format!("{value}: {e}"))?;
-                if let Some(list) = scenario["steps"].as_array() {
-                    steps.extend(list.iter().cloned());
-                }
-            }
-            "--step" => {
-                steps.push(serde_json::from_str(value).map_err(|e| format!("--step {value}: {e}"))?)
-            }
-            "--png" => png = Some(PathBuf::from(value)),
-            "--resources" => resources = Some(PathBuf::from(value)),
-            "--storage" => storage = Some(PathBuf::from(value)),
+            "--scenario" => options.scenario = Some(PathBuf::from(value)),
+            "--step" => options
+                .steps
+                .push(serde_json::from_str(value).map_err(|e| format!("--step {value}: {e}"))?),
+            "--png" => options.png = Some(PathBuf::from(value)),
+            "--resources" => options.resources = Some(PathBuf::from(value)),
+            "--storage" => options.storage = Some(PathBuf::from(value)),
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
+    if !options.watch {
+        return run_once(&options);
+    }
+    // Runs again whenever the mod or the scenario changes, until stopped (Ctrl+C).
+    let mut seen = stamp(&options);
+    loop {
+        if let Err(e) = run_once(&options) {
+            emit(json!({ "event": "error", "message": e }));
+        }
+        emit(json!({ "event": "watching" }));
+        seen = changed(&options, &seen);
+        emit(json!({ "event": "changed" }));
+    }
+}
+
+/// The mod's and the scenario's files with their times and sizes, to see a change.
+type Stamp = Vec<(PathBuf, Option<std::time::SystemTime>, u64)>;
+
+fn stamp(options: &Options) -> Stamp {
+    fn add(path: &Path, out: &mut Stamp) {
+        let Ok(meta) = std::fs::metadata(path) else {
+            out.push((path.to_owned(), None, 0));
+            return;
+        };
+        if !meta.is_dir() {
+            out.push((path.to_owned(), meta.modified().ok(), meta.len()));
+            return;
+        }
+        let Ok(read) = std::fs::read_dir(path) else {
+            return;
+        };
+        let mut entries: Vec<PathBuf> = read
+            .flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .map(|e| e.path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            add(&entry, out);
+        }
+    }
+    let mut out = Vec::new();
+    add(&options.path, &mut out);
+    if let Some(scenario) = &options.scenario {
+        add(scenario, &mut out);
+    }
+    out
+}
+
+/// Waits for the files to differ from `seen` and then hold still (a build or an editor writes in
+/// parts); their new stamp.
+fn changed(options: &Options, seen: &Stamp) -> Stamp {
+    let look = || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        stamp(options)
+    };
+    loop {
+        let now = look();
+        if now != *seen && look() == now {
+            return now;
+        }
+    }
+}
+
+/// One run of the mod: loaded fresh, the steps played on it.
+fn run_once(options: &Options) -> Result<(), String> {
+    let path = &options.path;
+    let (scenario, mut steps) = match &options.scenario {
+        Some(file) => {
+            let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+            let text = std::fs::read_to_string(file).map_err(|e| fail(&e))?;
+            let scenario: Value = serde_json::from_str(&text).map_err(|e| fail(&e))?;
+            let steps = scenario["steps"].as_array().cloned().unwrap_or_default();
+            (scenario, steps)
+        }
+        None => (json!({}), Vec::new()),
+    };
+    steps.extend(options.steps.iter().cloned());
     if steps.is_empty() {
         steps = vec![json!({ "tick": 1 }), json!({ "hud": {} })];
     }
 
     // A mod keeps its storage beside itself (`.horizon-mod-data`), so it runs from a copy in the
     // storage folder: a new one for this run unless `--storage` names one.
-    let place = Place::new(storage)?;
+    let place = Place::new(options.storage.clone())?;
     let copy = place.dir.join(path.file_name().ok_or(USAGE)?);
-    copy_all(&path, &copy)?;
+    copy_all(path, &copy)?;
 
     // The engine's compiled code is kept between runs, as the game keeps it; a folder for each
     // mod, since a load removes the compiled code of mods it did not load.
@@ -156,27 +253,34 @@ fn run(args: &[String]) -> Result<(), String> {
         height: scenario["gui"]["height"].as_u64().unwrap_or(240) as u32,
         scale: scenario["gui"]["scale"].as_f64().unwrap_or(2.0) as f32,
     };
-    let items = resources.as_deref().and_then(catalog).map(Arc::new);
-    let mut resources = render::Resources::new(resources);
-    let mut world = snapshot(&scenario["player"]);
+    let data = options.resources.as_deref().and_then(world::Data::read);
+    let data = Arc::new(data.unwrap_or_default());
+    let mut resources = render::Resources::new(options.resources.clone());
+    let mut world = world::world(&scenario, data.clone());
     world.gui = Some(gui);
-    world.items = items.clone().map(|c| c as Arc<dyn ItemCatalog>);
     world.measure = resources.measure();
     mods.set_snapshot(world);
     let mut screen: Option<String> = None;
     let mut ticks = 0;
-    if let Some(dir) = &png {
+    let png = &options.png;
+    if let Some(dir) = png {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // The last run's pictures, which this run may draw fewer of.
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("step") && name.ends_with(".png") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
         if !resources.has_font() {
             emit(
                 json!({ "event": "note", "text": "no font in --resources: text is drawn as boxes" }),
             );
         }
     }
-    let items = items.as_deref();
     for (n, step) in steps.into_iter().enumerate() {
-        let (result, drawn) = play(&mut mods, &step, &mut screen, &mut ticks, &gui, items);
-        let file = match (&png, drawn) {
+        let (result, drawn) = play(&mut mods, &step, &mut screen, &mut ticks, &gui, &data);
+        let file = match (png, drawn) {
             (Some(dir), Some(ops)) if !ops.is_empty() => {
                 let scale = gui.scale.round().max(1.0) as u32;
                 let file = dir.join(format!("step{n}.png"));
@@ -281,7 +385,7 @@ fn play(
     screen: &mut Option<String>,
     ticks: &mut u64,
     gui: &Gui,
-    items: Option<&Catalog>,
+    data: &world::Data,
 ) -> (Value, Option<Vec<DrawOp>>) {
     let drawn = |ops: Vec<DrawOp>| (draw_ops(&ops), Some(ops));
     let context = |v: &Value| RenderContext {
@@ -316,7 +420,7 @@ fn play(
         return drawn(mods.hud_render(context(&step["hud"])));
     }
     if let Some(id) = step["tooltip"].as_str() {
-        let info = items.and_then(|c| c.info(id));
+        let info = data.info(id);
         let stack = ItemStack {
             id: id.into(),
             count: 1,
@@ -433,96 +537,4 @@ fn draw_ops(ops: &[DrawOp]) -> Value {
             DrawOp::Pop => json!({ "pop": true }),
         })
         .collect()
-}
-
-/// The game's items, from a prepared resources folder's `items.json`, named from its
-/// `en_us.json`.
-struct Catalog(HashMap<String, ItemInfo>);
-
-impl ItemCatalog for Catalog {
-    fn info(&self, id: &str) -> Option<ItemInfo> {
-        self.0.get(id).cloned()
-    }
-}
-
-fn catalog(root: &Path) -> Option<Catalog> {
-    let read = |path: &str| -> Option<Value> {
-        serde_json::from_slice(&std::fs::read(root.join(path)).ok()?).ok()
-    };
-    let items = read("items.json")?;
-    let lang = read("assets/minecraft/lang/en_us.json").unwrap_or_default();
-    let items = items.as_object()?.iter().map(|(id, c)| {
-        let key = c["minecraft:item_name"]["translate"]
-            .as_str()
-            .unwrap_or_default();
-        let food = c.get("minecraft:food").map(|f| Food {
-            nutrition: f["nutrition"].as_u64().unwrap_or(0) as u32,
-            saturation: f["saturation"].as_f64().unwrap_or(0.0) as f32,
-            can_always_eat: f["can_always_eat"].as_bool().unwrap_or(false),
-        });
-        let info = ItemInfo {
-            id: id.clone(),
-            name: lang[key].as_str().unwrap_or(id).to_owned(),
-            max_stack_size: c["minecraft:max_stack_size"].as_u64().unwrap_or(64) as u32,
-            max_damage: c["minecraft:max_damage"].as_u64().unwrap_or(0) as u32,
-            food,
-        };
-        (id.clone(), info)
-    });
-    Some(Catalog(items.collect()))
-}
-
-/// The pretend world: a player standing in the overworld at noon, with the scenario's
-/// `player` fields over the defaults.
-fn snapshot(over: &Value) -> Snapshot {
-    let f = |name: &str, default: f64| over[name].as_f64().unwrap_or(default);
-    let u = |name: &str, default: u64| over[name].as_u64().unwrap_or(default);
-    Snapshot {
-        player: Some(Player {
-            x: f("x", 0.5),
-            y: f("y", 64.0),
-            z: f("z", 0.5),
-            velocity_x: 0.0,
-            velocity_y: 0.0,
-            velocity_z: 0.0,
-            yaw: f("yaw", 0.0) as f32,
-            pitch: f("pitch", 0.0) as f32,
-            health: f("health", 20.0) as f32,
-            max_health: 20.0,
-            absorption: 0.0,
-            food: u("food", 20) as u32,
-            saturation: f("saturation", 5.0) as f32,
-            exhaustion: 0.0,
-            air: 300,
-            max_air: 300,
-            armor: u("armor", 0) as u32,
-            experience_level: u("level", 0) as u32,
-            experience_progress: 0.0,
-            selected_slot: 0,
-            game_mode: match over["game_mode"].as_str() {
-                Some("creative") => GameMode::Creative,
-                Some("adventure") => GameMode::Adventure,
-                Some("spectator") => GameMode::Spectator,
-                _ => GameMode::Survival,
-            },
-            on_ground: true,
-            sneaking: false,
-            sprinting: false,
-            swimming: false,
-            flying: false,
-            gliding: false,
-            dimension: over["dimension"]
-                .as_str()
-                .unwrap_or("minecraft:overworld")
-                .into(),
-            name: over["name"].as_str().unwrap_or("Player").into(),
-            uuid: "00000000-0000-0000-0000-000000000000".into(),
-        }),
-        clock: Some(Clock {
-            game_time: 0,
-            day_time: u("day_time", 6000),
-        }),
-        touch: over["touch"].as_bool().unwrap_or(false),
-        ..Snapshot::default()
-    }
 }

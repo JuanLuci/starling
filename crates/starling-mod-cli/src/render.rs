@@ -189,9 +189,15 @@ fn spans(text: &str, colour: u32) -> Vec<(char, u32)> {
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c == '§' {
-            match chars.next().and_then(|code| code.to_digit(16)) {
-                Some(i) => current = COLOURS[i as usize],
-                None => current = colour,
+            // A colour, or `r` back to none; bold, italic and the like keep the colour.
+            match chars.next().map(|code| code.to_ascii_lowercase()) {
+                Some('r') => current = colour,
+                Some(code) => {
+                    if let Some(i) = code.to_digit(16) {
+                        current = COLOURS[i as usize];
+                    }
+                }
+                None => {}
             }
             continue;
         }
@@ -555,6 +561,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(colours("a§cb§rc"), [0xFFFFFF, 0xFF5555, 0xFFFFFF]);
+        assert_eq!(colours("§9§oa"), [0x5555FF]);
         assert_eq!(
             colours(r##"{"text":"a","color":"gold","extra":[{"text":"b","color":"#123456"}]}"##),
             [0xFFAA00, 0x123456]
