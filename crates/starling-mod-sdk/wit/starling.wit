@@ -540,3 +540,17 @@ world starling-mod {
     import storage;
     export events;
 }
+
+/// Starling's shared JavaScript engine's own import, not a mod's: the JavaScript mod's source,
+/// which the engine runs. The game refuses a mod component importing it.
+interface js-source {
+    get: func() -> string;
+}
+
+/// Starling's shared JavaScript engine (js-engine/): one component every JavaScript mod runs in,
+/// its source given by `js-source`. A JavaScript mod ships `mod.js` (an ES module importing these
+/// interfaces and exporting `events`) instead of a component.
+world starling-js {
+    include starling-mod;
+    import js-source;
+}

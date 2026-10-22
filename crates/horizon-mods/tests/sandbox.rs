@@ -658,6 +658,92 @@ fn compiled_mods_are_kept_for_the_next_start() {
     assert!(std::fs::metadata(&kept[0]).unwrap().len() > 1000);
 }
 
+/// A JavaScript mod (its manifest and `mod.js`) runs in the shared engine; the build embeds the
+/// engine once it is built (crates/starling-mod-sdk/js-engine).
+#[test]
+fn javascript_mods_run_in_the_shared_engine() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let example = root.join("crates/starling-mod-sdk/examples/hello-js");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.commands().collect::<Vec<_>>(), ["hello_js"]);
+    mods.set_snapshot(player());
+    assert!(mods.command("hello_js"));
+    let said = mods.drain();
+    assert!(
+        matches!(&said[..], [Output::Chat { text, .. }] if text.starts_with("Hello from JS at 12.5 64.0")),
+        "{said:?}"
+    );
+    let ops = mods.hud_render(context());
+    assert!(
+        matches!(&ops[..], [DrawOp::Text { text, .. }] if text.starts_with("JS ")),
+        "{ops:?}"
+    );
+    let stack = ItemStack {
+        id: "minecraft:stick".into(),
+        count: 1,
+        damage: 0,
+        max_damage: 0,
+        name: "Stick".into(),
+        components: String::new(),
+    };
+    assert_eq!(mods.tooltip(&stack), ["§8minecraft:stick"]);
+}
+
+/// A JavaScript mod gets only the interfaces its manifest declares: calling another stops it.
+#[test]
+fn javascript_mods_get_only_their_capabilities() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-undeclared");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"sneaky\"
+name = \"Sneaky\"
+version = \"1\"
+api = \"starling-0.1\"
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { show } from "starling:mods/chat@0.1.0";
+export const events = {
+  init() {
+    return {
+      commands: ["sneak"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) { show("not allowed"); },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.command("sneak");
+    let reason = "uses chat.show: capability chat is missing from its manifest";
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Sneaky".into(),
+            reason: reason.into()
+        }]
+    );
+    assert_eq!(mods.entries()[0].status, Status::Failed(reason.into()));
+}
+
 #[test]
 fn storage_persists_across_reload() {
     let dir = mods_dir().join("storage_reload");

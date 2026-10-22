@@ -1,4 +1,6 @@
-// Builds mod.wasm with componentize-js, keeping this computer out of it. The JavaScript engine's
+// Builds Starling's shared JavaScript engine (engine.js, the starling-js world) with
+// componentize-js into target/js-engine/engine.wasm, which the game embeds (horizon-mods'
+// build.rs), keeping this computer out of it. The JavaScript engine's
 // snapshot keeps the environment its pre-initializer ran in and the paths of the files it loaded,
 // so the build runs with an almost empty environment and a temporary folder that names no one,
 // and the result is refused if it still holds the home folder or the user name.
@@ -9,10 +11,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, platform, userInfo } from "node:os";
 
-const OUT = "mod.wasm";
+const OUT = "../../../target/js-engine/engine.wasm";
+// A path beside this script.
+const here = (file) => resolve(dirname(fileURLToPath(import.meta.url)), file);
 const windows = platform() === "win32";
 const temp = windows ? join(process.env.SystemDrive || "C:", "\\hmod-build") : "/tmp/hmod-build";
 mkdirSync(temp, { recursive: true });
+mkdirSync(dirname(here(OUT)), { recursive: true });
 
 // jco's command line, beside its main module.
 const jco = join(dirname(createRequire(import.meta.url).resolve("@bytecodealliance/jco")), "jco.js");
@@ -38,14 +43,13 @@ if (windows) {
     mkdirSync(join(temp, "AppData", dir), { recursive: true });
   }
 }
-// Run from the neutral folder (Windows keeps the current folder in a variable too), with this
-// mod's files by full path.
-const here = (file) => resolve(dirname(fileURLToPath(import.meta.url)), file);
+// Run from the neutral folder (Windows keeps the current folder in a variable too), with the
+// files by full path.
 const built = spawnSync(
   process.execPath,
   [
-    jco, "componentize", here("src/mod.js"), "--wit", here("../../wit"),
-    "--world-name", "starling-mod", "--out", here(OUT), "--disable", "all",
+    jco, "componentize", here("engine.js"), "--wit", here("../wit"),
+    "--world-name", "starling-js", "--out", here(OUT), "--disable", "all",
   ],
   { env, cwd: temp, stdio: "inherit" },
 );
@@ -63,7 +67,7 @@ const leaks = [home, home.replaceAll("\\", "/"), `USERNAME=${user}`, `USER=${use
   .filter((s) => wasm.includes(Buffer.from(s)));
 if (leaks.length > 0) {
   rmSync(here(OUT));
-  console.error(`mod.wasm held ${leaks.join(", ")}: not kept (build from a folder outside your home)`);
+  console.error(`the engine held ${leaks.join(", ")}: not kept (build from a folder outside your home)`);
   process.exit(1);
 }
-console.log(`${OUT}: nothing of this computer in it`);
+console.log(`${here(OUT)}: nothing of this computer in it`);

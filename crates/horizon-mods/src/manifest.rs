@@ -6,6 +6,8 @@ use std::{fmt, io::Read, path::Path};
 pub const MANIFEST: &str = "horizon-mod.toml";
 /// The component's file name in a `.hmod` or a mod folder.
 pub const WASM: &str = "mod.wasm";
+/// A JavaScript mod's source, in place of a component: Starling's shared engine runs it.
+pub const JS: &str = "mod.js";
 /// The API (WIT package `horizon:mods`) versions this build runs: a mod
 /// built for any 0.1.x SDK.
 pub const API: &str = "0.1";
@@ -24,6 +26,8 @@ pub const APIS: [&str; 3] = [API, "0.2", STARLING_API];
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
 /// The biggest `mod.wasm` a mod may ship.
 const MAX_WASM: u64 = 32 << 20;
+/// The biggest `mod.js`.
+const MAX_JS: u64 = 4 << 20;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -265,21 +269,31 @@ impl Manifest {
 /// A mod as found on disk: its manifest and component bytes.
 pub struct Package {
     pub manifest: Manifest,
-    /// None for a content-only mod (capability `registries`, no code).
+    /// None for a content-only mod (capability `registries`, no code) or a JavaScript one.
     pub wasm: Option<Vec<u8>>,
+    /// A JavaScript mod's source (`mod.js`), which Starling's shared engine runs.
+    pub js: Option<String>,
 }
 impl Package {
     /// A `.hmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
     /// content, `assets/` and `data/`) or a folder holding the same.
     pub fn read(path: &Path) -> Result<Self, String> {
-        let (toml, wasm) = if path.is_dir() {
+        let (toml, wasm, js) = if path.is_dir() {
             let toml = std::fs::read_to_string(path.join(MANIFEST));
-            let wasm = path.join(WASM);
-            let wasm = match wasm.exists() {
-                true => Some(std::fs::read(wasm).map_err(|e| format!("{WASM}: {e}"))?),
-                false => None,
+            let read = |name: &str| -> Result<Option<Vec<u8>>, String> {
+                let file = path.join(name);
+                match file.exists() {
+                    true => Ok(Some(
+                        std::fs::read(file).map_err(|e| format!("{name}: {e}"))?,
+                    )),
+                    false => Ok(None),
+                }
             };
-            (toml.map_err(|e| format!("{MANIFEST}: {e}"))?, wasm)
+            (
+                toml.map_err(|e| format!("{MANIFEST}: {e}"))?,
+                read(WASM)?,
+                read(JS)?,
+            )
         } else {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -297,18 +311,35 @@ impl Package {
             };
             let toml = entry(MANIFEST)?.ok_or_else(|| format!("{MANIFEST}: missing"))?;
             let toml = String::from_utf8(toml).map_err(|_| format!("{MANIFEST}: not UTF-8"))?;
-            (toml, entry(WASM)?)
+            (toml, entry(WASM)?, entry(JS)?)
         };
         if wasm.as_ref().is_some_and(|w| w.len() as u64 > MAX_WASM) {
             return Err(format!("{WASM} is over {} MiB", MAX_WASM >> 20));
         }
+        if js.as_ref().is_some_and(|j| j.len() as u64 > MAX_JS) {
+            return Err(format!("{JS} is over {} MiB", MAX_JS >> 20));
+        }
+        let js = js
+            .map(|j| String::from_utf8(j).map_err(|_| format!("{JS}: not UTF-8")))
+            .transpose()?;
         let manifest = Manifest::parse(&toml)?;
-        if wasm.is_none() && !manifest.capabilities.contains(&Capability::Registries) {
+        if wasm.is_some() && js.is_some() {
+            return Err(format!("{WASM} and {JS} both: a mod is one or the other"));
+        }
+        if js.is_some() && manifest.api != STARLING_API {
+            return Err(format!(
+                "{JS}: a JavaScript mod runs on Starling's API: set api = \"{STARLING_API}\""
+            ));
+        }
+        if wasm.is_none()
+            && js.is_none()
+            && !manifest.capabilities.contains(&Capability::Registries)
+        {
             return Err(format!(
                 "{WASM}: missing (only a content mod, with capability registries, may have no code)"
             ));
         }
-        Ok(Package { manifest, wasm })
+        Ok(Package { manifest, wasm, js })
     }
     /// The `.hmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {

@@ -1,5 +1,6 @@
-// A Horizon mod in JavaScript: /hello_js says where you are, the HUD shows the FPS, and
-// tooltips name the item's id.
+// A Starling mod in JavaScript, shipped as it is (beside horizon-mod.toml): Starling's shared
+// engine runs it. /hello_js says where you are, the HUD shows the FPS, and tooltips name the
+// item's id.
 import { write } from "starling:mods/log@0.1.0";
 import { getPlayer, getFps } from "starling:mods/game@0.1.0";
 import { show } from "starling:mods/chat@0.1.0";

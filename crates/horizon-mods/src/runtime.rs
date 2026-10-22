@@ -4,6 +4,7 @@
 //! hooks.
 use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
@@ -319,6 +320,8 @@ struct Running {
 struct State {
     name: String,
     id: String,
+    /// A JavaScript mod's source, which the shared engine asks for (`js-source.get`).
+    js_source: Option<String>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     panel: Option<Panel>,
@@ -348,6 +351,8 @@ pub struct Mods {
     out: Vec<Output>,
     /// Where compiled mods are kept ([`Mods::load_cached`]).
     cache: Option<PathBuf>,
+    /// The shared JavaScript engine, compiled once for every JavaScript mod.
+    js: Option<Component>,
 }
 
 // The game loads mods on a thread of their own: compiling one can take seconds.
@@ -428,6 +433,11 @@ impl Mods {
                     if let (Some(_), Some(wasm)) = (cache, &package.wasm) {
                         digests.push(digest(wasm));
                     }
+                    if let (Some(_), Some(_), Some(engine)) =
+                        (cache, &package.js, js_engine::DIGEST)
+                    {
+                        digests.push(engine.to_owned());
+                    }
                     if on {
                         // Content is read before the world loads; a mod whose
                         // content is refused stays off, with the reason.
@@ -469,6 +479,18 @@ impl Mods {
         Ok(self.engine.as_ref().expect("made above"))
     }
 
+    /// The shared JavaScript engine's component, compiled (or read from the cache) once.
+    fn js_component(&mut self) -> Result<Component, String> {
+        if let Some(component) = &self.js {
+            return Ok(component.clone());
+        }
+        let cache = self.cache.clone();
+        let (engine, _) = self.engine()?;
+        let component = js_engine::component(engine, cache.as_deref())?;
+        self.js = Some(component.clone());
+        Ok(component)
+    }
+
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
     /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
@@ -480,9 +502,9 @@ impl Mods {
         reserved: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Running>, String> {
         let m = &package.manifest;
-        let Some(wasm) = &package.wasm else {
+        if package.wasm.is_none() && package.js.is_none() {
             return Ok(None);
-        };
+        }
         if m.side == Side::Server {
             return Err("server mods do not run yet".into());
         }
@@ -503,17 +525,33 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let cache = self.cache.clone();
+        let js_component = match &package.js {
+            Some(_) => Some(self.js_component()?),
+            None => None,
+        };
         let (engine, linker) = self.engine()?;
-        let component = compile(engine, wasm, cache.as_deref())?;
-        let ty = component.component_type();
-        let imports: Vec<String> = ty
-            .imports(engine)
-            .map(|(name, _)| name.to_string())
-            .collect();
-        m.check_imports(imports.iter().map(String::as_str))?;
-        let for_starling = ty
-            .exports(engine)
-            .any(|(name, _)| name.starts_with("starling:mods/events@0.1."));
+        let (component, js_linker) = match (&package.wasm, js_component) {
+            (Some(wasm), _) => (compile(engine, wasm, cache.as_deref())?, None),
+            (None, Some(component)) => {
+                // The engine imports every interface: the mod gets the ones its manifest
+                // declares, and a call into another stops it.
+                let linker =
+                    js_linker(engine, &m.capabilities, &component).map_err(|e| e.to_string())?;
+                (component, Some(linker))
+            }
+            (None, None) => return Ok(None),
+        };
+        let for_starling = js_linker.is_some() || {
+            let ty = component.component_type();
+            let imports: Vec<String> = ty
+                .imports(engine)
+                .map(|(name, _)| name.to_string())
+                .collect();
+            m.check_imports(imports.iter().map(String::as_str))?;
+            ty.exports(engine)
+                .any(|(name, _)| name.starts_with("starling:mods/events@0.1."))
+        };
+        let linker = js_linker.as_ref().unwrap_or(linker);
         let data_dir = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -522,6 +560,7 @@ impl Mods {
         let state = State {
             name: m.name.clone(),
             id: m.id.clone(),
+            js_source: package.js.clone(),
             snapshot,
             out: Vec::new(),
             panel: None,
@@ -1111,11 +1150,23 @@ impl Mods {
 
 /// A mod's component compiled, or read back from `cache` where it was compiled before.
 fn compile(engine: &Engine, wasm: &[u8], cache: Option<&Path>) -> Result<Component, String> {
-    let fresh = || Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"));
+    compile_named(engine, &digest(wasm), || Ok(Cow::Borrowed(wasm)), cache)
+}
+
+/// [`compile`] for a component named by `digest`, whose bytes `wasm` gives only when it must be
+/// compiled.
+fn compile_named<'a>(
+    engine: &Engine,
+    digest: &str,
+    wasm: impl FnOnce() -> Result<Cow<'a, [u8]>, String>,
+    cache: Option<&Path>,
+) -> Result<Component, String> {
+    let fresh =
+        |wasm: &[u8]| Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"));
     let Some(dir) = cache else {
-        return fresh();
+        return fresh(&wasm()?);
     };
-    let file = dir.join(cached_name(&digest(wasm), engine));
+    let file = dir.join(cached_name(digest, engine));
     if file.is_file() {
         // SAFETY: the cache is the game's own folder and holds only what `Component::serialize`
         // wrote below (renamed into place once whole); deserializing checks the file was made
@@ -1125,8 +1176,9 @@ fn compile(engine: &Engine, wasm: &[u8], cache: Option<&Path>) -> Result<Compone
             Err(e) => log::warn!("Horizon: compiling {} again: {e}", file.display()),
         }
     }
+    let wasm = wasm()?;
     let started = Instant::now();
-    let component = fresh()?;
+    let component = fresh(&wasm)?;
     log::info!("Horizon: compiled a mod in {:?}", started.elapsed());
     if let Err(e) = keep_compiled(&component, &file) {
         log::warn!("Horizon: could not keep {}: {e}", file.display());
@@ -1151,6 +1203,132 @@ fn keep_compiled(component: &Component, file: &Path) -> std::io::Result<()> {
     std::fs::rename(&part, file).inspect_err(|_| {
         let _ = std::fs::remove_file(&part);
     })
+}
+
+/// Starling's shared JavaScript engine, which runs every JavaScript mod: embedded when the build
+/// found it (build.rs), compressed.
+mod js_engine {
+    use super::{Component, Engine, Path};
+    #[cfg(js_engine)]
+    use super::{Cow, compile_named};
+
+    #[cfg(js_engine)]
+    mod built {
+        include!(concat!(env!("OUT_DIR"), "/js_engine.rs"));
+        pub const PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/js-engine.wasm.gz"));
+    }
+
+    /// The engine component's SHA-256, when the build has it.
+    #[cfg(js_engine)]
+    pub const DIGEST: Option<&str> = Some(built::DIGEST);
+    #[cfg(not(js_engine))]
+    pub const DIGEST: Option<&str> = None;
+
+    /// The engine's component compiled, or read back from `cache`; unpacked only to compile it.
+    pub fn component(engine: &Engine, cache: Option<&Path>) -> Result<Component, String> {
+        #[cfg(js_engine)]
+        {
+            compile_named(
+                engine,
+                built::DIGEST,
+                || {
+                    use std::io::Read;
+                    let mut wasm = Vec::new();
+                    flate2::read::GzDecoder::new(built::PACKED)
+                        .read_to_end(&mut wasm)
+                        .map_err(|e| format!("the JavaScript engine: {e}"))?;
+                    Ok(Cow::Owned(wasm))
+                },
+                cache,
+            )
+        }
+        #[cfg(not(js_engine))]
+        {
+            let _ = (engine, cache);
+            Err("this build has no JavaScript engine".into())
+        }
+    }
+}
+
+/// Whether this build embeds the shared JavaScript engine, which JavaScript mods need.
+pub fn has_js_engine() -> bool {
+    js_engine::DIGEST.is_some()
+}
+
+/// A JavaScript mod's linker: the interfaces its manifest declares (and the ones every mod has),
+/// the engine's `js-source`, and a trap for every other import, which stops the mod.
+fn js_linker(
+    engine: &Engine,
+    capabilities: &[Capability],
+    component: &Component,
+) -> wasmtime::Result<Linker<State>> {
+    use starling::starling::mods as api;
+    use wasmtime::component::types::ComponentItem;
+    let mut linker = Linker::new(engine);
+    let mut interfaces = vec!["log", "mobile"];
+    for c in capabilities {
+        interfaces.extend(c.interfaces().iter().copied());
+    }
+    interfaces.sort_unstable();
+    interfaces.dedup();
+    for &interface in &interfaces {
+        let l = &mut linker;
+        match interface {
+            "log" => api::log::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "mobile" => api::mobile::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "game" => api::game::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "level" => api::level::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "inventory" => api::inventory::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "chat" => api::chat::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "chat-send" => api::chat_send::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "hud" => api::hud::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "screens" => api::screens::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "keys" => api::keys::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "sound" => api::sound::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "net" => api::net::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "storage" => api::storage::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            _ => {}
+        }
+    }
+    linker
+        .instance("starling:mods/js-source@0.1.0")?
+        .func_wrap(
+            "get",
+            |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+                Ok((store.data().js_source.clone().unwrap_or_default(),))
+            },
+        )?;
+    // The other interfaces: each function says which capability the manifest lacks.
+    for (name, item) in component.component_type().imports(engine) {
+        let interface = name
+            .strip_prefix("starling:mods/")
+            .and_then(|rest| rest.split_once('@'))
+            .map(|(interface, _)| interface);
+        let (Some(interface), ComponentItem::ComponentInstance(instance)) = (interface, item)
+        else {
+            continue;
+        };
+        if interface == "js-source" || interfaces.contains(&interface) {
+            continue;
+        }
+        let capability = Capability::ALL
+            .into_iter()
+            .find(|c| c.interfaces().contains(&interface))
+            .map_or_else(|| interface.to_owned(), |c| c.to_string());
+        let mut functions = linker.instance(name)?;
+        for (function, item) in instance.exports(engine) {
+            if let ComponentItem::ComponentFunc(_) = item {
+                let message = format!(
+                    "uses {interface}.{function}: capability {capability} is missing from its manifest"
+                );
+                functions.func_new(function, move |_, _, _| {
+                    Err(wasmtime::Error::msg(message.clone()))
+                })?;
+            }
+        }
+    }
+    Ok(linker)
 }
 
 /// SHA-256 of a mod's code, in hex.
@@ -1204,7 +1382,9 @@ fn reason(e: &wasmtime::Error) -> String {
         Some(Trap::OutOfFuel) => "it took too long (an endless loop?)".into(),
         Some(Trap::UnreachableCodeReached) => "it crashed (a panic)".into(),
         Some(trap) => format!("it crashed: {trap}"),
-        None => format!("{e:#}"),
+        // A host call that refused (a JavaScript mod using a capability it lacks): its own
+        // message, without the wasm backtrace around it.
+        None => e.root_cause().to_string(),
     }
 }
 
