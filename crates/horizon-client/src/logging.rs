@@ -54,6 +54,27 @@ pub fn game_home() -> PathBuf {
     }
 }
 
+/// What the game keeps apart from the player's folder: `HORIZON_PRIVATE`, else the game folder.
+/// Android shows the game folder in shared storage and keeps the prepared resources, the caches,
+/// the import inbox and the control endpoint in the app's own files.
+pub fn private_home() -> PathBuf {
+    match std::env::var_os("HORIZON_PRIVATE").filter(|h| !h.is_empty()) {
+        Some(h) => PathBuf::from(h),
+        None => game_home(),
+    }
+}
+
+/// Derived caches (`.horizon-cache`): in the folder the game runs in, or in `HORIZON_PRIVATE`
+/// when that is set apart (shared storage on Android has no symlinks for pack overlays).
+pub fn cache_dir() -> PathBuf {
+    match std::env::var_os("HORIZON_PRIVATE").filter(|h| !h.is_empty()) {
+        Some(h) => PathBuf::from(h).join(".horizon-cache"),
+        None => std::env::current_dir()
+            .unwrap_or_default()
+            .join(".horizon-cache"),
+    }
+}
+
 /// `logs/` and `crash-reports/` of a game folder.
 pub fn logs_dir(home: &Path) -> PathBuf {
     home.join("logs")

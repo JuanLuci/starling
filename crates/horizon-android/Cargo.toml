@@ -35,6 +35,8 @@ glam = "0.30"
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+# Calls into the activity: the file manager, the file picker, the clipboard (cpal's version).
+jni = "0.21.1"
 
 [features]
 default = ["audio"]

@@ -45,6 +45,8 @@ mod explosion;
 mod extras;
 mod falling_damage;
 mod fangs;
+#[cfg(target_os = "android")]
+mod files_offer;
 mod fireworks;
 mod fishing;
 mod fov;
@@ -58,6 +60,7 @@ mod ghasts;
 mod golems;
 mod growth;
 mod hand;
+mod imports;
 mod initial_spawn;
 mod integrated;
 mod item_draw;
@@ -1391,6 +1394,11 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// The Stats overlay's sampler and caches (game/perf.rs).
     stats_overlay: perf::Perf,
+    /// Files handed to the game from outside (game/imports.rs).
+    imports: imports::Imports,
+    /// The offer of the Starling folder in shared storage (game/files_offer.rs).
+    #[cfg(target_os = "android")]
+    files_offer: files_offer::FilesOffer,
     /// Horizon's extras (zoom, FPS counter, keystrokes): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
@@ -4501,6 +4509,10 @@ impl Game<'_> {
         self.draw_stats_overlay(&mut batch);
         self.draw_pad_cursor(&mut batch);
         self.lift_over_keyboard(&mut batch);
+        #[cfg(target_os = "android")]
+        self.draw_files_offer(&mut batch);
+        // Over the keyboard's lift: the note stays at the top.
+        self.draw_imports(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -10991,6 +11003,9 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         self.touch_frame(event_loop);
+        self.poll_imports();
+        #[cfg(target_os = "android")]
+        self.poll_files_offer();
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
@@ -11335,6 +11350,9 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             stats_overlay: Default::default(),
+            imports: Default::default(),
+            #[cfg(target_os = "android")]
+            files_offer: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             sky_darken_memo: Default::default(),
@@ -12286,6 +12304,8 @@ struct Loading {
     failure: Option<String>,
     /// The finger acting as the mouse (horizon_client::touch::TouchPointer).
     touch_pointer: horizon_client::touch::TouchPointer,
+    /// Files handed to the game from outside: prepared resources end the failure.
+    imports: imports::Imports,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -12355,6 +12375,17 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        // The failure screen: a tap picks the prepared resources to import.
+        if self.failure.is_some()
+            && let WindowEvent::Touch(touch) = &event
+        {
+            if touch.phase == winit::event::TouchPhase::Ended
+                && !horizon_client::platform::pick_file()
+            {
+                log::warn!("Horizon: no file picker to import resources with");
+            }
+            return;
+        }
         let events = match &event {
             WindowEvent::Touch(touch) => {
                 let size = self.window.as_ref().map_or([1, 1], |w| {
@@ -12362,6 +12393,11 @@ impl Loading {
                     [s.width, s.height]
                 });
                 let slop = horizon_client::touch::slop(size[0] as f32, size[1] as f32);
+                // Lists follow the finger one to one at this GUI scale.
+                self.touch_pointer.set_gui_scale(
+                    HudBatch::new(size).scale,
+                    self.settings.mouse_wheel_sensitivity,
+                );
                 self.touch_pointer.event(touch, slop, Instant::now())
             }
             _ => vec![event],
@@ -12410,10 +12446,19 @@ impl Loading {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.failure.is_some() {
+            // Prepared resources handed in (Android's "Open with" or the picker): load again.
+            if self.imports.poll(&self.vanilla_root)
+                == Some(horizon_client::import::Kind::Resources)
+                && let Err(e) = self.retry()
+            {
+                self.failure = Some(e.to_string());
+            }
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
-            event_loop.set_control_flow(ControlFlow::Wait);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(400),
+            ));
             return;
         }
         if let Err(error) = self.poll_menu_resources() {
@@ -12473,6 +12518,26 @@ impl Loading {
             );
         }
     }
+    /// Load the resources again (they were imported after a failure): a fresh loader, as at start.
+    fn retry(&mut self) -> Result<()> {
+        let options = self.options.as_ref().ok_or("loading already finished")?;
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        let (receiver, handle) = startup_menu::spawn_loader(
+            options,
+            &self.settings,
+            &self.vanilla_root,
+            self.started,
+            &self.progress,
+        )?;
+        self.receiver = receiver;
+        self.handle = Some(handle);
+        self.loaded = None;
+        self.failure = None;
+        log::info!("Horizon: resources imported, loading again");
+        Ok(())
+    }
     /// The loading failure and where the resources were looked for, in the embedded Horizon
     /// font: the vanilla one is part of the resources that did not load.
     fn draw_failure(&self, batch: &mut HudBatch, failure: &str) {
@@ -12492,10 +12557,19 @@ impl Loading {
             "Horizon could not start",
         );
         y += 40.0;
-        let detail = format!(
-            "{failure}\n\nResources are read from {}: copy the folder horizon-prepare made there.",
-            self.vanilla_root.display()
-        );
+        let detail = if horizon_client::platform::registered() {
+            // Android: the prepared folder, zipped, comes in through "Open with" or the picker.
+            format!(
+                "{failure}\n\nStarling needs the Minecraft resources horizon-prepare makes from your \
+                 own copy of the game. Zip that folder, then open the zip with Starling from your \
+                 file manager, or tap anywhere here to pick it."
+            )
+        } else {
+            format!(
+                "{failure}\n\nResources are read from {}: copy the folder horizon-prepare made there.",
+                self.vanilla_root.display()
+            )
+        };
         for paragraph in detail.lines() {
             let mut line = String::new();
             for word in paragraph.split(' ') {
@@ -12516,6 +12590,7 @@ impl Loading {
             y += 20.0;
         }
         ui.finish();
+        self.imports.draw(&gui.atlas, batch);
     }
     fn finish(&mut self, loaded: Loaded) -> Result<Option<Game<'static>>> {
         let handoff_at = Instant::now();
@@ -12712,6 +12787,7 @@ fn run_loading(
         error: None,
         failure: None,
         touch_pointer: Default::default(),
+        imports: Default::default(),
     };
     let mut app = App::Loading(Box::new(loading));
     event_loop()?.run_app(&mut app)?;
@@ -12762,9 +12838,9 @@ pub fn run() -> Result<()> {
             early_settings.horizon.resolution_scale
         );
     }
-    // Snapshots of derived tables live in the game folder, never beside the
-    // shared resources.
-    Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
+    // Snapshots of derived tables live in the game folder (or its private
+    // half), never beside the shared resources.
+    Behaviours::set_cache_dir(horizon_client::logging::cache_dir());
     if !synchronous_startup(&options) {
         return run_loading(options, early_settings, vanilla_root, None, started);
     }

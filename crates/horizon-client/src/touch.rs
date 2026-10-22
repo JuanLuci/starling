@@ -857,13 +857,26 @@ pub struct TouchPointer {
     last: [f32; 2],
     down: Option<Instant>,
     gesture: Gesture,
+    /// Wheel pixels per window pixel dragged (`set_gui_scale`); unset, 0.5.
+    scroll_scale: Option<f32>,
 }
 
-/// Wheel pixels per pixel dragged: the game turns 30 into one wheel step, which moves a list by
-/// about twice that at phone GUI scales.
-const SCROLL_SCALE: f32 = 0.5;
+/// The game turns this many wheel pixels into one wheel step...
+const WHEEL_PIXELS_PER_STEP: f32 = 30.0;
+/// ...and a wheel step moves a list this many GUI pixels (vanilla's lists, the options pages, the
+/// pack lists and the world list alike).
+const LIST_PIXELS_PER_STEP: f32 = 18.0;
 
 impl TouchPointer {
+    /// The GUI's scale (window pixels per GUI pixel) and the wheel sensitivity the game applies:
+    /// a list then follows the finger one to one.
+    pub fn set_gui_scale(&mut self, gui_scale: f32, wheel_sensitivity: f32) {
+        self.scroll_scale = Some(
+            WHEEL_PIXELS_PER_STEP
+                / (LIST_PIXELS_PER_STEP * gui_scale.max(0.1) * wheel_sensitivity.max(0.01)),
+        );
+    }
+
     /// Whether `finger` is the pointer.
     pub fn owns(&self, finger: u64) -> bool {
         self.finger == Some(finger)
@@ -907,7 +920,8 @@ impl TouchPointer {
                 }
                 match self.gesture {
                     Gesture::Scroll => {
-                        out.push(Pointer::Scroll((p[1] - self.last[1]) * SCROLL_SCALE))
+                        let scale = self.scroll_scale.unwrap_or(0.5);
+                        out.push(Pointer::Scroll((p[1] - self.last[1]) * scale))
                     }
                     Gesture::Drag => out.push(Pointer::Move(p)),
                     Gesture::Undecided => {}

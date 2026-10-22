@@ -794,6 +794,9 @@ pub struct HudRenderer {
     pub fire_animations: Vec<(Rect, crate::sprites::SpriteAnimation, usize)>,
     /// The shared atlas texture, for run-time glyph uploads.
     pub atlas_texture: Option<wgpu::Texture>,
+    /// Atlas patches of frames that were not drawn (in the background, or a surface that gave
+    /// no image): text glyphs are rasterized once, so they wait for the next drawn frame.
+    kept: Vec<crate::font::Patch>,
     pipeline: wgpu::RenderPipeline,
     /// `RenderPipelines.CROSSHAIR`.
     invert_pipeline: wgpu::RenderPipeline,
@@ -966,6 +969,7 @@ impl HudRenderer {
         });
         Ok(Self {
             atlas_texture: None,
+            kept: Vec::new(),
             fire_animations: Vec::new(),
             pipeline,
             invert_pipeline,
@@ -1011,6 +1015,10 @@ impl HudRenderer {
             *previous = frame;
         }
     }
+    /// Keep a batch's atlas patches for the next drawn frame: this one was not drawn.
+    pub fn keep_patches(&mut self, batch: &HudBatch) {
+        self.kept.extend(batch.patches.iter().cloned());
+    }
     /// Stage the batch's atlas patches, vertices and uniform: before the
     /// frame's first pass, so the copies share one command buffer.
     pub fn prepare(
@@ -1022,7 +1030,8 @@ impl HudRenderer {
         size: [u32; 2],
     ) {
         if let Some(texture) = &self.atlas_texture {
-            for p in &batch.patches {
+            let kept = std::mem::take(&mut self.kept);
+            for p in kept.iter().chain(&batch.patches) {
                 uploads.texture(
                     encoder,
                     wgpu::TexelCopyTextureInfo {

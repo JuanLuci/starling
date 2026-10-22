@@ -2761,6 +2761,10 @@ impl Renderer {
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
         let rendered = self.draw_frame(frame);
+        // Glyphs rasterized for a frame that was not drawn are not rasterized again.
+        if !matches!(rendered, Ok(true)) {
+            self.hud.keep_patches(frame.hud);
+        }
         // A frame that was not drawn still submits the section copies.
         if let Some(copies) = self.take_section_copies() {
             self.queue.submit([copies]);

@@ -1398,6 +1398,7 @@ dependencies = [
  "horizon-telemetry",
  "horizon-threads",
  "horizon-world",
+ "jni 0.21.1",
  "log",
  "pollster",
  "serde_json",

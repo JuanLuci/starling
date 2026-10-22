@@ -10,11 +10,9 @@ use horizon_client::{
 };
 use std::path::{Path, PathBuf};
 
-/// Where overlay roots are built (beside options.txt).
+/// Where overlay roots are built (beside options.txt, or in the private folder: `logging::cache_dir`).
 pub fn cache_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join(".horizon-cache/resourcepacks")
+    horizon_client::logging::cache_dir().join("resourcepacks")
 }
 pub fn packs_dir() -> PathBuf {
     std::env::current_dir()
@@ -23,6 +21,10 @@ pub fn packs_dir() -> PathBuf {
 }
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 pub fn open_folder(dir: &Path) {
+    // Android's file manager, through the activity.
+    if horizon_client::platform::open_folder(dir).is_some() {
+        return;
+    }
     let program = if cfg!(target_os = "windows") {
         "explorer"
     } else if cfg!(target_os = "macos") {

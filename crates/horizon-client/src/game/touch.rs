@@ -66,7 +66,7 @@ impl Game<'_> {
         self.touch.live && self.touch.editor.is_none()
     }
 
-    fn touch_size(&self) -> [u32; 2] {
+    pub(super) fn touch_size(&self) -> [u32; 2] {
         self.window.as_ref().map_or([1, 1], |w| {
             let s = w.inner_size();
             [s.width.max(1), s.height.max(1)]
@@ -110,6 +110,11 @@ impl Game<'_> {
         };
         self.touch.seen = true;
         self.last_input = Instant::now();
+        // The offer of the Starling folder, over the title, takes the touches while it shows.
+        #[cfg(target_os = "android")]
+        if self.files_offer_touch(t) {
+            return true;
+        }
         // A touch in the chat brings back a keyboard the back key put away.
         if t.phase == TouchPhase::Started
             && self.screen == Screen::Chat
@@ -142,6 +147,11 @@ impl Game<'_> {
         // The mouse finger stays the mouse until it lifts, even if the screen closed under it.
         if !self.touch_playing() || self.touch.pointer.owns(t.id) {
             let slop = touch::slop(layout.width, layout.height);
+            // Lists follow the finger one to one at this GUI scale.
+            let gui_scale = HudBatch::new(self.touch_size()).scale;
+            self.touch
+                .pointer
+                .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
             for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
                 self.window_event(event_loop, id, mouse);
             }

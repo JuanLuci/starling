@@ -1,4 +1,4 @@
-//! Horizon on Android: the desktop client's game module, run from a NativeActivity.
+//! Horizon on Android (Starling): the desktop client's game module, run from a NativeActivity.
 //!
 //! The crate root of horizon-android (crates/horizon-android/Cargo.toml), not a module of
 //! horizon-client: it sits beside main.rs so that `mod game` is the binary's own module, its
@@ -6,6 +6,11 @@
 //! `android_main` gives the process what the desktop binary gets from its launcher (the game
 //! folder as the current directory and `HORIZON_HOME`, the command line) and then runs
 //! `game::run` as `main` does.
+//!
+//! The game folder is `Starling` in shared storage once the player allows it (StarlingActivity
+//! says so before this starts), else the app's own files. The prepared resources, the caches,
+//! the import inbox and the test arguments always stay in the app's own files
+//! (`HORIZON_PRIVATE`).
 #![cfg(target_os = "android")]
 
 mod game;
@@ -17,13 +22,244 @@ use winit::platform::android::activity::AndroidApp;
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 static ARGS: OnceLock<Vec<String>> = OnceLock::new();
+/// Shared storage's Starling folder, when the player allowed the app to use it.
+static SHARED_FOLDER: OnceLock<PathBuf> = OnceLock::new();
 
-/// The on-screen keyboard's height in window pixels, from HorizonActivity's insets listener.
+/// `StarlingActivity.onStorage`, called on the UI thread before the game's thread starts.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onStorage(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    folder: jni::objects::JString,
+) {
+    if folder.is_null() {
+        return;
+    }
+    if let Ok(folder) = env.get_string(&folder) {
+        let _ = SHARED_FOLDER.set(PathBuf::from(String::from(folder)));
+    }
+}
+
+/// Run `f` with the activity, on the calling thread (attached to the VM for the call). None
+/// before the game starts, or when the call threw (the exception is logged and cleared).
+fn with_activity<R>(
+    f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<R>,
+) -> Option<R> {
+    let app = APP.get()?;
+    // SAFETY: the VM and the activity are NativeActivity's, alive as long as the process; the
+    // activity is a global reference, which this neither deletes nor keeps.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let result = f(&mut env, &activity);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+    result.ok()
+}
+
+/// The platform hooks (horizon_client::platform): StarlingActivity's public methods.
+fn open_folder(dir: &Path) -> bool {
+    with_activity(|env, activity| {
+        let path = env.new_string(dir.to_string_lossy())?;
+        env.call_method(
+            activity,
+            "openFolder",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::Object(&path)],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
+fn pick_file() -> bool {
+    with_activity(|env, activity| env.call_method(activity, "pickFile", "()Z", &[])?.z())
+        .unwrap_or(false)
+}
+
+fn clipboard_get() -> Option<String> {
+    with_activity(|env, activity| {
+        let text = env
+            .call_method(activity, "clipboardText", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if text.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(String::from(env.get_string(&text.into())?)))
+    })
+    .flatten()
+}
+
+fn clipboard_set(text: &str) -> bool {
+    with_activity(|env, activity| {
+        let text = env.new_string(text)?;
+        env.call_method(
+            activity,
+            "setClipboardText",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::Object(&text)],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
+/// Whether the player has allowed the Starling folder in shared storage (now: they may have just
+/// come back from the setting).
+pub(crate) fn file_access_allowed() -> bool {
+    with_activity(|env, activity| {
+        env.call_method(activity, "fileAccessAllowed", "()Z", &[])?
+            .z()
+    })
+    .unwrap_or(false)
+}
+
+/// Android's setting that allows it, in a task of its own: home and the icon come back to the
+/// game.
+pub(crate) fn open_file_access_settings() {
+    with_activity(|env, activity| {
+        env.call_method(activity, "openFileAccessSettings", "()V", &[])
+            .map(drop)
+    });
+}
+
+/// Start the game again in a new process (the game folder is chosen at start).
+pub(crate) fn restart_app() {
+    with_activity(|env, activity| env.call_method(activity, "restart", "()V", &[]).map(drop));
+}
+
+/// What the player made, moved with the game folder when it goes to shared storage: options.txt
+/// last, so a copy cut short is redone next time.
+const PLAYER_FILES: &[&str] = &[
+    "saves",
+    "backups",
+    "resourcepacks",
+    "shaderpacks",
+    "horizon-mods",
+    "screenshots",
+    "servers.dat",
+    "horizon-mods.txt",
+    "horizon-graphics.txt",
+    "horizon-extras.txt",
+    "horizon-controller.txt",
+    "horizon-player.txt",
+    "horizon.txt",
+    "touch-layout.json",
+    "options.txt",
+];
+
+/// Folders whose images are the game's own (world icons, skins, pack art), kept out of the
+/// gallery; screenshots are not.
+const NO_MEDIA: &[&str] = &[
+    "saves",
+    "backups",
+    "resourcepacks",
+    "shaderpacks",
+    "horizon-mods",
+    "assets",
+];
+
+/// The game folder: shared storage's once allowed (and what the player made in the app's own
+/// files moved there the first time), else the app's own files. Notes for the log, which
+/// starts after.
+fn game_folder(private: &Path, notes: &mut Vec<String>) -> PathBuf {
+    let Some(shared) = SHARED_FOLDER.get() else {
+        return private.to_path_buf();
+    };
+    let earlier = shared.with_file_name("Horizon");
+    if !shared.exists() && earlier.join("options.txt").exists() {
+        match std::fs::rename(&earlier, shared) {
+            Ok(()) => notes.push(format!(
+                "Horizon: renamed {} to {}",
+                earlier.display(),
+                shared.display()
+            )),
+            Err(e) => notes.push(format!(
+                "Horizon: could not rename {} to {}: {e}",
+                earlier.display(),
+                shared.display()
+            )),
+        }
+    }
+    let probe = shared.join(".horizon-probe");
+    if let Err(e) = std::fs::create_dir_all(shared).and_then(|()| std::fs::write(&probe, b"")) {
+        notes.push(format!("Horizon: cannot use {}: {e}", shared.display()));
+        return private.to_path_buf();
+    }
+    let _ = std::fs::remove_file(&probe);
+    if !shared.join("options.txt").exists() && private.join("options.txt").exists() {
+        match move_player_files(private, shared) {
+            Ok(n) => notes.push(format!(
+                "Horizon: moved {n} files and folders to {} (the old copies are in {})",
+                shared.display(),
+                private.join("moved-to-shared").display()
+            )),
+            Err(e) => {
+                notes.push(format!(
+                    "Horizon: could not move the game folder to {}: {e}; staying in {}",
+                    shared.display(),
+                    private.display()
+                ));
+                return private.to_path_buf();
+            }
+        }
+    }
+    for name in NO_MEDIA {
+        let dir = shared.join(name);
+        if std::fs::create_dir_all(&dir).is_ok() && !dir.join(".nomedia").exists() {
+            let _ = std::fs::write(dir.join(".nomedia"), b"");
+        }
+    }
+    shared.clone()
+}
+
+/// Copy the player's files to shared storage, then set the private copies aside.
+fn move_player_files(private: &Path, shared: &Path) -> std::io::Result<usize> {
+    let present: Vec<&str> = PLAYER_FILES
+        .iter()
+        .copied()
+        .filter(|name| private.join(name).exists())
+        .collect();
+    for name in &present {
+        copy_tree(&private.join(name), &shared.join(name))?;
+    }
+    let aside = private.join("moved-to-shared");
+    std::fs::create_dir_all(&aside)?;
+    for name in &present {
+        let _ = std::fs::rename(private.join(name), aside.join(name));
+    }
+    Ok(present.len())
+}
+
+/// Copy a file or a folder, checking each file's size (links are left out).
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+    } else if meta.is_file() {
+        std::fs::copy(from, to)?;
+        if std::fs::metadata(to)?.len() != meta.len() {
+            return Err(std::io::Error::other(format!(
+                "{} came out short",
+                to.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The on-screen keyboard's height in window pixels, from StarlingActivity's insets listener.
 static IME_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// `HorizonActivity.onImeHeight` (packaging/android/java), called on the UI thread.
+/// `StarlingActivity.onImeHeight` (packaging/android/java), called on the UI thread.
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_horizon_android_HorizonActivity_onImeHeight(
+extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onImeHeight(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
     pixels: i32,
@@ -75,7 +311,7 @@ fn command_line(home: &Path) -> (Vec<String>, Vec<(String, String)>) {
     (args, env)
 }
 
-/// Horizon's console lines in logcat, under the tag `horizon`.
+/// The game's console lines in logcat, under the tag `starling`.
 fn logcat(level: log::Level, message: &str) {
     use std::ffi::CString;
     let priority = match level {
@@ -85,7 +321,7 @@ fn logcat(level: log::Level, message: &str) {
         log::Level::Debug => 3,
         log::Level::Trace => 2,
     };
-    let tag = c"horizon";
+    let tag = c"starling";
     for line in message.lines() {
         let Ok(text) = CString::new(line.replace('\0', " ")) else {
             continue;
@@ -311,14 +547,18 @@ pub(crate) fn frame_hint(cpu: std::time::Duration, fps_limit: i32) {
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     horizon_client::telemetry::mark_start();
-    let home: PathBuf = app
+    // The app's own files: resources, caches, the import inbox, test arguments.
+    let private: PathBuf = app
         .internal_data_path()
         .unwrap_or_else(|| PathBuf::from("/data/local/tmp/horizon"));
-    let _ = std::fs::create_dir_all(&home);
-    let (args, env) = command_line(&home);
+    let _ = std::fs::create_dir_all(&private);
+    let mut notes = Vec::new();
+    let home = game_folder(&private, &mut notes);
+    let (args, env) = command_line(&private);
     // SAFETY: no other thread of ours runs yet; the game reads these from its threads afterwards.
     unsafe {
         std::env::set_var("HORIZON_HOME", &home);
+        std::env::set_var("HORIZON_PRIVATE", &private);
         for (name, value) in &env {
             std::env::set_var(name, value);
         }
@@ -335,12 +575,22 @@ fn android_main(app: AndroidApp) {
         thermal_status,
         thermal_headroom,
     });
+    horizon_client::platform::set(horizon_client::platform::Hooks {
+        open_folder,
+        pick_file,
+        clipboard_get,
+        clipboard_set,
+    });
     logging::init(&home, "Render thread");
     crash::install(home.clone(), "client");
     log::info!(
-        "Horizon: Android, game folder {}, arguments {args:?}, environment {env:?}",
-        home.display()
+        "Horizon: Android, game folder {}, private files {}, arguments {args:?}, environment {env:?}",
+        home.display(),
+        private.display()
     );
+    for note in notes {
+        log::info!("{note}");
+    }
     let _ = ARGS.set(args);
     let _ = APP.set(app);
     if let Err(error) = game::run() {

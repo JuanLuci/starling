@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build Horizon's arm64-v8a Android APK: horizon-android as a NativeActivity library.
+"""Build Starling's arm64-v8a Android APK (Horizon on Android): horizon-android as a
+NativeActivity library.
 
 The APK holds the game library and the launcher icon, nothing of Minecraft: the resources
 horizon-prepare makes from the player's own copy are copied to the app's folder separately.
@@ -24,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 
-APPLICATION_ID = "dev.horizon.mobile"
-LABEL = "Horizon"
+APPLICATION_ID = "io.github.juanluci.starling"
+LABEL = "Starling"
 VERSION_NAME = "0.1.0"
 VERSION_CODE = 1
 MIN_SDK = 26  # AAudio (cpal)
@@ -86,7 +87,7 @@ def build_library(profile, ndk, sdk):
 
 
 def compile_java(build_tools, android_jar, out):
-    """HorizonActivity (java/) as classes.dex."""
+    """StarlingActivity and LauncherActivity (java/) as classes.dex."""
     classes, dex = out / "classes", out / "dex"
     for folder in (classes, dex):
         shutil.rmtree(folder, ignore_errors=True)
@@ -199,7 +200,7 @@ def main():
     add_code(out / "base.apk", library, dex, out / "unsigned.apk")
     aligned = out / "aligned.apk"
     run(tool(build_tools, "zipalign"), "-P", "16", "-f", "4", out / "unsigned.apk", aligned)
-    apk = out / f"horizon-{VERSION_NAME}-{ABI}.apk"
+    apk = out / f"starling-{VERSION_NAME}-{ABI}.apk"
     sign(build_tools, aligned, apk, out)
     print(apk)
     if args.install:

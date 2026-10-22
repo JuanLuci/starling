@@ -106,8 +106,8 @@ pub trait Clipboard {
     fn set(&mut self, text: &str);
 }
 
-/// Android has no arboard backend: no system clipboard is ever reached there, so text copied in
-/// the game can only be pasted in the game.
+/// Android's clipboard, through the activity (`platform::clipboard_*`, registered by
+/// horizon-android): arboard has no Android backend.
 #[cfg(target_os = "android")]
 mod arboard {
     pub struct Clipboard;
@@ -117,13 +117,22 @@ mod arboard {
     }
     impl Clipboard {
         pub fn new() -> Result<Self, Error> {
-            Err(Error::ClipboardNotSupported)
+            if crate::platform::registered() {
+                Ok(Self)
+            } else {
+                Err(Error::ClipboardNotSupported)
+            }
         }
         pub fn get_text(&mut self) -> Result<String, Error> {
-            Err(Error::ContentNotAvailable)
+            crate::platform::clipboard_get()
+                .flatten()
+                .ok_or(Error::ContentNotAvailable)
         }
-        pub fn set_text(&mut self, _: String) -> Result<(), Error> {
-            Err(Error::ClipboardNotSupported)
+        pub fn set_text(&mut self, text: String) -> Result<(), Error> {
+            match crate::platform::clipboard_set(&text) {
+                Some(true) => Ok(()),
+                _ => Err(Error::ClipboardNotSupported),
+            }
         }
     }
 }

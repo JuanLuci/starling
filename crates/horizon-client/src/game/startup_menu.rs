@@ -699,6 +699,7 @@ mod tests {
             error: None,
             failure: None,
             touch_pointer: Default::default(),
+            imports: Default::default(),
         }
     }
 

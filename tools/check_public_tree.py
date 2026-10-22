@@ -10,7 +10,10 @@ PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
 PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The Android app's own activity (packaging/android/build_apk.py), Horizon's code like the above.
-ORIGINAL_ANDROID = {"packaging/android/java/dev/horizon/android/HorizonActivity.java"}
+ORIGINAL_ANDROID = {
+    "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
+    "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java",
+}
 
 
 def prohibited(path):

@@ -215,7 +215,7 @@ pub fn default_path() -> PathBuf {
         return path.into();
     }
     if cfg!(target_os = "android") {
-        return crate::logging::game_home().join("horizon-control.json");
+        return crate::logging::private_home().join("horizon-control.json");
     }
     if !cfg!(unix) {
         return std::env::temp_dir().join("horizon-control.json");

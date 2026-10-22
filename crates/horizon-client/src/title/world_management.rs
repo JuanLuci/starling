@@ -93,6 +93,12 @@ pub(super) fn backups_path(saves: &Path) -> PathBuf {
 pub(super) fn open_folder(path: &Path) -> crate::Result<()> {
     fs::create_dir_all(path)?;
     let path = fs::canonicalize(path)?;
+    // Android's file manager, through the activity.
+    match crate::platform::open_folder(&path) {
+        Some(true) => return Ok(()),
+        Some(false) => return Err(format!("no file manager can show {}", path.display()).into()),
+        None => {}
+    }
     let program = if cfg!(target_os = "windows") {
         "explorer"
     } else if cfg!(target_os = "macos") {
