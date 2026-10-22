@@ -1865,6 +1865,9 @@ impl Game<'_> {
         self.wither_bars(&mut bars);
         self.raid_bars(&mut bars);
         self.custom_bossbars(&mut bars);
+        if let Some(r) = &self.remote {
+            bars.extend(r.boss_bars.iter().map(|(_, b)| b.shown()));
+        }
         let draws = hud_overlays::boss_overlay(
             batch.width as i32,
             batch.height as i32,

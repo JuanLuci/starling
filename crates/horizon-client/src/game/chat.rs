@@ -450,7 +450,7 @@ impl Game<'_> {
         // Connected to a server (single player's own included), the chat on
         // screen is the connection's: the game's own messages join it.
         if self.remote.is_some() {
-            self.chat_line(text.plain());
+            self.chat_line(text);
             return;
         }
         let focused = self.screen == Screen::Chat;

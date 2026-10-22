@@ -20,6 +20,7 @@ use horizon_protocol::{
 use std::{
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
@@ -41,8 +42,13 @@ pub enum Event {
     Packet(Box<play::Clientbound>),
     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
     DecodeError(String),
+    /// The server sent us back to configuration (a proxy switching servers, a datapack
+    /// change): play packets are not sent until it ends.
+    Configuring,
     /// The server sent us back to configuration and finished it again.
     Reconfigured(Arc<Dynamic>),
+    /// ClientboundTransferPacket: connect to this address instead.
+    Transfer(String),
     /// The connection ended. `from_server`: the server gave the reason (or
     /// the connection was refused for good), rather than the connection
     /// failing (auto-reconnect retries only failures and shutdowns).
@@ -59,6 +65,8 @@ pub struct Session {
     pub address: String,
     pub name: String,
     pub counters: Arc<Mutex<Option<Arc<Counters>>>>,
+    /// The server is in configuration again: the game's play packets are dropped.
+    configuring: Arc<AtomicBool>,
     /// HORIZON_NET_DEBUG=1 logs every packet sent from the game thread.
     debug: bool,
 }
@@ -93,7 +101,9 @@ impl Session {
         let (send, events) = channel();
         let writer = Arc::new(Mutex::new(None));
         let counters = Arc::new(Mutex::new(None));
+        let configuring = Arc::new(AtomicBool::new(false));
         let (thread_writer, thread_counters) = (writer.clone(), counters.clone());
+        let thread_configuring = configuring.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
@@ -108,6 +118,7 @@ impl Session {
                     &send,
                     &thread_writer,
                     &thread_counters,
+                    &thread_configuring,
                 );
                 let from_server = result.is_ok();
                 let reason = result.unwrap_or_else(|e| e);
@@ -128,6 +139,7 @@ impl Session {
             address: address.to_owned(),
             name: name.to_owned(),
             counters,
+            configuring,
             debug,
         }
     }
@@ -147,7 +159,12 @@ impl Session {
         {
             eprintln!("[net] -> {packet:?}");
         }
-        if let Some(w) = self.writer.lock().unwrap().as_mut()
+        let mut writer = self.writer.lock().unwrap();
+        // Play packets are unknown to a server in configuration (a proxy drops the player).
+        if self.configuring.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(w) = writer.as_mut()
             && w.send(&packet.encode()).is_err()
         {
             w.shutdown();
@@ -254,6 +271,7 @@ fn run(
     send: &Sender<Event>,
     shared_writer: &Mutex<Option<ConnWriter>>,
     shared_counters: &Mutex<Option<Arc<Counters>>>,
+    configuring: &AtomicBool,
 ) -> Result<String, String> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -377,13 +395,16 @@ fn run(
     .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
-    let registries = configure(&mut reader, shared_writer, lang, send)?;
+    let registries = match configure(&mut reader, shared_writer, lang, send)? {
+        Ok(registries) => registries,
+        Err(kicked) => return Ok(kicked),
+    };
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
         uuid: profile.uuid,
         name: profile.name,
     });
-    receive_play(&mut reader, shared_writer, lang, send)
+    receive_play(&mut reader, shared_writer, lang, send, configuring)
 }
 
 fn receive_play(
@@ -391,6 +412,7 @@ fn receive_play(
     shared_writer: &Mutex<Option<ConnWriter>>,
     lang: &Language,
     send: &Sender<Event>,
+    configuring: &AtomicBool,
 ) -> Result<String, String> {
     loop {
         let (id, payload) = reader.recv().map_err(|e| e.to_string())?;
@@ -423,8 +445,18 @@ fn receive_play(
                 }));
             }
             play::Clientbound::StartConfiguration(_) => {
-                reply(play::Serverbound::ConfigurationAcknowledged(Empty));
-                let registries = configure(reader, shared_writer, lang, send)?;
+                // Under the writer's lock: no play packet of the game's follows the
+                // acknowledgement until the configuration ends.
+                if let Some(w) = shared_writer.lock().unwrap().as_mut() {
+                    configuring.store(true, Ordering::SeqCst);
+                    let _ = w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode());
+                }
+                let _ = send.send(Event::Configuring);
+                let registries = match configure(reader, shared_writer, lang, send)? {
+                    Ok(registries) => registries,
+                    Err(kicked) => return Ok(kicked),
+                };
+                configuring.store(false, Ordering::SeqCst);
                 let _ = send.send(Event::Reconfigured(Arc::new(registries)));
             }
             play::Clientbound::Disconnect(d) => return Ok(plain(&d.reason, lang)),
@@ -441,13 +473,14 @@ fn receive_play(
 }
 
 /// The configuration phase: registries, tags and known packs until the
-/// server finishes it (ClientConfigurationPacketListenerImpl).
+/// server finishes it (ClientConfigurationPacketListenerImpl). Err: the connection failed;
+/// Ok(Err): the server ended it, with its reason.
 fn configure(
     reader: &mut ConnReader,
     writer: &Mutex<Option<ConnWriter>>,
     lang: &Language,
     send: &Sender<Event>,
-) -> Result<Dynamic, String> {
+) -> Result<Result<Dynamic, String>, String> {
     let mut registries = Dynamic::default();
     let reply = |p: cfg::Serverbound| -> Result<(), String> {
         match writer.lock().unwrap().as_mut() {
@@ -483,10 +516,13 @@ fn configure(
                     payload: None,
                 }))?
             }
-            cfg::Clientbound::Disconnect(d) => return Err(plain(&d.reason, lang)),
+            cfg::Clientbound::Disconnect(d) => return Ok(Err(plain(&d.reason, lang))),
+            cfg::Clientbound::Transfer(t) => {
+                let _ = send.send(Event::Transfer(format!("{}:{}", t.host, t.port)));
+            }
             cfg::Clientbound::FinishConfiguration(_) => {
                 reply(cfg::Serverbound::FinishConfiguration(Empty))?;
-                return Ok(registries);
+                return Ok(Ok(registries));
             }
             _ => {}
         }
@@ -602,7 +638,13 @@ mod tests {
         let (send, events) = channel();
         let thread_writer = writer.clone();
         let thread = std::thread::spawn(move || {
-            receive_play(&mut reader, &thread_writer, &Language::new(), &send)
+            receive_play(
+                &mut reader,
+                &thread_writer,
+                &Language::new(),
+                &send,
+                &AtomicBool::new(false),
+            )
         });
         let mut server = Connection::local(server);
         let teleport = play::Clientbound::PlayerPosition(play::PlayerPosition {

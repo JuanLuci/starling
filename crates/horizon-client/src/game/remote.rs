@@ -38,7 +38,7 @@ use horizon_protocol::{
         play::{self, Clientbound as C, Serverbound as S},
     },
     registry::{Builtin, DimensionType, Dynamic, ceil_log2},
-    text::{Language, format_java, plain},
+    text::{Language, plain},
 };
 use horizon_world::{nbt::Tag, registry::BlockStateId};
 use std::{collections::HashMap, sync::Arc, time::Instant};
@@ -63,6 +63,28 @@ impl ChunkGenerator for NoTerrain {
     }
     fn finish(&self, _: Proto) -> Chunk {
         Chunk::empty(0, 0)
+    }
+}
+
+/// `LerpingBossEvent`: a server's boss bar, its progress easing to the last value sent over
+/// 100 ms.
+pub(super) struct RemoteBoss {
+    pub(super) bar: horizon_client::hud_overlays::BossBar,
+    from: f32,
+    set: Instant,
+    /// `ClientboundBossEventPacket` flags: darken the sky (1), boss music (2), world fog (4).
+    pub(super) flags: u8,
+}
+impl RemoteBoss {
+    /// `LerpingBossEvent.getProgress`.
+    pub(super) fn shown(&self) -> horizon_client::hud_overlays::BossBar {
+        let t = (self.set.elapsed().as_secs_f32() / 0.1).clamp(0.0, 1.0);
+        let mut bar = self.bar.clone();
+        bar.progress = self.from + (self.bar.progress - self.from) * t;
+        bar
+    }
+    fn shown_progress(&self) -> f32 {
+        self.shown().progress
     }
 }
 
@@ -129,6 +151,10 @@ pub(super) struct Remote {
     pub commands: Option<horizon_client::command::Dispatcher>,
     /// The server's command tree as it sent it.
     pub server_commands: Option<horizon_client::command::Dispatcher>,
+    /// `BossHealthOverlay.events`, in the order the server added them.
+    pub(super) boss_bars: Vec<(u128, RemoteBoss)>,
+    /// ClientboundTransferPacket: the server sent the player to this address.
+    transfer: Option<String>,
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and
     /// which of them are listed.
@@ -161,6 +187,49 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
+}
+
+impl Remote {
+    /// A new ClientPacketListener after a reconfiguration: what the last one tracked is gone.
+    fn reset_listener(&mut self) {
+        self.joined = false;
+        self.entity_id = 0;
+        self.sequence = 0;
+        self.position_sender = Default::default();
+        self.last_input = 0;
+        self.was_sprinting = false;
+        self.carried = None;
+        self.loaded_sent = false;
+        self.predictions.clear();
+        self.menu = None;
+        self.menu_title = None;
+        self.state_id = 0;
+        self.use_target = None;
+        self.entities.clear();
+        self.lerps.clear();
+        self.head_lerps.clear();
+        self.pending_items.clear();
+        self.commands = None;
+        self.server_commands = None;
+        self.boss_bars.clear();
+        self.players.clear();
+        self.tab_players.clear();
+        self.skin_textures.clear();
+        self.listed.clear();
+        self.level_players.clear();
+        self.destroying = None;
+        self.destroy_delay = 0;
+        self.input = Default::default();
+        self.stop_mining = false;
+        self.placing = None;
+        self.death_message = None;
+        self.synced = vec![None; 36];
+        self.clock = None;
+        self.clock_rate = 1.0;
+        self.clock_partial = 0.0;
+        self.clock_game_time = 0;
+        self.chunk_center = (0, 0);
+    }
 }
 
 fn face_direction(face: [i32; 3]) -> u8 {
@@ -333,6 +402,8 @@ impl Game<'_> {
             chat_received: 0,
             commands: None,
             server_commands: None,
+            boss_bars: Vec::new(),
+            transfer: None,
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -386,11 +457,32 @@ impl Game<'_> {
         };
         horizon_client::crash::clear_detail("Server");
         self.clock = Default::default();
+        self.clear_remote_world();
+        let saves = std::env::current_dir()?.join("saves");
+        let mut title = horizon_client::title::Title::new(saves.clone(), &self.options.resources);
+        title.last_server = self.settings.file.string("lastServer");
+        if single_player && reason.is_none() {
+            self.title = Some(title);
+            self.capture(false);
+            return Ok(());
+        }
+        title.mode = horizon_client::title::Mode::Multiplayer(match reason {
+            Some(reason) => horizon_client::multiplayer::Screen::Disconnected {
+                reason,
+                retry: None,
+            },
+            None => horizon_client::multiplayer::Screen::list(&saves),
+        });
+        self.title = Some(title);
+        self.capture(false);
+        Ok(())
+    }
+
+    /// What the connection's level and listener held (leaving, or reconfiguring).
+    fn clear_remote_world(&mut self) {
         self.adv = Default::default();
         self.stats = Default::default();
         self.debug_charts.reset();
-        self.tab_list.reset();
-        self.score.board = Default::default();
         self.streaming = Streaming::new(Arc::new(NoTerrain), self.pack.context.clone(), 1);
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
@@ -411,24 +503,6 @@ impl Game<'_> {
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections();
         }
-        let saves = std::env::current_dir()?.join("saves");
-        let mut title = horizon_client::title::Title::new(saves.clone(), &self.options.resources);
-        title.last_server = self.settings.file.string("lastServer");
-        if single_player && reason.is_none() {
-            self.title = Some(title);
-            self.capture(false);
-            return Ok(());
-        }
-        title.mode = horizon_client::title::Mode::Multiplayer(match reason {
-            Some(reason) => horizon_client::multiplayer::Screen::Disconnected {
-                reason,
-                retry: None,
-            },
-            None => horizon_client::multiplayer::Screen::list(&saves),
-        });
-        self.title = Some(title);
-        self.capture(false);
-        Ok(())
     }
 
     pub(super) fn send(&self, packet: S) {
@@ -510,20 +584,22 @@ impl Game<'_> {
         }
         Some(stack)
     }
-    pub(super) fn chat_line(&mut self, text: String) {
-        log::info!("[chat] {text}");
+    /// A line in the connection's chat, styled as the server sent it.
+    pub(super) fn chat_line(&mut self, text: horizon_client::text::Text) {
+        let plain = text.plain();
+        log::info!("[chat] {plain}");
         self.ui.chat.add(
             &self.gui.atlas,
-            horizon_client::text::Text::literal(text.clone()),
+            text,
             None,
             self.ticks,
             self.screen == Screen::Chat,
         );
         if self.mods.mods.is_running() {
-            self.mods_chat(&text);
+            self.mods_chat(&plain);
         }
         if let Some(r) = self.remote.as_mut() {
-            r.chat.push((text, Instant::now()));
+            r.chat.push((plain, Instant::now()));
             r.chat_received += 1;
             if r.chat.len() > 100 {
                 r.chat.remove(0);
@@ -581,7 +657,28 @@ impl Game<'_> {
                         remote.brand = brand;
                     }
                 }
-                Event::Reconfigured(registries) => self.set_registries(registries),
+                // ClientPacketListener.handleConfigurationStart: the level goes, and a new
+                // listener starts from nothing when the configuration ends.
+                Event::Configuring => {
+                    self.clear_remote_world();
+                    if let Some(r) = self.remote.as_mut() {
+                        r.reset_listener();
+                        r.status = "Reconfiguring...".into();
+                    }
+                }
+                Event::Reconfigured(registries) => {
+                    self.set_registries(registries);
+                    if let Some(r) = self.remote.as_mut() {
+                        r.joined = true;
+                        r.status = "Loading terrain...".into();
+                    }
+                    self.merge_remote_commands();
+                }
+                Event::Transfer(address) => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.transfer = Some(address);
+                    }
+                }
                 Event::DecodeError(e) => {
                     if let Some(r) = self.remote.as_mut() {
                         r.decode_errors += 1;
@@ -604,6 +701,20 @@ impl Game<'_> {
             }
             if self.remote.is_none() {
                 break;
+            }
+            if let Some(address) = self.remote.as_mut().and_then(|r| r.transfer.take()) {
+                let name = self
+                    .remote
+                    .as_ref()
+                    .map(|r| r.session.name.clone())
+                    .unwrap_or_default();
+                log::info!(
+                    "Horizon: transferred to {}",
+                    horizon_client::net::shown_address(&address)
+                );
+                self.extras_left();
+                self.leave_server(Some("Transferring...".into()))?;
+                return self.connect_server(&address, &name);
             }
         }
         self.send_suggestion_request();
@@ -629,6 +740,66 @@ impl Game<'_> {
     }
     /// ClientboundCommandSuggestionsPacket: id, range start and length, then
     /// each suggestion's text and optional tooltip.
+    /// ClientboundBossEventPacket: a bar added, removed or changed (BossHealthOverlay.update).
+    fn handle_boss_event(&mut self, data: &[u8]) -> horizon_protocol::Result<()> {
+        use horizon_client::hud_overlays::BossBar;
+        let mut r = horizon_protocol::buf::Reader::new(data);
+        let id = r.uuid()?;
+        let op = r.varint()?;
+        let Some(remote) = self.remote.as_mut() else {
+            return Ok(());
+        };
+        let bars = &mut remote.boss_bars;
+        let at = bars.iter().position(|(b, _)| *b == id);
+        match (op, at) {
+            // ADD
+            (0, _) => {
+                let name = remote_text(&r.nbt()?);
+                let progress = r.f32()?;
+                let color = r.varint()?.clamp(0, 6) as usize;
+                let overlay = r.varint()?.clamp(0, 4) as usize;
+                let flags = r.u8()?;
+                let boss = RemoteBoss {
+                    bar: BossBar {
+                        name,
+                        progress,
+                        color,
+                        overlay,
+                    },
+                    from: progress,
+                    set: Instant::now(),
+                    flags,
+                };
+                match at {
+                    Some(i) => bars[i].1 = boss,
+                    None => bars.push((id, boss)),
+                }
+            }
+            // REMOVE
+            (1, Some(i)) => {
+                bars.remove(i);
+            }
+            // UPDATE_PROGRESS
+            (2, Some(i)) => {
+                let progress = r.f32()?;
+                let boss = &mut bars[i].1;
+                boss.from = boss.shown_progress();
+                boss.set = Instant::now();
+                boss.bar.progress = progress;
+            }
+            // UPDATE_NAME
+            (3, Some(i)) => bars[i].1.bar.name = remote_text(&r.nbt()?),
+            // UPDATE_STYLE
+            (4, Some(i)) => {
+                bars[i].1.bar.color = r.varint()?.clamp(0, 6) as usize;
+                bars[i].1.bar.overlay = r.varint()?.clamp(0, 4) as usize;
+            }
+            // UPDATE_PROPERTIES
+            (5, Some(i)) => bars[i].1.flags = r.u8()?,
+            _ => {}
+        }
+        Ok(())
+    }
     fn handle_command_suggestions(&mut self, data: &[u8]) {
         let lang = self
             .remote
@@ -1914,6 +2085,35 @@ impl Game<'_> {
             {
                 self.handle_command_suggestions(&data);
             }
+            C::Unknown(id, data) if id == horizon_protocol::ids::play::clientbound::BOSS_EVENT => {
+                if let Err(e) = self.handle_boss_event(&data) {
+                    log::warn!("Horizon: skipped undecodable packet boss_event: {e}");
+                }
+            }
+            // ClientCommonPacketListenerImpl.handleTransfer: connect there once this frame's
+            // packets are done.
+            C::Unknown(id, data) if id == horizon_protocol::ids::play::clientbound::TRANSFER => {
+                let mut rd = horizon_protocol::buf::Reader::new(&data);
+                if let (Ok(host), Ok(port)) = (rd.string(32767), rd.varint())
+                    && let Some(r) = self.remote.as_mut()
+                {
+                    r.transfer = Some(format!("{host}:{port}"));
+                }
+            }
+            // ClientCommonPacketListenerImpl.handleRequestCookie: Horizon stores no cookies.
+            C::Unknown(id, data)
+                if id == horizon_protocol::ids::play::clientbound::COOKIE_REQUEST =>
+            {
+                if let Ok(key) = horizon_protocol::buf::Reader::new(&data).string(32767) {
+                    let mut w = horizon_protocol::buf::Writer::new();
+                    w.string(&key);
+                    w.bool(false);
+                    self.send(S::Unknown(
+                        horizon_protocol::ids::play::serverbound::COOKIE_RESPONSE,
+                        w.data,
+                    ));
+                }
+            }
             C::Commands(p) => {
                 let tree = horizon_client::command::network::from_packet(
                     &p,
@@ -1925,42 +2125,23 @@ impl Game<'_> {
                 self.merge_remote_commands();
             }
             C::SystemChat(p) => {
-                let text = plain(
-                    &p.content,
-                    &self
-                        .remote
-                        .as_ref()
-                        .map(|r| r.lang.clone())
-                        .unwrap_or_default(),
-                );
                 // ChatListener.handleOverlay.
                 if p.overlay {
                     self.titles.set_overlay(remote_text(&p.content), false);
                 } else {
-                    self.chat_line(text);
+                    self.chat_line(remote_text(&p.content));
                 }
             }
             C::PlayerChat(p) => {
-                let lang = self
-                    .remote
-                    .as_ref()
-                    .map(|r| r.lang.clone())
-                    .unwrap_or_default();
-                let content = p
-                    .unsigned_content
-                    .as_ref()
-                    .map_or_else(|| p.content.clone(), |t| plain(t, &lang));
-                let line = self.format_chat(&p.chat_type, &content);
+                let content = p.unsigned_content.as_ref().map_or_else(
+                    || horizon_client::text::Text::literal(p.content.clone()),
+                    remote_text,
+                );
+                let line = self.format_chat(&p.chat_type, content);
                 self.chat_line(line);
             }
             C::DisguisedChat(p) => {
-                let lang = self
-                    .remote
-                    .as_ref()
-                    .map(|r| r.lang.clone())
-                    .unwrap_or_default();
-                let content = plain(&p.message, &lang);
-                let line = self.format_chat(&p.chat_type, &content);
+                let line = self.format_chat(&p.chat_type, remote_text(&p.message));
                 self.chat_line(line);
             }
             C::PlayerInfoUpdate(p) => {
@@ -2345,11 +2526,19 @@ impl Game<'_> {
         true
     }
     /// ChatType decoration: `chat.translation_key` with sender/content parameters.
-    fn format_chat(&self, bound: &play::ChatTypeBound, content: &str) -> String {
+    /// ChatTypeDecoration.decorate: the chat type's translation with the sender, target and
+    /// content as its parameters, in its style. A key the language lacks is its own pattern, as
+    /// servers' custom chat types use.
+    fn format_chat(
+        &self,
+        bound: &play::ChatTypeBound,
+        content: horizon_client::text::Text,
+    ) -> horizon_client::text::Text {
+        use horizon_client::text::Text;
         let Some(r) = self.remote.as_ref() else {
-            return content.to_owned();
+            return content;
         };
-        let sender = plain(&bound.name, &r.lang);
+        let sender = remote_text(&bound.name);
         let decoration = r
             .registries
             .data("minecraft:chat_type", bound.chat_type)
@@ -2358,30 +2547,27 @@ impl Game<'_> {
             Some(Tag::String(s)) => s.to_string_lossy(),
             _ => "chat.type.text".into(),
         };
-        let params: Vec<String> = match decoration.and_then(|d| d.get("parameters")) {
+        let params: Vec<Text> = match decoration.and_then(|d| d.get("parameters")) {
             Some(Tag::List(list)) => list
                 .iter()
                 .map(|p| match p {
                     Tag::String(s) => match s.to_string_lossy().as_str() {
                         "sender" => sender.clone(),
-                        "target" => bound
-                            .target
-                            .as_ref()
-                            .map(|t| plain(t, &r.lang))
-                            .unwrap_or_default(),
-                        _ => content.to_owned(),
+                        "target" => bound.target.as_ref().map_or_else(Text::empty, remote_text),
+                        _ => content.clone(),
                     },
-                    _ => String::new(),
+                    _ => Text::empty(),
                 })
                 .collect(),
-            _ => vec![sender, content.to_owned()],
+            _ => vec![sender, content],
         };
-        let pattern = r
-            .lang
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| "<%s> %s".into());
-        format_java(&pattern, &params)
+        let line = Text::translate(&key, &params);
+        match decoration.and_then(|d| d.get("style")) {
+            Some(style) => line.with_style(&horizon_client::scoreboard::style_from_json(
+                &horizon_client::scoreboard::tag_to_json(style),
+            )),
+            None => line,
+        }
     }
     fn remote_item_data(&mut self, id: i32, stack: &Option<Stack>) {
         let Some(stack) = self.to_stack(stack) else {
@@ -3925,7 +4111,9 @@ impl Game<'_> {
                 self.send(S::ContainerClose(play::ContainerClose {
                     container: p.container,
                 }));
-                self.chat_line(format!("(Horizon cannot show {menu} screens yet)"));
+                self.chat_line(horizon_client::text::Text::literal(format!(
+                    "(Horizon cannot show {menu} screens yet)"
+                )));
                 return;
             }
         };
