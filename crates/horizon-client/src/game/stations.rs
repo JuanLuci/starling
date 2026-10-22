@@ -36,6 +36,18 @@ pub(super) enum Kind {
     Loom,
 }
 impl Kind {
+    /// The station a server's menu type (`MenuType`) is shown with.
+    pub(super) fn from_menu(menu: &str) -> Option<Self> {
+        Some(match menu {
+            "minecraft:enchantment" => Self::Enchanting,
+            "minecraft:anvil" => Self::Anvil,
+            "minecraft:grindstone" => Self::Grindstone,
+            "minecraft:smithing" => Self::Smithing,
+            "minecraft:stonecutter" => Self::Stonecutter,
+            "minecraft:cartography_table" => Self::Cartography,
+            _ => return None,
+        })
+    }
     fn from_block(name: &str) -> Option<Self> {
         Some(match name {
             "minecraft:enchanting_table" => Self::Enchanting,
@@ -140,6 +152,8 @@ pub(super) struct Station {
     input_item: Option<Arc<str>>,
     /// Anvil: the input the rename box was last filled from.
     anvil_last: Option<ItemStack>,
+    /// On a server: the name last sent with ServerboundRenameItemPacket.
+    sent_name: Option<String>,
     /// When the screen opened: the rename box has the focus from then.
     opened: std::time::Instant,
     pub(super) last_sound: u64,
@@ -166,6 +180,7 @@ impl Station {
             start: 0,
             input_item: None,
             anvil_last: None,
+            sent_name: None,
             opened: std::time::Instant::now(),
             last_sound: 0,
             merchant: None,
@@ -307,6 +322,134 @@ impl Game<'_> {
         }
         true
     }
+    /// A server's station menu: its slots, result and data are the server's (they come in
+    /// ContainerSetSlot and ContainerSetData), its buttons go to it.
+    pub(super) fn open_remote_station(&mut self, kind: Kind, pos: [i32; 3]) {
+        self.station = Some(Station::new(kind, pos));
+        self.screen = Screen::Inventory;
+        self.capture(false);
+        self.right = false;
+    }
+    /// ContainerSetData for a server's station (`EnchantmentMenu`'s costs, seed and clues,
+    /// `AnvilMenu`'s cost, `StonecutterMenu`'s selected recipe). True when one took it.
+    pub(super) fn remote_station_data(&mut self, container: i32, id: i16, value: i32) -> bool {
+        let open = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.menu.as_ref())
+            .is_some_and(|(c, _)| *c == container);
+        let clue = |g: &Self, id: i32| -> Option<Arc<str>> {
+            let r = g.remote.as_ref()?;
+            r.registries
+                .name("minecraft:enchantment", id)
+                .map(Arc::from)
+        };
+        let Some(kind) = self.station.as_ref().map(|s| s.kind).filter(|_| open) else {
+            return false;
+        };
+        match (kind, id) {
+            (Kind::Enchanting, 0..=2) => {
+                if let Some(s) = self.station.as_mut() {
+                    s.offers.costs[id as usize] = value;
+                }
+            }
+            // The seed the table's names are drawn from.
+            (Kind::Enchanting, 3) => self.level.xp_seed = value,
+            (Kind::Enchanting, 4..=6) => {
+                let name = (value >= 0).then(|| clue(self, value)).flatten();
+                if let Some(s) = self.station.as_mut() {
+                    let i = (id - 4) as usize;
+                    let level = s.offers.clues[i].as_ref().map_or(0, |c| c.1);
+                    s.offers.clues[i] = name.map(|n| (n, level));
+                }
+            }
+            (Kind::Enchanting, 7..=9) => {
+                if let Some(s) = self.station.as_mut()
+                    && let Some(c) = s.offers.clues[(id - 7) as usize].as_mut()
+                {
+                    c.1 = value.max(0) as u32;
+                }
+            }
+            (Kind::Anvil, 0) => {
+                if let Some(s) = self.station.as_mut() {
+                    s.anvil.cost = value;
+                }
+            }
+            (Kind::Stonecutter, 0) => {
+                if let Some(s) = self.station.as_mut() {
+                    s.selected = usize::try_from(value).ok().filter(|&i| i < s.recipes.len());
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+    /// `slotsChanged` on a server's station: the result is the server's; the stonecutter lists
+    /// its input's recipes, and the anvil's name goes to the server when it changes
+    /// (`AnvilScreen.onNameChanged`).
+    fn remote_station_changed(&mut self) {
+        let Some(kind) = self.station.as_ref().map(|s| s.kind) else {
+            return;
+        };
+        match kind {
+            Kind::Stonecutter => {
+                let data = self.res.stations();
+                if let Some(s) = self.station.as_mut() {
+                    let item = s.inputs[0].as_ref().map(|i| i.item.clone());
+                    if item != s.input_item {
+                        s.input_item = item;
+                        s.selected = None;
+                        s.start = 0;
+                        s.recipes = match &s.inputs[0] {
+                            Some(input) => data
+                                .recipes
+                                .stonecutting
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, r)| r.input.test(input))
+                                .map(|(i, _)| i)
+                                .collect(),
+                            None => Vec::new(),
+                        };
+                    }
+                }
+            }
+            Kind::Anvil => {
+                let Some(s) = self.station.as_ref() else {
+                    return;
+                };
+                if s.inputs[0].is_none() {
+                    return;
+                }
+                let name = self.anvil_item_name(s);
+                if s.sent_name.as_deref() != Some(name.as_str()) {
+                    if let Some(s) = self.station.as_mut() {
+                        s.sent_name = Some(name.clone());
+                    }
+                    self.send(horizon_protocol::packets::play::Serverbound::RenameItem(
+                        horizon_protocol::packets::play::RenameItem { name },
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    /// `MultiPlayerGameMode.handleInventoryButtonClick` on the server's open menu.
+    fn remote_button(&mut self, button: i32) {
+        let Some(container) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.menu.as_ref())
+            .map(|m| m.0)
+        else {
+            return;
+        };
+        self.send(
+            horizon_protocol::packets::play::Serverbound::ContainerButtonClick(
+                horizon_protocol::packets::play::ContainerButtonClick { container, button },
+            ),
+        );
+    }
     /// `AbstractContainerMenu.clearContainer`: inputs go back to the player.
     pub(super) fn close_station(&mut self) {
         if self
@@ -325,6 +468,10 @@ impl Game<'_> {
         };
         if let Some(m) = station.merchant.as_mut() {
             self.merchant_closed(m);
+        }
+        if self.remote.is_some() {
+            // The server's menu gives its inputs back.
+            return;
         }
         for stack in station.inputs.into_iter().flatten() {
             self.give_or_drop(stack);
@@ -412,6 +559,14 @@ impl Game<'_> {
     }
     /// `slotsChanged` / `createResult` for the open station.
     pub(super) fn station_changed(&mut self) {
+        if self.remote.is_some()
+            && self
+                .station
+                .as_ref()
+                .is_some_and(|s| s.kind != Kind::Merchant)
+        {
+            return self.remote_station_changed();
+        }
         let Some(mut s) = self.station.take() else {
             return;
         };
@@ -1091,7 +1246,11 @@ impl Game<'_> {
                 for i in 0..3 {
                     let (x, y, w, h) = enchant_button(i);
                     if inside(local, x, y, w, h) {
-                        self.click_enchant(i);
+                        if self.remote.is_some() {
+                            self.remote_click_enchant(i);
+                        } else {
+                            self.click_enchant(i);
+                        }
                         return true;
                     }
                 }
@@ -1114,12 +1273,19 @@ impl Game<'_> {
                                 1.0,
                                 1.0,
                             );
+                            if self.remote.is_some() {
+                                self.remote_button(index as i32);
+                            }
                             self.station_changed();
                         }
                         return true;
                     }
                 }
             }
+        }
+        if self.remote.is_some() {
+            // A server's station: its slots are the server's.
+            return false;
         }
         let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1) else {
             return true;
@@ -1155,8 +1321,26 @@ impl Game<'_> {
         self.station_after_input();
         true
     }
+    /// `EnchantmentMenu.clickMenuButton` on a client: the button goes to the server when the
+    /// lapis, the levels and the offer allow it.
+    fn remote_click_enchant(&mut self, button: usize) {
+        let Some(s) = self.station.as_ref() else {
+            return;
+        };
+        let needed = button as u32 + 1;
+        let lapis = s.inputs[1].as_ref().map_or(0, |l| l.count);
+        let level = self.experience.level;
+        let cost = s.offers.costs[button];
+        if s.inputs[0].is_none()
+            || cost <= 0
+            || !self.creative && (lapis < needed || level < needed as i32 || level < cost)
+        {
+            return;
+        }
+        self.remote_button(button as i32);
+    }
     /// Recompute after slot changes; the anvil box follows its input item.
-    fn station_after_input(&mut self) {
+    pub(super) fn station_after_input(&mut self) {
         let Some(s) = self.station.as_mut() else {
             return;
         };

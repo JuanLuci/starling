@@ -1721,6 +1721,37 @@ impl Game<'_> {
                 30..=38 => Some(s - 30),
                 _ => None,
             },
+            // EnchantmentMenu: the item and the lapis; StonecutterMenu: the input and the result.
+            "minecraft:enchantment" => match s {
+                0 | 1 => Some(super::stations::INPUT + s),
+                2..=28 => Some(9 + s - 2),
+                29..=37 => Some(s - 29),
+                _ => None,
+            },
+            "minecraft:stonecutter" => match s {
+                0 => Some(super::stations::INPUT),
+                1 => Some(super::stations::RESULT),
+                2..=28 => Some(9 + s - 2),
+                29..=37 => Some(s - 29),
+                _ => None,
+            },
+            // ItemCombinerMenu with two inputs (AnvilMenu, GrindstoneMenu) and
+            // CartographyTableMenu: two inputs and the result.
+            "minecraft:anvil" | "minecraft:grindstone" | "minecraft:cartography_table" => match s {
+                0 | 1 => Some(super::stations::INPUT + s),
+                2 => Some(super::stations::RESULT),
+                3..=29 => Some(9 + s - 3),
+                30..=38 => Some(s - 30),
+                _ => None,
+            },
+            // SmithingMenu: template, base, addition, result.
+            "minecraft:smithing" => match s {
+                0..=2 => Some(super::stations::INPUT + s),
+                3 => Some(super::stations::RESULT),
+                4..=30 => Some(9 + s - 4),
+                31..=39 => Some(s - 31),
+                _ => None,
+            },
             "minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker" => match s {
                 0..=2 => Some(300 + s),
                 3..=29 => Some(9 + s - 3),
@@ -1758,6 +1789,15 @@ impl Game<'_> {
             return; // the result slot is recomputed from the grid
         }
         *self.slot_mut(internal) = item;
+        if internal >= super::stations::INPUT
+            && internal < super::stations::RESULT
+            && self
+                .station
+                .as_ref()
+                .is_some_and(|s| s.kind != super::stations::Kind::Merchant)
+        {
+            self.station_after_input();
+        }
     }
 
     fn handle_packet(&mut self, packet: C) -> Result<()> {
@@ -2390,6 +2430,9 @@ impl Game<'_> {
             }
             C::ContainerSetData(p) => {
                 let v = i32::from(p.value);
+                if self.remote_station_data(p.container, p.id, v) {
+                    return Ok(());
+                }
                 match self
                     .container
                     .and_then(|key| self.world.block_entities.get_mut(&key))
@@ -4383,13 +4426,8 @@ impl Game<'_> {
             r.menu = None;
             r.menu_title = None;
         }
-        if self
-            .station
-            .as_ref()
-            .is_some_and(|s| s.kind == super::stations::Kind::Merchant)
-        {
-            self.station = None;
-        }
+        // A server's station (trading, enchanting, an anvil...) shows only its menu.
+        self.station = None;
         self.craft_size = 2;
         if let Some(key) = self.container.take() {
             // Server containers stay renderable but lose their copied slots.
@@ -4463,6 +4501,14 @@ impl Game<'_> {
             .as_ref()
             .and_then(|r| r.use_target)
             .map(|t| (t[0], t[1], t[2]));
+        if let Some(kind) = super::stations::Kind::from_menu(&menu) {
+            if let Some(r) = self.remote.as_mut() {
+                r.menu = Some((p.container, menu.clone()));
+            }
+            let pos = target.map_or([0; 3], |t| [t.0, t.1, t.2]);
+            self.open_remote_station(kind, pos);
+            return;
+        }
         if menu == "minecraft:merchant" {
             // A trading window: its offers follow in a MerchantOffers packet.
             let title = plain(

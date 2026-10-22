@@ -1716,6 +1716,15 @@ packet!(
     }
 );
 packet!(SelectTrade { item: i32 => VarInt });
+packet!(
+    /// ServerboundContainerButtonClickPacket: a menu's button (an enchantment, a stonecutter
+    /// recipe, a loom pattern, a lectern page).
+    ContainerButtonClick { container: i32 => VarInt, button: i32 => VarInt }
+);
+packet!(
+    /// ServerboundRenameItemPacket: the anvil's name box.
+    RenameItem { name: String => Str }
+);
 packet!(Interact { id: i32 => VarInt, hand: i32 => VarInt, location: [f64; 3] => LpVec3, secondary: bool => Bool });
 packet!(
     /// ServerboundMovePlayerPacket flags: 1 on ground, 2 horizontal collision.
@@ -1805,6 +1814,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ClientInformation(ClientInformation) = CLIENT_INFORMATION,
     ClientTickEnd(Empty) = CLIENT_TICK_END,
     ConfigurationAcknowledged(Empty) = CONFIGURATION_ACKNOWLEDGED,
+    ContainerButtonClick(ContainerButtonClick) = CONTAINER_BUTTON_CLICK,
     ContainerClick(ContainerClick) = CONTAINER_CLICK,
     ContainerClose(ContainerClose) = CONTAINER_CLOSE,
     CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
@@ -1823,6 +1833,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     PlayerLoaded(Empty) = PLAYER_LOADED,
     Pong(Ping) = PONG,
     Punch(Empty) = PUNCH,
+    RenameItem(RenameItem) = RENAME_ITEM,
     ResourcePack(ResourcePackResponse) = RESOURCE_PACK,
     SelectTrade(SelectTrade) = SELECT_TRADE,
     SetCarriedItem(SetCarriedItem) = SET_CARRIED_ITEM,

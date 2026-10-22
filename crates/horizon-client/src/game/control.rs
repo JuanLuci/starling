@@ -529,6 +529,13 @@ impl Game<'_> {
                     Screen::Inventory if self.recipe_search_focused() => {
                         self.recipe_text(Some(text), false)
                     }
+                    // The anvil's name box; `\b` erases a character.
+                    Screen::Inventory if self.station_typing() && text == "\\b" => {
+                        self.station_text(None, true)
+                    }
+                    Screen::Inventory if self.station_typing() => {
+                        self.station_text(Some(text), false)
+                    }
                     Screen::Creative if self.creative_screen.tab().search => {
                         // As typed: replaces a selected query, keeps the length limit.
                         self.creative_search_edit(Some(text), false)
