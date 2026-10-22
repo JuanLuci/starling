@@ -57,6 +57,48 @@ pub(super) struct Touch {
     config: Option<LayoutConfig>,
     /// The layout editor, while it is open.
     editor: Option<LayoutEditor>,
+    /// The chat bar's button last tapped and when (it lights up a moment).
+    chat_key: Option<(usize, Instant)>,
+    /// The finger on the chat bar: its moves and lift are the bar's.
+    chat_finger: Option<u64>,
+}
+
+/// The chat bar's keys, left to right: history up and down, completion, the cursor.
+const CHAT_KEYS: [KeyCode; 5] = [
+    KeyCode::ArrowUp,
+    KeyCode::ArrowDown,
+    KeyCode::Tab,
+    KeyCode::ArrowLeft,
+    KeyCode::ArrowRight,
+];
+
+/// A pixel arrow centred on (cx, cy): a head 7 wide and a stem 3 wide. `dir`: 0 up, 1 down,
+/// 2 left, 3 right.
+fn arrow(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    c: [f32; 2],
+    dir: u8,
+    ink: u32,
+) {
+    let [cx, cy] = c;
+    for k in 0..4 {
+        let (k, w) = (k as f32, 2.0 * k as f32 + 1.0);
+        let [x, y, w, h] = match dir {
+            0 => [cx - k, cy - 3.0 + k, w, 1.0],
+            1 => [cx - k, cy + 3.0 - k, w, 1.0],
+            2 => [cx - 3.0 + k, cy - k, 1.0, w],
+            _ => [cx + 3.0 - k, cy - k, 1.0, w],
+        };
+        batch.fill(atlas, x, y, w, h, ink);
+    }
+    let [x, y] = match dir {
+        0 => [cx - 1.0, cy + 1.0],
+        1 => [cx - 1.0, cy - 3.0],
+        2 => [cx + 1.0, cy - 1.0],
+        _ => [cx - 3.0, cy - 1.0],
+    };
+    batch.fill(atlas, x, y, 3.0, 3.0, ink);
 }
 
 impl Game<'_> {
@@ -142,6 +184,21 @@ impl Game<'_> {
             self.touch.wanted = true;
         }
         let p = [t.location.x as f32, t.location.y as f32];
+        // The chat bar: a tap is its key, and the finger stays the bar's until it lifts.
+        if t.phase == TouchPhase::Started
+            && let Some(i) = self.chat_bar_at(p)
+        {
+            self.touch.chat_key = Some((i, Instant::now()));
+            self.touch.chat_finger = Some(t.id);
+            let _ = self.touch_key_tap(CHAT_KEYS[i]);
+            return true;
+        }
+        if self.touch.chat_finger == Some(t.id) {
+            if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.touch.chat_finger = None;
+            }
+            return true;
+        }
         if self.touch.editor.is_some() && self.touch_playing() {
             let [w, h] = self.touch_size();
             let config = self.touch.config.get_or_insert_with(LayoutConfig::default);
@@ -594,6 +651,69 @@ impl Game<'_> {
         self.touch.keyboard = false;
     }
 
+    /// Whether the chat bar shows: the chat open on a touch screen.
+    fn chat_bar_shown(&self) -> bool {
+        self.screen == Screen::Chat && (self.touch.seen || cfg!(target_os = "android"))
+    }
+    /// The chat bar's buttons in GUI pixels (x, y, w, h): at the right, just above the text
+    /// field (lifted with it over the keyboard).
+    fn chat_bar(batch: &HudBatch) -> [[f32; 4]; 5] {
+        let (w, h, gap) = (24.0, 16.0, 2.0);
+        let y = batch.height - 14.0 - h - 2.0;
+        let left = batch.width - 2.0 - 5.0 * w - 4.0 * gap;
+        std::array::from_fn(|i| [left + i as f32 * (w + gap), y, w, h])
+    }
+    /// The chat bar's button under window pixel `p`.
+    fn chat_bar_at(&self, p: [f32; 2]) -> Option<usize> {
+        if !self.chat_bar_shown() {
+            return None;
+        }
+        let batch = HudBatch::new(self.touch_size());
+        let lift = self.keyboard_height() as f32 / batch.scale;
+        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale + lift);
+        Self::chat_bar(&batch)
+            .iter()
+            .position(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+    }
+    /// The chat bar: vanilla buttons for ↑ ↓ Tab ← →, the one just tapped lit.
+    pub(super) fn draw_chat_bar(&self, batch: &mut HudBatch) {
+        if !self.chat_bar_shown() {
+            return;
+        }
+        let atlas = &self.gui.atlas;
+        let lit = self
+            .touch
+            .chat_key
+            .filter(|(_, at)| at.elapsed() < Duration::from_millis(150))
+            .map(|(i, _)| i);
+        let ink = horizon_client::hud::rgba(255, 255, 255, 255);
+        for (i, r) in Self::chat_bar(batch).iter().enumerate() {
+            let sprite = if lit == Some(i) {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            };
+            horizon_client::ui::nine_slice(batch, atlas, sprite, r[0], r[1], r[2], r[3], u32::MAX);
+            let c = [(r[0] + r[2] / 2.0).floor(), (r[1] + r[3] / 2.0).floor()];
+            match i {
+                2 => {
+                    let tw = HudBatch::text_width(atlas, "Tab");
+                    batch.text(
+                        atlas,
+                        "Tab",
+                        (c[0] - tw / 2.0).floor() + 1.0,
+                        c[1] - 4.0,
+                        ink,
+                        true,
+                    );
+                }
+                0 => arrow(batch, atlas, c, 0, ink),
+                1 => arrow(batch, atlas, c, 1, ink),
+                3 => arrow(batch, atlas, c, 2, ink),
+                _ => arrow(batch, atlas, c, 3, ink),
+            }
+        }
+    }
     /// How far the on-screen keyboard covers the window, in pixels (Android).
     fn keyboard_height(&self) -> u32 {
         #[cfg(target_os = "android")]

@@ -4529,6 +4529,7 @@ impl Game<'_> {
         self.draw_mod_screens(&mut batch);
         self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
+        self.draw_chat_bar(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
