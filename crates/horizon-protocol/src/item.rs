@@ -263,6 +263,88 @@ impl Component {
     }
 }
 
+/// The values the client shows of a few components kept as [`Component::Raw`], read from
+/// their bytes. None when the bytes do not read as the component.
+pub mod view {
+    use crate::{Result, buf::Reader};
+
+    /// ResolvableProfile: the full or partial GameProfile (the skin patch is not read).
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct Profile {
+        pub name: Option<String>,
+        pub id: Option<u128>,
+        /// (name, value, signature): `textures` holds the skin.
+        pub properties: Vec<(String, String, Option<String>)>,
+    }
+    pub fn profile(bytes: &[u8]) -> Option<Profile> {
+        let r = &mut Reader::new(bytes);
+        let properties = |r: &mut Reader| -> Result<Vec<(String, String, Option<String>)>> {
+            let n = r.count(16)?;
+            (0..n)
+                .map(|_| {
+                    let name = r.string(64)?;
+                    let value = r.string(32767)?;
+                    let signature = if r.bool()? {
+                        Some(r.string(1024)?)
+                    } else {
+                        None
+                    };
+                    Ok((name, value, signature))
+                })
+                .collect()
+        };
+        let mut read = || -> Result<Profile> {
+            // ByteBufCodecs.either: true for the full GameProfile.
+            if r.bool()? {
+                let id = r.uuid()?;
+                let name = r.string(16)?;
+                Ok(Profile {
+                    name: Some(name),
+                    id: Some(id),
+                    properties: properties(r)?,
+                })
+            } else {
+                let name = if r.bool()? { Some(r.string(16)?) } else { None };
+                let id = if r.bool()? { Some(r.uuid()?) } else { None };
+                Ok(Profile {
+                    name,
+                    id,
+                    properties: properties(r)?,
+                })
+            }
+        };
+        read().ok()
+    }
+
+    /// PotionContents: the potion's registry id and the custom colour.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Potion {
+        pub potion: Option<i32>,
+        pub custom_color: Option<i32>,
+    }
+    pub fn potion(bytes: &[u8]) -> Option<Potion> {
+        let r = &mut Reader::new(bytes);
+        let mut read = || -> Result<Potion> {
+            let potion = if r.bool()? { Some(r.varint()?) } else { None };
+            let custom_color = if r.bool()? { Some(r.i32()?) } else { None };
+            Ok(Potion {
+                potion,
+                custom_color,
+            })
+        };
+        read().ok()
+    }
+
+    /// ArmorTrim: the material's and pattern's registry ids, when both are references (an
+    /// inline definition is not read).
+    pub fn trim(bytes: &[u8]) -> Option<(i32, i32)> {
+        let r = &mut Reader::new(bytes);
+        let material = r.varint().ok()?.checked_sub(1).filter(|id| *id >= 0)?;
+        let pattern = r.varint().ok()?.checked_sub(1).filter(|id| *id >= 0)?;
+        Some((material, pattern))
+    }
+}
+
 /// A non-empty item stack.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stack {

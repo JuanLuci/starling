@@ -190,6 +190,162 @@ pub(super) struct Remote {
 }
 
 impl Remote {
+    /// A stack's patched components in their saved (NBT) form, as the game's items keep them:
+    /// the ones the game shows (names, lore, enchantments, models, colours, heads, potions,
+    /// trims...). None when it has none.
+    fn saved_components(&self, s: &Stack) -> Option<Tag> {
+        use horizon_protocol::item::{Component, component as c, view};
+        let mut out: Vec<(String, Tag)> = Vec::new();
+        let builtin = |registry: &str, id: i32| {
+            self.builtin
+                .get(registry)
+                .and_then(|r| r.name(id))
+                .map(str::to_owned)
+        };
+        let dynamic =
+            |registry: &str, id: i32| self.registries.name(registry, id).map(str::to_owned);
+        let string = |s: &str| Tag::String(s.into());
+        let levels = |list: &[(i32, i32)]| {
+            let named: Vec<(String, i32)> = list
+                .iter()
+                .filter_map(|&(id, level)| Some((dynamic("minecraft:enchantment", id)?, level)))
+                .collect();
+            Tag::compound(
+                named
+                    .iter()
+                    .map(|(n, level)| (n.as_str(), Tag::Int(*level))),
+            )
+        };
+        for (kind, value) in &s.added {
+            let name = |n: &str| format!("minecraft:{n}");
+            let entry = match (*kind, value) {
+                (c::DAMAGE, Component::Int(v)) => Some(("damage", Tag::Int(*v))),
+                (c::MAX_STACK_SIZE, Component::Int(v)) => Some(("max_stack_size", Tag::Int(*v))),
+                (c::MAX_DAMAGE, Component::Int(v)) => Some(("max_damage", Tag::Int(*v))),
+                (c::REPAIR_COST, Component::Int(v)) => Some(("repair_cost", Tag::Int(*v))),
+                (c::MAP_ID, Component::Int(v)) => Some(("map_id", Tag::Int(*v))),
+                (c::DYED_COLOR, Component::Int(v)) => Some(("dyed_color", Tag::Int(*v))),
+                (c::RARITY, Component::Int(v)) => ["common", "uncommon", "rare", "epic"]
+                    .get(*v as usize)
+                    .map(|r| ("rarity", string(r))),
+                (c::UNBREAKABLE, Component::Unit) => {
+                    Some(("unbreakable", Tag::compound(Vec::<(&str, Tag)>::new())))
+                }
+                (c::ENCHANTMENT_GLINT_OVERRIDE, Component::Bool(b)) => {
+                    Some(("enchantment_glint_override", Tag::Byte(i8::from(*b))))
+                }
+                (c::CUSTOM_NAME, Component::Text(t)) => Some(("custom_name", t.clone())),
+                (c::ITEM_NAME, Component::Text(t)) => Some(("item_name", t.clone())),
+                (c::ITEM_MODEL, Component::Ident(m)) => Some(("item_model", string(m))),
+                (c::LORE, Component::Lore(lines)) => Some(("lore", Tag::List(lines.clone()))),
+                (c::ENCHANTMENTS, Component::Enchantments(list)) => {
+                    Some(("enchantments", levels(list)))
+                }
+                (c::STORED_ENCHANTMENTS, Component::Enchantments(list)) => {
+                    Some(("stored_enchantments", levels(list)))
+                }
+                (
+                    c::CUSTOM_MODEL_DATA,
+                    Component::CustomModelData {
+                        floats,
+                        flags,
+                        strings,
+                        colors,
+                    },
+                ) => Some((
+                    "custom_model_data",
+                    Tag::compound([
+                        (
+                            "floats",
+                            Tag::List(floats.iter().map(|f| Tag::Float(f.to_bits())).collect()),
+                        ),
+                        (
+                            "flags",
+                            Tag::List(flags.iter().map(|f| Tag::Byte(i8::from(*f))).collect()),
+                        ),
+                        (
+                            "strings",
+                            Tag::List(strings.iter().map(|s| string(s)).collect()),
+                        ),
+                        (
+                            "colors",
+                            Tag::List(colors.iter().map(|c| Tag::Int(*c)).collect()),
+                        ),
+                    ]),
+                )),
+                (c::TOOLTIP_DISPLAY, Component::TooltipDisplay { hide, hidden }) => Some((
+                    "tooltip_display",
+                    Tag::compound([
+                        ("hide_tooltip", Tag::Byte(i8::from(*hide))),
+                        (
+                            "hidden_components",
+                            Tag::List(
+                                hidden
+                                    .iter()
+                                    .filter_map(|id| builtin("minecraft:data_component_type", *id))
+                                    .map(|n| string(&n))
+                                    .collect(),
+                            ),
+                        ),
+                    ]),
+                )),
+                (c::PROFILE, Component::Raw(bytes)) => view::profile(bytes).map(|p| {
+                    let mut fields: Vec<(&str, Tag)> = Vec::new();
+                    if let Some(n) = &p.name {
+                        fields.push(("name", string(n)));
+                    }
+                    if let Some(id) = p.id {
+                        fields.push((
+                            "id",
+                            Tag::IntArray(
+                                [96, 64, 32, 0].map(|s| (id >> s) as u32 as i32).to_vec(),
+                            ),
+                        ));
+                    }
+                    if !p.properties.is_empty() {
+                        let list = p
+                            .properties
+                            .iter()
+                            .map(|(n, v, sig)| {
+                                let mut f = vec![("name", string(n)), ("value", string(v))];
+                                if let Some(sig) = sig {
+                                    f.push(("signature", string(sig)));
+                                }
+                                Tag::compound(f)
+                            })
+                            .collect();
+                        fields.push(("properties", Tag::List(list)));
+                    }
+                    ("profile", Tag::compound(fields))
+                }),
+                (c::POTION_CONTENTS, Component::Raw(bytes)) => view::potion(bytes).map(|p| {
+                    let mut fields: Vec<(&str, Tag)> = Vec::new();
+                    if let Some(potion) = p.potion.and_then(|id| builtin("minecraft:potion", id)) {
+                        fields.push(("potion", string(&potion)));
+                    }
+                    if let Some(color) = p.custom_color {
+                        fields.push(("custom_color", Tag::Int(color)));
+                    }
+                    ("potion_contents", Tag::compound(fields))
+                }),
+                (c::TRIM, Component::Raw(bytes)) => view::trim(bytes).and_then(|(m, p)| {
+                    Some((
+                        "trim",
+                        Tag::compound([
+                            ("material", string(&dynamic("minecraft:trim_material", m)?)),
+                            ("pattern", string(&dynamic("minecraft:trim_pattern", p)?)),
+                        ]),
+                    ))
+                }),
+                _ => None,
+            };
+            if let Some((key, tag)) = entry {
+                out.push((name(key), tag));
+            }
+        }
+        (!out.is_empty()).then(|| Tag::compound(out.iter().map(|(k, v)| (k.as_str(), v.clone()))))
+    }
+
     /// A new ClientPacketListener after a reconfiguration: what the last one tracked is gone.
     fn reset_listener(&mut self) {
         self.joined = false;
@@ -558,20 +714,14 @@ impl Game<'_> {
     }
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let s = s.as_ref()?;
-        let mut out = ItemStack {
+        let components = self.remote.as_ref().and_then(|r| r.saved_components(s));
+        let (damage, extra) = horizon_client::item_data::decode_components(components.as_ref());
+        Some(ItemStack {
             item: self.item_name(s.item),
             count: s.count.max(0) as u32,
-            damage: s.damage().max(0) as u32,
-            extra: None,
-        };
-        use horizon_protocol::item::{Component, component};
-        if let Some(Component::Int(rgb)) = s.component(component::DYED_COLOR) {
-            out.data_mut().dyed_color = Some(*rgb);
-        }
-        if let Some(Component::Int(id)) = s.component(component::MAP_ID) {
-            out.data_mut().map_id = Some(*id);
-        }
-        Some(out)
+            damage,
+            extra,
+        })
     }
     fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
         let s = s.as_ref()?;

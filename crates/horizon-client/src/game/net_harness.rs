@@ -87,6 +87,13 @@ impl Game<'_> {
             .as_ref()
             .map(|r| r.chat.iter().map(|(t, _)| t.clone()).collect())
             .unwrap_or_default();
+        // What the server's items became, in the saved form (`/give` syntax).
+        let inventory: Vec<String> = self
+            .inventory
+            .iter()
+            .flatten()
+            .map(|s| horizon_client::item_data::canon_stack(Some(s)))
+            .collect();
         if self.remote.is_some() {
             self.leave_server(None)?;
         }
@@ -96,6 +103,7 @@ impl Game<'_> {
                 "position": position,
                 "chunks": chunks,
                 "chat": chat,
+                "inventory": inventory,
                 "error": error,
             })
             .to_string(),
