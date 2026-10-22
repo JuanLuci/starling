@@ -391,7 +391,11 @@ impl Game<'_> {
             if pos.length_squared() > 64.0 * 64.0 {
                 continue;
             }
-            let context = DisplayContext::ALL[usize::from(d.context)];
+            let context = if d.block {
+                DisplayContext::None
+            } else {
+                DisplayContext::ALL[usize::from(d.context)]
+            };
             let state = self.resolve_item(stack, context, None, *id);
             if state.is_empty() {
                 continue;
@@ -417,10 +421,17 @@ impl Game<'_> {
                     * glam::Mat4::from_quat(q(d.left))
                     * glam::Mat4::from_scale(glam::Vec3::from_array(d.scale))
                     * glam::Mat4::from_quat(q(d.right));
+            // An item turns half round (ItemDisplayRenderer); a block sits on its corner
+            // (BlockDisplayRenderer), where an item is drawn about its centre.
+            let last = if d.block {
+                glam::Mat4::from_translation(glam::Vec3::splat(0.5))
+            } else {
+                glam::Mat4::from_rotation_y(std::f32::consts::PI)
+            };
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_quat(orientation)
                 * transformation
-                * glam::Mat4::from_rotation_y(std::f32::consts::PI);
+                * last;
             let packed = self.world.light(
                 t.position[0].floor() as i32,
                 t.position[1].floor() as i32,

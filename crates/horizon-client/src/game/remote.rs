@@ -126,10 +126,14 @@ pub(super) struct ItemDisplay {
     pub(super) billboard: u8,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
+    /// A block display (`Display.BlockDisplay`), drawn as its block's item from the block's
+    /// corner: its state's other properties are not shown.
+    pub(super) block: bool,
 }
 impl ItemDisplay {
     fn new(yaw: f32, pitch: f32) -> Self {
         Self {
+            block: false,
             stack: None,
             context: 0,
             translation: [0.0; 3],
@@ -968,8 +972,10 @@ impl Game<'_> {
     /// Entity.DATA_CUSTOM_NAME (2) and DATA_CUSTOM_NAME_VISIBLE (3) of any entity, and a text
     /// display's own data (Display 8 to 22, TextDisplay 23 to 27).
     fn remote_names_and_displays(&mut self, id: i32, values: &[(u8, i32, Value)]) {
-        // An item display's stack, made a game stack once the borrow of the connection ends.
+        // An item display's stack, made a game stack once the borrow of the connection ends;
+        // a block display's state the same way.
         let mut pending_items = Vec::new();
+        let mut pending_blocks: Vec<(i32, i32)> = Vec::new();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -986,6 +992,10 @@ impl Game<'_> {
                     (23, Value::Item(stack)) => Some(stack.clone()),
                     _ => None,
                 };
+                // BlockDisplay.DATA_BLOCK_STATE_ID.
+                if let (23, Value::Id(state)) = (index, value) {
+                    pending_blocks.push((id, *state));
+                }
                 if let Some(d) = r.item_displays.get_mut(&id) {
                     match (index, value) {
                         (11, Value::Floats(v)) if v.len() == 3 => {
@@ -1019,6 +1029,27 @@ impl Game<'_> {
         }
         for (id, stack) in pending_items {
             let stack = self.to_stack(&stack);
+            if let Some(d) = self
+                .remote
+                .as_mut()
+                .and_then(|r| r.item_displays.get_mut(&id))
+            {
+                d.stack = stack;
+            }
+        }
+        for (id, state) in pending_blocks {
+            let name = self
+                .res
+                .facts()
+                .get(horizon_world::registry::BlockStateId(state.max(0) as u32))
+                .name
+                .clone();
+            let stack = self
+                .res
+                .items()
+                .items
+                .contains_key(&*name)
+                .then(|| horizon_client::items::ItemStack::new(&name, 1));
             if let Some(d) = self
                 .remote
                 .as_mut()
@@ -1577,6 +1608,11 @@ impl Game<'_> {
             }
             if kind == "minecraft:item_display" {
                 r.item_displays.insert(id, ItemDisplay::new(yaw, pitch));
+            }
+            if kind == "minecraft:block_display" {
+                let mut d = ItemDisplay::new(yaw, pitch);
+                d.block = true;
+                r.item_displays.insert(id, d);
             }
             r.entities.insert(
                 id,
