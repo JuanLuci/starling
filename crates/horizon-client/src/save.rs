@@ -1826,15 +1826,54 @@ impl Drop for SaveDir {
 }
 
 pub fn read_dat(path: &Path) -> Option<Tag> {
-    let bytes = fs::read(path).ok()?;
+    let bytes = match later::queued(path) {
+        Some(bytes) => bytes,
+        None => fs::read(path).ok()?,
+    };
     let raw = match Compression::Gzip.decode(&bytes, 64 << 20) {
         Ok(raw) => raw,
         Err(_) => bytes,
     };
     Some(nbt::read_named(&raw, Limits::default()).ok()?.0.tag)
 }
-/// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
+/// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`). Inside
+/// [`later::deferred`] it goes to the background writer.
 pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
+    if later::is_deferred() {
+        later::queue(path, later::Job::Dat(tag));
+        return Ok(());
+    }
+    // A queued older copy must not land after this one.
+    later::flush();
+    write_dat_now(path, tag)
+}
+/// A file's new bytes (`fs::write` through `_new` and a rename); queued like `write_dat`.
+pub fn write_file(path: &Path, bytes: Vec<u8>) -> Result<()> {
+    if later::is_deferred() {
+        later::queue(path, later::Job::Bytes(bytes));
+        return Ok(());
+    }
+    later::flush();
+    write_file_now(path, &bytes)
+}
+fn write_file_now(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let temporary = path.with_file_name(format!("{file}_new"));
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+/// A file's bytes, the newest queued ones first.
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    match later::queued(path) {
+        Some(bytes) => Ok(bytes),
+        None => fs::read(path),
+    }
+}
+fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -1862,6 +1901,140 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
     }
     fs::rename(temporary, path)?;
     Ok(())
+}
+/// World files written off the render thread while the game saves in the background (the
+/// autosave): Android's shared storage takes milliseconds per file call, and a save writes a
+/// dozen small files. One thread writes them in order; reads see what is still queued; a
+/// synchronous write, and [`flush`], wait for the queue first.
+pub mod later {
+    use super::{Path, PathBuf, Tag};
+    use std::{
+        cell::Cell,
+        collections::HashMap,
+        sync::{Condvar, Mutex, OnceLock, mpsc::Sender},
+    };
+
+    pub enum Job {
+        Dat(Tag),
+        Bytes(Vec<u8>),
+    }
+    impl Job {
+        /// The bytes the file will hold (what a read must see before the write is done).
+        fn bytes(&self) -> Option<Vec<u8>> {
+            match self {
+                Job::Bytes(b) => Some(b.clone()),
+                Job::Dat(tag) => {
+                    let named = horizon_world::nbt::NamedTag {
+                        name: "".into(),
+                        tag: tag.clone(),
+                    };
+                    horizon_world::nbt::write_named(&named, horizon_world::nbt::Limits::default())
+                        .ok()
+                }
+            }
+        }
+    }
+    struct Queue {
+        tx: Mutex<Option<Sender<(u64, PathBuf, Job)>>>,
+        /// The newest queued bytes of each file, by the job that will write them.
+        pending: Mutex<HashMap<PathBuf, (u64, Vec<u8>)>>,
+        /// (jobs queued, jobs written).
+        counts: Mutex<(u64, u64)>,
+        done: Condvar,
+    }
+    thread_local! {
+        static DEFERRED: Cell<bool> = const { Cell::new(false) };
+    }
+    fn queue_state() -> &'static Queue {
+        static QUEUE: OnceLock<Queue> = OnceLock::new();
+        QUEUE.get_or_init(|| Queue {
+            tx: Mutex::new(None),
+            pending: Mutex::default(),
+            counts: Mutex::new((0, 0)),
+            done: Condvar::new(),
+        })
+    }
+    /// Runs `f` with its world file writes queued.
+    pub fn deferred<R>(f: impl FnOnce() -> R) -> R {
+        DEFERRED.with(|d| d.set(true));
+        let out = f();
+        DEFERRED.with(|d| d.set(false));
+        out
+    }
+    pub(super) fn is_deferred() -> bool {
+        DEFERRED.with(Cell::get)
+    }
+    pub(super) fn queue(path: &Path, job: Job) {
+        let q = queue_state();
+        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = counts.0 + 1;
+        if let Some(bytes) = job.bytes()
+            && let Ok(mut pending) = q.pending.lock()
+        {
+            pending.insert(path.to_owned(), (seq, bytes));
+        }
+        let mut tx = q.tx.lock().unwrap_or_else(|e| e.into_inner());
+        if tx.is_none() {
+            let (send, receive) = std::sync::mpsc::channel::<(u64, PathBuf, Job)>();
+            let started = std::thread::Builder::new()
+                .name("horizon-world-files".into())
+                .spawn(move || {
+                    for (seq, path, job) in receive {
+                        let written = match job {
+                            Job::Dat(tag) => super::write_dat_now(&path, tag),
+                            Job::Bytes(bytes) => super::write_file_now(&path, &bytes),
+                        };
+                        if let Err(e) = written {
+                            log::warn!("Horizon: could not save {}: {e}", path.display());
+                        }
+                        let q = queue_state();
+                        if let Ok(mut pending) = q.pending.lock()
+                            && pending.get(&path).is_some_and(|(s, _)| *s == seq)
+                        {
+                            pending.remove(&path);
+                        }
+                        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
+                        counts.1 += 1;
+                        q.done.notify_all();
+                    }
+                });
+            if started.is_err() {
+                drop(tx);
+                drop(counts);
+                // No writer thread: write it now.
+                let _ = match job {
+                    Job::Dat(tag) => super::write_dat_now(path, tag),
+                    Job::Bytes(bytes) => super::write_file_now(path, &bytes),
+                };
+                if let Ok(mut pending) = q.pending.lock() {
+                    pending.remove(path);
+                }
+                return;
+            }
+            *tx = Some(send);
+        }
+        counts.0 = seq;
+        if let Some(send) = tx.as_ref() {
+            let _ = send.send((seq, path.to_owned(), job));
+        }
+    }
+    /// The newest queued bytes of `path`, when its write is not done yet.
+    pub(super) fn queued(path: &Path) -> Option<Vec<u8>> {
+        let q = queue_state();
+        q.pending
+            .lock()
+            .ok()?
+            .get(path)
+            .map(|(_, bytes)| bytes.clone())
+    }
+    /// Waits until every queued file is written.
+    pub fn flush() {
+        let q = queue_state();
+        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
+        while counts.1 < counts.0 {
+            counts = q.done.wait(counts).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 /// `SavedDataStorage`: `{data: ..., DataVersion}` under `data/minecraft/`.
 fn saved_data_path(world: &Path, name: &str) -> PathBuf {
@@ -3317,6 +3490,30 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_world_files_read_back_and_keep_their_order() {
+        let dir = std::env::temp_dir().join(format!("horizon-later-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("data").join("x.dat");
+        let json = dir.join("stats.json");
+        super::later::deferred(|| {
+            super::write_dat(&path, Tag::compound([("v", Tag::Int(1))])).unwrap();
+            super::write_file(&json, b"{\"a\":1}".to_vec()).unwrap();
+        });
+        // Queued or written, a read sees the new contents.
+        let v = |t: Option<Tag>| t.and_then(|t| t.get("v").cloned());
+        assert_eq!(v(super::read_dat(&path)), Some(Tag::Int(1)));
+        assert_eq!(super::read_file(&json).unwrap(), b"{\"a\":1}");
+        // A synchronous write after a deferred one is the one that stays.
+        super::later::deferred(|| {
+            super::write_dat(&path, Tag::compound([("v", Tag::Int(2))])).unwrap()
+        });
+        super::write_dat(&path, Tag::compound([("v", Tag::Int(3))])).unwrap();
+        super::later::flush();
+        assert_eq!(v(super::read_dat(&path)), Some(Tag::Int(3)));
+        assert_eq!(std::fs::read(&json).unwrap(), b"{\"a\":1}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn saved_far_surface_reads_builds_and_water_without_gameplay_chunks() {
         let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {

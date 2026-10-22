@@ -9215,9 +9215,20 @@ impl Game<'_> {
         if self.remote.is_some() {
             return Ok(());
         }
-        self.save_level(wait)?;
-        self.save_parked_levels(wait)?;
-        self.save_game_metadata()
+        if wait {
+            self.save_level(true)?;
+            self.save_parked_levels(true)?;
+            self.save_game_metadata()?;
+            horizon_client::save::later::flush();
+            return Ok(());
+        }
+        // The autosave: its small files go to the background writer too, so the frame does
+        // not wait on storage.
+        horizon_client::save::later::deferred(|| {
+            self.save_level(false)?;
+            self.save_parked_levels(false)?;
+            self.save_game_metadata()
+        })
     }
     fn save_game_metadata(&mut self) -> Result<()> {
         self.save_maps();
