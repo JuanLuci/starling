@@ -1,6 +1,7 @@
-//! Loading and calling mods with wasmtime's component model. A component built for API 0.3
-//! links `horizon:mods@0.3.0`; one built for 0.1 links the 0.1 interfaces, which this host still
-//! offers (`wit-0.1/`), and keeps 0.1's hooks.
+//! Loading and calling mods with wasmtime's component model. A Starling mod links
+//! `starling:mods@0.1.0` (starling-mod-sdk/wit); one built for Horizon links its `horizon:mods`
+//! 0.1 interfaces (horizon-mod-sdk/wit, Horizon's own), which this host offers too, and keeps 0.1's
+//! hooks.
 use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
     collections::VecDeque,
@@ -13,34 +14,34 @@ use wasmtime::{
     component::{Component, HasSelf, Linker},
 };
 
-mod v3 {
+mod starling {
+    wasmtime::component::bindgen!({
+        path: "../starling-mod-sdk/wit",
+        world: "starling-mod",
+    });
+}
+mod v1 {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
     });
 }
-mod v1 {
-    wasmtime::component::bindgen!({
-        path: "wit-0.1",
-        world: "horizon-mod",
-    });
-}
-pub use v3::exports::horizon::mods::events::{
+pub use starling::exports::starling::mods::events::{
     ChatAction, HudElement, HudPart, KeyEvent, Keybind, MouseAction, MouseEvent, Placement,
     RenderContext, SendAction,
 };
-pub use v3::horizon::mods::{
+pub use starling::starling::mods::{
     game::{BlockHit, Clock, Effect, EntityHit, Gui, Player, Target, WorldInfo},
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
     level::Entity,
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
 };
-use v3::{
-    exports::horizon::mods::events::Registration,
-    horizon::mods::{
-        chat, chat_send, draw, game, hud, inventory, keys, level, log as mod_log, net, screens,
-        sound, storage, types,
+use starling::{
+    exports::starling::mods::events::Registration,
+    starling::mods::{
+        chat, chat_send, draw, game, hud, inventory, keys, level, log as mod_log, mobile, net,
+        screens, sound, storage, types,
     },
 };
 
@@ -124,6 +125,8 @@ pub struct Snapshot {
     pub measure: Option<Measure>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub keys_down: Vec<String>,
+    /// The player plays with a touch screen (`mobile.has-touch`).
+    pub touch: bool,
 }
 
 /// What mods asked the game to do since the last [`Mods::drain`].
@@ -301,8 +304,9 @@ impl From<v1::exports::horizon::mods::events::Registration> for Hooks {
 
 /// The component's exports, by the API it was built for.
 enum Guest {
-    V1(v1::HorizonMod),
-    V3(v3::HorizonMod),
+    /// Built for Horizon's API 0.1.
+    Horizon(v1::HorizonMod),
+    Starling(starling::StarlingMod),
 }
 
 struct Running {
@@ -456,7 +460,7 @@ impl Mods {
             config.wasm_component_model(true).consume_fuel(true);
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
-            v3::HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+            starling::StarlingMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             v1::HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
@@ -507,9 +511,9 @@ impl Mods {
             .map(|(name, _)| name.to_string())
             .collect();
         m.check_imports(imports.iter().map(String::as_str))?;
-        let api3 = ty
+        let for_starling = ty
             .exports(engine)
-            .any(|(name, _)| name.starts_with("horizon:mods/events@0.3."));
+            .any(|(name, _)| name.starts_with("starling:mods/events@0.1."));
         let data_dir = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -534,14 +538,14 @@ impl Mods {
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-        let (guest, mut hooks): (Guest, Hooks) = if api3 {
-            let exports = v3::HorizonMod::instantiate(&mut store, &component, linker)
+        let (guest, mut hooks): (Guest, Hooks) = if for_starling {
+            let exports = starling::StarlingMod::instantiate(&mut store, &component, linker)
                 .map_err(|e| reason(&e))?;
             let hooks = exports
-                .horizon_mods_events()
+                .starling_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Guest::V3(exports), hooks.into())
+            (Guest::Starling(exports), hooks.into())
         } else {
             let exports = v1::HorizonMod::instantiate(&mut store, &component, linker)
                 .map_err(|e| reason(&e))?;
@@ -549,7 +553,7 @@ impl Mods {
                 .horizon_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Guest::V1(exports), hooks.into())
+            (Guest::Horizon(exports), hooks.into())
         };
         hooks.commands.retain(|c| {
             let free = !reserved(c) && !taken.contains(c);
@@ -665,14 +669,14 @@ impl Mods {
     fn render(
         &mut self,
         i: usize,
-        f: impl FnOnce(&v3::HorizonMod, &mut Store<State>) -> wasmtime::Result<()>,
+        f: impl FnOnce(&starling::StarlingMod, &mut Store<State>) -> wasmtime::Result<()>,
     ) -> Vec<DrawOp> {
         if let Some(run) = self.entries[i].run.as_mut() {
             run.store.data_mut().draw = Some(Vec::new());
         }
         self.call(i, FUEL_RENDER, |g, s| match g {
-            Guest::V3(m) => f(m, s),
-            Guest::V1(_) => Ok(()),
+            Guest::Starling(m) => f(m, s),
+            Guest::Horizon(_) => Ok(()),
         });
         self.entries[i]
             .run
@@ -705,8 +709,8 @@ impl Mods {
             FUEL_TICK,
             |h| h.tick,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_tick(s, tick),
-                Guest::V1(m) => m.horizon_mods_events().call_tick(s, tick),
+                Guest::Starling(m) => m.starling_mods_events().call_tick(s, tick),
+                Guest::Horizon(m) => m.horizon_mods_events().call_tick(s, tick),
             },
         );
     }
@@ -716,8 +720,8 @@ impl Mods {
             FUEL_FRAME,
             |h| h.frame,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_frame(s, seconds),
-                Guest::V1(m) => m.horizon_mods_events().call_frame(s, seconds),
+                Guest::Starling(m) => m.starling_mods_events().call_frame(s, seconds),
+                Guest::Horizon(m) => m.horizon_mods_events().call_frame(s, seconds),
             },
         );
     }
@@ -728,10 +732,10 @@ impl Mods {
         let (mut plain, mut component) = (plain.to_owned(), component.to_owned());
         for i in self.indices(|h| h.chat) {
             let result = self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m
-                    .horizon_mods_events()
+                Guest::Starling(m) => m
+                    .starling_mods_events()
                     .call_chat_received(s, &plain, &component),
-                Guest::V1(m) => m
+                Guest::Horizon(m) => m
                     .horizon_mods_events()
                     .call_chat(s, &plain)
                     .map(|()| ChatAction::Keep),
@@ -754,8 +758,8 @@ impl Mods {
         let mut message = message.to_owned();
         for i in self.indices(|h| h.chat_send) {
             let result = self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_chat_sending(s, &message),
-                Guest::V1(_) => Ok(SendAction::Send),
+                Guest::Starling(m) => m.starling_mods_events().call_chat_sending(s, &message),
+                Guest::Horizon(_) => Ok(SendAction::Send),
             });
             match result {
                 Some(SendAction::Cancel) => return None,
@@ -770,7 +774,7 @@ impl Mods {
         let mut ops = Vec::new();
         for i in self.indices(|h| h.hud) {
             ops.extend(self.render(i, |m, s| {
-                m.horizon_mods_events().call_hud_render(s, context)
+                m.starling_mods_events().call_hud_render(s, context)
             }));
         }
         ops
@@ -806,7 +810,7 @@ impl Mods {
                 .unwrap_or_default();
             for id in ids {
                 ops.extend(self.render(i, |m, s| {
-                    m.horizon_mods_events()
+                    m.starling_mods_events()
                         .call_render_hud_element(s, &id, context)
                 }));
             }
@@ -824,16 +828,16 @@ impl Mods {
     pub fn screen_opened(&mut self, screen: &str) {
         for i in self.screen_mods(screen) {
             self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_screen_opened(s, screen),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_screen_opened(s, screen),
+                Guest::Horizon(_) => Ok(()),
             });
         }
     }
     pub fn screen_closed(&mut self, screen: &str) {
         for i in self.screen_mods(screen) {
             self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_screen_closed(s, screen),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_screen_closed(s, screen),
+                Guest::Horizon(_) => Ok(()),
             });
         }
     }
@@ -842,7 +846,7 @@ impl Mods {
         let mut ops = Vec::new();
         for i in self.screen_mods(screen) {
             ops.extend(self.render(i, |m, s| {
-                m.horizon_mods_events()
+                m.starling_mods_events()
                     .call_screen_render(s, screen, context)
             }));
         }
@@ -852,8 +856,8 @@ impl Mods {
     pub fn screen_mouse(&mut self, screen: &str, event: MouseEvent) -> bool {
         for i in self.screen_mods(screen) {
             let used = self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_screen_mouse(s, screen, event),
-                Guest::V1(_) => Ok(false),
+                Guest::Starling(m) => m.starling_mods_events().call_screen_mouse(s, screen, event),
+                Guest::Horizon(_) => Ok(false),
             });
             if used == Some(true) {
                 return true;
@@ -864,8 +868,8 @@ impl Mods {
     pub fn screen_key(&mut self, screen: &str, event: &KeyEvent) -> bool {
         for i in self.screen_mods(screen) {
             let used = self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_screen_key(s, screen, event),
-                Guest::V1(_) => Ok(false),
+                Guest::Starling(m) => m.starling_mods_events().call_screen_key(s, screen, event),
+                Guest::Horizon(_) => Ok(false),
             });
             if used == Some(true) {
                 return true;
@@ -878,8 +882,8 @@ impl Mods {
         let mut lines = Vec::new();
         for i in self.indices(|h| h.tooltips) {
             if let Some(more) = self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_tooltip(s, stack),
-                Guest::V1(_) => Ok(Vec::new()),
+                Guest::Starling(m) => m.starling_mods_events().call_tooltip(s, stack),
+                Guest::Horizon(_) => Ok(Vec::new()),
             }) {
                 lines.extend(more.into_iter().take(32).map(|l| clip_to(l, TEXT_CHARS)));
             }
@@ -903,8 +907,8 @@ impl Mods {
     pub fn key(&mut self, id: &str, key: &str, pressed: bool) {
         if let Some(i) = self.by_id(id) {
             self.call(i, FUEL_EVENT, |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_key(s, key, pressed),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_key(s, key, pressed),
+                Guest::Horizon(_) => Ok(()),
             });
         }
     }
@@ -923,8 +927,8 @@ impl Mods {
     pub fn payload(&mut self, channel: &str, data: &[u8]) {
         let wanted = |h: &Hooks| h.channels.iter().any(|c| c == channel);
         self.each(FUEL_EVENT, wanted, |g, s| match g {
-            Guest::V3(m) => m.horizon_mods_events().call_payload(s, channel, data),
-            Guest::V1(_) => Ok(()),
+            Guest::Starling(m) => m.starling_mods_events().call_payload(s, channel, data),
+            Guest::Horizon(_) => Ok(()),
         });
     }
     pub fn joined(&mut self, server: Option<&str>) {
@@ -932,8 +936,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.connection,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_joined(s, server),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_joined(s, server),
+                Guest::Horizon(_) => Ok(()),
             },
         );
     }
@@ -942,8 +946,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.connection,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_left(s),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_left(s),
+                Guest::Horizon(_) => Ok(()),
             },
         );
     }
@@ -952,8 +956,10 @@ impl Mods {
             FUEL_EVENT,
             |h| h.connection,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_dimension_changed(s, dimension),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m
+                    .starling_mods_events()
+                    .call_dimension_changed(s, dimension),
+                Guest::Horizon(_) => Ok(()),
             },
         );
     }
@@ -963,8 +969,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.interaction,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_use_item(s, hand),
-                Guest::V1(_) => Ok(true),
+                Guest::Starling(m) => m.starling_mods_events().call_use_item(s, hand),
+                Guest::Horizon(_) => Ok(true),
             },
         );
         allowed.into_iter().all(|a| a)
@@ -974,8 +980,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.interaction,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_use_block(s, pos, face, hand),
-                Guest::V1(_) => Ok(true),
+                Guest::Starling(m) => m.starling_mods_events().call_use_block(s, pos, face, hand),
+                Guest::Horizon(_) => Ok(true),
             },
         );
         allowed.into_iter().all(|a| a)
@@ -985,8 +991,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.interaction,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_attack_entity(s, entity),
-                Guest::V1(_) => Ok(true),
+                Guest::Starling(m) => m.starling_mods_events().call_attack_entity(s, entity),
+                Guest::Horizon(_) => Ok(true),
             },
         );
         allowed.into_iter().all(|a| a)
@@ -996,8 +1002,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.interaction,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_attack_block(s, pos, face),
-                Guest::V1(_) => Ok(true),
+                Guest::Starling(m) => m.starling_mods_events().call_attack_block(s, pos, face),
+                Guest::Horizon(_) => Ok(true),
             },
         );
         allowed.into_iter().all(|a| a)
@@ -1007,8 +1013,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.interaction,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_block_broken(s, pos, block),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_block_broken(s, pos, block),
+                Guest::Horizon(_) => Ok(()),
             },
         );
     }
@@ -1017,8 +1023,8 @@ impl Mods {
             FUEL_EVENT,
             |h| h.damage,
             |g, s| match g {
-                Guest::V3(m) => m.horizon_mods_events().call_player_hurt(s, amount),
-                Guest::V1(_) => Ok(()),
+                Guest::Starling(m) => m.starling_mods_events().call_player_hurt(s, amount),
+                Guest::Horizon(_) => Ok(()),
             },
         );
     }
@@ -1041,8 +1047,8 @@ impl Mods {
             return false;
         };
         let result = self.call(i, FUEL_EVENT, |g, s| match g {
-            Guest::V3(m) => m.horizon_mods_events().call_command(s, name, args),
-            Guest::V1(m) => m.horizon_mods_events().call_command(s, name, args),
+            Guest::Starling(m) => m.starling_mods_events().call_command(s, name, args),
+            Guest::Horizon(m) => m.horizon_mods_events().call_command(s, name, args),
         });
         match result {
             Some(Ok(Some(text))) => self.out.push(Output::Feedback { text, error: false }),
@@ -1525,6 +1531,11 @@ impl screens::Host for State {
         self.out.push(Output::CloseScreen {
             id: self.id.clone(),
         });
+    }
+}
+impl mobile::Host for State {
+    fn has_touch(&mut self) -> bool {
+        self.snapshot.touch
     }
     fn keyboard(&mut self, shown: bool) {
         self.out.push(Output::Keyboard {

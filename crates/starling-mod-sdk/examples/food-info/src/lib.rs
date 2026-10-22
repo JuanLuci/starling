@@ -6,7 +6,7 @@
 //! - the exhaustion building toward the next lost hunger point, as a light band behind the bar
 //!   (single player only: servers do not send it);
 //! - nutrition and saturation in food tooltips.
-use horizon_mod_sdk::{
+use starling_mod_sdk::{
     Hand, HudPart, ItemStack, Mod, Placement, Registration, RenderContext, draw, game,
     inventory::{self, Food},
 };
@@ -116,4 +116,4 @@ impl Mod for FoodInfo {
     }
 }
 
-horizon_mod_sdk::export_mod!(FoodInfo);
+starling_mod_sdk::export_mod!(FoodInfo);

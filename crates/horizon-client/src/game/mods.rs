@@ -659,6 +659,7 @@ impl Game<'_> {
             gui: Some(gui),
             fps: self.fps.round().max(0.0) as u32,
             keys_down: self.mods.keys_down.clone(),
+            touch: self.has_touch(),
             measure: Some(self.mod_measure()),
             ..Snapshot::default()
         };

@@ -10,7 +10,7 @@ description = "Example Horizon mod in the spirit of AppleSkin: saturation, exhau
 crate-type = ["cdylib"]
 
 [dependencies]
-horizon-mod-sdk = { path = "../.." }
+starling-mod-sdk = { path = "../.." }
 
 [lints]
 workspace = true

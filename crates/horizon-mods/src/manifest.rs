@@ -6,16 +6,19 @@ use std::{fmt, io::Read, path::Path};
 pub const MANIFEST: &str = "horizon-mod.toml";
 /// The component's file name in a `.hmod` or a mod folder.
 pub const WASM: &str = "mod.wasm";
-/// The API (WIT package `horizon:mods`) this build's SDK targets. Components built for any
-/// 0.1.x or 0.3.x SDK run.
-pub const API: &str = "0.3";
-/// The WIT package versions a component may link: `0.1.` and `0.3.` (0.3 is 0.1's interfaces
-/// and more; a 0.1 mod keeps 0.1's hooks).
-const LINKED: [&str; 2] = ["0.1.", "0.3."];
+/// The API (WIT package `horizon:mods`) versions this build runs: a mod
+/// built for any 0.1.x SDK.
+pub const API: &str = "0.1";
+/// Starling's own API, the WIT package `starling:mods` (starling-mod-sdk): Horizon's 0.1 and
+/// what Starling adds. Its mods say so in their manifest, which Horizon refuses with that line.
+pub const STARLING_API: &str = "starling-0.1";
+/// The WIT packages and versions a component may link.
+const LINKED: [(&str, &str); 2] = [("horizon:mods/", "0.1."), ("starling:mods/", "0.1.")];
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
 /// `assets/` and `data/` in the `.hmod`, with blocks and items declared in
-/// `data/<id>/horizon/` (docs/modpacks.md); 0.3 adds the 0.3 interfaces and keeps content.
-pub const APIS: [&str; 3] = ["0.1", "0.2", API];
+/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1. starling-0.1 links
+/// `starling:mods` and may hold content too.
+pub const APIS: [&str; 3] = [API, "0.2", STARLING_API];
 /// Namespaces no mod may claim: vanilla's, the convention tags' (mods add
 /// to those, docs/mods.md) and the game's own.
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
@@ -129,15 +132,29 @@ impl Capability {
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
-    /// mod has; `Err` for an import Horizon does not offer.
+    /// mod has; `Err` for an import Starling does not offer.
     pub fn of_import(name: &str) -> Result<Option<Capability>, String> {
-        let unknown = || format!("imports {name}, which Horizon does not offer");
-        let rest = name.strip_prefix("horizon:mods/").ok_or_else(unknown)?;
+        let unknown = || format!("imports {name}, which Starling does not offer");
+        let (package, rest) = LINKED
+            .iter()
+            .find_map(|(package, _)| Some((*package, name.strip_prefix(package)?)))
+            .ok_or_else(unknown)?;
         let (interface, version) = rest.split_once('@').ok_or_else(unknown)?;
-        if !LINKED.iter().any(|v| version.starts_with(v)) {
-            return Err(format!("needs API {version}; this Horizon runs {API}"));
+        if !LINKED
+            .iter()
+            .any(|(p, v)| *p == package && version.starts_with(v))
+        {
+            let package = package.trim_end_matches('/');
+            return Err(format!(
+                "needs {package}@{version}; this Starling runs Horizon's API {API} and {STARLING_API}"
+            ));
         }
-        if interface == "log" || interface == "types" {
+        // Always granted: the log, the shared types and Starling's device interface (which does
+        // nothing where it does not apply).
+        if interface == "log"
+            || interface == "types"
+            || (package == "starling:mods/" && interface == "mobile")
+        {
             return Ok(None);
         }
         Capability::ALL
@@ -182,7 +199,7 @@ impl Manifest {
         }
         if !APIS.contains(&m.api.as_str()) {
             return Err(format!(
-                "built for API {}; this Horizon runs {}",
+                "built for API {}; this Starling runs {}",
                 m.api,
                 APIS.join(" and ")
             ));
@@ -223,12 +240,18 @@ impl Manifest {
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.id.as_str()).chain(self.namespaces.iter().map(String::as_str))
     }
-    /// Checks that the component's imports need only declared capabilities.
+    /// Checks that the component's imports need only declared capabilities, and that one
+    /// linking Starling's API says so in its manifest.
     pub fn check_imports<'a>(
         &self,
         imports: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), String> {
         for name in imports {
+            if name.starts_with("starling:mods/") && self.api != STARLING_API {
+                return Err(format!(
+                    "links Starling's API: set api = \"{STARLING_API}\" in {MANIFEST}"
+                ));
+            }
             if let Some(c) = Capability::of_import(name)?
                 && !self.capabilities.contains(&c)
             {
@@ -388,6 +411,44 @@ capabilities = ["game-read", "hud"]
         let with_storage = EXAMPLE.replace("\"hud\"", "\"hud\", \"storage\"");
         let m = Manifest::parse(&with_storage).unwrap();
         assert_eq!(m.check_imports(["horizon:mods/storage@0.1.0"]), Ok(()));
+    }
+
+    #[test]
+    fn starling_imports_need_starlings_api_line() {
+        // Linking starling:mods needs api = "starling-0.1": Horizon refuses that line itself.
+        let horizon = Manifest::parse(EXAMPLE).unwrap();
+        assert!(
+            horizon
+                .check_imports(["starling:mods/game@0.1.0"])
+                .unwrap_err()
+                .contains("starling-0.1")
+        );
+        let starling =
+            Manifest::parse(&EXAMPLE.replace("api = \"0.1\"", "api = \"starling-0.1\"")).unwrap();
+        // The device interface is always granted; the rest are capabilities as in Horizon's.
+        let ok = [
+            "starling:mods/log@0.1.0",
+            "starling:mods/types@0.1.0",
+            "starling:mods/mobile@0.1.0",
+            "starling:mods/game@0.1.0",
+            "starling:mods/draw@0.1.0",
+        ];
+        assert_eq!(starling.check_imports(ok), Ok(()));
+        assert!(
+            starling
+                .check_imports(["starling:mods/chat@0.1.0"])
+                .is_err()
+        );
+        assert!(
+            starling
+                .check_imports(["starling:mods/game@0.2.0"])
+                .is_err()
+        );
+        assert!(
+            starling
+                .check_imports(["horizon:mods/mobile@0.1.0"])
+                .is_err()
+        );
     }
 
     #[test]

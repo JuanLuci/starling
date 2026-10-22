@@ -104,6 +104,10 @@ fn arrow(
 }
 
 impl Game<'_> {
+    /// The player plays with a touch screen: always on Android, elsewhere once a touch was seen.
+    pub(super) fn has_touch(&self) -> bool {
+        self.touch.seen
+    }
     fn touch_playing(&self) -> bool {
         self.screen == Screen::Playing
             && self.title.is_none()

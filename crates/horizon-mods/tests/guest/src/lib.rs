@@ -8,7 +8,7 @@
 //! `test_guest:menu` (a click inside 10..50 is its own), hides chat lines with "secret",
 //! rewrites "swap", cancels `/blocked`, adds a tooltip line, sends `/send <text>` as chat,
 //! echoes payloads on `test:echo` and refuses to use the off hand.
-use horizon_mod_sdk::{
+use starling_mod_sdk::{
     ChatAction, Hand, HudPart, ItemStack, Mod, MouseAction, MouseEvent, Placement, Registration,
     RenderContext, SendAction, chat, chat_send, draw, game, net, screens, storage,
 };
@@ -143,4 +143,4 @@ impl Mod for Guest {
     }
 }
 
-horizon_mod_sdk::export_mod!(Guest);
+starling_mod_sdk::export_mod!(Guest);

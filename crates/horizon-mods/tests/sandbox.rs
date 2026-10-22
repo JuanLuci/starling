@@ -16,7 +16,7 @@ const GUEST_MANIFEST: &str = r#"
 id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
-api = "0.3"
+api = "starling-0.1"
 capabilities = ["chat", "storage", "hud", "ui", "chat-send", "net", "game-read"]
 "#;
 
@@ -50,14 +50,15 @@ fn mods_dir() -> &'static Path {
         let built = target.join("wasm32-unknown-unknown/release");
         let dir = target.join("mods");
         std::fs::create_dir_all(&dir).unwrap();
-        let example = |name: &str| {
-            let path = format!("crates/horizon-mod-sdk/examples/{name}/horizon-mod.toml");
+        // coords-hud is Horizon's own (API 0.1); the others Starling's.
+        let example = |sdk: &str, name: &str| {
+            let path = format!("crates/{sdk}/examples/{name}/horizon-mod.toml");
             std::fs::read_to_string(root.join(path)).unwrap()
         };
         let mods = [
-            ("coords_hud", example("coords-hud")),
-            ("food_info", example("food-info")),
-            ("waypoints", example("waypoints")),
+            ("coords_hud", example("horizon-mod-sdk", "coords-hud")),
+            ("food_info", example("starling-mod-sdk", "food-info")),
+            ("waypoints", example("starling-mod-sdk", "waypoints")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
@@ -194,7 +195,7 @@ fn api_0_1_mods_still_run() {
         text: "12, 64, -4 in minecraft:overworld".into(),
     };
     assert_eq!(mods.drain(), [chat]);
-    // 0.3's hooks are not 0.1's: nothing to draw, every action allowed.
+    // Starling's hooks are not 0.1's: nothing to draw, every action allowed.
     assert!(mods.hud_render(context()).is_empty());
     assert!(mods.use_item(Hand::OffHand));
 }

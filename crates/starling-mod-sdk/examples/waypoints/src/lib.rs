@@ -3,9 +3,9 @@
 //! a place's button picks it, "x" forgets it and "Rename" names the picked one (bringing up the
 //! on-screen keyboard on a phone; Enter keeps the name). The chosen place's distance and
 //! direction show at the top of the HUD. Places are kept with `storage`, one per line.
-use horizon_mod_sdk::{
-    KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, draw, game, screens,
-    storage,
+use starling_mod_sdk::{
+    KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, draw, game, mobile,
+    screens, storage,
 };
 
 struct Place {
@@ -202,7 +202,7 @@ impl Mod for Waypoints {
             Some(Hit::Rename) => {
                 if let Some(i) = self.chosen {
                     self.renaming = Some(self.places[i].name.clone());
-                    screens::keyboard(true);
+                    mobile::keyboard(true);
                 }
             }
             Some(Hit::Close) => screens::close(),
@@ -228,7 +228,7 @@ impl Mod for Waypoints {
                     self.save();
                 }
                 self.renaming = None;
-                screens::keyboard(false);
+                mobile::keyboard(false);
             }
             _ => {
                 for c in event.text.chars().filter(|c| !c.is_control()) {
@@ -275,4 +275,4 @@ impl Mod for Waypoints {
     }
 }
 
-horizon_mod_sdk::export_mod!(Waypoints);
+starling_mod_sdk::export_mod!(Waypoints);

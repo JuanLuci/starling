@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-horizon-mod-sdk = {sdk}
+starling-mod-sdk = {sdk}
 
 [profile.release]
 opt-level = "s"

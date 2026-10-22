@@ -1069,7 +1069,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 name = "food-info"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-sdk",
+ "starling-mod-sdk",
 ]
 
 [[package]]
@@ -1542,7 +1542,7 @@ dependencies = [
 name = "horizon-mods-test-guest"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-sdk",
+ "starling-mod-sdk",
 ]
 
 [[package]]
@@ -3555,6 +3555,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "starling-mod-sdk"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4548,7 +4555,7 @@ dependencies = [
 name = "waypoints"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-sdk",
+ "starling-mod-sdk",
 ]
 
 [[package]]

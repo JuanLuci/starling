@@ -45,7 +45,7 @@ const built = spawnSync(
   process.execPath,
   [
     jco, "componentize", here("src/mod.js"), "--wit", here("../../wit"),
-    "--world-name", "horizon-mod", "--out", here(OUT), "--disable", "all",
+    "--world-name", "starling-mod", "--out", here(OUT), "--disable", "all",
   ],
   { env, cwd: temp, stdio: "inherit" },
 );

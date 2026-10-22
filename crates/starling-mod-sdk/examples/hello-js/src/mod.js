@@ -1,9 +1,9 @@
 // A Horizon mod in JavaScript: /hello_js says where you are, the HUD shows the FPS, and
 // tooltips name the item's id.
-import { write } from "horizon:mods/log@0.3.0";
-import { getPlayer, getFps } from "horizon:mods/game@0.3.0";
-import { show } from "horizon:mods/chat@0.3.0";
-import { text } from "horizon:mods/draw@0.3.0";
+import { write } from "starling:mods/log@0.1.0";
+import { getPlayer, getFps } from "starling:mods/game@0.1.0";
+import { show } from "starling:mods/chat@0.1.0";
+import { text } from "starling:mods/draw@0.1.0";
 
 export const events = {
   init() {

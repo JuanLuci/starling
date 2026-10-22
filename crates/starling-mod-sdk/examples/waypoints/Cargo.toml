@@ -10,7 +10,7 @@ description = "Example Horizon mod: a screen of saved places, a keybind to open 
 crate-type = ["cdylib"]
 
 [dependencies]
-horizon-mod-sdk = { path = "../.." }
+starling-mod-sdk = { path = "../.." }
 
 [lints]
 workspace = true

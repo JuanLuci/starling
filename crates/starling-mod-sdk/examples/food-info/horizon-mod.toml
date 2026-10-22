@@ -3,6 +3,6 @@ name = "Food Info"
 version = "0.1.0"
 description = "Saturation and exhaustion on the hunger bar, what the food in your hand would restore, and food values in tooltips."
 authors = ["Starling"]
-api = "0.3"
+api = "starling-0.1"
 side = "client"
 capabilities = ["game-read", "inventory-read", "hud"]

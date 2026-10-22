@@ -1,0 +1,542 @@
+/// The contract between Starling and its mods: Horizon's mod API (`horizon:mods`, whose 0.1 mods
+/// Starling runs too) grown with what Starling adds, its own package so it never collides with
+/// Horizon's next versions. A mod for it says `api = "starling-0.1"` in its manifest.
+///
+/// A mod is a WebAssembly component targeting the `starling-mod` world: any language that builds
+/// components works (Rust with this SDK, C/C++, Go, JavaScript, Python, C#...). Each imported
+/// interface but `log` and `types` is a capability: the mod's manifest lists the ones it uses,
+/// the player sees them before turning the mod on, and the game refuses a component that
+/// imports one its manifest does not declare.
+///
+/// Hooks are named after Fabric's events where one exists (in the comments), so a Fabric
+/// client mod's callbacks map onto them one for one.
+///
+package starling:mods@0.1.0;
+
+/// Shared types. Always granted.
+interface types {
+    record block-pos {
+        x: s32,
+        y: s32,
+        z: s32,
+    }
+    enum direction {
+        down,
+        up,
+        north,
+        south,
+        west,
+        east,
+    }
+    enum hand {
+        main-hand,
+        off-hand,
+    }
+    enum game-mode {
+        survival,
+        creative,
+        adventure,
+        spectator,
+    }
+    /// An item stack as the game shows it.
+    record item-stack {
+        /// `minecraft:diamond_sword`.
+        id: string,
+        count: u32,
+        damage: u32,
+        /// 0 when the item has no durability.
+        max-damage: u32,
+        /// The name the player sees (a custom name, else the item's), as plain text.
+        name: string,
+        /// The components that differ from the item's defaults in their saved form, as `/give`
+        /// writes them (`{"minecraft:custom_name":"Blade"}` in SNBT); empty when none.
+        components: string,
+    }
+    /// Text shown to the player: plain text (legacy `§` codes work), or a JSON text component
+    /// when it starts with `{` or `[` (`{"text":"Hi","color":"gold"}`).
+    type rich-text = string;
+}
+
+/// The mod's log, in the game's log under the mod's id. Always granted.
+interface log {
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+    write: func(level: level, message: string);
+}
+
+/// Capability `game-read`: the local player, the clock, what the crosshair is on, the screen.
+interface game {
+    use types.{block-pos, direction, game-mode};
+
+    record player {
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Blocks per tick.
+        velocity-x: f64,
+        velocity-y: f64,
+        velocity-z: f64,
+        /// Degrees, as F3 shows them.
+        yaw: f32,
+        pitch: f32,
+        health: f32,
+        max-health: f32,
+        absorption: f32,
+        /// 0 to 20.
+        food: u32,
+        saturation: f32,
+        /// Known in single player only (servers do not send it): 0 elsewhere.
+        exhaustion: f32,
+        /// Ticks of breath left, up to `max-air`.
+        air: s32,
+        max-air: s32,
+        armor: u32,
+        experience-level: u32,
+        /// 0 to 1 along the experience bar.
+        experience-progress: f32,
+        /// 0 to 8.
+        selected-slot: u32,
+        game-mode: game-mode,
+        on-ground: bool,
+        sneaking: bool,
+        sprinting: bool,
+        swimming: bool,
+        flying: bool,
+        gliding: bool,
+        /// `minecraft:overworld`, `minecraft:the_nether`, ...
+        dimension: string,
+        name: string,
+        /// `069a79f4-44e9-4726-a5be-fca90e38aaf5`.
+        uuid: string,
+    }
+    record effect {
+        /// `minecraft:speed`.
+        id: string,
+        /// 0 for level I.
+        amplifier: u32,
+        /// Ticks left; -1 for an infinite effect.
+        duration: s32,
+        ambient: bool,
+        visible: bool,
+    }
+    record clock {
+        /// Ticks since the world was created.
+        game-time: u64,
+        /// 24000 ticks per day; 0 is 6:00 on the first day.
+        day-time: u64,
+    }
+    record world-info {
+        /// On a server (not single player).
+        multiplayer: bool,
+        /// The server's address, when on one.
+        server: option<string>,
+        /// 0 peaceful to 3 hard.
+        difficulty: u32,
+        hardcore: bool,
+        raining: bool,
+        thundering: bool,
+    }
+    record block-hit {
+        pos: block-pos,
+        face: direction,
+        /// `minecraft:oak_log[axis=y]`.
+        block: string,
+    }
+    record entity-hit {
+        id: s32,
+        /// `minecraft:zombie`.
+        kind: string,
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// What the crosshair is on (Minecraft.hitResult).
+    variant target {
+        miss,
+        block(block-hit),
+        entity(entity-hit),
+    }
+    /// The GUI's size in GUI pixels (what screens and the HUD draw in) and its scale.
+    record gui {
+        width: u32,
+        height: u32,
+        scale: f32,
+    }
+    /// None on the title screen.
+    get-player: func() -> option<player>;
+    get-effects: func() -> list<effect>;
+    get-clock: func() -> option<clock>;
+    get-world-info: func() -> option<world-info>;
+    get-target: func() -> target;
+    /// The screen open now (see `events.screen-opened`), None while playing.
+    get-screen: func() -> option<string>;
+    get-gui: func() -> gui;
+    /// Frames per second, as F3 shows it.
+    get-fps: func() -> u32;
+}
+
+/// Capability `world-read`: blocks and entities around the player.
+interface level {
+    use types.{block-pos};
+
+    record entity {
+        id: s32,
+        /// `minecraft:zombie`.
+        kind: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        yaw: f32,
+        /// For living entities.
+        health: option<f32>,
+        /// A custom name or a player's name.
+        name: option<string>,
+    }
+    /// `minecraft:oak_log[axis=y]`; None outside the loaded area within 24 blocks of the
+    /// player.
+    get-block: func(pos: block-pos) -> option<string>;
+    /// `minecraft:plains`.
+    get-biome: func(pos: block-pos) -> option<string>;
+    /// Block light and sky light, 0 to 15.
+    get-light: func(pos: block-pos) -> option<tuple<u8, u8>>;
+    /// Entities within `radius` blocks of the player (at most 128, nearest first).
+    get-entities: func(radius: f32) -> list<entity>;
+}
+
+/// Capability `inventory-read`: the player's items and the open container.
+interface inventory {
+    use types.{item-stack, hand};
+
+    record food {
+        nutrition: u32,
+        saturation: f32,
+        can-always-eat: bool,
+    }
+    record item-info {
+        /// `minecraft:apple`.
+        id: string,
+        /// The item's name, as plain text.
+        name: string,
+        max-stack-size: u32,
+        max-damage: u32,
+        /// For food.
+        food: option<food>,
+    }
+    record container {
+        /// The menu type: `minecraft:generic_9x3`, `minecraft:furnace`, ...
+        kind: string,
+        /// The title the server gave it, as plain text.
+        title: string,
+        /// The container's own slots (not the player's inventory below them).
+        slots: list<option<item-stack>>,
+    }
+    /// 0 to 8 the hotbar, 9 to 35 the rest, 36 to 39 the armour (feet to head), 40 the offhand.
+    get-slot: func(slot: u32) -> option<item-stack>;
+    get-held: func(hand: hand) -> option<item-stack>;
+    /// The stack carried by the cursor in a screen.
+    get-cursor: func() -> option<item-stack>;
+    /// The stack under the cursor in a screen.
+    get-hovered: func() -> option<item-stack>;
+    get-container: func() -> option<container>;
+    /// What an item is by default; None for an unknown id.
+    get-item-info: func(id: string) -> option<item-info>;
+}
+
+/// Capability `chat`: messages only the local player sees.
+interface chat {
+    use types.{rich-text};
+    /// Shown in chat after the mod's name, like a system message.
+    show: func(text: rich-text);
+    /// Shown above the hotbar (the action bar).
+    show-overlay: func(text: rich-text);
+}
+
+/// Capability `chat-send`: messages and commands sent as the player (to the server, or to the
+/// game in single player). At most 4 per second.
+interface chat-send {
+    /// A chat line, or a `/command`.
+    send: func(message: string) -> result<_, string>;
+}
+
+/// Capability `hud`: drawing on the screen. Calls draw only inside `events.hud-render`,
+/// `events.hud-element` and `events.screen-render`; elsewhere they do nothing. Coordinates are
+/// GUI pixels (`game.get-gui`), colours 0xAARRGGBB (alpha 0 is opaque, as a convenience:
+/// 0xRRGGBB draws solid).
+interface draw {
+    use types.{item-stack, rich-text};
+
+    fill: func(x: f32, y: f32, width: f32, height: f32, color: u32);
+    /// Top colour to bottom colour.
+    gradient: func(x: f32, y: f32, width: f32, height: f32, top: u32, bottom: u32);
+    /// Draws `text`, returns its width.
+    text: func(x: f32, y: f32, text: rich-text, color: u32, shadow: bool) -> f32;
+    text-width: func(text: rich-text) -> f32;
+    /// An item's icon (16x16), with its count and durability bar as in an inventory.
+    item: func(x: f32, y: f32, stack: item-stack);
+    /// An item's icon by id.
+    item-id: func(x: f32, y: f32, id: string);
+    /// A GUI sprite from the resource packs' atlas (`hud/food_full`, `container/slot`, a
+    /// content mod's own `<id>:my_icon` from `assets/<id>/textures/gui/sprites/`), stretched to
+    /// the size.
+    sprite: func(x: f32, y: f32, width: f32, height: f32, sprite: string);
+    /// The vanilla tooltip box with these lines at the point.
+    tooltip: func(x: f32, y: f32, lines: list<rich-text>);
+    /// A vanilla button.
+    button: func(x: f32, y: f32, width: f32, height: f32, label: rich-text, hovered: bool, active: bool);
+    /// A vanilla window background (the menus' panel).
+    panel: func(x: f32, y: f32, width: f32, height: f32);
+    /// Moves and scales what is drawn after it, until `pop`.
+    push: func(x: f32, y: f32, scale: f32);
+    pop: func();
+}
+
+/// Capability `hud`: the mod's retained text panel (API 0.1), drawn every frame until changed.
+interface hud {
+    enum corner {
+        top-left,
+        top-right,
+        bottom-left,
+        bottom-right,
+    }
+    record line {
+        text: string,
+        /// 0xRRGGBB.
+        color: u32,
+    }
+    set-panel: func(corner: corner, lines: list<line>);
+    clear: func();
+}
+
+/// Capability `ui`: the mod's own screens. A screen opened here is drawn and fed input
+/// through `events.screen-render`, `screen-mouse` and `screen-key` as `<mod id>:<name>`; Escape
+/// closes it.
+interface screens {
+    /// Opens `<mod id>:<name>` over whatever is shown.
+    open: func(name: string);
+    /// Closes the mod's screen if one is open.
+    close: func();
+}
+
+/// The device: always granted, on every device (where a part does not apply it does nothing).
+interface mobile {
+    /// Whether the player plays with a touch screen (the phone), so a mod can lay its screens
+    /// out for fingers.
+    has-touch: func() -> bool;
+    /// Shows (or hides) the on-screen keyboard over the mod's open screen, for a text field it
+    /// draws: on a phone there is no keyboard otherwise. Its keys come to `screen-key` with
+    /// their text. Closing the screen hides it. Without a touch screen it does nothing.
+    keyboard: func(shown: bool);
+}
+
+/// Capability `keys`: whether the mod's keybinds (from its registration) are held.
+interface keys {
+    is-down: func(id: string) -> bool;
+}
+
+/// Capability `sound`: sounds only the player hears.
+interface sound {
+    /// `minecraft:entity.experience_orb.pickup`, or a content mod's own sound event.
+    play: func(id: string, volume: f32, pitch: f32);
+}
+
+/// Capability `net`: custom payloads on the mod's channels (from its registration), to and
+/// from a server's plugins or mods (Fabric's ClientPlayNetworking).
+interface net {
+    /// Errs when not on a server, or the channel is not the mod's. At most 32 KiB.
+    send: func(channel: string, data: list<u8>) -> result<_, string>;
+}
+
+/// Capability `storage`: a per-mod folder of small key/value files, quota'd (docs/mods.md).
+/// Keys are `[a-z0-9_.-]{1,64}`, one path segment.
+interface storage {
+    /// None if `key` has never been `set`, or the key is not well-formed.
+    get: func(key: string) -> option<list<u8>>;
+    /// Errs on a malformed key or over quota (bytes for the whole mod).
+    set: func(key: string, value: list<u8>) -> result<_, string>;
+    /// No error if `key` was already absent.
+    delete: func(key: string);
+}
+
+/// What the game calls. Only the hooks `init` asks for are ever called.
+interface events {
+    use types.{block-pos, direction, hand, item-stack, rich-text};
+
+    /// A part of the vanilla HUD, which a mod's element is drawn before, after or instead of.
+    enum hud-part {
+        crosshair,
+        hotbar,
+        /// Hearts.
+        health,
+        armor,
+        food,
+        air,
+        mount-health,
+        experience,
+        effects,
+        boss-bars,
+        selected-item-name,
+        scoreboard,
+        chat,
+    }
+    enum placement {
+        before,
+        after,
+        /// The vanilla part is not drawn.
+        replace,
+    }
+    /// HudElementRegistry.attachElementBefore / After / replaceElement.
+    record hud-element {
+        id: string,
+        part: hud-part,
+        placement: placement,
+    }
+    /// KeyBindingHelper.registerKeyBinding.
+    record keybind {
+        id: string,
+        /// Shown to the player.
+        name: string,
+        /// The default key: `key.keyboard.r`, `key.keyboard.left.shift`, `key.mouse.middle`.
+        key: string,
+    }
+    record registration {
+        /// Chat commands, without the slash (ClientCommandRegistrationCallback). A name the
+        /// game or the server already uses is not taken (theirs runs).
+        commands: list<string>,
+        /// `tick` every game tick, 20 per second (ClientTickEvents.END_CLIENT_TICK).
+        tick: bool,
+        /// `frame` every rendered frame. Budget: 0.1 ms.
+        frame: bool,
+        /// `chat-received` for each chat line (ClientReceiveMessageEvents).
+        chat: bool,
+        /// `chat-sending` for each line the player sends (ClientSendMessageEvents).
+        chat-send: bool,
+        /// `hud-render` every frame, over the HUD (HudRenderCallback).
+        hud: bool,
+        hud-elements: list<hud-element>,
+        /// The game's screens: `screen-opened`, `screen-closed`, `screen-render`, `screen-mouse`
+        /// and `screen-key` (ScreenEvents). A mod's own screens get these whatever this says.
+        screens: bool,
+        /// `tooltip` for each item tooltip shown (ItemTooltipCallback).
+        tooltips: bool,
+        keybinds: list<keybind>,
+        /// Payload channels (`namespace:path`) the mod sends and receives on.
+        channels: list<string>,
+        /// `joined`, `left` and `dimension-changed` (ClientPlayConnectionEvents).
+        connection: bool,
+        /// `use-item`, `use-block`, `attack-entity`, `attack-block` and `block-broken`
+        /// (UseItemCallback, UseBlockCallback, AttackEntityCallback, AttackBlockCallback,
+        /// ClientPlayerBlockBreakEvents).
+        interaction: bool,
+        /// `player-hurt`.
+        damage: bool,
+    }
+    /// The GUI's size and the mouse, in GUI pixels.
+    record render-context {
+        width: u32,
+        height: u32,
+        mouse-x: f32,
+        mouse-y: f32,
+        /// Seconds since the last frame.
+        delta: f32,
+    }
+    enum mouse-action {
+        press,
+        release,
+        drag,
+        scroll,
+    }
+    record mouse-event {
+        action: mouse-action,
+        x: f32,
+        y: f32,
+        /// 0 left, 1 right, 2 middle (a tap on a touch screen is a left click).
+        button: u8,
+        /// Scroll lines, up positive.
+        scroll: f32,
+    }
+    record key-event {
+        /// `key.keyboard.e`, `key.keyboard.escape`, ...
+        key: string,
+        pressed: bool,
+        /// The text the key typed, if any.
+        text: string,
+        shift: bool,
+        control: bool,
+        alt: bool,
+    }
+    variant chat-action {
+        keep,
+        hide,
+        replace(rich-text),
+    }
+    variant send-action {
+        send,
+        cancel,
+        replace(string),
+    }
+
+    /// Once, after loading. An error keeps the mod off and is shown.
+    init: func() -> result<registration, string>;
+    tick: func(tick: u64);
+    frame: func(seconds: f32);
+    /// `/name args`: ok(some(text)) is shown as feedback, err(text) in red.
+    command: func(name: string, args: string) -> result<option<string>, string>;
+    /// A chat line the player receives, as plain text and as a JSON text component.
+    chat-received: func(plain: string, component: rich-text) -> chat-action;
+    /// A chat line or `/command` the player is about to send.
+    chat-sending: func(message: string) -> send-action;
+    hud-render: func(context: render-context);
+    render-hud-element: func(id: string, context: render-context);
+    /// `inventory`, `creative`, `container` (any container menu: `inventory.get-container`),
+    /// `pause`, `options`, `chat`, `death`, `sign`, `book`, `advancements`, `title`,
+    /// `multiplayer`, `worlds`, a mod's own `<id>:<name>`...
+    screen-opened: func(screen: string);
+    screen-closed: func(screen: string);
+    /// After the screen drew (a mod's own screen draws everything here).
+    screen-render: func(screen: string, context: render-context);
+    /// True when the mod used the event: the screen does not get it.
+    screen-mouse: func(screen: string, event: mouse-event) -> bool;
+    screen-key: func(screen: string, event: key-event) -> bool;
+    /// Lines added under an item's tooltip.
+    tooltip: func(stack: item-stack) -> list<rich-text>;
+    /// A keybind of the mod's pressed or released.
+    key: func(id: string, pressed: bool);
+    /// A payload on one of the mod's channels.
+    payload: func(channel: string, data: list<u8>);
+    /// The player entered a world: single player (None) or a server's address.
+    joined: func(server: option<string>);
+    left: func();
+    dimension-changed: func(dimension: string);
+    /// False cancels the action.
+    use-item: func(hand: hand) -> bool;
+    use-block: func(pos: block-pos, face: direction, hand: hand) -> bool;
+    attack-entity: func(entity: s32) -> bool;
+    attack-block: func(pos: block-pos, face: direction) -> bool;
+    /// The player broke a block (seen by the client).
+    block-broken: func(pos: block-pos, block: string);
+    /// The player lost health.
+    player-hurt: func(amount: f32);
+}
+
+world starling-mod {
+    import types;
+    import mobile;
+    import log;
+    import game;
+    import level;
+    import inventory;
+    import chat;
+    import chat-send;
+    import draw;
+    import hud;
+    import screens;
+    import keys;
+    import sound;
+    import net;
+    import storage;
+    export events;
+}

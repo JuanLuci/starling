@@ -16,7 +16,8 @@ use std::{
 };
 
 const TARGET: &str = "wasm32-unknown-unknown";
-const SDK_GIT: &str = "{ git = \"https://github.com/ludovic111/horizon\" }";
+/// Starling's SDK, from its repository (`--sdk-path` for a local one).
+const SDK_GIT: &str = "{ git = \"https://github.com/JuanLuci/starling\", branch = \"android\" }";
 
 fn main() -> ExitCode {
     // Cargo runs `cargo-horizon-mod horizon-mod <args>`.

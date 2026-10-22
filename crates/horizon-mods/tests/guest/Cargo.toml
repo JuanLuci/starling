@@ -10,7 +10,7 @@ description = "A mod that misbehaves on command, for horizon-mods' sandbox tests
 crate-type = ["cdylib"]
 
 [dependencies]
-horizon-mod-sdk = { path = "../../../horizon-mod-sdk" }
+starling-mod-sdk = { path = "../../../starling-mod-sdk" }
 
 [lints]
 workspace = true
