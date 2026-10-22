@@ -1803,8 +1803,7 @@ impl Game<'_> {
             return; // the result slot is recomputed from the grid
         }
         *self.slot_mut(internal) = item;
-        if internal >= super::stations::INPUT
-            && internal < super::stations::RESULT
+        if (super::stations::INPUT..super::stations::RESULT).contains(&internal)
             && self
                 .station
                 .as_ref()
