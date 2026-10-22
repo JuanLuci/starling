@@ -9,6 +9,7 @@
 <p align="center">
   <a href="#download"><b>Download</b></a> ·
   <a href="#android-status"><b>Android status</b></a> ·
+  <a href="#mods"><b>Mods</b></a> ·
   <a href="#build-from-source"><b>Build from source</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
   <a href="https://github.com/ludovic111/horizon"><b>Horizon</b></a>
@@ -34,6 +35,8 @@ There is no release yet: for now, [build the APK from source](#build-from-source
 - **Made for phones:** settings picked for your device on the first start, and a stats overlay (tap with three fingers) for FPS, memory and temperature.
 - **Horizon's own extras:** new menus (vanilla's are one setting away), graphics presets and more, all off by default where they would change the vanilla look. See [Settings](https://playhorizon.dev/docs/settings).
 - **Resource packs and data packs:** resource packs work, and data packs load functions, predicates and item modifiers.
+- **Servers:** offline-mode servers, behind a proxy such as Velocity too, with their resource packs, coloured chat, boss bars, signs, workstation menus (enchanting, anvil, smithing...), flight and the attributes they set.
+- **Mods:** mods in Rust or JavaScript change the HUD, add screens, commands and keys, read the world and talk to servers, on the phone as on the desktop. See [Mods](#mods).
 
 ## Android status
 
@@ -41,17 +44,26 @@ What the Android port covers so far. The game itself is Horizon's: its parity au
 
 | Part | Progress | Notes |
 | --- | --- | --- |
-| The game, singleplayer | `██████████` | Horizon's game, as on the desktop |
-| Touch controls | `██████████` | Every action, with an editable layout |
-| Starling folder and `.starling` files | `█████████░` | Packs and game files checked on a phone; worlds and mods by tests only |
-| Resource packs | `█████████░` | Pack icons show the unknown-pack texture, as in Horizon |
-| Performance tuning | `████████░░` | Tuned on one phone; mid-range devices not measured yet |
-| Shader packs | `██░░░░░░░░` | Built in, not tried on Android yet |
-| Mods | `██░░░░░░░░` | Horizon's mod system is built in, not tried on Android yet |
-| Playing with others | `█░░░░░░░░░` | Invites, Open to LAN and servers not tried on Android yet |
-| Physical controllers | `░░░░░░░░░░` | No Android backend yet |
-| Preparing the game files on the phone | `░░░░░░░░░░` | Needs a computer today |
-| Microsoft account sign-in | `░░░░░░░░░░` | Not yet: online-mode servers can't be joined |
+| The game, singleplayer | <img src="docs/media/progress/100.svg" alt="100%"> | Horizon's game, as on the desktop |
+| Touch controls | <img src="docs/media/progress/100.svg" alt="100%"> | Every action, with an editable layout |
+| Starling folder and `.starling` files | <img src="docs/media/progress/90.svg" alt="90%"> | Packs and game files checked on a phone; worlds and mods by tests only |
+| Resource packs | <img src="docs/media/progress/90.svg" alt="90%"> | Server packs too; pack icons show the unknown-pack texture, as in Horizon |
+| Performance tuning | <img src="docs/media/progress/80.svg" alt="80%"> | Tuned on one phone; mid-range devices not measured yet |
+| Mods | <img src="docs/media/progress/60.svg" alt="60%"> | Starling's mod API, Rust and JavaScript mods, tried on a phone; more of the game to open to them |
+| Servers | <img src="docs/media/progress/50.svg" alt="50%"> | Offline-mode servers and proxies; some old-version servers behind ViaVersion still pull the player back |
+| Shader packs | <img src="docs/media/progress/20.svg" alt="20%"> | Built in, not tried on Android yet |
+| Open to LAN and invites | <img src="docs/media/progress/10.svg" alt="10%"> | Not tried on Android yet |
+| Physical controllers | <img src="docs/media/progress/0.svg" alt="0%"> | No Android backend yet |
+| Preparing the game files on the phone | <img src="docs/media/progress/0.svg" alt="0%"> | Needs a computer today |
+| Microsoft account sign-in | <img src="docs/media/progress/0.svg" alt="0%"> | Not yet: online-mode servers can't be joined |
+
+## Mods
+
+Starling runs mods made for it and Horizon's API 0.1 mods. A mod is a sandboxed WebAssembly component, or a JavaScript file, that the player turns on in **Options > Mods**; it asks in its `horizon-mod.toml` for what it may do (read the game, draw on the HUD, use the chat...), and gets nothing else. Starling's API is the WIT package `starling:mods` ([starling.wit](crates/starling-mod-sdk/wit/starling.wit)), with hooks named after Fabric's events. A mod for it says `api = "starling-0.1"`.
+
+- **JavaScript:** a mod is its `horizon-mod.toml` and a `mod.js`, an ES module importing `starling:mods/...` and exporting `events`; Starling's shared JavaScript engine runs it. See [hello-js](crates/starling-mod-sdk/examples/hello-js).
+- **Rust:** `cargo horizon-mod new`, then `cargo horizon-mod build`, with [starling-mod-sdk](crates/starling-mod-sdk). See [food-info](crates/starling-mod-sdk/examples/food-info) (in the spirit of AppleSkin) and [waypoints](crates/starling-mod-sdk/examples/waypoints) (a screen of its own).
+- **Trying a mod:** `starling-mod run <mod>` (`cargo run -p starling-mod-cli -- run <mod>` from this repository) runs it without the game, in a pretend world, and says in JSON what it did; `cargo horizon-mod push` copies it to the phone over adb, and the game reloads it.
 
 ## Build from source
 
@@ -62,6 +74,8 @@ git clone https://github.com/JuanLuci/starling.git
 cd starling
 python packaging/android/build_apk.py            # the APK lands in target/android/
 ```
+
+With [Node.js](https://nodejs.org) installed, the build also makes the JavaScript engine JavaScript mods run in; without it the APK runs the other mods only.
 
 Starling contains no game files and never downloads them. It builds its resources from **your own copy** of Minecraft: Java Edition 26.3, verified against the checksums in `research-lock.json`, the same way Horizon does:
 
