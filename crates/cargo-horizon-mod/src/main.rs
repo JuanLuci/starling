@@ -4,6 +4,8 @@
 //! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`.
 //! - `run [--game <horizon-client>] [-- <game args>]`: build, then play with
 //!   the mod; run `build` again and the game reloads it.
+//! - `push [--debug] [--to <folder>]`: build, then copy the `.hmod` to the Starling on the phone
+//!   adb reaches (`ANDROID_SERIAL` picks one of several); the game reloads it within a second.
 use horizon_mods::{
     Manifest, Package,
     manifest::{MANIFEST, component_imports, componentize},
@@ -28,7 +30,8 @@ fn main() -> ExitCode {
             println!("Built {}", p.display());
         }),
         Some("run") => run(&args[1..]),
-        _ => Err("usage: cargo horizon-mod new <path> | build [--debug] | run [--game <horizon-client>] [-- <game args>]".into()),
+        Some("push") => push(&args[1..]),
+        _ => Err("usage: cargo horizon-mod new <path> | build [--debug] | run [--game <horizon-client>] [-- <game args>] | push [--debug] [--to <folder>]".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -173,6 +176,66 @@ fn run(args: &[String]) -> Result<(), String> {
         .success()
         .then_some(())
         .ok_or_else(|| format!("the game exited with {status}"))
+}
+
+/// Starling's mods folder on a phone (its game folder in shared storage).
+const PHONE_MODS: &str = "/storage/emulated/0/Starling/horizon-mods";
+
+/// adb: `ADB`, the Android SDK's (`ANDROID_HOME`, or the default install), else the PATH's.
+fn adb() -> PathBuf {
+    if let Some(adb) = std::env::var_os("ADB") {
+        return adb.into();
+    }
+    let exe = if cfg!(windows) { "adb.exe" } else { "adb" };
+    let sdk = std::env::var_os("ANDROID_HOME")
+        .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"))
+        .map(PathBuf::from)
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Android/Sdk"))
+            } else if cfg!(target_os = "macos") {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Android/sdk"))
+            } else {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Android/Sdk"))
+            }
+        });
+    sdk.map(|s| s.join("platform-tools").join(exe))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| exe.into())
+}
+
+fn push(args: &[String]) -> Result<(), String> {
+    let path = build(!args.iter().any(|a| a == "--debug"))?;
+    let folder = flag(args, "--to")
+        .unwrap_or(PHONE_MODS)
+        .trim_end_matches('/');
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("unexpected mod file name")?;
+    let (partial, target) = (
+        format!("{folder}/{name}.partial"),
+        format!("{folder}/{name}"),
+    );
+    let adb = adb();
+    let run = |args: &[&str]| -> Result<(), String> {
+        let status = Command::new(&adb)
+            .args(args)
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|e| format!("{}: {e} (set ADB or ANDROID_HOME)", adb.display()))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("adb {} failed ({status})", args.join(" ")))
+    };
+    // Copied under another name, then renamed: the game never reads half a mod.
+    run(&["push", &path.to_string_lossy(), &partial])?;
+    run(&["shell", "mv", "-f", &partial, &target])?;
+    println!(
+        "Pushed {name} to {folder}: the game reloads it (turn it on in Options > Mods the first time)"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

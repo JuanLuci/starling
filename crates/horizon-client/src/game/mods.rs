@@ -57,6 +57,15 @@ pub(super) struct ModsState {
     measure: Option<Measure>,
     /// Mods loading on their own thread ([`Game::start_mods`]), and since when.
     loading: Option<(Receiver<Mods>, Instant)>,
+    /// The mods folder as last looked at (each mod with its size and time), and when: a mod
+    /// copied in, replaced or removed (`cargo horizon-mod push`, a file manager) restarts them.
+    folder: Option<Vec<FolderMod>>,
+    /// A change seen once: the mods restart when the next look finds the folder the same
+    /// (replacing a file on Android's shared storage shows it missing for a moment).
+    changed: Option<Vec<FolderMod>>,
+    watched: Option<Instant>,
+    /// The load running restarts the mods after the folder changed: say so when it ends.
+    reloading: bool,
     /// The "Starting mods" note is up.
     announced: bool,
 }
@@ -68,6 +77,12 @@ impl ModsState {
             .unwrap_or_else(|| vanilla::game_dispatcher())
     }
 }
+/// A mod in the folder as the watcher saw it: path, size, file id and change time. On Android's
+/// shared storage a replaced file's modification time goes back to the old file's a moment
+/// later (and the change time's fraction of a second with it), so Unix uses the inode and the
+/// change time's seconds, which a replacement sets.
+type FolderMod = (PathBuf, u64, u64, i128);
+
 /// How often dev mods are checked for a rebuild.
 const RELOAD_CHECK: Duration = Duration::from_secs(1);
 /// How long mods may take to start before a note says so (a large one compiling the first time).
@@ -256,8 +271,71 @@ impl Game<'_> {
             Err(e) => log::error!("Horizon: could not start mods: {e}"),
         }
     }
+    /// The mods folder's mods, each with its size and time (a folder mod's by its component).
+    fn mods_folder() -> Vec<FolderMod> {
+        let dir = Self::options_path().with_file_name(mod_list::DIR);
+        horizon_mods::find(&dir)
+            .into_iter()
+            .map(|path| {
+                let file = if path.is_dir() {
+                    path.join(horizon_mods::manifest::WASM)
+                } else {
+                    path.clone()
+                };
+                let Ok(meta) = std::fs::metadata(&file) else {
+                    return (path, 0, 0, 0);
+                };
+                #[cfg(unix)]
+                let (id, time) = {
+                    use std::os::unix::fs::MetadataExt;
+                    // Whole seconds: the fraction too changes back a moment after a copy.
+                    (meta.ino(), i128::from(meta.ctime()))
+                };
+                #[cfg(not(unix))]
+                let (id, time) = (
+                    0,
+                    meta.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_nanos() as i128),
+                );
+                (path, meta.len(), id, time)
+            })
+            .collect()
+    }
+    /// Once a second, in menus and in a world: the mods start again when the folder changed.
+    fn watch_mods_folder(&mut self) {
+        if self
+            .mods
+            .watched
+            .is_some_and(|t| t.elapsed() < RELOAD_CHECK)
+        {
+            return;
+        }
+        self.mods.watched = Some(Instant::now());
+        if self.mods.loading.is_some() {
+            return;
+        }
+        let now = Self::mods_folder();
+        match &self.mods.folder {
+            Some(was) if *was != now => {
+                if self.mods.changed.as_ref() != Some(&now) {
+                    self.mods.changed = Some(now);
+                    return;
+                }
+                log::info!("Horizon: the mods folder changed; starting the mods again");
+                self.mods.changed = None;
+                self.mods.folder = Some(now);
+                self.mods.reloading = true;
+                self.start_mods();
+            }
+            Some(_) => self.mods.changed = None,
+            None => self.mods.folder = Some(now),
+        }
+    }
     /// Each frame: the mods a load finished, in place of the ones running.
     pub(super) fn poll_mods(&mut self) {
+        self.watch_mods_folder();
         let Some((receive, started)) = &self.mods.loading else {
             return;
         };
@@ -283,7 +361,10 @@ impl Game<'_> {
                 .take()
                 .map_or(Duration::ZERO, |(_, t)| t.elapsed())
         );
-        if std::mem::take(&mut self.mods.announced) {
+        if std::mem::take(&mut self.mods.reloading) {
+            self.imports.say("Mods reloaded".into());
+            self.mods.announced = false;
+        } else if std::mem::take(&mut self.mods.announced) {
             self.imports.say("Mods started".into());
         }
         self.mods.mods = mods;
