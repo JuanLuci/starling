@@ -573,6 +573,41 @@ impl PreparedTextures {
     }
 }
 
+/// One black frame on a surface just configured.
+fn clear_surface(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface: &wgpu::Surface,
+    format: wgpu::TextureFormat,
+) {
+    let frame = match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        _ => return,
+    };
+    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(format),
+        ..Default::default()
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("First clear"),
+    });
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("First clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    queue.submit([encoder.finish()]);
+    queue.present(frame);
+}
+
 fn mip_chain(
     pixels: &[u8],
     size: u32,
@@ -958,6 +993,12 @@ impl Renderer {
                 ));
             }
             surface.configure(&device, &config);
+            // Until its first frame the window shows what was behind it (on Android, the
+            // launcher through the app's empty window): clear it now, before the pipelines
+            // take their few hundred milliseconds.
+            if previous.is_none() {
+                clear_surface(&device, &queue, surface, config.format);
+            }
             (config, caps.present_modes.clone())
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
