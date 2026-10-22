@@ -614,6 +614,7 @@ impl Game<'_> {
         horizon_client::crash::clear_detail("Server");
         self.clock = Default::default();
         self.clear_remote_world();
+        self.drop_server_packs();
         let saves = std::env::current_dir()?.join("saves");
         let mut title = horizon_client::title::Title::new(saves.clone(), &self.options.resources);
         title.last_server = self.settings.file.string("lastServer");
@@ -827,6 +828,8 @@ impl Game<'_> {
                     self.merge_remote_commands();
                     self.register_mod_channels();
                 }
+                Event::ResourcePack(push) => self.server_pack_push(push),
+                Event::ResourcePackPop(id) => self.server_pack_pop(id),
                 Event::Transfer(address) => {
                     if let Some(r) = self.remote.as_mut() {
                         r.transfer = Some(address);
@@ -870,6 +873,7 @@ impl Game<'_> {
                 return self.connect_server(&address, &name);
             }
         }
+        self.poll_server_packs();
         self.send_suggestion_request();
         Ok(())
     }

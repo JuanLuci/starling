@@ -38,8 +38,21 @@ pub fn open_folder(dir: &Path) {
 }
 /// The resource root to load from, given the vanilla root and the selection.
 pub fn startup_root(vanilla: &Path, selected: &[String]) -> std::io::Result<PathBuf> {
+    root_with_server(vanilla, selected, &[])
+}
+/// The same with a server's packs on top (`ServerPackManager`'s, above the player's).
+fn root_with_server(
+    vanilla: &Path,
+    selected: &[String],
+    server: &[(u128, PathBuf)],
+) -> std::io::Result<PathBuf> {
     let all = packs::discover(vanilla, &packs_dir());
-    let enabled = packs::enabled(&all, selected);
+    let mut enabled = packs::enabled(&all, selected);
+    enabled.extend(
+        server
+            .iter()
+            .filter_map(|(id, zip)| packs::server_pack(zip, *id)),
+    );
     packs::resource_root(vanilla, &enabled, &cache_dir())
 }
 fn info(p: &Pack) -> PackInfo {
@@ -109,20 +122,7 @@ impl Game<'_> {
     /// particle and font textures), item models, sounds, languages, GUI
     /// metadata and the cloud and world border textures.
     pub(super) fn reload_packs(&mut self) {
-        // Pack reload updates tail-owned mob metadata. Keep menus responsive
-        // until those resources exist, then apply the latest selection once.
-        if self.rest_loader.is_some() || self.world_loader.is_some() {
-            self.pending_pack_reload = true;
-            return;
-        }
-        let vanilla = self.vanilla_root();
-        if self.ui.vanilla_root.as_os_str().is_empty() {
-            self.ui.vanilla_root = vanilla.clone();
-        }
-        let result = startup_root(&vanilla, &self.settings.resource_packs)
-            .map_err(Into::into)
-            .and_then(|root| self.reload_resources(&root));
-        if let Err(e) = result {
+        if let Err(e) = self.try_reload_packs() {
             log::warn!("Horizon: resource reload failed: {e}");
             if self.screen != super::Screen::Options {
                 self.open_options_at(
@@ -132,6 +132,23 @@ impl Game<'_> {
             }
             self.ui.options.resource_error = Some(e.to_string());
         }
+    }
+    /// `reload_packs`, with the error for the caller (a server's pack failing to load).
+    pub(super) fn try_reload_packs(&mut self) -> horizon_client::Result<()> {
+        // Pack reload updates tail-owned mob metadata. Keep menus responsive
+        // until those resources exist, then apply the latest selection once.
+        if self.rest_loader.is_some() || self.world_loader.is_some() {
+            self.pending_pack_reload = true;
+            return Ok(());
+        }
+        let vanilla = self.vanilla_root();
+        if self.ui.vanilla_root.as_os_str().is_empty() {
+            self.ui.vanilla_root = vanilla.clone();
+        }
+        let server = self.server_packs.applied();
+        root_with_server(&vanilla, &self.settings.resource_packs, &server)
+            .map_err(Into::into)
+            .and_then(|root| self.reload_resources(&root))
     }
     fn reload_resources(&mut self, root: &Path) -> horizon_client::Result<()> {
         let render = std::sync::Arc::new(self.pack.assets.reload(root)?);

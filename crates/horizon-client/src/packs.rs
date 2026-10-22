@@ -287,6 +287,14 @@ fn pack(id: String, title: Text, source: Source) -> Option<Pack> {
         source,
     })
 }
+/// A server's pack (`ServerPackManager`), downloaded to `zip`: over the player's own.
+pub fn server_pack(zip: &Path, id: u128) -> Option<Pack> {
+    pack(
+        format!("server/{id:032x}"),
+        Text::translate("resourcePack.server.name", &[]),
+        Source::Zip(zip.to_owned()),
+    )
+}
 /// Built-in and `resourcepacks/` packs (vanilla itself excluded), sorted like
 /// the pack screen (built-ins first, then by name).
 pub fn discover(resources: &Path, packs_dir: &Path) -> Vec<Pack> {
@@ -375,10 +383,13 @@ fn link(target: &Path, at: &Path) -> io::Result<()> {
 #[cfg(not(unix))]
 fn link(target: &Path, at: &Path) -> io::Result<()> {
     if target.is_dir() {
-        Ok(())
-    } else {
-        fs::copy(target, at).map(|_| ())
+        // A junction: an untouched folder must be there for the loader to find its files.
+        #[cfg(windows)]
+        return junction::create(std::path::absolute(target)?, at);
+        #[cfg(not(windows))]
+        return Ok(());
     }
+    fs::copy(target, at).map(|_| ())
 }
 /// Build `out` as `vanilla` with the packs' files layered on top (packs in
 /// load order, last wins). Untouched directories are symlinks into vanilla.

@@ -129,6 +129,7 @@ mod scoreboard;
 mod screens;
 mod sculk;
 mod sculk_fixture;
+mod server_packs;
 mod server_travel;
 mod shader_packs;
 mod shield;
@@ -1405,6 +1406,8 @@ struct Game<'a> {
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
+    /// The server's resource packs (game/server_packs.rs).
+    server_packs: server_packs::ServerPacks,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
@@ -4524,6 +4527,7 @@ impl Game<'_> {
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
         self.draw_mod_screens(&mut batch);
+        self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
@@ -10328,8 +10332,9 @@ impl ApplicationHandler for Game<'_> {
             }
             return;
         }
-        // The mods' turn: their screens, the game's screens' events, their keybinds.
-        if self.mods_window_event(&event) {
+        // A server's resource pack prompt, then the mods: their screens, the game's screens'
+        // events, their keybinds.
+        if self.pack_prompt_window_event(&event) || self.mods_window_event(&event) {
             return;
         }
         let result: Result<()> = (|| {
@@ -11409,6 +11414,7 @@ impl<'a> Game<'a> {
             files_offer: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
+            server_packs: Default::default(),
             sky_darken_memo: Default::default(),
             persist: Default::default(),
             remote: None,

@@ -49,6 +49,11 @@ pub enum Event {
     Reconfigured(Arc<Dynamic>),
     /// ClientboundTransferPacket: connect to this address instead.
     Transfer(String),
+    /// ClientboundResourcePackPushPacket (configuration or play): the game answers with
+    /// [`Session::pack_response`].
+    ResourcePack(cfg::ResourcePackPush),
+    /// ClientboundResourcePackPopPacket: one pack (or all, None) is no longer wanted.
+    ResourcePackPop(Option<u128>),
     /// The connection ended. `from_server`: the server gave the reason (or
     /// the connection was refused for good), rather than the connection
     /// failing (auto-reconnect retries only failures and shutdowns).
@@ -101,7 +106,8 @@ impl Session {
         let (send, events) = channel();
         let writer = Arc::new(Mutex::new(None));
         let counters = Arc::new(Mutex::new(None));
-        let configuring = Arc::new(AtomicBool::new(false));
+        // Login's configuration comes first: no play packet until it ends.
+        let configuring = Arc::new(AtomicBool::new(true));
         let (thread_writer, thread_counters) = (writer.clone(), counters.clone());
         let thread_configuring = configuring.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
@@ -166,6 +172,22 @@ impl Session {
         }
         if let Some(w) = writer.as_mut()
             && w.send(&packet.encode()).is_err()
+        {
+            w.shutdown();
+        }
+    }
+    /// ServerboundResourcePackPacket in the connection's phase: 0 loaded, 1 declined, 2 failed
+    /// download, 3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded.
+    pub fn pack_response(&self, id: u128, action: i32) {
+        let response = cfg::ResourcePackResponse { id, action };
+        let mut writer = self.writer.lock().unwrap();
+        let bytes = if self.configuring.load(Ordering::SeqCst) {
+            cfg::Serverbound::ResourcePack(response).encode()
+        } else {
+            play::Serverbound::ResourcePack(response).encode()
+        };
+        if let Some(w) = writer.as_mut()
+            && w.send(&bytes).is_err()
         {
             w.shutdown();
         }
@@ -399,6 +421,7 @@ fn run(
         Ok(registries) => registries,
         Err(kicked) => return Ok(kicked),
     };
+    configuring.store(false, Ordering::SeqCst);
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
         uuid: profile.uuid,
@@ -438,11 +461,17 @@ fn receive_play(
             play::Clientbound::KeepAlive(k) => reply(play::Serverbound::KeepAlive(k)),
             play::Clientbound::BundleDelimiter(_) => {}
             play::Clientbound::ResourcePackPush(p) => {
-                // Declined: Horizon has no server resource packs.
-                reply(play::Serverbound::ResourcePack(cfg::ResourcePackResponse {
-                    id: p.id,
-                    action: 1,
-                }));
+                let _ = send.send(Event::ResourcePack(p));
+            }
+            play::Clientbound::Unknown(id, data)
+                if id == horizon_protocol::ids::play::clientbound::RESOURCE_PACK_POP =>
+            {
+                let mut r = horizon_protocol::buf::Reader::new(&data);
+                let pack = match r.bool() {
+                    Ok(true) => r.uuid().ok(),
+                    _ => None,
+                };
+                let _ = send.send(Event::ResourcePackPop(pack));
             }
             play::Clientbound::StartConfiguration(_) => {
                 // Under the writer's lock: no play packet of the game's follows the
@@ -504,11 +533,13 @@ fn configure(
             cfg::Clientbound::CodeOfConduct(_) => {
                 reply(cfg::Serverbound::AcceptCodeOfConduct(Empty))?
             }
+            // The game decides, downloads and answers (Session::pack_response); the server
+            // waits for it before finishing the configuration.
             cfg::Clientbound::ResourcePackPush(p) => {
-                reply(cfg::Serverbound::ResourcePack(cfg::ResourcePackResponse {
-                    id: p.id,
-                    action: 1,
-                }))?
+                let _ = send.send(Event::ResourcePack(p));
+            }
+            cfg::Clientbound::ResourcePackPop(p) => {
+                let _ = send.send(Event::ResourcePackPop(p.id));
             }
             cfg::Clientbound::CookieRequest(q) => {
                 reply(cfg::Serverbound::CookieResponse(cfg::CookieResponse {

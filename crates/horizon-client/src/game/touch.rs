@@ -74,6 +74,7 @@ impl Game<'_> {
             || self.book.is_some()
             || self.command_block_screen.is_some()
             || self.mods.screen.is_some()
+            || self.server_packs.prompting()
     }
 
     /// A screen opened in a world that the back key or the close button leaves.
