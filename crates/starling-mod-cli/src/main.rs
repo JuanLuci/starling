@@ -13,15 +13,29 @@
 //! it), `{"click": [x, y], "button": 0}`, `{"type": "text"}`, `{"press": "key.keyboard.enter"}`,
 //! `{"close": true}`, `{"join": "server"}`, `{"leave": true}`, `{"hurt": 2.0}`.
 //! Without steps it ticks once and draws the HUD.
+//!
+//! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
+//! `--resources <dir>` is a prepared resources folder (the one holding `items.json` and
+//! `assets/minecraft`): the pretend world gets its items and its font's text widths.
+//! `--png <dir>` also draws each step that drew something to `<dir>/step<N>.png` (its path in the
+//! step's line), with that folder's font and sprites, or plain shapes without one.
+mod render;
+
 use horizon_mods::{
-    Clock, DrawOp, GameMode, Gui, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output,
-    Player, RenderContext, Snapshot, Status,
+    Clock, DrawOp, Food, GameMode, Gui, ItemCatalog, ItemInfo, ItemStack, KeyEvent, Mods,
+    MouseAction, MouseEvent, Output, Player, RenderContext, Snapshot, Status,
 };
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::ExitCode, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Arc,
+    time::Instant,
+};
 
-const USAGE: &str =
-    "usage: starling-mod run <mod folder or .hmod> [--scenario <file.json>] [--step <json>]...";
+const USAGE: &str = "usage: starling-mod run <mod folder or .hmod> [--scenario <file.json>] \
+    [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>]";
 
 fn main() -> ExitCode {
     log::set_logger(&JSON_LOG).expect("the only logger");
@@ -72,6 +86,7 @@ fn run(args: &[String]) -> Result<(), String> {
         .ok_or(USAGE)?;
     let mut scenario = json!({});
     let mut steps: Vec<Value> = Vec::new();
+    let (mut png, mut resources, mut storage) = (None, None, None);
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
         let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
@@ -86,6 +101,9 @@ fn run(args: &[String]) -> Result<(), String> {
             "--step" => {
                 steps.push(serde_json::from_str(value).map_err(|e| format!("--step {value}: {e}"))?)
             }
+            "--png" => png = Some(PathBuf::from(value)),
+            "--resources" => resources = Some(PathBuf::from(value)),
+            "--storage" => storage = Some(PathBuf::from(value)),
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
@@ -93,11 +111,20 @@ fn run(args: &[String]) -> Result<(), String> {
         steps = vec![json!({ "tick": 1 }), json!({ "hud": {} })];
     }
 
-    // The engine's compiled code is kept between runs, as the game keeps it.
-    let cache = std::env::temp_dir().join("starling-mod-cache");
+    // A mod keeps its storage beside itself (`.horizon-mod-data`), so it runs from a copy in the
+    // storage folder: a new one for this run unless `--storage` names one.
+    let place = Place::new(storage)?;
+    let copy = place.dir.join(path.file_name().ok_or(USAGE)?);
+    copy_all(&path, &copy)?;
+
+    // The engine's compiled code is kept between runs, as the game keeps it; a folder for each
+    // mod, since a load removes the compiled code of mods it did not load.
+    let cache = std::env::temp_dir()
+        .join("starling-mod-cache")
+        .join(copy.file_name().ok_or(USAGE)?);
     let started = Instant::now();
     let mut mods = Mods::load_cached(
-        std::slice::from_ref(&path),
+        std::slice::from_ref(&copy),
         |_| true,
         |_| false,
         Some(&cache),
@@ -129,20 +156,86 @@ fn run(args: &[String]) -> Result<(), String> {
         height: scenario["gui"]["height"].as_u64().unwrap_or(240) as u32,
         scale: scenario["gui"]["scale"].as_f64().unwrap_or(2.0) as f32,
     };
+    let items = resources.as_deref().and_then(catalog).map(Arc::new);
+    let mut resources = render::Resources::new(resources);
     let mut world = snapshot(&scenario["player"]);
     world.gui = Some(gui);
+    world.items = items.clone().map(|c| c as Arc<dyn ItemCatalog>);
+    world.measure = resources.measure();
     mods.set_snapshot(world);
     let mut screen: Option<String> = None;
     let mut ticks = 0;
-    for step in steps {
-        let result = play(&mut mods, &step, &mut screen, &mut ticks, &gui);
-        emit(json!({ "event": "step", "step": step, "result": result }));
+    if let Some(dir) = &png {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if !resources.has_font() {
+            emit(
+                json!({ "event": "note", "text": "no font in --resources: text is drawn as boxes" }),
+            );
+        }
+    }
+    let items = items.as_deref();
+    for (n, step) in steps.into_iter().enumerate() {
+        let (result, drawn) = play(&mut mods, &step, &mut screen, &mut ticks, &gui, items);
+        let file = match (&png, drawn) {
+            (Some(dir), Some(ops)) if !ops.is_empty() => {
+                let scale = gui.scale.round().max(1.0) as u32;
+                let file = dir.join(format!("step{n}.png"));
+                render::render(&ops, gui.width, gui.height, scale, &mut resources).save(&file)?;
+                Some(file)
+            }
+            _ => None,
+        };
+        emit(json!({ "event": "step", "step": step, "result": result, "png": file }));
         outputs(&mut mods, &mut screen);
         if !mods.is_running() {
             break;
         }
     }
     Ok(())
+}
+
+/// The folder a run's copy of the mod (and so its storage) is in, removed after the run when
+/// it was made for it.
+struct Place {
+    dir: PathBuf,
+    temporary: bool,
+}
+
+impl Place {
+    fn new(storage: Option<PathBuf>) -> Result<Self, String> {
+        let temporary = storage.is_none();
+        let dir = storage.unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("starling-mod-run-{}", std::process::id()))
+        });
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(Place { dir, temporary })
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        if self.temporary {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+/// `from` (a file or a folder) copied to `to`, over what was there.
+fn copy_all(from: &Path, to: &Path) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", from.display());
+    if from.is_dir() {
+        if to.exists() {
+            std::fs::remove_dir_all(to).map_err(fail)?;
+        }
+        std::fs::create_dir_all(to).map_err(fail)?;
+        for entry in std::fs::read_dir(from).map_err(fail)? {
+            let entry = entry.map_err(fail)?;
+            copy_all(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to).map(drop).map_err(fail)
+    }
 }
 
 /// What the mod asked of the game since the last look, a line each; a screen it opened or
@@ -181,14 +274,16 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>) {
     }
 }
 
-/// One step on the mod; what its hook returned.
+/// One step on the mod; what its hook returned, and what it drew.
 fn play(
     mods: &mut Mods,
     step: &Value,
     screen: &mut Option<String>,
     ticks: &mut u64,
     gui: &Gui,
-) -> Value {
+    items: Option<&Catalog>,
+) -> (Value, Option<Vec<DrawOp>>) {
+    let drawn = |ops: Vec<DrawOp>| (draw_ops(&ops), Some(ops));
     let context = |v: &Value| RenderContext {
         width: v["width"].as_u64().map_or(gui.width, |w| w as u32),
         height: v["height"].as_u64().map_or(gui.height, |h| h as u32),
@@ -201,52 +296,78 @@ fn play(
             *ticks += 1;
             mods.tick(*ticks);
         }
-        return json!({ "ticks": *ticks });
+        return (json!({ "ticks": *ticks }), None);
     }
     if let Some(seconds) = step["frame"].as_f64() {
         mods.frame(seconds as f32);
-        return Value::Null;
+        return (Value::Null, None);
     }
     if let Some(line) = step["command"].as_str() {
-        return json!({ "handled": mods.command(line) });
+        return (json!({ "handled": mods.command(line) }), None);
     }
     if let Some(text) = step["chat"].as_str() {
-        return json!({ "verdict": format!("{:?}", mods.chat(text, &json!({ "text": text }).to_string())) });
+        let verdict = mods.chat(text, &json!({ "text": text }).to_string());
+        return (json!({ "verdict": format!("{verdict:?}") }), None);
     }
     if let Some(text) = step["send"].as_str() {
-        return json!({ "sent": mods.chat_sending(text) });
+        return (json!({ "sent": mods.chat_sending(text) }), None);
     }
     if step.get("hud").is_some() {
-        return draw_ops(&mods.hud_render(context(&step["hud"])));
+        return drawn(mods.hud_render(context(&step["hud"])));
     }
     if let Some(id) = step["tooltip"].as_str() {
+        let info = items.and_then(|c| c.info(id));
         let stack = ItemStack {
             id: id.into(),
             count: 1,
             damage: 0,
-            max_damage: 0,
-            name: id.rsplit(':').next().unwrap_or(id).replace('_', " "),
+            max_damage: info.as_ref().map_or(0, |i| i.max_damage),
+            name: info.map_or_else(
+                || id.rsplit(':').next().unwrap_or(id).replace('_', " "),
+                |i| i.name,
+            ),
             components: String::new(),
         };
-        return json!({ "lines": mods.tooltip(&stack) });
+        let lines = mods.tooltip(&stack);
+        // The item's tooltip as the game shows it: its name, then the mod's lines.
+        let shown = [vec![stack.name.clone()], lines.clone()].concat();
+        let ops = vec![DrawOp::Tooltip {
+            x: 20.0,
+            y: 32.0,
+            lines: shown,
+        }];
+        return (json!({ "lines": lines }), Some(ops));
     }
     if let Some(id) = step["key"].as_str() {
         let pressed = step["pressed"].as_bool().unwrap_or(true);
         let Some((owner, _)) = mods.keybinds().into_iter().find(|(_, k)| k.id == id) else {
-            return json!({ "error": format!("no keybind {id}") });
+            return (json!({ "error": format!("no keybind {id}") }), None);
         };
         mods.key(&owner, id, pressed);
-        return Value::Null;
+        return (Value::Null, None);
+    }
+    if let Some(server) = step.get("join") {
+        mods.joined(server.as_str());
+        return (Value::Null, None);
+    }
+    if step.get("leave").is_some() {
+        mods.left();
+        return (Value::Null, None);
+    }
+    if let Some(amount) = step["hurt"].as_f64() {
+        mods.player_hurt(amount as f32);
+        return (Value::Null, None);
     }
     if let Some(name) = step["screen"].as_str() {
         if screen.as_deref() != Some(name) {
             mods.screen_opened(name);
             *screen = Some(name.to_owned());
         }
-        return draw_ops(&mods.screen_render(name, context(step)));
+        return drawn(mods.screen_render(name, context(step)));
     }
     let Some(open) = screen.clone() else {
-        return json!({ "error": format!("unknown step, or one for a screen while none is open: {step}") });
+        let error = format!("unknown step, or one for a screen while none is open: {step}");
+        return (json!({ "error": error }), None);
     };
     if let Some([x, y]) = step["click"].as_array().map(|a| a.as_slice()) {
         let button = step["button"].as_u64().unwrap_or(0) as u8;
@@ -259,7 +380,8 @@ fn play(
         };
         let handled = mods.screen_mouse(&open, event(MouseAction::Press));
         mods.screen_mouse(&open, event(MouseAction::Release));
-        return json!({ "handled": handled, "then": draw_ops(&mods.screen_render(&open, context(step))) });
+        let (then, ops) = drawn(mods.screen_render(&open, context(step)));
+        return (json!({ "handled": handled, "then": then }), ops);
     }
     let key = |key: &str, text: &str| KeyEvent {
         key: key.into(),
@@ -279,18 +401,19 @@ fn play(
                 ),
             );
         }
-        return draw_ops(&mods.screen_render(&open, context(step)));
+        return drawn(mods.screen_render(&open, context(step)));
     }
     if let Some(name) = step["press"].as_str() {
         let handled = mods.screen_key(&open, &key(name, ""));
-        return json!({ "handled": handled, "then": draw_ops(&mods.screen_render(&open, context(step))) });
+        let (then, ops) = drawn(mods.screen_render(&open, context(step)));
+        return (json!({ "handled": handled, "then": then }), ops);
     }
     if step.get("close").is_some() {
         mods.screen_closed(&open);
         *screen = None;
-        return Value::Null;
+        return (Value::Null, None);
     }
-    json!({ "error": format!("unknown step: {step}") })
+    (json!({ "error": format!("unknown step: {step}") }), None)
 }
 
 /// What a render hook drew, an object a call.
@@ -310,6 +433,43 @@ fn draw_ops(ops: &[DrawOp]) -> Value {
             DrawOp::Pop => json!({ "pop": true }),
         })
         .collect()
+}
+
+/// The game's items, from a prepared resources folder's `items.json`, named from its
+/// `en_us.json`.
+struct Catalog(HashMap<String, ItemInfo>);
+
+impl ItemCatalog for Catalog {
+    fn info(&self, id: &str) -> Option<ItemInfo> {
+        self.0.get(id).cloned()
+    }
+}
+
+fn catalog(root: &Path) -> Option<Catalog> {
+    let read = |path: &str| -> Option<Value> {
+        serde_json::from_slice(&std::fs::read(root.join(path)).ok()?).ok()
+    };
+    let items = read("items.json")?;
+    let lang = read("assets/minecraft/lang/en_us.json").unwrap_or_default();
+    let items = items.as_object()?.iter().map(|(id, c)| {
+        let key = c["minecraft:item_name"]["translate"]
+            .as_str()
+            .unwrap_or_default();
+        let food = c.get("minecraft:food").map(|f| Food {
+            nutrition: f["nutrition"].as_u64().unwrap_or(0) as u32,
+            saturation: f["saturation"].as_f64().unwrap_or(0.0) as f32,
+            can_always_eat: f["can_always_eat"].as_bool().unwrap_or(false),
+        });
+        let info = ItemInfo {
+            id: id.clone(),
+            name: lang[key].as_str().unwrap_or(id).to_owned(),
+            max_stack_size: c["minecraft:max_stack_size"].as_u64().unwrap_or(64) as u32,
+            max_damage: c["minecraft:max_damage"].as_u64().unwrap_or(0) as u32,
+            food,
+        };
+        (id.clone(), info)
+    });
+    Some(Catalog(items.collect()))
 }
 
 /// The pretend world: a player standing in the overworld at noon, with the scenario's

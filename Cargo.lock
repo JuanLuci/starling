@@ -3561,6 +3561,7 @@ version = "0.1.0"
 dependencies = [
  "horizon-mods",
  "log",
+ "png",
  "serde_json",
 ]
 
