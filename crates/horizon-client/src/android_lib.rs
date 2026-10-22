@@ -123,8 +123,10 @@ struct Mallinfo {
 unsafe extern "C" {
     fn mallinfo() -> Mallinfo;
     fn dlopen(filename: *const std::ffi::c_char, flags: std::ffi::c_int) -> *mut std::ffi::c_void;
-    fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char)
-    -> *mut std::ffi::c_void;
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
 }
 
 /// The native heap in use (the Stats overlay's `heap`).
@@ -190,6 +192,120 @@ fn thermal_headroom() -> Option<f32> {
     t.headroom
         .map(|f| unsafe { f(t.manager, 10) })
         .filter(|h| h.is_finite())
+}
+
+/// Functions of libandroid.so newer than Android 8, looked up at run time like `thermal`.
+struct FrameHints {
+    /// ADPF's performance hint (Android 13): the manager's session for the render thread.
+    create: Option<unsafe extern "C" fn(usize, *const i32, usize, i64) -> usize>,
+    manager: usize,
+    update: Option<unsafe extern "C" fn(usize, i64) -> std::ffi::c_int>,
+    report: Option<unsafe extern "C" fn(usize, i64) -> std::ffi::c_int>,
+    /// ANativeWindow_setFrameRate (Android 11).
+    set_frame_rate: Option<unsafe extern "C" fn(*mut std::ffi::c_void, f32, i8) -> i32>,
+}
+
+fn frame_hints() -> &'static FrameHints {
+    static HINTS: OnceLock<FrameHints> = OnceLock::new();
+    HINTS.get_or_init(|| {
+        // SAFETY: as `thermal`: NUL-terminated names, each symbol cast to its signature in the
+        // NDK headers (performance_hint.h, native_window.h); the manager lives for the process.
+        unsafe {
+            let lib = dlopen(c"libandroid.so".as_ptr(), 2 /* RTLD_NOW */);
+            let symbol = |name: &std::ffi::CStr| {
+                let s = if lib.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    dlsym(lib, name.as_ptr())
+                };
+                (!s.is_null()).then_some(s)
+            };
+            let manager = symbol(c"APerformanceHint_getManager")
+                .map(|f| std::mem::transmute::<_, unsafe extern "C" fn() -> usize>(f)())
+                .unwrap_or(0);
+            FrameHints {
+                create: symbol(c"APerformanceHint_createSession").map(|s| std::mem::transmute(s)),
+                manager,
+                update: symbol(c"APerformanceHint_updateTargetWorkDuration")
+                    .map(|s| std::mem::transmute(s)),
+                report: symbol(c"APerformanceHint_reportActualWorkDuration")
+                    .map(|s| std::mem::transmute(s)),
+                set_frame_rate: symbol(c"ANativeWindow_setFrameRate")
+                    .map(|s| std::mem::transmute(s)),
+            }
+        }
+    })
+}
+
+unsafe extern "C" {
+    fn gettid() -> i32;
+}
+
+/// The render thread's hint session, its target, and the window and rate last voted for.
+#[derive(Default)]
+struct HintState {
+    session: usize,
+    target_ns: i64,
+    window: usize,
+    voted: f32,
+}
+
+thread_local! {
+    static HINT_STATE: std::cell::RefCell<HintState> = std::cell::RefCell::default();
+}
+
+/// Tell Android about a frame the render thread finished: its CPU time against the time the
+/// frame cap allows (ADPF), so the scheduler raises the clock or moves the thread to a bigger
+/// core when a tick makes a frame late, rather than following a load average; and the frame
+/// cap as the display's refresh rate, so a 60 FPS cap gets a 60 Hz screen (every frame shown
+/// as long) instead of a 120 Hz one alternating one and two refreshes. `fps_limit` 260 and up
+/// is no cap.
+pub(crate) fn frame_hint(cpu: std::time::Duration, fps_limit: i32) {
+    let hints = frame_hints();
+    let cap = (fps_limit < 260).then(|| fps_limit.clamp(10, 240));
+    let target_ns = 1_000_000_000 / i64::from(cap.unwrap_or(120));
+    HINT_STATE.with_borrow_mut(|state| {
+        if state.session == 0
+            && hints.manager != 0
+            && let Some(create) = hints.create
+        {
+            // SAFETY: the manager came from APerformanceHint_getManager; one thread id, this one.
+            state.session = unsafe {
+                let tid = gettid();
+                create(hints.manager, &tid, 1, target_ns)
+            };
+            state.target_ns = target_ns;
+        }
+        if state.session != 0 {
+            // SAFETY: a session this thread created, never closed.
+            unsafe {
+                if state.target_ns != target_ns
+                    && let Some(update) = hints.update
+                {
+                    update(state.session, target_ns);
+                    state.target_ns = target_ns;
+                }
+                if let Some(report) = hints.report {
+                    report(state.session, (cpu.as_nanos() as i64).max(1));
+                }
+            }
+        }
+        let Some(set_frame_rate) = hints.set_frame_rate else {
+            return;
+        };
+        let Some(window) = android_app().native_window() else {
+            return;
+        };
+        let rate = cap.map_or(0.0, |c| c as f32);
+        let ptr = window.ptr().as_ptr() as usize;
+        if (state.window, state.voted) != (ptr, rate) {
+            // SAFETY: the window is held for the call; 0 is
+            // ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT, and a rate of 0 is no preference.
+            unsafe { set_frame_rate(ptr as *mut std::ffi::c_void, rate, 0) };
+            state.window = ptr;
+            state.voted = rate;
+        }
+    });
 }
 
 #[unsafe(no_mangle)]

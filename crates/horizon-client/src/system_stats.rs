@@ -5,11 +5,13 @@
 //! app read them (Linux and Android; elsewhere they stay unknown).
 //!
 //! A thread samples once a second, started by the first `latest`: reading smaps_rollup walks
-//! every mapping, too slow for the frame.
+//! every mapping, too slow for the frame. It rests while nobody asks (the overlay hidden, no
+//! `perf`), so a look at the numbers does not cost the game a share of a core for good.
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Platform probes: each returns None when it cannot tell.
 pub struct Probes {
@@ -61,25 +63,35 @@ pub fn thermal_name(status: i32) -> &'static str {
 #[derive(Default)]
 pub struct Sampler {
     latest: Arc<Mutex<SystemSample>>,
+    /// Someone read a sample since the thread last looked.
+    wanted: Arc<AtomicBool>,
     started: OnceLock<()>,
 }
 
 impl Sampler {
     /// The last sample (all unknown until the first second has passed).
     pub fn latest(&self) -> SystemSample {
+        self.wanted.store(true, Ordering::Relaxed);
         self.started.get_or_init(|| {
-            let latest = self.latest.clone();
+            let (latest, wanted) = (self.latest.clone(), self.wanted.clone());
             let _ = std::thread::Builder::new()
                 .name("horizon-stats".into())
                 .spawn(move || {
                     let zones = Zones::find(Path::new("/sys/class/thermal"));
                     let cpus = fastest_core(Path::new("/sys/devices/system/cpu"));
+                    let mut last: Option<Instant> = None;
                     loop {
-                        let sample = sample(&zones, cpus.as_deref());
-                        if let Ok(mut l) = latest.lock() {
-                            *l = sample;
+                        // Asked for within the last second or so: at most a sample a second.
+                        if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
+                            && wanted.swap(false, Ordering::Relaxed)
+                        {
+                            let sample = sample(&zones, cpus.as_deref());
+                            if let Ok(mut l) = latest.lock() {
+                                *l = sample;
+                            }
+                            last = Some(Instant::now());
                         }
-                        std::thread::sleep(Duration::from_secs(1));
+                        std::thread::sleep(Duration::from_millis(250));
                     }
                 });
         });
@@ -107,6 +119,51 @@ fn sample(zones: &Zones, cpu: Option<&Path>) -> SystemSample {
         cpu_mhz: khz("scaling_cur_freq")
             .zip(khz("cpuinfo_max_freq"))
             .map(|(cur, max)| [cur / 1000, max / 1000]),
+    }
+}
+
+/// How much a device can take, for the settings a phone's first start picks
+/// (`graphics::apply_mobile_defaults`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    Low,
+    Mid,
+    High,
+}
+
+impl Tier {
+    /// From the memory and the fastest core's highest clock, which stand for a phone's chip, and
+    /// so its GPU, well enough: Snapdragon 8 Gen 2 has a 3.2 GHz core and 8 to 16 GB, 7 Gen 1
+    /// 2.4 GHz and 6 to 8 GB, 695 2.2 GHz and 4 to 6 GB. The kernel keeps some memory back from
+    /// `MemTotal`: an 8 GB phone reports about 7.4 GB.
+    pub fn of(ram_bytes: u64, fastest_mhz: u32) -> Self {
+        let gib = ram_bytes as f64 / f64::from(1u32 << 30);
+        if fastest_mhz >= 2900 && gib >= 7.0 {
+            Self::High
+        } else if fastest_mhz >= 2350 && gib >= 5.0 {
+            Self::Mid
+        } else {
+            Self::Low
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Mid => "mid",
+            Self::High => "high",
+        }
+    }
+    /// This device's, where /proc and sysfs tell (Linux and Android).
+    pub fn here() -> Option<Self> {
+        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+        let ram = kib_field(&meminfo, "MemTotal:")? * 1024;
+        let core = fastest_core(Path::new("/sys/devices/system/cpu"))?;
+        let khz: u32 = fs::read_to_string(core.join("cpuinfo_max_freq"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(Self::of(ram, khz / 1000))
     }
 }
 
@@ -188,6 +245,18 @@ fn fastest_core(root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiers_follow_the_chip() {
+        const GIB: u64 = 1 << 30;
+        // As MemTotal reads them: a little under the box's number.
+        assert_eq!(Tier::of(11 * GIB, 3187), Tier::High);
+        assert_eq!(Tier::of(15 * GIB / 2, 3000), Tier::High);
+        assert_eq!(Tier::of(11 * GIB, 2400), Tier::Mid);
+        assert_eq!(Tier::of(11 * GIB / 2, 2850), Tier::Mid);
+        assert_eq!(Tier::of(15 * GIB / 4, 3187), Tier::Low);
+        assert_eq!(Tier::of(11 * GIB / 2, 2200), Tier::Low);
+    }
 
     #[test]
     fn proc_fields_are_read_in_kib() {

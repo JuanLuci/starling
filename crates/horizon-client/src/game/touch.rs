@@ -195,6 +195,11 @@ impl Game<'_> {
             }
         }
         self.touch.live = live;
+        // Fingers resting on the controls send no events: still input for the idle frame cap
+        // (Inactivity FPS Limit: AFK), as a held key would be.
+        if self.touch.controls.touching() || self.touch.pointer.down() {
+            self.last_input = now;
+        }
         let actions = self.touch.controls.frame(now);
         self.touch_apply(actions);
         if self.touch.use_until.is_some_and(|t| now >= t) {

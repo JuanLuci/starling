@@ -794,6 +794,13 @@ async fn open_device(
                 label: Some("Horizon device"),
                 required_features: features,
                 required_limits: limits,
+                // A phone's GPU memory is the system's: blocks of 256 MiB held 400 to 800 MiB
+                // more than the game used (Adreno 740, render distance 2 to 16).
+                memory_hints: if cfg!(target_os = "android") {
+                    wgpu::MemoryHints::MemoryUsage
+                } else {
+                    wgpu::MemoryHints::Performance
+                },
                 ..Default::default()
             })
             .await
@@ -2014,6 +2021,10 @@ impl Renderer {
                 cull.always = cull_env.as_deref() == Ok("all");
                 cull
             });
+        // Android starts with it off (`section-cull on` or HORIZON_GPU_CULL=1 for A/B): on the
+        // tiled GPU measured (Adreno 740) it saved no GPU time, and a block the player placed or
+        // broke now and then left most of the terrain out of a frame, or a chunk out for longer.
+        let cull_on = cull.is_some() && (!cfg!(target_os = "android") || cull_env.is_ok());
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
@@ -2028,7 +2039,7 @@ impl Renderer {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
                 on_off(multi_draw),
-                on_off(cull.is_some()),
+                on_off(cull_on),
                 on_off(gpu_timer.is_some()),
             ));
         }
@@ -2055,7 +2066,7 @@ impl Renderer {
             solid,
             translucent,
             flat_on: flat.is_some(),
-            cull_on: cull.is_some(),
+            cull_on,
             cull,
             flat,
             sky,

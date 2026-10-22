@@ -406,9 +406,73 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
     g.weather = true;
 }
 
+/// A phone's first start: settings for its tier instead of the desktop's (measured on a
+/// Snapdragon 8 Gen 2 at 3200x1440; slower tiers scaled down from it).
+///
+/// The frame cap is 60: a steady 60 runs cooler than 70 to 90 that dips, and the display
+/// follows the cap. Mobs think on the render thread, so the simulation distance stays short:
+/// at 12 the ticks of a few hundred mobs made every third frame late. Clouds cost the GPU
+/// 1.7 ms of a frame at any distance, fancy leaves are overdraw on tiled GPUs, and animated
+/// textures are mixed on the CPU each frame.
+pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::settings::Settings) {
+    use crate::system_stats::Tier;
+    let high = tier == Tier::High;
+    s.max_fps = 60;
+    s.render_distance = match tier {
+        Tier::High => 10,
+        Tier::Mid => 8,
+        Tier::Low => 6,
+    };
+    s.simulation_distance = if high { 8 } else { 6 };
+    s.clouds = if high { "fast" } else { "false" }.into();
+    s.particles = if high { 1 } else { 2 };
+    s.entity_shadows = high;
+    s.biome_blend = if high { 1 } else { 0 };
+    s.mipmap_levels = if high { 4 } else { 2 };
+    s.entity_distance = match tier {
+        Tier::High => 1.0,
+        Tier::Mid => 0.75,
+        Tier::Low => 0.5,
+    };
+    s.cutout_leaves = high;
+    s.weather_radius = if high { 5 } else { 3 };
+    s.graphics_preset = "custom".into();
+    let g = &mut s.horizon;
+    g.preset = Preset::Custom;
+    g.resolution_scale = match tier {
+        Tier::High => 100,
+        Tier::Mid => 85,
+        Tier::Low => 70,
+    };
+    g.animated_textures = tier != Tier::Low;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phones_start_lighter_by_tier() {
+        use crate::system_stats::Tier;
+        let mut low = crate::settings::Settings::default();
+        apply_mobile_defaults(Tier::Low, &mut low);
+        let mut high = crate::settings::Settings::default();
+        apply_mobile_defaults(Tier::High, &mut high);
+        assert_eq!((low.max_fps, high.max_fps), (60, 60));
+        assert!(low.render_distance < high.render_distance);
+        assert_eq!(
+            (low.clouds.as_str(), high.clouds.as_str()),
+            ("false", "fast")
+        );
+        assert!(low.horizon.resolution_scale < high.horizon.resolution_scale);
+        assert!(!low.horizon.animated_textures && high.horizon.animated_textures);
+        // What the options screens read back.
+        let file = high.to_file();
+        assert_eq!(
+            crate::settings::Settings::from_file(file).render_distance,
+            10
+        );
+    }
 
     #[test]
     fn round_trips() {

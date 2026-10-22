@@ -3,6 +3,7 @@
 use super::{Game, Screen};
 use horizon_client::{
     Result,
+    graphics::Graphics,
     hud::HudBatch,
     lang,
     options_ui::{Event, Page},
@@ -14,6 +15,8 @@ use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
 pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",
     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
+    "graphics-get [KEY...]          Horizon's graphics settings (graphics.txt) by key",
+    "graphics-set KEY VALUE         set a Horizon graphics setting (resolutionScale 50..200, presentMode, workers...), apply and save it",
 ];
 
 impl Game<'_> {
@@ -28,7 +31,7 @@ impl Game<'_> {
             self.settings.save(&Self::options_path());
         }
     }
-    /// `options-get` and `options-set`; None for other commands.
+    /// `options-get`, `options-set`, `graphics-get` and `graphics-set`; None for other commands.
     pub(super) fn options_control(&mut self, words: &[&str], line: &str) -> Result<Option<Value>> {
         match words[0] {
             "options-get" => {
@@ -76,6 +79,57 @@ impl Game<'_> {
                 self.ui_wait.clicked();
                 let now = self.settings.to_file().describe(key);
                 Ok(Some(json!({ "ok": true, "key": key, "option": now })))
+            }
+            "graphics-get" => {
+                let text = self.settings.horizon.serialize();
+                let all: Vec<(&str, &str)> =
+                    text.lines().filter_map(|l| l.split_once(':')).collect();
+                if let Some(key) = words[1..]
+                    .iter()
+                    .find(|k| !all.iter().any(|(a, _)| a == *k))
+                {
+                    return Err(
+                        format!("unknown graphics key {key}; graphics-get lists them all").into(),
+                    );
+                }
+                let graphics: serde_json::Map<String, Value> = all
+                    .into_iter()
+                    .filter(|(k, _)| words.len() == 1 || words[1..].contains(k))
+                    .map(|(k, v)| (k.to_owned(), v.into()))
+                    .collect();
+                Ok(Some(json!({ "graphics": graphics })))
+            }
+            "graphics-set" => {
+                let (Some(key), Some(_)) = (words.get(1), words.get(2)) else {
+                    return Err("graphics-set KEY VALUE".into());
+                };
+                let value = words[2..].join(" ");
+                // graphics.txt's own reading, with the new line last.
+                let text = self.settings.horizon.serialize();
+                let line = |text: &str| {
+                    text.lines()
+                        .find(|l| l.split_once(':').is_some_and(|(k, _)| k == *key))
+                        .map(str::to_owned)
+                };
+                let before = line(&text).ok_or_else(|| {
+                    format!("unknown graphics key {key}; graphics-get lists them all")
+                })?;
+                let graphics = Graphics::parse(&format!(
+                    "{text}{key}:{value}
+"
+                ));
+                let after = line(&graphics.serialize()).unwrap_or_default();
+                if after == before && after != format!("{key}:{value}") {
+                    return Err(format!("{key} does not take {value}; it stays {before}").into());
+                }
+                self.settings.horizon = graphics;
+                self.handle_option_events(vec![Event::Changed])?;
+                let now = after.split_once(':').map_or("", |(_, v)| v).to_owned();
+                // The worker pool and the graphics API are made once, at start.
+                let restart = matches!(*key, "workers" | "graphicsApi");
+                Ok(Some(
+                    json!({ "ok": true, "key": key, "value": now, "restart": restart }),
+                ))
             }
             _ => Ok(None),
         }

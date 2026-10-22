@@ -10854,6 +10854,10 @@ impl ApplicationHandler for Game<'_> {
                         }
                         self.frame_stats.record_gpu(&r.gpu_times);
                         r.gpu_times.clear();
+                        #[cfg(target_os = "android")]
+                        if rendered {
+                            crate::frame_hint(cpu, self.framerate_limit());
+                        }
                     }
                     self.limit_frame();
                     self.pause = self.pauses_game();
@@ -12741,7 +12745,23 @@ pub fn run() -> Result<()> {
     let started = Instant::now();
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
-    let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    let options_txt = std::env::current_dir()?.join("options.txt");
+    #[cfg(target_os = "android")]
+    let first_start = !options_txt.exists();
+    #[allow(unused_mut)]
+    let mut early_settings = Settings::load(&options_txt);
+    // A phone's first start: settings for what it can take, saved before anything reads them.
+    #[cfg(target_os = "android")]
+    if first_start && let Some(tier) = horizon_client::system_stats::Tier::here() {
+        horizon_client::graphics::apply_mobile_defaults(tier, &mut early_settings);
+        early_settings.save(&options_txt);
+        log::info!(
+            "Horizon: first start on a {} tier device: render distance {}, resolution {}%",
+            tier.name(),
+            early_settings.render_distance,
+            early_settings.horizon.resolution_scale
+        );
+    }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));

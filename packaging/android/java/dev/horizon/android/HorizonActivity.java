@@ -10,9 +10,10 @@ import android.view.WindowManager;
 
 /**
  * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
- * hides the system bars, tells the game how tall the on-screen keyboard is (it no longer
- * shrinks the window since edge-to-edge), and ends the process with the activity, since the
- * game's event loop cannot start twice in one process.
+ * hides the system bars, keeps the screen on while the game is in front, tells the game how
+ * tall the on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and
+ * ends the process with the activity, since the game's event loop cannot start twice in one
+ * process.
  */
 public final class HorizonActivity extends NativeActivity {
     static {
@@ -26,6 +27,8 @@ public final class HorizonActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // As games do: watching, a controller or a benchmark can go minutes without a touch.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (Build.VERSION.SDK_INT >= 28) {
             WindowManager.LayoutParams attributes = getWindow().getAttributes();
             attributes.layoutInDisplayCutoutMode =

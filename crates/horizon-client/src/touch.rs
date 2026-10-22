@@ -586,6 +586,11 @@ impl TouchControls {
             .collect()
     }
 
+    /// Whether any finger is on a control: a player holding the stick still is not idle.
+    pub fn touching(&self) -> bool {
+        !self.fingers.is_empty()
+    }
+
     /// Whether a control holds `button` down.
     pub fn held(&self, button: Button) -> bool {
         self.fingers
