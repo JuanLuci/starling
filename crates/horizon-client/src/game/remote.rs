@@ -44,10 +44,11 @@ use horizon_world::{nbt::Tag, registry::BlockStateId};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use winit::{event::MouseButton, keyboard::KeyCode};
 
-/// A text component the server sent, for the HUD.
+/// A text component the server sent, for the HUD and the chat. Legacy `§` codes in its strings
+/// (which plugins still send) style the text as the font's StringDecomposer does.
 fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     use horizon_client::scoreboard::{comp_text, tag_to_json};
-    comp_text(&tag_to_json(tag))
+    comp_text(&tag_to_json(tag)).resolve_legacy()
 }
 
 /// A section's sky and block light layers from the wire.
