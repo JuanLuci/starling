@@ -32,10 +32,10 @@ pub use starling::exports::starling::mods::events::{
     RenderContext, SendAction,
 };
 pub use starling::starling::mods::{
-    game::{BlockHit, Clock, Effect, EntityHit, Gui, Player, Target, WorldInfo},
+    game::{BlockHit, Clock, Effect, EntityHit, Gui, Mining, Player, Target, WorldInfo},
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
-    level::Entity,
+    level::{BlockInfo, Entity, EntityInfo},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
 };
 use starling::{
@@ -93,6 +93,10 @@ pub trait LevelView: Send + Sync {
     fn biome(&self, pos: [i32; 3]) -> Option<String>;
     /// Block light, sky light.
     fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)>;
+    /// What the game shows of the block at `pos` (`level.get-block-info`).
+    fn block_info(&self, _pos: [i32; 3]) -> Option<BlockInfo> {
+        None
+    }
 }
 /// The game's items by id, for `inventory.get-item-info`.
 pub trait ItemCatalog: Send + Sync {
@@ -111,6 +115,7 @@ pub struct Snapshot {
     pub world: Option<WorldInfo>,
     /// None: the crosshair is on nothing.
     pub target: Option<Target>,
+    pub mining: Option<Mining>,
     pub screen: Option<String>,
     pub gui: Option<Gui>,
     pub fps: u32,
@@ -121,6 +126,8 @@ pub struct Snapshot {
     pub container: Option<Container>,
     /// Nearest first.
     pub entities: Vec<Entity>,
+    /// What the game shows of `entities` (`level.get-entity-info`).
+    pub entity_info: Vec<EntityInfo>,
     pub level: Option<Arc<dyn LevelView>>,
     pub items: Option<Arc<dyn ItemCatalog>>,
     pub measure: Option<Measure>,
@@ -1256,7 +1263,8 @@ pub fn has_js_engine() -> bool {
 }
 
 /// A JavaScript mod's linker: the interfaces its manifest declares (and the ones every mod has),
-/// the engine's `js-source`, and a trap for every other import, which stops the mod.
+/// the engine's `js-source` (and `js-draw` with `draw`), and a trap for every other import, which
+/// stops the mod.
 fn js_linker(
     engine: &Engine,
     capabilities: &[Capability],
@@ -1299,6 +1307,29 @@ fn js_linker(
                 Ok((store.data().js_source.clone().unwrap_or_default(),))
             },
         )?;
+    if interfaces.contains(&"draw") {
+        use api::draw::Host;
+        type Colour = (f32, f32, f32, f32, i32);
+        type Colours = (f32, f32, f32, f32, i32, i32);
+        let mut draw = linker.instance("starling:mods/js-draw@0.1.0")?;
+        draw.func_wrap(
+            "fill",
+            |mut store: wasmtime::StoreContextMut<'_, State>, (x, y, w, h, color): Colour| {
+                store.data_mut().fill(x, y, w, h, color as u32);
+                Ok(())
+            },
+        )?;
+        draw.func_wrap(
+            "gradient",
+            |mut store: wasmtime::StoreContextMut<'_, State>,
+             (x, y, w, h, top, bottom): Colours| {
+                store
+                    .data_mut()
+                    .gradient(x, y, w, h, top as u32, bottom as u32);
+                Ok(())
+            },
+        )?;
+    }
     // The other interfaces: each function says which capability the manifest lacks.
     for (name, item) in component.component_type().imports(engine) {
         let interface = name
@@ -1309,12 +1340,18 @@ fn js_linker(
         else {
             continue;
         };
-        if interface == "js-source" || interfaces.contains(&interface) {
+        // js-draw goes with draw.
+        let granting = if interface == "js-draw" {
+            "draw"
+        } else {
+            interface
+        };
+        if interface == "js-source" || interfaces.contains(&granting) {
             continue;
         }
         let capability = Capability::ALL
             .into_iter()
-            .find(|c| c.interfaces().contains(&interface))
+            .find(|c| c.interfaces().contains(&granting))
             .map_or_else(|| interface.to_owned(), |c| c.to_string());
         let mut functions = linker.instance(name)?;
         for (function, item) in instance.exports(engine) {
@@ -1481,10 +1518,26 @@ impl game::Host for State {
     fn get_fps(&mut self) -> u32 {
         self.snapshot.fps
     }
+    fn get_mining(&mut self) -> Option<Mining> {
+        self.snapshot.mining
+    }
 }
 impl level::Host for State {
     fn get_block(&mut self, pos: BlockPos) -> Option<String> {
         self.snapshot.level.as_ref()?.block([pos.x, pos.y, pos.z])
+    }
+    fn get_block_info(&mut self, pos: BlockPos) -> Option<BlockInfo> {
+        self.snapshot
+            .level
+            .as_ref()?
+            .block_info([pos.x, pos.y, pos.z])
+    }
+    fn get_entity_info(&mut self, id: i32) -> Option<EntityInfo> {
+        self.snapshot
+            .entity_info
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
     }
     fn get_biome(&mut self, pos: BlockPos) -> Option<String> {
         self.snapshot.level.as_ref()?.biome([pos.x, pos.y, pos.z])

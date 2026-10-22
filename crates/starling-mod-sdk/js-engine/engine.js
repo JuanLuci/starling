@@ -16,11 +16,22 @@ import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
 import { get as source } from "starling:mods/js-source@0.1.0";
+import { fill as fillBits, gradient as gradientBits } from "starling:mods/js-draw@0.1.0";
+
+// componentize-js passes a u32 of 2^31 or more (an ARGB colour with an alpha of 0x80 or more,
+// such as 0xF0100010) wrong, as the low bits of the number's double: fill and gradient go through
+// js-draw, which takes their colours as s32, the same bits.
+const drawing = {
+  ...draw,
+  fill: (x, y, width, height, colour) => fillBits(x, y, width, height, colour | 0),
+  gradient: (x, y, width, height, top, bottom) =>
+    gradientBits(x, y, width, height, top | 0, bottom | 0),
+};
 
 // `types` holds only types: nothing to import from it.
 const API = {
-  types: {}, mobile, log, game, level, inventory, chat, "chat-send": chatSend, draw, hud, screens,
-  keys, sound, net, storage,
+  types: {}, mobile, log, game, level, inventory, chat, "chat-send": chatSend, draw: drawing, hud,
+  screens, keys, sound, net, storage,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.
@@ -66,9 +77,18 @@ function load() {
   return exports.events;
 }
 
-// A hook the mod leaves out answers as an unhandled one would.
-function hook(name, fallback) {
-  return (...args) => (mod[name] ? mod[name](...args) : fallback);
+// A hook the mod leaves out answers as an unhandled one would. An error a hook throws stops the
+// mod, and only `init` and `command` can say why, so the others log it (with where it was) first.
+function hook(name, fallback, says = false) {
+  return (...args) => {
+    if (!mod[name]) return fallback;
+    try {
+      return mod[name](...args);
+    } catch (e) {
+      if (!says) log.write("error", `${name}: ${e}${e && e.stack ? `\n${e.stack}` : ""}`);
+      throw e;
+    }
+  };
 }
 
 export const events = {
@@ -82,7 +102,7 @@ export const events = {
   },
   tick: hook("tick"),
   frame: hook("frame"),
-  command: hook("command"),
+  command: hook("command", undefined, true),
   chatReceived: hook("chatReceived", { tag: "keep" }),
   chatSending: hook("chatSending", { tag: "send" }),
   hudRender: hook("hudRender"),

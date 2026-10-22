@@ -166,6 +166,12 @@ interface game {
         height: u32,
         scale: f32,
     }
+    /// The block the player is breaking.
+    record mining {
+        pos: block-pos,
+        /// 0 to 1, as its cracks show.
+        progress: f32,
+    }
     /// None on the title screen.
     get-player: func() -> option<player>;
     get-effects: func() -> list<effect>;
@@ -177,6 +183,8 @@ interface game {
     get-gui: func() -> gui;
     /// Frames per second, as F3 shows it.
     get-fps: func() -> u32;
+    /// None while the player is not breaking a block.
+    get-mining: func() -> option<mining>;
 }
 
 /// Capability `world-read`: blocks and entities around the player.
@@ -196,9 +204,45 @@ interface level {
         /// A custom name or a player's name.
         name: option<string>,
     }
+    /// What the game shows of a block.
+    record block-info {
+        /// `minecraft:wheat[age=3]`.
+        block: string,
+        /// Its name in the player's language (`Wheat Crops`).
+        name: string,
+        /// The item picking it gives (`minecraft:wheat_seeds`); None for blocks with none
+        /// (fire, water).
+        item: option<string>,
+        /// How long it takes to break (dirt 0.5, stone 1.5, obsidian 50); -1 for unbreakable.
+        hardness: f32,
+        /// The tool that breaks it fastest: `pickaxe`, `axe`, `shovel` or `hoe`.
+        tool: option<string>,
+        /// It drops something only when broken with the right tool (stone, ores).
+        needs-tool: bool,
+        /// Breaking it with what the player holds now would make it drop.
+        harvestable: bool,
+    }
+    /// What the game shows of an entity.
+    record entity-info {
+        id: s32,
+        /// `minecraft:zombie`.
+        kind: string,
+        /// Its name in the player's language: a custom name, else its kind's (`Zombie`).
+        name: string,
+        /// For living entities.
+        health: option<f32>,
+        max-health: option<f32>,
+        /// Armor points, as the armor bar counts them.
+        armor: f32,
+        baby: bool,
+    }
     /// `minecraft:oak_log[axis=y]`; None outside the loaded area within 24 blocks of the
     /// player.
     get-block: func(pos: block-pos) -> option<string>;
+    /// None where `get-block` is None.
+    get-block-info: func(pos: block-pos) -> option<block-info>;
+    /// An entity `get-entities` lists (or `game.get-target` hits), by its id.
+    get-entity-info: func(id: s32) -> option<entity-info>;
     /// `minecraft:plains`.
     get-biome: func(pos: block-pos) -> option<string>;
     /// Block light and sky light, 0 to 15.
@@ -547,10 +591,19 @@ interface js-source {
     get: func() -> string;
 }
 
+/// The JavaScript engine's own import too: `draw.fill` and `draw.gradient` with their ARGB
+/// colours as s32 (the same bits), which the engine calls instead, since componentize-js passes
+/// a u32 of 2^31 or more (an alpha of 0x80 or more) wrong. Linked with `draw`.
+interface js-draw {
+    fill: func(x: f32, y: f32, width: f32, height: f32, color: s32);
+    gradient: func(x: f32, y: f32, width: f32, height: f32, top: s32, bottom: s32);
+}
+
 /// Starling's shared JavaScript engine (js-engine/): one component every JavaScript mod runs in,
 /// its source given by `js-source`. A JavaScript mod ships `mod.js` (an ES module importing these
 /// interfaces and exporting `events`) instead of a component.
 world starling-js {
     include starling-mod;
     import js-source;
+    import js-draw;
 }

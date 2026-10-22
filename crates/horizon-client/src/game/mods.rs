@@ -10,14 +10,16 @@ use horizon_client::{
     extras_hud::{self, Corners},
     hud::HudBatch,
     items::ItemStack,
+    mobs::finalize,
     mod_list::{self, Installed},
     text::{self, Text},
 };
 use horizon_mods::{
-    Capability, ChatVerdict, Clock, Effect, Entity, GameMode, Gui, ItemCatalog, ItemInfo, Measure,
-    Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
+    BlockInfo, Capability, ChatVerdict, Clock, Effect, Entity, EntityInfo, GameMode, Gui,
+    ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
 };
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::{
         Arc,
@@ -52,6 +54,11 @@ pub(super) struct ModsState {
     pub(super) keys_down: Vec<String>,
     /// Every block state's name, for `world-read` (made once).
     states: Option<Arc<Vec<String>>>,
+    /// What `level.get-block-info` says of every block state, made once for the language its
+    /// names are in.
+    block_facts: Option<(String, Arc<Vec<BlockFact>>)>,
+    /// The blocks needing a tool that the held item (its id here) harvests.
+    harvest: Option<(String, Arc<HashSet<Arc<str>>>)>,
     biomes: Option<Arc<Vec<String>>>,
     items: Option<Arc<dyn ItemCatalog>>,
     measure: Option<Measure>,
@@ -104,6 +111,18 @@ struct LevelView {
     chunks: Vec<((i32, i32), Arc<horizon_client::chunk::Chunk>)>,
     states: Arc<Vec<String>>,
     biomes: Arc<Vec<String>>,
+    facts: Arc<Vec<BlockFact>>,
+    harvest: Arc<HashSet<Arc<str>>>,
+}
+/// A block state as `level.get-block-info` tells it, but for the held item.
+struct BlockFact {
+    /// `minecraft:stone`.
+    block: Arc<str>,
+    name: String,
+    item: Option<String>,
+    hardness: f32,
+    tool: Option<&'static str>,
+    needs_tool: bool,
 }
 impl LevelView {
     fn chunk(&self, pos: [i32; 3]) -> Option<&horizon_client::chunk::Chunk> {
@@ -126,6 +145,19 @@ impl horizon_mods::LevelView for LevelView {
     fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
         let light = self.chunk(pos)?.light(pos[0] & 15, pos[1], pos[2] & 15);
         Some((light & 15, light >> 4))
+    }
+    fn block_info(&self, pos: [i32; 3]) -> Option<BlockInfo> {
+        let state = self.chunk(pos)?.block(pos[0] & 15, pos[1], pos[2] & 15).0 as usize;
+        let fact = self.facts.get(state)?;
+        Some(BlockInfo {
+            block: self.states.get(state)?.clone(),
+            name: fact.name.clone(),
+            item: fact.item.clone(),
+            hardness: fact.hardness,
+            tool: fact.tool.map(str::to_owned),
+            needs_tool: fact.needs_tool,
+            harvestable: !fact.needs_tool || self.harvest.contains(&fact.block),
+        })
     }
 }
 
@@ -641,6 +673,18 @@ impl Game<'_> {
             thundering: weather.thunder_level.1 > 0.9,
         });
         let target = (game_read && in_world).then(|| self.mod_target()).flatten();
+        let mining = self
+            .mining
+            .as_ref()
+            .filter(|_| game_read && in_world)
+            .map(|m| horizon_mods::Mining {
+                pos: horizon_mods::BlockPos {
+                    x: m.pos[0],
+                    y: m.pos[1],
+                    z: m.pos[2],
+                },
+                progress: m.progress.clamp(0.0, 1.0),
+            });
         let (gw, gh) = self.gui_size();
         let gui = Gui {
             width: gw as u32,
@@ -655,6 +699,7 @@ impl Game<'_> {
             clock,
             world,
             target,
+            mining,
             screen: self.mod_screen_name(),
             gui: Some(gui),
             fps: self.fps.round().max(0.0) as u32,
@@ -682,7 +727,7 @@ impl Game<'_> {
         }
         if world_read && in_world {
             snapshot.level = Some(self.mod_level());
-            snapshot.entities = self.mod_entities();
+            (snapshot.entities, snapshot.entity_info) = self.mod_entities().into_iter().unzip();
         }
         snapshot
     }
@@ -875,31 +920,105 @@ impl Game<'_> {
             chunks,
             states,
             biomes,
+            facts: self.mod_block_facts(),
+            harvest: self.mod_harvest(),
         })
     }
-    /// Entities near the player, nearest first, for mods.
-    fn mod_entities(&self) -> Vec<Entity> {
+    /// Every block state's name, item, hardness and tool, in the player's language.
+    fn mod_block_facts(&mut self) -> Arc<Vec<BlockFact>> {
+        let language = horizon_client::lang::code();
+        if let Some((made_in, facts)) = &self.mods.block_facts
+            && *made_in == language
+        {
+            return facts.clone();
+        }
+        let tags = &self.res.items().block_tags;
+        let tool = |block: &str| {
+            ["pickaxe", "axe", "shovel", "hoe"]
+                .into_iter()
+                .find(|tool| {
+                    tags.get(&format!("minecraft:mineable/{tool}"))
+                        .is_some_and(|set| set.contains(block))
+                })
+        };
+        let registry = &self.pack.assets.registry;
+        let facts: Vec<BlockFact> = (0..registry.len())
+            .map(|i| {
+                let f = self
+                    .res
+                    .facts()
+                    .get(horizon_world::registry::BlockStateId(i as u32));
+                let (namespace, path) = f.name.split_once(':').unwrap_or(("minecraft", &f.name));
+                BlockFact {
+                    block: f.name.clone(),
+                    name: horizon_client::lang::get(&format!("block.{namespace}.{path}")),
+                    item: (&*f.item != "minecraft:air").then(|| f.item.to_string()),
+                    hardness: f.hardness,
+                    tool: tool(&f.name),
+                    needs_tool: f.requires_tool,
+                }
+            })
+            .collect();
+        let facts = Arc::new(facts);
+        self.mods.block_facts = Some((language, facts.clone()));
+        facts
+    }
+    /// The blocks needing a tool that the held item would make drop (`Tool.isCorrectForDrops`),
+    /// made again when the held item changes.
+    fn mod_harvest(&mut self) -> Arc<HashSet<Arc<str>>> {
+        let held = self.held().map_or_else(String::new, |s| s.item.to_string());
+        if let Some((item, set)) = &self.mods.harvest
+            && *item == held
+        {
+            return set.clone();
+        }
+        let facts = self.mod_block_facts();
+        let items = self.res.items();
+        let stack = self.held();
+        let set: HashSet<Arc<str>> = facts
+            .iter()
+            .filter(|f| f.needs_tool && items.correct_for_drops(stack, &f.block))
+            .map(|f| f.block.clone())
+            .collect();
+        let set = Arc::new(set);
+        self.mods.harvest = Some((held, set.clone()));
+        set
+    }
+    /// Entities near the player, nearest first, for mods, with what the game shows of them.
+    fn mod_entities(&self) -> Vec<(Entity, EntityInfo)> {
         let Some(p) = self.player.as_ref() else {
             return Vec::new();
         };
-        let mut list: Vec<(f64, Entity)> = self
+        let mut list: Vec<(f64, (Entity, EntityInfo))> = self
             .mobs
             .iter()
             .map(|m| {
                 let d = m.position.distance_squared(p.position);
-                (
-                    d,
-                    Entity {
-                        id: m.id as i32,
-                        kind: m.kind.id.to_string(),
-                        x: m.position.x,
-                        y: m.position.y,
-                        z: m.position.z,
-                        yaw: m.yaw,
-                        health: Some(m.health),
-                        name: m.custom_name.clone(),
-                    },
-                )
+                let entity = Entity {
+                    id: m.id as i32,
+                    kind: m.kind.id.to_string(),
+                    x: m.position.x,
+                    y: m.position.y,
+                    z: m.position.z,
+                    yaw: m.yaw,
+                    health: Some(m.health),
+                    name: m.custom_name.clone(),
+                };
+                let info = EntityInfo {
+                    id: m.id as i32,
+                    kind: m.kind.id.to_string(),
+                    name: m.custom_name.clone().unwrap_or_else(|| {
+                        horizon_client::lang::get(&format!(
+                            "entity.{}",
+                            m.kind.id.replace(':', ".")
+                        ))
+                    }),
+                    health: Some(m.health),
+                    max_health: Some(finalize::max_health(m)),
+                    armor: finalize::value(m, finalize::Attr::Armor) as f32,
+                    baby: m.is_baby(),
+                };
+                (d, (entity, info))
             })
             .filter(|(d, _)| *d <= 64.0 * 64.0)
             .collect();
