@@ -13,6 +13,8 @@ ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 ORIGINAL_ANDROID = {
     "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
     "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java",
+    # The same activity before the app was named Starling, in the history.
+    "packaging/android/java/dev/horizon/android/HorizonActivity.java",
 }
 
 
