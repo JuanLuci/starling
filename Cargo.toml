@@ -29,6 +29,26 @@ wgpu-hal = { path = "third_party/wgpu-hal" }
 [profile.dev]
 debug = "line-tables-only"
 
+# The mod runtime's compiler, optimized in debug builds and tests: unoptimized, it took minutes to
+# compile the test mods (cargo test -p horizon-mods).
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+
+[profile.dev.package.regalloc2]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+
+[profile.dev.package.wasmparser]
+opt-level = 3
+
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+
+[profile.dev.package.wit-component]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -46,3 +66,13 @@ incremental = true
 [profile.quick]
 inherits = "fast"
 codegen-units = 256
+# Each codegen unit optimized on its own: with the default thin local LTO a one-line edit in
+# game/ re-optimized much of the crate (6 minutes for the APK; checking it takes 17 s).
+lto = "off"
+
+# The crates edits land in, lightly optimized; the dependencies stay fully optimized.
+[profile.quick.package.horizon-client]
+opt-level = 1
+
+[profile.quick.package.horizon-android]
+opt-level = 1
