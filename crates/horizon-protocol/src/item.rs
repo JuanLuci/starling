@@ -8,6 +8,7 @@ use crate::{
 use horizon_world::nbt::Tag;
 
 mod codecs;
+pub(crate) use codecs::{skip_profile, skip_template};
 
 /// minecraft:data_component_type registry ids (26.3).
 pub mod component {

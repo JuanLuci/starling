@@ -36,6 +36,17 @@ pub(super) fn skip(kind: i32, r: &mut Reader, depth: u32) -> Result<()> {
     }
 }
 
+/// Consume one ItemStackTemplate.STREAM_CODEC value on its own (as in
+/// ItemParticleOption).
+pub(crate) fn skip_template(r: &mut Reader) -> Result<()> {
+    template(r, 0)
+}
+/// Consume one ResolvableProfile.STREAM_CODEC value on its own (as in the
+/// RESOLVABLE_PROFILE entity data serializer).
+pub(crate) fn skip_profile(r: &mut Reader) -> Result<()> {
+    profile(r)
+}
+
 /// The components that hold no item stacks or other components.
 #[inline(never)]
 fn flat(kind: i32, r: &mut Reader) -> Result<()> {
