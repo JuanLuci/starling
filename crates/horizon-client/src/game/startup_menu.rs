@@ -373,8 +373,13 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::ButtonClick => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.play_button_click();
+                    }
+                }
                 // Over a world only: the title has no controls to lay out.
-                Event::ButtonClick | Event::TouchLayout => {}
+                Event::TouchLayout => {}
             }
         }
     }
@@ -526,11 +531,14 @@ impl Loading {
                             );
                             action
                         } else {
-                            let (action, _) = title.click(
+                            let (action, sound) = title.click(
                                 self.menu.cursor.0,
                                 self.menu.cursor.1,
                                 (batch.width, batch.height),
                             );
+                            if sound && let Some(audio) = &mut self.audio {
+                                audio.play_button_click();
+                            }
                             title.press_field(
                                 &gui.atlas,
                                 self.menu.cursor,
@@ -700,6 +708,8 @@ mod tests {
             failure: None,
             touch_pointer: Default::default(),
             imports: Default::default(),
+            audio: None,
+            sound_registry: None,
         }
     }
 

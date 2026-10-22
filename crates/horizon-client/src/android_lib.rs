@@ -125,6 +125,15 @@ pub(crate) fn open_file_access_settings() {
     });
 }
 
+/// The game drew its first frame: the activity lets its window show, and the system's
+/// starting window (the app icon) goes.
+pub(crate) fn first_frame_shown() {
+    with_activity(|env, activity| {
+        env.call_method(activity, "firstFrame", "()V", &[])
+            .map(drop)
+    });
+}
+
 /// Start the game again in a new process (the game folder is chosen at start).
 pub(crate) fn restart_app() {
     with_activity(|env, activity| env.call_method(activity, "restart", "()V", &[]).map(drop));

@@ -45,6 +45,14 @@ pub(super) struct Touch {
     use_until: Option<Instant>,
     /// The on-screen keyboard was asked for.
     keyboard: bool,
+    /// The keyboard is wanted over the text field shown now: a typing screen opened, or a tap
+    /// landed on the field; a tap beside it, the back key or the field going away end it.
+    wanted: bool,
+    /// The text field the keyboard was last decided for (`text_context`).
+    context: Option<&'static str>,
+    /// The keyboard has shown since it was asked for: its height falling to 0 then means the
+    /// player put it away (the back key), which the game is not told otherwise.
+    ime_seen: bool,
     /// The player's layout, read from touch-layout.json on the first frame.
     config: Option<LayoutConfig>,
     /// The layout editor, while it is open.
@@ -116,11 +124,8 @@ impl Game<'_> {
             return true;
         }
         // A touch in the chat brings back a keyboard the back key put away.
-        if t.phase == TouchPhase::Started
-            && self.screen == Screen::Chat
-            && let Some(window) = &self.window
-        {
-            window.set_ime_allowed(true);
+        if t.phase == TouchPhase::Started && self.screen == Screen::Chat {
+            self.touch.wanted = true;
         }
         let p = [t.location.x as f32, t.location.y as f32];
         if self.touch.editor.is_some() && self.touch_playing() {
@@ -147,6 +152,10 @@ impl Game<'_> {
         // The mouse finger stays the mouse until it lifts, even if the screen closed under it.
         if !self.touch_playing() || self.touch.pointer.owns(t.id) {
             let slop = touch::slop(layout.width, layout.height);
+            // A finger on a scrollbar drags it, as the mouse would.
+            if t.phase == TouchPhase::Started && self.on_scrollbar(p) {
+                self.touch.pointer.prefer_drag();
+            }
             // Lists follow the finger one to one at this GUI scale.
             let gui_scale = HudBatch::new(self.touch_size()).scale;
             self.touch
@@ -154,6 +163,14 @@ impl Game<'_> {
                 .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
             for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
                 self.window_event(event_loop, id, mouse);
+            }
+            // A tap on the text field brings up the on-screen keyboard, a tap beside it puts the
+            // keyboard away (the chat keeps it).
+            if t.phase == TouchPhase::Ended
+                && let Some(context) = self.text_context()
+                && context != "chat"
+            {
+                self.touch.wanted = self.on_text_field().unwrap_or(true);
             }
             return true;
         }
@@ -216,18 +233,112 @@ impl Game<'_> {
             self.touch.use_until = None;
             self.pad.touch_trigger(0, 0.0);
         }
-        // The on-screen keyboard while the chat is open (its keys arrive as key events). Android
-        // shows it only to a focused window: back from the background, it is asked for again once
-        // the focus has come back.
-        let keyboard = (self.touch.seen || cfg!(target_os = "android"))
-            && self.screen == Screen::Chat
-            && self.focused;
+        // The on-screen keyboard (its keys arrive as key events). The screens made for typing
+        // (chat, sign, book, command block) open it with them; the other text fields on a tap on
+        // them. Android shows it only to a focused window: back from the background, it is asked
+        // for again once the focus is back.
+        let context = self.text_context();
+        if context != self.touch.context {
+            self.touch.context = context;
+            self.touch.wanted = matches!(context, Some("chat" | "sign" | "book" | "command"));
+        }
+        #[cfg(target_os = "android")]
+        if self.touch.keyboard {
+            if crate::ime_height() > 0 {
+                self.touch.ime_seen = true;
+            } else if self.touch.ime_seen {
+                // Put away with the back key: a tap on the field brings it back.
+                self.touch.wanted = false;
+                self.touch.ime_seen = false;
+            }
+        }
+        let keyboard =
+            (self.touch.seen || cfg!(target_os = "android")) && self.touch.wanted && self.focused;
         if keyboard != self.touch.keyboard
             && let Some(window) = &self.window
         {
             window.set_ime_allowed(keyboard);
             self.touch.keyboard = keyboard;
+            self.touch.ime_seen = false;
         }
+    }
+
+    /// The text field shown now, by name: the chat, a sign, a book, a command block, the anvil's
+    /// name, the creative and recipe searches, the title's forms, the options' searches.
+    fn text_context(&mut self) -> Option<&'static str> {
+        if self.screen == Screen::Chat {
+            Some("chat")
+        } else if self.sign_edit.is_some() {
+            Some("sign")
+        } else if matches!(self.book, Some(super::books::BookScreen::Edit { .. })) {
+            Some("book")
+        } else if self.command_block_screen.is_some() {
+            Some("command")
+        } else if self.station_typing() {
+            Some("anvil")
+        } else if self.screen == Screen::Creative && self.creative_screen.tab().search {
+            Some("creative")
+        } else if self.recipe_search_focused() {
+            Some("recipe")
+        } else if self.title.as_mut().is_some_and(|t| t.text_focused()) {
+            Some("title")
+        } else if self.screen == Screen::Options && self.ui.options.text_focused() {
+            Some("options")
+        } else {
+            None
+        }
+    }
+
+    /// Whether the cursor (where a tap just landed) is on the text field shown now; None where
+    /// the field's place is not known.
+    fn on_text_field(&mut self) -> Option<bool> {
+        let (size, cursor) = (self.gui_size(), self.cursor);
+        let inside = |r: [f32; 4]| {
+            cursor.0 >= r[0] && cursor.0 < r[0] + r[2] && cursor.1 >= r[1] && cursor.1 < r[1] + r[3]
+        };
+        match self.text_context()? {
+            "title" => self.title.as_mut().map(|t| t.text_field_at(cursor, size)),
+            "options" => Some(self.ui.options.text_field_at(cursor.0, cursor.1)),
+            context => self.text_field_rect(context).map(inside),
+        }
+    }
+
+    /// The text field's box in GUI pixels, a little larger for a finger, on the screens that
+    /// draw one at a known place (vanilla's layouts).
+    fn text_field_rect(&self, context: &str) -> Option<[f32; 4]> {
+        let batch = HudBatch::new(self.touch_size());
+        let w = batch.width;
+        match context {
+            // SignEditScreen and HangingSignEditScreen's board, around (w / 2, 90..125).
+            "sign" => Some([w / 2.0 - 50.0, 60.0, 100.0, 110.0]),
+            // BookEditScreen's page text, inside the 192x192 book at (w / 2 - 96, 2).
+            "book" => Some([w / 2.0 - 66.0, 26.0, 132.0, 140.0]),
+            // CommandBlockEditScreen's command box.
+            "command" => Some([w / 2.0 - 150.0, 50.0, 300.0, 20.0]),
+            // AnvilScreen's name box (62, 24), 103 wide.
+            "anvil" => {
+                let (ox, oy) = self.inventory_origin(&batch);
+                Some([ox + 60.0, oy + 21.0, 107.0, 16.0])
+            }
+            // CreativeModeInventoryScreen's search box (82, 6), 80 wide.
+            "creative" => {
+                let (ox, oy) = Self::creative_origin(&batch);
+                Some([ox + 80.0, oy + 3.0, 86.0, 14.0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a finger landing at window pixel `p` is on a scrollbar's track, which it should
+    /// drag like a held mouse instead of scrolling the list.
+    fn on_scrollbar(&self, p: [f32; 2]) -> bool {
+        let batch = HudBatch::new(self.touch_size());
+        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
+        if self.screen == Screen::Creative {
+            let (ox, oy) = Self::creative_origin(&batch);
+            return self.creative_screen.inside_scrollbar(x - ox, y - oy);
+        }
+        false
     }
 
     fn touch_apply(&mut self, actions: Vec<Action>) {

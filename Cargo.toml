@@ -39,3 +39,10 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+
+# The Android APK's iteration builds (packaging/android/build_apk.py): fast's optimization, with
+# incremental compilation's own split, so an edit re-optimizes only the parts it touched
+# (codegen-units 16 re-optimized a sixteenth of the game for any change). Measure with fast.
+[profile.quick]
+inherits = "fast"
+codegen-units = 256

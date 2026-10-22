@@ -859,6 +859,8 @@ pub struct TouchPointer {
     gesture: Gesture,
     /// Wheel pixels per window pixel dragged (`set_gui_scale`); unset, 0.5.
     scroll_scale: Option<f32>,
+    /// The finger landed where a drag is meant (a scrollbar): moving it drags, never scrolls.
+    drag: bool,
 }
 
 /// The game turns this many wheel pixels into one wheel step...
@@ -875,6 +877,12 @@ impl TouchPointer {
             WHEEL_PIXELS_PER_STEP
                 / (LIST_PIXELS_PER_STEP * gui_scale.max(0.1) * wheel_sensitivity.max(0.01)),
         );
+    }
+
+    /// The finger that just landed drags with the button held whichever way it moves (it is on a
+    /// scrollbar, which follows it); lifting it ends that.
+    pub fn prefer_drag(&mut self) {
+        self.drag = true;
     }
 
     /// Whether `finger` is the pointer.
@@ -909,7 +917,7 @@ impl TouchPointer {
                 let mut out = Vec::new();
                 if self.gesture == Gesture::Undecided && dist(p, self.start) > slop {
                     let (dx, dy) = (p[0] - self.start[0], p[1] - self.start[1]);
-                    if dy.abs() > dx.abs() {
+                    if dy.abs() > dx.abs() && !self.drag {
                         self.gesture = Gesture::Scroll;
                         // Scrolling picks up from where the finger landed.
                         self.last = self.start;
@@ -931,6 +939,7 @@ impl TouchPointer {
             }
             TouchPhase::Ended | TouchPhase::Cancelled if self.owns(id) => {
                 self.finger = None;
+                self.drag = false;
                 match self.gesture {
                     Gesture::Undecided if phase == TouchPhase::Ended => {
                         vec![Pointer::Press, Pointer::Release]
@@ -981,6 +990,7 @@ impl TouchPointer {
     pub fn cancel(&mut self) -> Vec<WindowEvent> {
         let held = self.finger.is_some() && self.gesture == Gesture::Drag;
         self.finger = None;
+        self.drag = false;
         match (held, self.device) {
             (true, Some(device)) => vec![window_event(Pointer::Release, device)],
             _ => Vec::new(),

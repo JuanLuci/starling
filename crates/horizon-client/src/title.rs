@@ -1418,6 +1418,20 @@ impl Title {
             edit.shortcut(shortcut, board);
         });
     }
+    /// Whether a text field has the focus.
+    pub fn text_focused(&mut self) -> bool {
+        self.focused_field().is_some()
+    }
+    /// Whether `(x, y)` (GUI pixels) is on the focused text field, where a tap asks for an
+    /// on-screen keyboard. The server screens are forms: any of their fields counts.
+    pub fn text_field_at(&mut self, (x, y): (f32, f32), size: (f32, f32)) -> bool {
+        if let Mode::Multiplayer(screen) = &mut self.mode {
+            return screen.focused_text().is_some();
+        }
+        let (w, h) = (size.0.ceil(), size.1.ceil());
+        self.focused_rect((w, h))
+            .is_some_and(|[fx, fy, fw, fh]| crate::ui::hovered((x, y), fx, fy, fw, fh))
+    }
     /// The focused field's box on screen.
     fn focused_rect(&self, (w, h): (f32, f32)) -> Option<[f32; 4]> {
         let x = (w / 2.0).floor() - 100.0;

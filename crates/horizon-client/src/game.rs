@@ -2614,6 +2614,26 @@ impl Game<'_> {
             .name
             .clone();
         let key = (pos[0], pos[1], pos[2]);
+        // SignBlock.useWithoutItem: the editor, unless the sign is waxed (it was taken for a
+        // container before, which showed the inventory without its screen).
+        if let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) {
+            if sign.waxed {
+                let at = [
+                    f64::from(key.0) + 0.5,
+                    f64::from(key.1) + 0.5,
+                    f64::from(key.2) + 0.5,
+                ];
+                self.audio.play(
+                    "minecraft:block.sign.waxed_interact_fail",
+                    Some(at),
+                    1.0,
+                    1.0,
+                );
+            } else {
+                self.open_sign_editor(key, true);
+            }
+            return;
+        }
         if &*name == "minecraft:lectern" {
             self.open_lectern(pos);
             return;
@@ -10926,6 +10946,9 @@ impl ApplicationHandler for Game<'_> {
                                 "Horizon: first frame after {} ms",
                                 self.started.elapsed().as_millis()
                             );
+                            // Runs that skip the loading screen show the window here.
+                            #[cfg(target_os = "android")]
+                            crate::first_frame_shown();
                         }
                         if self.title.is_some() {
                             self.perf.title_shown();
@@ -12306,6 +12329,11 @@ struct Loading {
     touch_pointer: horizon_client::touch::TouchPointer,
     /// Files handed to the game from outside: prepared resources end the failure.
     imports: imports::Imports,
+    /// The sound output, opened once the first frame is up so the menu clicks before the game
+    /// loads (Game takes it over at the handoff).
+    audio: Option<Audio>,
+    /// The sound events, read on a thread of their own from the start.
+    sound_registry: Option<JoinHandle<horizon_client::sound_events::SoundRegistry>>,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -12516,6 +12544,24 @@ impl Loading {
                 "Horizon: loading screen shown after {} ms",
                 self.started.elapsed().as_millis()
             );
+            // The system's starting window stayed over the app until now (StarlingActivity).
+            #[cfg(target_os = "android")]
+            crate::first_frame_shown();
+            // Not before the first frame: opening the output takes a moment.
+            if self.audio.is_none()
+                && self.failure.is_none()
+                && let Some(registry) = self.sound_registry.take()
+            {
+                let registry = registry.join().unwrap_or_default();
+                let mut audio = Audio::with_registry(&self.vanilla_root, registry);
+                audio.master = self.settings.master_volume;
+                // As Game::apply_ui_settings: the master volume is the engine's own.
+                let mut volumes = self.settings.volumes;
+                volumes[0] = 1.0;
+                horizon_client::settings::set_source_volumes(volumes);
+                audio.sync_volumes();
+                self.audio = Some(audio);
+            }
         }
     }
     /// Load the resources again (they were imported after a failure): a fresh loader, as at start.
@@ -12620,11 +12666,20 @@ impl Loading {
             self.started.elapsed().as_millis()
         );
         let renderer_ms = renderer_at.elapsed().as_millis();
-        // Audio is created on the main thread, after the core is ready.
+        // Audio is made on the main thread: the menu's since its first frame, read again from the
+        // resource packs' root where they change it, else made now.
         let audio = if options.dedicated.is_some() {
             Audio::silent(&options.resources)
         } else {
-            Audio::new(&options.resources)
+            match self.audio.take() {
+                Some(mut audio) => {
+                    if options.resources != self.vanilla_root {
+                        audio.reload(&options.resources);
+                    }
+                    audio
+                }
+                None => Audio::new(&options.resources),
+            }
         };
         let pack_error = loaded.pack_error.or_else(|| self.pack_error.take());
         // The game borrows its shared resources for the process's lifetime,
@@ -12767,6 +12822,10 @@ fn run_loading(
     let (receiver, loader) =
         startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
     let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
+    let sound_registry = options.dedicated.is_none().then(|| {
+        let root = vanilla_root.clone();
+        std::thread::spawn(move || horizon_client::sound_events::SoundRegistry::load(&root))
+    });
     let loading = Loading {
         window: None,
         renderer: None,
@@ -12788,6 +12847,8 @@ fn run_loading(
         failure: None,
         touch_pointer: Default::default(),
         imports: Default::default(),
+        audio: None,
+        sound_registry,
     };
     let mut app = App::Loading(Box::new(loading));
     event_loop()?.run_app(&mut app)?;

@@ -1092,6 +1092,31 @@ impl OptionsUi {
                     && self.page() == Page::Main
                     && crate::options_horizon::searchable_section(self.section)))
     }
+    /// Whether a text field shown now has the focus: the language and settings searches, or
+    /// the pack search.
+    pub fn text_focused(&self) -> bool {
+        match self.page() {
+            Page::Language => self.language_search.focused,
+            Page::Packs => self
+                .pack_screen
+                .as_ref()
+                .is_some_and(|p| p.search_focused()),
+            Page::Main => crate::ui_theme::horizon() && self.settings_search.focused,
+            _ => false,
+        }
+    }
+    /// Whether `(x, y)` (GUI pixels) is on the focused text field shown now.
+    pub fn text_field_at(&self, x: f32, y: f32) -> bool {
+        let on = |e: &ui::EditBox| {
+            e.focused && x >= e.x && x < e.x + e.width && y >= e.y && y < e.y + e.height
+        };
+        match self.page() {
+            Page::Language => on(&self.language_search),
+            Page::Packs => self.pack_screen.as_ref().is_some_and(|p| p.search_at(x, y)),
+            Page::Main => crate::ui_theme::horizon() && on(&self.settings_search),
+            _ => false,
+        }
+    }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
     }

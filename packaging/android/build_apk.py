@@ -102,7 +102,7 @@ def compile_java(build_tools, android_jar, out):
 
 
 def link_resources(aapt2, android_jar, out):
-    """The manifest and the launcher icon, compiled and linked into `out/base.apk`."""
+    """The manifest, the launcher icon and the themes, compiled and linked into `out/base.apk`."""
     manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
     manifest = manifest.replace("@APPLICATION_ID@", APPLICATION_ID).replace("@LABEL@", LABEL)
     (out / "AndroidManifest.xml").write_text(manifest, encoding="utf-8")
@@ -115,6 +115,8 @@ def link_resources(aapt2, android_jar, out):
             ROOT / "packaging" / "icons" / "hicolor" / size / "apps" / "horizon.png",
             target / "ic_launcher.png",
         )
+    # The window themes (res/: the starting window's icon and background).
+    shutil.copytree(HERE / "res", res, dirs_exist_ok=True)
     compiled = out / "compiled"
     shutil.rmtree(compiled, ignore_errors=True)
     compiled.mkdir()
@@ -164,7 +166,10 @@ def sign(build_tools, aligned, apk, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--profile", default="fast", help="Cargo profile (default: fast)")
+    parser.add_argument(
+        "--profile", default="quick",
+        help="Cargo profile (default: quick, for iteration; fast or release to measure and ship)",
+    )
     parser.add_argument("--no-build", action="store_true", help="package the library built last")
     parser.add_argument("--install", action="store_true", help="adb install the APK")
     parser.add_argument(

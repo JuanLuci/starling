@@ -747,6 +747,10 @@ impl PackScreen {
             self.filter(None);
         }
     }
+    /// Whether `(x, y)` (GUI pixels) is on the focused search box.
+    pub fn search_at(&self, x: f32, y: f32) -> bool {
+        self.search_focused() && self.search.contains(f64::from(x), f64::from(y))
+    }
     pub fn search_focused(&self) -> bool {
         self.confirm.is_none() && self.focus == Focus::Search
     }

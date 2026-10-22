@@ -16,6 +16,7 @@ import android.provider.DocumentsContract;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import java.io.File;
 
@@ -44,6 +45,9 @@ public final class StarlingActivity extends NativeActivity {
 
     private ClipboardManager clipboard;
 
+    /** The game has drawn: the window may show (firstFrame). */
+    private volatile boolean drawn;
+
     /** Shared storage's Starling folder when the player allowed the app to use it, else null. */
     static String sharedFolder(Context context) {
         boolean allowed = Build.VERSION.SDK_INT >= 30
@@ -64,6 +68,26 @@ public final class StarlingActivity extends NativeActivity {
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         // As games do: watching, a controller or a benchmark can go minutes without a touch.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // A NativeActivity's window counts as drawn at once, so the system's starting window (the
+        // app icon) went and the screen behind showed until the game's first frame: the window
+        // is held back until the game says it has drawn, or ten seconds at most.
+        final View decor = getWindow().getDecorView();
+        decor.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override
+            public boolean onPreDraw() {
+                if (!drawn) {
+                    return false;
+                }
+                decor.getViewTreeObserver().removeOnPreDrawListener(this);
+                return true;
+            }
+        });
+        decor.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                firstFrame();
+            }
+        }, 10000);
         if (Build.VERSION.SDK_INT >= 28) {
             WindowManager.LayoutParams attributes = getWindow().getAttributes();
             attributes.layoutInDisplayCutoutMode =
@@ -106,6 +130,17 @@ public final class StarlingActivity extends NativeActivity {
         // The world was saved when the window went away (the game's `suspended`).
         android.os.Process.killProcess(android.os.Process.myPid());
         super.onDestroy();
+    }
+
+    /** The game drew its first frame: let the window show. */
+    public void firstFrame() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                drawn = true;
+                getWindow().getDecorView().invalidate();
+            }
+        });
     }
 
     /** Whether the player allowed the Starling folder (they may have just come back from it). */

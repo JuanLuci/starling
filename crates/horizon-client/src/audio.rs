@@ -490,14 +490,17 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
 }
 impl Audio {
     pub fn new(root: &Path) -> Self {
-        Self::with_output(root, true)
+        Self::with_output(root, SoundRegistry::load(root), true)
+    }
+    /// With the sound events already read (`SoundRegistry::load`, on another thread).
+    pub fn with_registry(root: &Path, registry: SoundRegistry) -> Self {
+        Self::with_output(root, registry, true)
     }
     /// No output device: the dedicated server.
     pub fn silent(root: &Path) -> Self {
-        Self::with_output(root, false)
+        Self::with_output(root, SoundRegistry::load(root), false)
     }
-    fn with_output(root: &Path, output: bool) -> Self {
-        let registry = SoundRegistry::load(root);
+    fn with_output(root: &Path, registry: SoundRegistry, output: bool) -> Self {
         if output && registry.is_empty() {
             // The game then plays nothing on a working output (#1035, #1076).
             log::warn!(
@@ -557,9 +560,10 @@ impl Audio {
         let mut errors = Vec::new();
         // The default device first, then any other output a host lists:
         // a default that cannot open (busy, or a stale ALSA default) should
-        // not leave the game silent when another device works.
+        // not leave the game silent when another device works. The list is
+        // asked for only then: on Android it goes through Java and is slow.
         let default = host.default_output_device();
-        let others = host.output_devices().into_iter().flatten();
+        let others = std::iter::once_with(|| host.output_devices().into_iter().flatten()).flatten();
         let mut tried = Vec::new();
         for device in default.into_iter().chain(others) {
             let name = device.name().unwrap_or_else(|_| "unnamed device".into());
@@ -602,7 +606,7 @@ impl Audio {
     }
     /// Sync the volume options, refreshing the categories that changed
     /// (the option sliders' `refreshCategoryVolume`).
-    fn sync_volumes(&mut self) {
+    pub fn sync_volumes(&mut self) {
         let mut volumes = [self.master; 11];
         for (i, v) in volumes.iter_mut().enumerate().skip(1) {
             *v = crate::settings::source_volume(i);
