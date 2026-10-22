@@ -151,7 +151,9 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
             } else {
                 extract_into(path, &prefix, &unique(&dir, &title, ""), &[]).map_err(fail)?;
             }
-            format!("Mod \"{title}\" added: restart the game, then turn it on in Options > Mods")
+            format!(
+                "Mod \"{title}\" added: turn it on in Options > Mods (one that adds blocks or items needs a restart)"
+            )
         }
         Kind::Resources => {
             install_resources(path, &prefix, &places.resources)?;

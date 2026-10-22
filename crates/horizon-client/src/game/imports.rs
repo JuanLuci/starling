@@ -129,6 +129,8 @@ impl super::Game<'_> {
                 .imports
                 .say("Minecraft resources imported: restart the game to use them".into()),
             Some(Kind::ResourcePack) => self.refresh_pack_lists(),
+            // The Mods page lists it at once; a mod with code runs as soon as it is turned on.
+            Some(Kind::Mod) => self.start_mods(),
             _ => {}
         }
     }
