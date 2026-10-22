@@ -2638,7 +2638,8 @@ impl Game<'_> {
                     1.0,
                 );
             } else {
-                self.open_sign_editor(key, true);
+                let front = self.facing_sign_front(pos);
+                self.open_sign_editor(key, front);
             }
             return;
         }

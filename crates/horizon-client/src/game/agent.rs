@@ -466,6 +466,8 @@ impl Game<'_> {
         });
         json!({
             "screen": self.screen_label(),
+            // The sign editor's block and side.
+            "sign": self.sign_edit.as_ref().map(|s| json!({ "pos": [s.pos.0, s.pos.1, s.pos.2], "front": s.front })),
             "menu": self.title.as_ref().map(|_| self.title_value()),
             "world": (self.title.is_none()).then(|| match &self.integrated {
                 Some(server) => server.world_name.clone(),

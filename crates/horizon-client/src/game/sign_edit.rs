@@ -22,6 +22,44 @@ pub(super) struct SignEditor {
 
 impl Game<'_> {
     /// `SignBlock.openTextEdit` for the front side after placement.
+    /// `SignBlockEntity.getSlotPlayerIsFacing`: whether the player stands on the sign's front
+    /// side (within 90 degrees of its facing, seen from its hitbox's centre), else the back.
+    pub(super) fn facing_sign_front(&self, pos: [i32; 3]) -> bool {
+        let Some(p) = self.player.as_ref() else {
+            return true;
+        };
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let Some(s) = self.pack.assets.registry.state(state) else {
+            return true;
+        };
+        let wall = s.name.contains("wall_");
+        let prop = |k: &str| s.properties.get(k).map(String::as_str);
+        // Direction.toYRot of a wall sign's facing, else RotationSegment.convertToDegrees.
+        let (sign_yaw, facing) = if wall {
+            let facing = prop("facing").unwrap_or("north");
+            let yaw = match facing {
+                "south" => 0.0,
+                "west" => 90.0,
+                "north" => 180.0,
+                _ => 270.0,
+            };
+            (yaw, Some(facing))
+        } else {
+            let rotation: f32 = prop("rotation").and_then(|r| r.parse().ok()).unwrap_or(0.0);
+            (rotation * 22.5, None)
+        };
+        // WallSignBlock.getSignHitboxCenterPosition: its board, 1/16 from the wall; the others
+        // the block's centre.
+        let (cx, cz) = match (s.name.contains("hanging"), facing) {
+            (false, Some("north")) => (0.5, 0.9375),
+            (false, Some("south")) => (0.5, 0.0625),
+            (false, Some("west")) => (0.9375, 0.5),
+            (false, Some("east")) => (0.0625, 0.5),
+            _ => (0.5, 0.5),
+        };
+        let center = [f64::from(pos[0]) + cx, f64::from(pos[2]) + cz];
+        faces_front(sign_yaw, center, [p.position.x, p.position.z])
+    }
     pub(super) fn open_sign_editor(&mut self, pos: (i32, i32, i32), front: bool) {
         self.sign_edit = Some(SignEditor {
             pos,
@@ -263,6 +301,34 @@ impl Game<'_> {
 }
 
 /// The sign line being edited, for Select All.
+/// `getSlotPlayerIsFacing`'s test: the player (x, z) within 90 degrees of the sign's facing,
+/// seen from its centre.
+fn faces_front(sign_yaw: f32, center: [f64; 2], player: [f64; 2]) -> bool {
+    let (xd, zd) = (player[0] - center[0], player[1] - center[1]);
+    let to_player = (zd.atan2(xd).to_degrees() - 90.0) as f32;
+    let difference = (to_player - sign_yaw + 540.0).rem_euclid(360.0) - 180.0;
+    difference.abs() <= 90.0
+}
+
 fn sign_line_id(front: bool, line: usize) -> horizon_client::clipboard::FieldId {
     (if front { "sign.front" } else { "sign.back" }, line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::faces_front;
+
+    #[test]
+    fn the_side_is_the_one_the_player_stands_on() {
+        // A standing sign at rotation 4 (90, its front to the west) on block 8, 6.
+        let center = [8.5, 6.5];
+        assert!(faces_front(90.0, center, [7.5, 6.5]));
+        assert!(!faces_front(90.0, center, [9.5, 6.5]));
+        // A wall sign facing north (180): its board 1/16 from the wall at the block's south.
+        let wall = [0.5, 0.9375];
+        assert!(faces_front(180.0, wall, [0.5, -2.0]));
+        assert!(!faces_front(180.0, wall, [0.5, 3.0]));
+        // Right beside it counts as the front (within 90 degrees).
+        assert!(faces_front(0.0, [0.5, 0.5], [2.0, 0.5]));
+    }
 }
