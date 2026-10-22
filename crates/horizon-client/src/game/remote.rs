@@ -110,6 +110,39 @@ impl Default for TextDisplay {
     }
 }
 
+/// `Display.ItemDisplay` as its entity data sets it: the item, how it is held (ItemDisplayContext)
+/// and the display's transformation, billboard and rotation.
+#[derive(Clone)]
+pub(super) struct ItemDisplay {
+    pub(super) stack: Option<horizon_client::items::ItemStack>,
+    /// DATA_ITEM_DISPLAY_ID: an ItemDisplayContext ordinal.
+    pub(super) context: u8,
+    /// DATA_TRANSLATION_ID, DATA_SCALE_ID, DATA_LEFT_ROTATION_ID, DATA_RIGHT_ROTATION_ID.
+    pub(super) translation: [f32; 3],
+    pub(super) scale: [f32; 3],
+    pub(super) left: [f32; 4],
+    pub(super) right: [f32; 4],
+    /// DATA_BILLBOARD_RENDER_CONSTRAINTS_ID: fixed, vertical, horizontal, center.
+    pub(super) billboard: u8,
+    pub(super) yaw: f32,
+    pub(super) pitch: f32,
+}
+impl ItemDisplay {
+    fn new(yaw: f32, pitch: f32) -> Self {
+        Self {
+            stack: None,
+            context: 0,
+            translation: [0.0; 3],
+            scale: [1.0; 3],
+            left: [0.0, 0.0, 0.0, 1.0],
+            right: [0.0, 0.0, 0.0, 1.0],
+            billboard: 0,
+            yaw,
+            pitch,
+        }
+    }
+}
+
 /// A server entity the client tracks (position as last sent).
 pub(super) struct Tracked {
     pub(super) kind: String,
@@ -182,6 +215,8 @@ pub(super) struct Remote {
     pub(super) names: HashMap<i32, (Option<horizon_client::text::Text>, bool)>,
     /// The text displays in the level, by entity.
     pub(super) text_displays: HashMap<i32, TextDisplay>,
+    /// The item displays in the level, by entity.
+    pub(super) item_displays: HashMap<i32, ItemDisplay>,
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and
     /// which of them are listed.
@@ -397,6 +432,7 @@ impl Remote {
         self.boss_bars.clear();
         self.names.clear();
         self.text_displays.clear();
+        self.item_displays.clear();
         self.players.clear();
         self.tab_players.clear();
         self.skin_textures.clear();
@@ -591,6 +627,7 @@ impl Game<'_> {
             transfer: None,
             names: HashMap::new(),
             text_displays: HashMap::new(),
+            item_displays: HashMap::new(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -931,6 +968,8 @@ impl Game<'_> {
     /// Entity.DATA_CUSTOM_NAME (2) and DATA_CUSTOM_NAME_VISIBLE (3) of any entity, and a text
     /// display's own data (Display 8 to 22, TextDisplay 23 to 27).
     fn remote_names_and_displays(&mut self, id: i32, values: &[(u8, i32, Value)]) {
+        // An item display's stack, made a game stack once the borrow of the connection ends.
+        let mut pending_items = Vec::new();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -942,6 +981,31 @@ impl Game<'_> {
                 (3, Value::Bool(v)) => r.names.entry(id).or_insert((None, false)).1 = *v,
                 _ => {}
             }
+            if r.item_displays.contains_key(&id) {
+                let item = match (index, value) {
+                    (23, Value::Item(stack)) => Some(stack.clone()),
+                    _ => None,
+                };
+                if let Some(d) = r.item_displays.get_mut(&id) {
+                    match (index, value) {
+                        (11, Value::Floats(v)) if v.len() == 3 => {
+                            d.translation = [v[0], v[1], v[2]]
+                        }
+                        (12, Value::Floats(v)) if v.len() == 3 => d.scale = [v[0], v[1], v[2]],
+                        (13, Value::Floats(v)) if v.len() == 4 => d.left = [v[0], v[1], v[2], v[3]],
+                        (14, Value::Floats(v)) if v.len() == 4 => {
+                            d.right = [v[0], v[1], v[2], v[3]]
+                        }
+                        (15, Value::Byte(b)) => d.billboard = (*b as u8).min(3),
+                        (24, Value::Byte(c)) => d.context = (*c as u8).min(9),
+                        _ => {}
+                    }
+                }
+                if let Some(stack) = item {
+                    pending_items.push((id, stack));
+                }
+                continue;
+            }
             let Some(d) = r.text_displays.get_mut(&id) else {
                 continue;
             };
@@ -951,6 +1015,16 @@ impl Game<'_> {
                 (24, Value::Int(w)) => d.line_width = (*w).max(1),
                 (27, Value::Byte(f)) => d.flags = *f as u8,
                 _ => {}
+            }
+        }
+        for (id, stack) in pending_items {
+            let stack = self.to_stack(&stack);
+            if let Some(d) = self
+                .remote
+                .as_mut()
+                .and_then(|r| r.item_displays.get_mut(&id))
+            {
+                d.stack = stack;
             }
         }
     }
@@ -1501,6 +1575,9 @@ impl Game<'_> {
             if kind == "minecraft:text_display" {
                 r.text_displays.insert(id, TextDisplay::default());
             }
+            if kind == "minecraft:item_display" {
+                r.item_displays.insert(id, ItemDisplay::new(yaw, pitch));
+            }
             r.entities.insert(
                 id,
                 Tracked {
@@ -1521,6 +1598,9 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             if let Some(t) = r.entities.get_mut(&id) {
                 t.position = position;
+            }
+            if let (Some(d), Some((yaw, pitch))) = (r.item_displays.get_mut(&id), rotation) {
+                (d.yaw, d.pitch) = (yaw, pitch);
             }
             // AbstractInterpolationHandler.interpolateTo: without a rotation,
             // the one it was heading for (or has).
@@ -1558,6 +1638,7 @@ impl Game<'_> {
             r.pending_items.remove(&id);
             r.names.remove(&id);
             r.text_displays.remove(&id);
+            r.item_displays.remove(&id);
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.

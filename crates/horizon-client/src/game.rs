@@ -6320,6 +6320,8 @@ impl Game<'_> {
         }
         // `ItemEntityRenderer`.
         self.dropped_item_geometry(camera, alpha, &mut out);
+        // `ItemDisplayRenderer` (a server's item displays).
+        self.item_display_geometry(camera, &mut out);
         // `VaultRenderer`.
         self.vault_geometry(camera, alpha, &mut out);
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);

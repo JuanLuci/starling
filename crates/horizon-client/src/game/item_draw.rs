@@ -375,6 +375,64 @@ impl Game<'_> {
     }
 }
 
+impl Game<'_> {
+    /// `ItemDisplayRenderer` on a server: each item display's item in its display context, posed
+    /// by `DisplayRenderer` (the billboard or the entity's rotation, then the transformation,
+    /// then half a turn).
+    pub(super) fn item_display_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        let Some(r) = &self.remote else {
+            return;
+        };
+        for (id, d) in &r.item_displays {
+            let (Some(stack), Some(t)) = (&d.stack, r.entities.get(id)) else {
+                continue;
+            };
+            let pos = glam::DVec3::from_array(t.position) - camera;
+            if pos.length_squared() > 64.0 * 64.0 {
+                continue;
+            }
+            let context = DisplayContext::ALL[usize::from(d.context)];
+            let state = self.resolve_item(stack, context, None, *id);
+            if state.is_empty() {
+                continue;
+            }
+            // DisplayRenderer.calculateOrientation; the camera is turned half round.
+            let (camera_yaw, camera_pitch) = (self.yaw - 180.0, -self.pitch);
+            let (yaw, pitch) = match d.billboard {
+                1 => (camera_yaw, d.pitch),
+                2 => (d.yaw, camera_pitch),
+                3 => (camera_yaw, camera_pitch),
+                _ => (d.yaw, d.pitch),
+            };
+            let orientation = glam::Quat::from_euler(
+                glam::EulerRot::YXZ,
+                -yaw.to_radians(),
+                pitch.to_radians(),
+                0.0,
+            );
+            let q = |v: [f32; 4]| glam::Quat::from_xyzw(v[0], v[1], v[2], v[3]).normalize();
+            // Transformation.getMatrix: translate, left rotation, scale, right rotation.
+            let transformation =
+                glam::Mat4::from_translation(glam::Vec3::from_array(d.translation))
+                    * glam::Mat4::from_quat(q(d.left))
+                    * glam::Mat4::from_scale(glam::Vec3::from_array(d.scale))
+                    * glam::Mat4::from_quat(q(d.right));
+            let pose = glam::Mat4::from_translation(pos.as_vec3())
+                * glam::Mat4::from_quat(orientation)
+                * transformation
+                * glam::Mat4::from_rotation_y(std::f32::consts::PI);
+            let packed = self.world.light(
+                t.position[0].floor() as i32,
+                t.position[1].floor() as i32,
+                t.position[2].floor() as i32,
+            );
+            let entity_start = out.len();
+            self.submit_item_world(&state, pose, vertex_light(packed), out);
+            self.cull_entity_vertices(out, entity_start);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
