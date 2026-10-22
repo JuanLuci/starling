@@ -475,6 +475,7 @@ fn frame_hints() -> &'static FrameHints {
 
 unsafe extern "C" {
     fn gettid() -> i32;
+    fn _exit(status: std::ffi::c_int) -> !;
 }
 
 /// The render thread's hint session, its target, and the window and rate last voted for.
@@ -600,6 +601,8 @@ fn android_main(app: AndroidApp) {
     logging::flush();
     // The activity is gone. Android may keep the process and start a new activity in it, but
     // winit's event loop cannot be made twice in one process: end it, so the next launch is a
-    // fresh one.
-    std::process::exit(0);
+    // fresh one. `_exit`, not `exit`: the C library's exit handlers tear down mutexes that the
+    // app's Java threads (hwui) still use, and the process would abort instead of ending.
+    // SAFETY: ends the process at once; the log was flushed above.
+    unsafe { _exit(0) }
 }
