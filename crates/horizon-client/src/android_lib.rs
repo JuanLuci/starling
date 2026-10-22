@@ -134,6 +134,14 @@ pub(crate) fn first_frame_shown() {
     });
 }
 
+/// Put the on-screen keyboard away, however it was shown.
+pub(crate) fn hide_keyboard() {
+    with_activity(|env, activity| {
+        env.call_method(activity, "hideKeyboard", "()V", &[])
+            .map(drop)
+    });
+}
+
 /// Start the game again in a new process (the game folder is chosen at start).
 pub(crate) fn restart_app() {
     with_activity(|env, activity| env.call_method(activity, "restart", "()V", &[]).map(drop));

@@ -61,12 +61,22 @@ pub(super) struct Touch {
 
 impl Game<'_> {
     fn touch_playing(&self) -> bool {
-        self.screen == Screen::Playing && self.title.is_none() && self.player.is_some()
+        self.screen == Screen::Playing
+            && self.title.is_none()
+            && self.player.is_some()
+            && !self.over_world_screen()
+    }
+
+    /// A screen drawn over the world without leaving the playing screen: the sign editor, a
+    /// book, a command block. Fingers are a pointer there, as on any other screen.
+    fn over_world_screen(&self) -> bool {
+        self.sign_edit.is_some() || self.book.is_some() || self.command_block_screen.is_some()
     }
 
     /// A screen opened in a world that the back key or the close button leaves.
     fn touch_closable(&self) -> bool {
-        self.title.is_none() && !matches!(self.screen, Screen::Playing | Screen::Dead)
+        self.title.is_none()
+            && (!matches!(self.screen, Screen::Playing | Screen::Dead) || self.over_world_screen())
     }
 
     /// The touch controls turn the view as a grabbed pointer does (mouse.rs).
@@ -258,6 +268,11 @@ impl Game<'_> {
             && let Some(window) = &self.window
         {
             window.set_ime_allowed(keyboard);
+            // winit hides only a keyboard shown implicitly; Android's own call hides any.
+            #[cfg(target_os = "android")]
+            if !keyboard {
+                crate::hide_keyboard();
+            }
             self.touch.keyboard = keyboard;
             self.touch.ime_seen = false;
         }

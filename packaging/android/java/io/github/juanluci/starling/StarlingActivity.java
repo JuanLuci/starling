@@ -17,6 +17,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.ViewTreeObserver;
+import android.view.inputmethod.InputMethodManager;
 import android.view.WindowManager;
 import java.io.File;
 
@@ -130,6 +131,20 @@ public final class StarlingActivity extends NativeActivity {
         // The world was saved when the window went away (the game's `suspended`).
         android.os.Process.killProcess(android.os.Process.myPid());
         super.onDestroy();
+    }
+
+    /** Put the on-screen keyboard away, however it was shown. */
+    public void hideKeyboard() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                InputMethodManager keyboard =
+                        (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (keyboard != null) {
+                    keyboard.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
+                }
+            }
+        });
     }
 
     /** The game drew its first frame: let the window show. */
