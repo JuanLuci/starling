@@ -1,0 +1,19 @@
+[package]
+name = "starling-mod-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.86"
+description = "starling-mod: run a Starling mod without the game, in a pretend world, and see what it does (JSON)"
+
+[[bin]]
+name = "starling-mod"
+path = "src/main.rs"
+
+[dependencies]
+horizon-mods = { path = "../horizon-mods" }
+serde_json = "1.0.151"
+log = "0.4"
+
+[lints]
+workspace = true
