@@ -2,10 +2,10 @@
   "name": "hello-js",
   "version": "0.1.0",
   "private": true,
-  "description": "Example Horizon mod in JavaScript: npm install, then npm run build makes mod.wasm (beside horizon-mod.toml, this folder is the mod)",
+  "description": "Example Horizon mod in JavaScript: npm install, then npm run build makes mod.wasm (beside horizon-mod.toml, this folder is the mod), keeping this computer's paths and environment out of it",
   "type": "module",
   "scripts": {
-    "build": "jco componentize src/mod.js --wit ../../wit --world-name horizon-mod --out mod.wasm --disable all"
+    "build": "node build.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/componentize-js": "0.18.1",
