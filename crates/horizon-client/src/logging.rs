@@ -195,7 +195,8 @@ pub struct Latest {
 }
 
 /// Opens `dir/latest.log` for this run, archiving the last run's. None when another Horizon
-/// using the same folder is writing it: that game keeps it, this one logs to stderr only. The
+/// using the same folder is writing it: that game keeps it, this one logs to stderr only (where
+/// files cannot be locked at all, it is opened unlocked). The
 /// lock is a separate file (`.lock`): Windows locks are mandatory, and a locked latest.log could
 /// not be read while the game runs.
 pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
@@ -208,7 +209,9 @@ pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
     match lock.try_lock() {
         Ok(()) => {}
         Err(fs::TryLockError::WouldBlock) => return Ok(None),
-        Err(fs::TryLockError::Error(e)) => return Err(e),
+        // A filesystem without file locks (Android's shared storage, ENOSYS): log unlocked,
+        // rather than not at all.
+        Err(fs::TryLockError::Error(_)) => {}
     }
     let mut file = OpenOptions::new()
         .read(true)
