@@ -181,6 +181,37 @@ impl Game<'_> {
             .peek()
             .is_some()
             .then(|| vanilla::game_dispatcher().with_mod_commands(names));
+        self.merge_remote_commands();
+    }
+    /// On a server, the chat's tree: the server's, with the running mods' commands it does not
+    /// have (the server's own win).
+    pub(super) fn merge_remote_commands(&mut self) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        r.commands = r.server_commands.as_ref().map(|tree| {
+            let mut names = self
+                .mods
+                .mods
+                .commands()
+                .filter(|name| tree.find(name).is_none())
+                .peekable();
+            match names.peek() {
+                Some(_) => tree.with_mod_commands(names),
+                None => tree.clone(),
+            }
+        });
+    }
+    /// `/command` typed in chat on a server: true when a mod owns it and the server has no
+    /// command of that name.
+    pub(super) fn remote_mod_command(&mut self, command: &str) -> bool {
+        let name = command.split_whitespace().next().unwrap_or_default();
+        let server_has = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.server_commands.as_ref())
+            .is_some_and(|tree| tree.find(name).is_some());
+        !server_has && self.mod_command(command)
     }
     /// After the options changed: restart the mods if the list of the ones
     /// turned on did.

@@ -124,8 +124,11 @@ pub(super) struct Remote {
     pub chat: Vec<(String, Instant)>,
     /// Lines received since joining, for the control socket's events.
     pub chat_received: u64,
-    /// The server's command tree (ClientboundCommandsPacket).
+    /// The server's command tree (ClientboundCommandsPacket) with the running mods' commands
+    /// the server does not have.
     pub commands: Option<horizon_client::command::Dispatcher>,
+    /// The server's command tree as it sent it.
+    pub server_commands: Option<horizon_client::command::Dispatcher>,
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and
     /// which of them are listed.
@@ -329,6 +332,7 @@ impl Game<'_> {
             chat: Vec::new(),
             chat_received: 0,
             commands: None,
+            server_commands: None,
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -515,6 +519,9 @@ impl Game<'_> {
             self.ticks,
             self.screen == Screen::Chat,
         );
+        if self.mods.mods.is_running() {
+            self.mods_chat(&text);
+        }
         if let Some(r) = self.remote.as_mut() {
             r.chat.push((text, Instant::now()));
             r.chat_received += 1;
@@ -1913,8 +1920,9 @@ impl Game<'_> {
                     horizon_client::command::vanilla::dispatcher(),
                 );
                 if let Some(r) = self.remote.as_mut() {
-                    r.commands = Some(tree);
+                    r.server_commands = Some(tree);
                 }
+                self.merge_remote_commands();
             }
             C::SystemChat(p) => {
                 let text = plain(
@@ -2493,6 +2501,8 @@ impl Game<'_> {
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
     pub(super) fn tick_remote(&mut self) -> Result<()> {
         self.tick_remote_level()?;
+        // Client mods tick on a server as they do in single player.
+        self.tick_mods();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {

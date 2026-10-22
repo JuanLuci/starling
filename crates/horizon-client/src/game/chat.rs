@@ -570,8 +570,14 @@ impl Game<'_> {
     /// ChatScreen.handleChatInput: history, then a command or a chat line.
     pub(super) fn handle_chat_input(&mut self, message: &str) {
         self.ui.chat.add_recent(message);
-        // On a server (single player's own included) the server runs it.
+        // On a server (single player's own included) the server runs it, but for a mod's command
+        // the server does not have (as Fabric's client commands).
         if self.remote.is_some() {
+            if let Some(command) = message.trim().strip_prefix('/')
+                && self.remote_mod_command(command)
+            {
+                return;
+            }
             self.send_chat(message);
             return;
         }
