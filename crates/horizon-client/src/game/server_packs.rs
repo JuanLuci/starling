@@ -172,7 +172,7 @@ impl Game<'_> {
         }
     }
     /// The prompt's answer for the first push waiting.
-    fn answer_pack_prompt(&mut self, accept: bool) {
+    pub(super) fn answer_pack_prompt(&mut self, accept: bool) {
         let Some(push) = self.server_packs.prompts.pop_front() else {
             return;
         };

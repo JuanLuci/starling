@@ -699,6 +699,19 @@ impl Game<'_> {
     }
 
     pub(super) fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
+        // Over everything, the server pack prompt and a mod's screen take Escape as they take
+        // the keyboard's (the back key, the touch close button and the control socket come
+        // this way, not as window events).
+        if key == KeyCode::Escape {
+            if self.server_packs.prompting() {
+                self.answer_pack_prompt(false);
+                return Ok(());
+            }
+            if self.mods.screen.is_some() {
+                self.close_mod_screen();
+                return Ok(());
+            }
+        }
         self.physical_keys.insert(key);
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);
