@@ -892,6 +892,10 @@ struct WorldRest {
 }
 
 impl Resources {
+    /// Whether the world's resources (items, mobs...) have loaded: menus show before they do.
+    fn rest_ready(&self) -> bool {
+        self.rest.get().is_some()
+    }
     fn rest(&self) -> &WorldRest {
         self.rest
             .get()

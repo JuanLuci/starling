@@ -428,10 +428,7 @@ impl Game<'_> {
         self.sync_mod_commands();
         self.register_mod_channels();
         // What they read until the next tick, now: a game paused while they started has none.
-        if self.mods.mods.is_running() {
-            let snapshot = self.mod_snapshot();
-            self.mods.mods.set_snapshot(snapshot);
-        }
+        self.refresh_mod_snapshot();
         self.show_mod_output();
     }
     /// The Mods page's rows, from what loaded.
@@ -596,6 +593,14 @@ impl Game<'_> {
                     .contains_key(s.id.as_str())
                     .then(|| ItemStack::new(&s.id, s.count.max(1)))
             })
+    }
+    /// What mods read, taken now (between ticks), once the world's resources have loaded: mods
+    /// cached from an earlier start run before they do, on the loading menus.
+    fn refresh_mod_snapshot(&mut self) {
+        if self.mods.mods.is_running() && self.res.rest_ready() {
+            let snapshot = self.mod_snapshot();
+            self.mods.mods.set_snapshot(snapshot);
+        }
     }
     /// What mods read this tick: the parts their capabilities reach.
     fn mod_snapshot(&mut self) -> Snapshot {
@@ -1244,8 +1249,7 @@ impl Game<'_> {
         if pressed {
             self.mods.keys_down.push(full);
             // A press on a paused game's screen (a mod's button there) comes between no ticks.
-            let snapshot = self.mod_snapshot();
-            self.mods.mods.set_snapshot(snapshot);
+            self.refresh_mod_snapshot();
         } else {
             self.mods.keys_down.retain(|k| *k != full);
         }
