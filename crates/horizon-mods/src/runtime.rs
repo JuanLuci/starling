@@ -612,8 +612,30 @@ impl Mods {
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
     /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
-    /// per-mod directory.
+    /// per-mod directory. A mod that fails on the quick compiler's code is started again on the
+    /// full compiler's, which every mod gets from then on.
     fn start(
+        &mut self,
+        path: &Path,
+        package: &Package,
+        reserved: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<Running>, String> {
+        STARTED_QUICK.set(false);
+        match self.start_once(path, package, reserved) {
+            Err(e) if STARTED_QUICK.get() => {
+                log::warn!(
+                    "Horizon: mod {} failed on quick code ({e}): compiling it fully",
+                    package.manifest.id
+                );
+                QUICK_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.js = None;
+                self.start_once(path, package, reserved)
+            }
+            other => other,
+        }
+    }
+
+    fn start_once(
         &mut self,
         path: &Path,
         package: &Package,
@@ -660,7 +682,8 @@ impl Mods {
             }
             (None, None) => return Ok(None),
         };
-        // The quick compiler's engine for a JavaScript mod started before the full compile.
+        // The quick compiler's engine for a mod started before its full compile.
+        STARTED_QUICK.set(!Engine::same(component.engine(), engine));
         let engine = &component.engine().clone();
         let for_starling = js_linker.is_some() || {
             let ty = component.component_type();
@@ -1335,6 +1358,7 @@ fn compile_named<'a>(
     let wasm = wasm()?;
     // A big component (the JavaScript engine) runs on quick code until its full code is kept.
     if wasm.len() >= QUICK_FIRST
+        && quick_wanted()
         && let Some(component) = compile_quick_then_full(engine, wasm.to_vec(), file.clone())
     {
         return Ok(component);
@@ -1351,6 +1375,31 @@ fn compile_named<'a>(
 /// Components this big start on the quick compiler's code (a mod's own is tens of kilobytes;
 /// the JavaScript engine is 12 megabytes).
 const QUICK_FIRST: usize = 2 << 20;
+
+thread_local! {
+    /// The mod being started (on this thread) runs on the quick compiler's code.
+    static STARTED_QUICK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A mod failed on the quick compiler's code: this run compiles fully.
+static QUICK_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether big components start on the quick compiler's code: on x86-64, where Winch's code
+/// runs the JavaScript engine right; on ARM (phones) its code crashed it (wasmtime 36), so they
+/// compile fully there. `STARLING_QUICK_COMPILER=on` or `off` says otherwise (testing a newer
+/// wasmtime on a phone).
+fn quick_wanted() -> bool {
+    static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let wanted =
+        *WANTED.get_or_init(
+            || match std::env::var("STARLING_QUICK_COMPILER").as_deref() {
+                Ok("on") => true,
+                Ok("off") => false,
+                _ => cfg!(target_arch = "x86_64"),
+            },
+        );
+    wanted && !QUICK_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn keep_compiled(component: &Component, file: &Path) -> std::io::Result<()> {
     let bytes = component.serialize().map_err(std::io::Error::other)?;

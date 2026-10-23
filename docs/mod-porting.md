@@ -184,8 +184,10 @@ phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into
   first, so a frame with fewer of them is cheaper. Reads of `game`, `level` and `inventory` are
   kept until the game's snapshot changes (once a tick) and handed out as shallow copies (the
   player: 37 us a read, 2 us kept); `keys.is-control-down` reads every control at once a hook.
-  The first start after the engine changed runs
-  on quick code (Winch, about two and a half times slower) until the full compile is kept.
+  On a PC (x86-64) the first start after the engine
+  changed runs on quick code (Winch, about two and a half times slower) until the full compile
+  is kept; on ARM Winch's code crashed the engine (wasmtime 36), so phones compile fully, on
+  every core. A mod failing on quick code is started again on full code.
 - **Out of memory**: a mod has 64 MiB. The engine is built with componentize-js 0.23 or later:
   before it every string passed to the game leaked, and a mod drawing text each frame ran out in
   minutes.
