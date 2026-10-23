@@ -446,6 +446,8 @@ impl Game<'_> {
                         id: String::new(),
                         title: file.into_owned(),
                         description: String::new(),
+                        summary: String::new(),
+                        config: None,
                         problem,
                         dev: false,
                     };
@@ -461,6 +463,8 @@ impl Game<'_> {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
                     description: format!("{may} {}", m.description).trim().to_owned(),
+                    summary: m.description.clone(),
+                    config: self.mods.mods.config_screen(&m.id),
                     problem,
                     dev: dev.contains(&e.path),
                 }

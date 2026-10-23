@@ -358,6 +358,8 @@ struct State {
     panel: Option<Panel>,
     /// Some while a render hook runs: what it drew.
     draw: Option<Vec<DrawOp>>,
+    /// Its settings screen (`screens.set-config`), `<mod id>:<name>`.
+    config: Option<String>,
     /// The mod's payload channels.
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
@@ -598,6 +600,7 @@ impl Mods {
             out: Vec::new(),
             panel: None,
             draw: None,
+            config: None,
             channels: Vec::new(),
             sent: VecDeque::new(),
             data_dir,
@@ -662,6 +665,14 @@ impl Mods {
     }
     fn running(&self) -> impl Iterator<Item = &Running> {
         self.entries.iter().filter_map(|e| e.run.as_ref())
+    }
+    /// The settings screen running mod `id` offers (`screens.set-config`), `<mod id>:<name>`.
+    pub fn config_screen(&self, id: &str) -> Option<String> {
+        let state = self
+            .running()
+            .map(|r| r.store.data())
+            .find(|s| s.id == id)?;
+        state.config.clone()
     }
     /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
     pub fn uses(&self, c: Capability) -> bool {
@@ -1796,6 +1807,17 @@ impl screens::Host for State {
         self.out.push(Output::CloseScreen {
             id: self.id.clone(),
         });
+    }
+    fn set_config(&mut self, name: String) {
+        if screen_name_ok(&name) {
+            self.config = Some(format!("{}:{name}", self.id));
+        } else {
+            log::warn!(
+                "[mod {}] config screen {:?} is not [a-z0-9_./-]{{1,64}}",
+                self.id,
+                clip(name)
+            );
+        }
     }
 }
 impl mobile::Host for State {

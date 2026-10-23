@@ -39,6 +39,7 @@
 //! | `ClientSendMessageEvents.ALLOW_CHAT/MODIFY_CHAT` | [`Mod::chat_sending`] |
 //! | `ScreenEvents.AFTER_INIT/afterRender/remove`, `ScreenMouseEvents`, `ScreenKeyboardEvents` | [`Mod::screen_opened`], [`Mod::screen_render`], [`Mod::screen_closed`], [`Mod::screen_mouse`], [`Mod::screen_key`] |
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
+//! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
 //! | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | [`Registration::keybind`], [`Mod::key`], [`keys::is_down`] |
 //! | `options.forwardKey.isPressed()`, `KeyBinding.setPressed` (sprint, sneak) | [`keys::is_control_down`], [`keys::presses`], [`input::hold`] |

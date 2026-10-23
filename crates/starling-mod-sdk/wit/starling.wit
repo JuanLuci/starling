@@ -363,6 +363,10 @@ interface screens {
     open: func(name: string);
     /// Closes the mod's screen if one is open.
     close: func();
+    /// The mod's settings screen, `<mod id>:<name>` (Mod Menu's config screen): a Config button
+    /// beside the mod on the Mods page opens it, over the page. Called in `init`; the mod draws
+    /// it as any of its screens (`registration.screens`).
+    set-config: func(name: string);
 }
 
 /// The device: always granted, on every device (where a part does not apply it does nothing).

@@ -21,7 +21,12 @@ pub struct Installed {
     pub id: String,
     /// `Name 1.0` (the file name when the manifest is unreadable).
     pub title: String,
+    /// What it may do, then what it is (the row's tooltip).
     pub description: String,
+    /// What it is, in its own words (the line under its row).
+    pub summary: String,
+    /// Its settings screen (`screens.set-config`), when running.
+    pub config: Option<String>,
     /// Why it is not running, when it failed.
     pub problem: Option<String>,
     /// Loaded with `--dev-mod`: always on, reloaded when rebuilt.
@@ -94,6 +99,8 @@ mod tests {
             id: id.into(),
             title: id.into(),
             description: String::new(),
+            summary: String::new(),
+            config: None,
             problem: None,
             dev,
         };

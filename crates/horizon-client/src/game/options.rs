@@ -284,6 +284,18 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                // Over the Mods page, which shows again when the mod closes it.
+                Event::ModConfig(i) => {
+                    if let Some(screen) = self
+                        .settings
+                        .mods
+                        .installed
+                        .get(i)
+                        .and_then(|m| m.config.clone())
+                    {
+                        self.open_mod_screen(screen);
+                    }
+                }
                 // The editor works over the world: the menus close for it.
                 Event::TouchLayout if self.title.is_none() => {
                     self.settings.save(&Self::options_path());

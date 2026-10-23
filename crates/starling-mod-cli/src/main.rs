@@ -245,6 +245,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         "commands": mods.commands().collect::<Vec<_>>(),
         "keybinds": mods.keybinds().iter().map(|(_, k)| json!({ "id": k.id, "name": k.name, "key": k.key })).collect::<Vec<_>>(),
         "channels": mods.channels(),
+        "config": manifest.and_then(|m| mods.config_screen(&m.id)),
     }));
     let mut hands = Hands::default();
     outputs(&mut mods, &mut None, &mut hands);

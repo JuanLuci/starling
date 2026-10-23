@@ -104,6 +104,14 @@ pub enum Opt {
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
+/// `text` cut to `chars` characters, `...` marking the cut.
+fn clipped(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(chars - 3).collect();
+    format!("{}...", cut.trim_end())
+}
 fn generic(caption: &str, value: Text) -> Text {
     Text::translate("options.generic_value", &[tr(caption), value])
 }
@@ -887,6 +895,7 @@ enum Act {
     /// Back to Horizon's own menus (Horizon only, see `list_rows`).
     HorizonMenus,
     ToggleMod(usize),
+    ModConfig(usize),
     OpenModFolder,
     /// The touch layout editor (phones).
     TouchLayout,
@@ -937,6 +946,8 @@ pub enum Event {
     Packs(Vec<String>),
     OpenPackFolder,
     OpenModFolder,
+    /// Open mod `i`'s settings screen (`screens.set-config`) over the Mods page.
+    ModConfig(usize),
     /// Close the options and edit the touch controls' layout over the world.
     TouchLayout,
 }
@@ -1077,7 +1088,10 @@ enum Row {
     Big(Opt),
     Pair(Opt, Option<Opt>),
     Header(&'static str),
+    /// A button, and another after it.
     Buttons(Widget, Option<Widget>),
+    /// A line of grey text under the row before (a mod's description).
+    Note(String),
 }
 fn pairs(opts: &[Opt]) -> Vec<Row> {
     opts.chunks(2)
@@ -1449,29 +1463,40 @@ impl OptionsUi {
                         "No mods: put .hmod files in the horizon-mods folder",
                     )];
                 }
-                s.mods
-                    .installed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, installed)| {
-                        let mut label = Text::literal(format!("{}: ", installed.title))
-                            .append(on_off(s.mods.is_on(i)));
-                        if installed.problem.is_some() {
-                            label = label.append(" (Stopped)");
-                        } else if installed.dev {
-                            label = label.append(" (Dev)");
-                        }
-                        let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
-                        Row::Buttons(
-                            if installed.dev || installed.id.is_empty() {
-                                inactive(widget)
-                            } else {
-                                widget
-                            },
-                            None,
-                        )
-                    })
-                    .collect()
+                // Each mod: its switch (and its settings, Mod Menu's config button), then what it
+                // is, readable without a mouse to hover.
+                let mut rows = Vec::new();
+                for (i, installed) in s.mods.installed.iter().enumerate() {
+                    let mut label = Text::literal(format!("{}: ", installed.title))
+                        .append(on_off(s.mods.is_on(i)));
+                    if installed.problem.is_some() {
+                        label = label.append(" (Stopped)");
+                    } else if installed.dev {
+                        label = label.append(" (Dev)");
+                    }
+                    let width = if installed.config.is_some() {
+                        236.0
+                    } else {
+                        310.0
+                    };
+                    let widget = button(0.0, 0.0, width, label, Act::ToggleMod(i));
+                    let config = installed.config.as_ref().map(|_| {
+                        button(0.0, 0.0, 64.0, Text::literal("Config"), Act::ModConfig(i))
+                    });
+                    rows.push(Row::Buttons(
+                        if installed.dev || installed.id.is_empty() {
+                            inactive(widget)
+                        } else {
+                            widget
+                        },
+                        config,
+                    ));
+                    let about = installed.problem.as_deref().unwrap_or(&installed.summary);
+                    if !about.is_empty() {
+                        rows.push(Row::Note(clipped(about, 52)));
+                    }
+                }
+                rows
             }
             _ => {
                 let _ = s;
@@ -1886,13 +1911,29 @@ impl OptionsUi {
                         Row::Buttons(mut a, b) => {
                             a.x = cx - 155.0;
                             a.y = y + 2.0;
+                            let after = a.x + a.w + 10.0;
                             out.push(a);
                             if let Some(mut b) = b {
-                                b.x = cx + 5.0;
+                                b.x = after;
                                 b.y = y + 2.0;
                                 out.push(b);
                             }
                             y += 25.0;
+                        }
+                        Row::Note(text) => {
+                            out.push(Widget {
+                                x: cx - 153.0,
+                                y,
+                                w: 306.0,
+                                h: 9.0,
+                                kind: WKind::Text {
+                                    text: Text::literal(text),
+                                    color: 0xFFA0_A0A0,
+                                    centered: false,
+                                },
+                                list: false,
+                            });
+                            y += 13.0;
                         }
                     }
                 }
@@ -2399,6 +2440,7 @@ impl OptionsUi {
                             s.mods.toggle(i);
                             events.push(Event::Changed);
                         }
+                        Act::ModConfig(i) => events.push(Event::ModConfig(i)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
                         Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::None => {}
@@ -2856,6 +2898,53 @@ mod tests {
     }
 
     #[test]
+    fn mods_page_shows_what_a_mod_is_and_opens_its_settings() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        let size = (480.0, 240.0);
+        ui.show(Page::Mods);
+        s.mods.installed.push(crate::mod_list::Installed {
+            id: "keystrokes".into(),
+            title: "Keystrokes 0.1.0".into(),
+            description: "May draw on your screen.".into(),
+            summary: "Keys lit while held.".into(),
+            config: Some("keystrokes:settings".into()),
+            problem: None,
+            dev: false,
+        });
+        let (widgets, ..) = ui.layout(&s, size.0, size.1);
+        assert!(widgets.iter().any(|w| {
+            matches!(&w.kind, WKind::Text { text, .. } if text.plain() == "Keys lit while held.")
+        }));
+        let config = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Button {
+                        act: Act::ModConfig(0),
+                        ..
+                    }
+                )
+            })
+            .expect("a Config button beside the mod");
+        assert_eq!(
+            ui.click(
+                &mut s,
+                &atlas,
+                config.x + 1.0,
+                config.y + 1.0,
+                size,
+                [480, 240],
+                false,
+                false,
+            ),
+            vec![Event::ButtonClick, Event::ModConfig(0)]
+        );
+    }
+
+    #[test]
     fn classic_mods_page_toggles_mods_and_keeps_dev_and_invalid_entries_inactive() {
         let atlas = atlas();
         let mut s = Settings::default();
@@ -2906,6 +2995,8 @@ mod tests {
                 id: id.into(),
                 title: id.into(),
                 description: "May show HUD panels.".into(),
+                summary: String::new(),
+                config: None,
                 problem: id.is_empty().then(|| "Invalid package".into()),
                 dev,
             });
