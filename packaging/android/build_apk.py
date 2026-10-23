@@ -8,6 +8,7 @@ horizon-prepare makes from the player's own copy are copied to the app's folder 
     python3 packaging/android/build_apk.py                 # build the library, then the APK
     python3 packaging/android/build_apk.py --no-build      # package the library built last
     python3 packaging/android/build_apk.py --install       # and adb install it
+    python3 packaging/android/build_apk.py --zip           # and a zip of it to send (a third the size)
 
 Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
 NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (javac, keytool,
@@ -192,6 +193,10 @@ def main():
     parser.add_argument("--no-build", action="store_true", help="package the library built last")
     parser.add_argument("--install", action="store_true", help="adb install the APK")
     parser.add_argument(
+        "--zip", action="store_true",
+        help="also zip the APK, whose library is stored uncompressed (about 22 MB instead of 54)",
+    )
+    parser.add_argument(
         "--keep-symbols", action="store_true", help="ship the library unstripped (backtraces)"
     )
     args = parser.parse_args()
@@ -228,6 +233,12 @@ def main():
     apk = out / f"starling-{VERSION_NAME}-{ABI}.apk"
     sign(build_tools, aligned, apk, out)
     print(apk)
+    if args.zip:
+        # Sent where files are capped in size (a chat, a phone away from adb): unzip, then install.
+        packed = apk.with_suffix(".apk.zip")
+        with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            z.write(apk, apk.name)
+        print(packed)
     if args.install:
         adb = tool(sdk / "platform-tools", "adb")
         run(adb, "install", "-r", apk)
