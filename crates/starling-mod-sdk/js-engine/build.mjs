@@ -59,11 +59,13 @@ if (built.status !== 0) {
 }
 
 // What would tell who built it: the home folder (either slash) and the user name as a variable
-// (alone, a short name would be found in any text).
+// (alone, a short name would be found in any text). GitHub's runners build under their home,
+// /home/runner, which names no one.
 const wasm = readFileSync(here(OUT));
 const home = homedir();
 const user = userInfo().username;
-const leaks = [home, home.replaceAll("\\", "/"), `USERNAME=${user}`, `USER=${user}`]
+const homes = process.env.GITHUB_ACTIONS === "true" ? [] : [home, home.replaceAll("\\", "/")];
+const leaks = [...homes, `USERNAME=${user}`, `USER=${user}`]
   .filter((s, i, all) => all.indexOf(s) === i)
   .filter((s) => wasm.includes(Buffer.from(s)));
 if (leaks.length > 0) {
