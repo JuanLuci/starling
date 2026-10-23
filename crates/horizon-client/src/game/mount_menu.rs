@@ -363,8 +363,14 @@ impl Game<'_> {
         offset_y: f32,
     ) {
         let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        let x_angle = ((cx - self.cursor.0) / 40.0).atan();
-        let y_angle = ((cy - self.cursor.1) / 40.0).atan();
+        // Ahead on a touch screen, as the player's (perspective.rs).
+        let cursor = if self.has_touch() {
+            (cx, cy)
+        } else {
+            self.cursor
+        };
+        let x_angle = ((cx - cursor.0) / 40.0).atan();
+        let y_angle = ((cy - cursor.1) / 40.0).atan();
         let mut m = mob.clone();
         m.previous = m.position;
         m.body_yaw = 180.0 + x_angle * 20.0;

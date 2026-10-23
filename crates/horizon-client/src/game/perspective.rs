@@ -470,8 +470,15 @@ impl Game<'_> {
             return;
         }
         let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        let x_angle = ((cx - self.cursor.0) / 40.0).atan();
-        let y_angle = ((cy - self.cursor.1) / 40.0).atan();
+        // On a touch screen there is no cursor to follow (the touch inventory parks it out of
+        // the window): the player looks ahead.
+        let cursor = if self.has_touch() {
+            (cx, cy)
+        } else {
+            self.cursor
+        };
+        let x_angle = ((cx - cursor.0) / 40.0).atan();
+        let y_angle = ((cy - cursor.1) / 40.0).atan();
         let mut m = m.clone();
         // The render state: still, facing out, the head toward the cursor.
         m.previous = m.position;

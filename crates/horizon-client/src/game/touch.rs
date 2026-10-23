@@ -2,7 +2,10 @@
 //! HUD and turned into the virtual pad, mouse motion and the hotbar, laid out as the player's
 //! touch-layout.json says (edited in place: a long press on pause); on every other screen the
 //! first finger is the pointer, with a close button over the screens a world opens. Android's
-//! back key is Escape, and the chat raises the on-screen keyboard and moves above it.
+//! back key is Escape, and the chat raises the on-screen keyboard and moves above it. On the
+//! screens with slots a finger works them as Bedrock's touch inventory does (slots.rs).
+mod slots;
+
 use super::{Game, Screen};
 use horizon_client::{
     Result,
@@ -38,6 +41,8 @@ pub(super) struct Touch {
     controls: TouchControls,
     /// The finger acting as the mouse off the playing screen.
     pointer: touch::TouchPointer,
+    /// The finger on a slot and the stack it picked (slots.rs).
+    slots: slots::SlotTouch,
     /// A touch was seen: draw the controls (always on Android).
     seen: bool,
     /// The controls were live last frame (the playing screen).
@@ -241,6 +246,12 @@ impl Game<'_> {
             let _ = self.touch_key_tap(KeyCode::Escape);
             return true;
         }
+        if !self.touch_playing()
+            && !self.touch.pointer.owns(t.id)
+            && self.slot_touch_event(event_loop, id, t)
+        {
+            return true;
+        }
         // The mouse finger stays the mouse until it lifts, even if the screen closed under it.
         if !self.touch_playing() || self.touch.pointer.owns(t.id) {
             let slop = touch::slop(layout.width, layout.height);
@@ -303,6 +314,7 @@ impl Game<'_> {
             for mouse in self.touch.pointer.frame_events(now) {
                 self.window_event(event_loop, id, mouse);
             }
+            self.slot_touch_frame(event_loop, id);
         }
         let live = self.touch_playing();
         if self.touch.live && !live {
@@ -818,6 +830,56 @@ impl Game<'_> {
     }
 
     /// `touch-layout`: the layout, or open, close (saving) or reset its editor.
+    /// `touch down|move|up|tap X Y [FINGER]`: a finger at a GUI pixel, as the touch screen's.
+    pub(super) fn touch_input_command(
+        &mut self,
+        words: &[&str],
+        event_loop: &ActiveEventLoop,
+    ) -> Result<Option<Value>> {
+        if words.first() != Some(&"touch") {
+            return Ok(None);
+        }
+        let number = |i: usize| -> Result<f64> {
+            let word = words.get(i).ok_or("touch down|move|up|tap X Y [FINGER]")?;
+            Ok(word
+                .parse::<f64>()
+                .map_err(|_| format!("{word} is not a number"))?)
+        };
+        let phases: &[TouchPhase] = match words.get(1).copied() {
+            Some("down") => &[TouchPhase::Started],
+            Some("move") => &[TouchPhase::Moved],
+            Some("up") => &[TouchPhase::Ended],
+            Some("tap") => &[TouchPhase::Started, TouchPhase::Ended],
+            _ => return Err("touch down|move|up|tap X Y [FINGER]".into()),
+        };
+        let scale = HudBatch::new(self.touch_size()).scale;
+        let location = winit::dpi::PhysicalPosition::new(
+            number(2)? * f64::from(scale),
+            number(3)? * f64::from(scale),
+        );
+        let finger = if words.len() > 4 {
+            number(4)? as u64
+        } else {
+            0
+        };
+        let id = self
+            .window
+            .as_ref()
+            .map(|w| w.id())
+            .ok_or("no window yet")?;
+        for &phase in phases {
+            let touch = winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location,
+                force: None,
+                id: finger,
+            };
+            self.window_event(event_loop, id, WindowEvent::Touch(touch));
+        }
+        Ok(Some(json!({ "ok": true, "screen": self.screen_label() })))
+    }
+
     pub(super) fn touch_command(&mut self, words: &[&str]) -> Result<Option<Value>> {
         if words.first() != Some(&"touch-layout") {
             return Ok(None);

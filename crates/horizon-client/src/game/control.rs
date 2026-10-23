@@ -159,6 +159,9 @@ impl Game<'_> {
         if let Some(value) = self.touch_command(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.touch_input_command(&words, event_loop)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.block_command(&words)? {
             return Ok(Some(value));
         }

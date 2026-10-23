@@ -4531,6 +4531,7 @@ impl Game<'_> {
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
+        self.draw_slot_touch(&mut batch);
         self.draw_mod_screens(&mut batch);
         self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
@@ -5831,9 +5832,8 @@ impl Game<'_> {
         self.physical_keys.contains(&KeyCode::ControlLeft)
             || self.physical_keys.contains(&KeyCode::ControlRight)
     }
-    /// `hasClickedOutside` of the open screen at the cursor.
-    fn clicked_outside(&self, batch: &HudBatch) -> bool {
-        use horizon_client::container_screen::{Book, Image, clicked_outside};
+    /// The open screen's window (`leftPos`, `topPos`, `imageWidth`, `imageHeight`).
+    fn window_image(&self, batch: &HudBatch) -> horizon_client::container_screen::Image {
         let (ox, oy) = self.inventory_origin(batch);
         let (shift, width, height) = if self.screen == Screen::Creative {
             (0.0, Creative::WIDTH as i32, Creative::HEIGHT as i32)
@@ -5845,12 +5845,17 @@ impl Game<'_> {
             };
             (shift, width, self.screen_height() as i32)
         };
-        let image = Image {
+        horizon_client::container_screen::Image {
             left: (ox + shift) as i32,
             top: oy as i32,
             width,
             height,
-        };
+        }
+    }
+    /// `hasClickedOutside` of the open screen at the cursor.
+    fn clicked_outside(&self, batch: &HudBatch) -> bool {
+        use horizon_client::container_screen::{Book, clicked_outside};
+        let image = self.window_image(batch);
         let book = self
             .recipe_book_area(batch)
             .map(|(visible, tab_hovered)| Book {
