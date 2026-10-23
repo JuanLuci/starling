@@ -5,7 +5,8 @@
 //! tap on the picked stack sends it to the other side (Shift-click); a tap outside the window
 //! throws it. In creative an item of the tabs taps into a slot as a full stack. Stacks slide to
 //! where they went, and a finger on a slot's frame or just past it still means that slot. A
-//! finger that moves from a slot scrolls or drags as the pointer does elsewhere.
+//! finger dragged across the player turns it round. A finger that moves from a slot scrolls or
+//! drags as the pointer does elsewhere.
 use super::super::{Game, Screen};
 use horizon_client::{
     creative::Creative,
@@ -30,6 +31,8 @@ const DOUBLE_TAP: Duration = Duration::from_millis(350);
 const SLIDE: Duration = Duration::from_millis(150);
 /// How far from a slot's middle a finger still means it: half its 18-pixel cell and 2 beyond.
 const REACH: f32 = 11.0;
+/// Degrees the player turns for each GUI pixel a finger drags across it.
+const TURN: f32 = 2.5;
 
 #[derive(Default)]
 pub(super) struct SlotTouch {
@@ -38,6 +41,10 @@ pub(super) struct SlotTouch {
     picked: Option<Picked>,
     /// Stacks sliding to the slots they went to.
     slides: Vec<Slide>,
+    /// The finger turning the player, and where it was last (window pixels).
+    turning: Option<(u64, f64)>,
+    /// How far the player was turned, in degrees.
+    spin: f32,
 }
 
 struct Slide {
@@ -91,6 +98,33 @@ impl Game<'_> {
         (slot, outside)
     }
 
+    /// Whether a window position is on the player shown in the inventory (its box in the survival
+    /// inventory, in the creative screen's inventory tab).
+    fn touch_on_player(&self, p: PhysicalPosition<f64>) -> bool {
+        let batch = self.touch_gui_batch();
+        let (x, y) = (p.x as f32 / batch.scale, p.y as f32 / batch.scale);
+        let (ox, oy) = self.inventory_origin(&batch);
+        let [x0, y0, x1, y1] = if self.creative_inventory_open() {
+            [73.0, 6.0, 105.0, 49.0]
+        } else if self.screen == Screen::Inventory
+            && self.container.is_none()
+            && self.station.is_none()
+            && self.craft_size != 3
+            && !self.mount_active()
+        {
+            [26.0, 8.0, 75.0, 78.0]
+        } else {
+            return false;
+        };
+        (ox + x0..ox + x1).contains(&x) && (oy + y0..oy + y1).contains(&y)
+    }
+
+    /// How far a finger turned the inventory's player, in degrees, on a touch screen (where the
+    /// player does not follow a cursor).
+    pub(in crate::game) fn player_spin(&self) -> Option<f32> {
+        self.has_touch().then_some(self.touch.slots.spin)
+    }
+
     /// The slot whose cell holds `gui` (its frame, a little past it), the nearest if two do.
     fn touch_slot_near(&self, batch: &HudBatch, gui: (f32, f32)) -> Option<usize> {
         let (ox, oy) = self.inventory_origin(batch);
@@ -131,9 +165,24 @@ impl Game<'_> {
             self.touch.slots = SlotTouch::default();
             return false;
         }
+        if let Some((finger, last)) = self.touch.slots.turning
+            && finger == t.id
+        {
+            let scale = f64::from(self.touch_gui_batch().scale);
+            self.touch.slots.spin += ((t.location.x - last) / scale) as f32 * TURN;
+            self.touch.slots.turning = match t.phase {
+                TouchPhase::Ended | TouchPhase::Cancelled => None,
+                _ => Some((finger, t.location.x)),
+            };
+            return true;
+        }
         match t.phase {
             TouchPhase::Started => {
-                if self.touch.slots.down.is_some() {
+                if self.touch.slots.down.is_some() || self.touch.slots.turning.is_some() {
+                    return true;
+                }
+                if self.touch_on_player(t.location) {
+                    self.touch.slots.turning = Some((t.id, t.location.x));
                     return true;
                 }
                 let (slot, outside) = self.slot_touch_at(t.location);
@@ -492,18 +541,22 @@ impl Game<'_> {
             batch.fill(atlas, x + 1.0, y + 1.0, 14.0, 2.0, rgba(60, 60, 60, 255));
             batch.fill(atlas, x + 1.0, y + 1.0, 7.0, 2.0, rgba(85, 255, 85, 255));
         }
+        let window = self.window_image(batch);
+        let (left, right) = (window.left as f32, (window.left + window.width) as f32);
+        // Clear of the window's frame and of the tooltip's own, on the roomier side; lines too
+        // long for it wrap (a phone's GUI is narrow).
+        const GAP: f32 = 8.0;
+        let (room_right, room_left) = (batch.width - right - GAP - 4.0, left - GAP - 4.0);
+        let room = room_right.max(room_left);
         let lines = self.stack_tooltip(&stack);
+        let lines = self.wrap_tooltip(lines, room);
         let width = lines
             .iter()
             .map(|(t, _)| HudBatch::text_width(&self.gui.atlas, t))
             .fold(0.0, f32::max);
-        let window = self.window_image(batch);
-        let (left, right) = (window.left as f32, (window.left + window.width) as f32);
-        // Clear of the window's frame and of the tooltip's own.
-        const GAP: f32 = 8.0;
-        let (tx, ty) = if right + GAP + width + 4.0 <= batch.width {
+        let (tx, ty) = if width <= room_right {
             (right + GAP, y + 4.0)
-        } else if left - GAP - width >= 4.0 {
+        } else if width <= room_left {
             (left - GAP - width, y + 4.0)
         } else {
             let bottom = (window.top + window.height) as f32;
@@ -511,5 +564,21 @@ impl Game<'_> {
         };
         // draw_tooltip_lines puts the box 12 right of and 12 above the point it is given.
         self.draw_tooltip_lines(batch, &lines, tx - 12.0, ty + 12.0);
+    }
+
+    /// Tooltip lines wrapped to `width` GUI pixels (left whole when that is too narrow to read).
+    fn wrap_tooltip(&self, lines: Vec<(String, u32)>, width: f32) -> Vec<(String, u32)> {
+        if width < 60.0 {
+            return lines;
+        }
+        let font = &self.gui.atlas.font;
+        lines
+            .into_iter()
+            .flat_map(|(text, colour)| {
+                font.split(&horizon_client::text::Text::literal(text), width)
+                    .into_iter()
+                    .map(move |part| (part.plain(), colour))
+            })
+            .collect()
     }
 }

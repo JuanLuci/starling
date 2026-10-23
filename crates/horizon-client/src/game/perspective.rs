@@ -471,18 +471,17 @@ impl Game<'_> {
         }
         let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
         // On a touch screen there is no cursor to follow (the touch inventory parks it out of
-        // the window): the player looks ahead.
-        let cursor = if self.has_touch() {
-            (cx, cy)
-        } else {
-            self.cursor
+        // the window): the player looks ahead, turned as far as a finger dragged it.
+        let (cursor, spin) = match self.player_spin() {
+            Some(spin) => ((cx, cy), spin),
+            None => (self.cursor, 0.0),
         };
         let x_angle = ((cx - cursor.0) / 40.0).atan();
         let y_angle = ((cy - cursor.1) / 40.0).atan();
         let mut m = m.clone();
         // The render state: still, facing out, the head toward the cursor.
         m.previous = m.position;
-        m.body_yaw = 180.0 + x_angle * 20.0;
+        m.body_yaw = 180.0 + x_angle * 20.0 + spin;
         m.previous_body_yaw = m.body_yaw;
         m.head_yaw = m.body_yaw + x_angle * 20.0;
         m.previous_head_yaw = m.head_yaw;
