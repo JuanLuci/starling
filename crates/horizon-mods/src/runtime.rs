@@ -1418,6 +1418,68 @@ pub fn has_js_engine() -> bool {
     js_engine::DIGEST.is_some()
 }
 
+/// `js-draw.batch`: the engine's queued drawing, as the calls it stands for (an unknown opcode or a
+/// short call ends it).
+fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
+    use draw::Host;
+    let slots: Vec<[u8; 4]> = ops
+        .chunks_exact(4)
+        .map(|c| [c[0], c[1], c[2], c[3]])
+        .collect();
+    let f = |i: usize| slots.get(i).map(|s| f32::from_le_bytes(*s));
+    let n = |i: usize| slots.get(i).map(|s| i32::from_le_bytes(*s));
+    let text = |i: usize| {
+        n(i).and_then(|t| texts.get(usize::try_from(t).ok()?))
+            .map(|t| (*t).to_owned())
+    };
+    let mut at = 0;
+    while let Some(op) = n(at) {
+        let drawn = match op {
+            1 => (|| {
+                let (x, y, w, h, c) = (f(at + 1)?, f(at + 2)?, f(at + 3)?, f(at + 4)?, n(at + 5)?);
+                state.fill(x, y, w, h, c as u32);
+                Some(6)
+            })(),
+            2 => (|| {
+                let (x, y, w, h) = (f(at + 1)?, f(at + 2)?, f(at + 3)?, f(at + 4)?);
+                let (top, bottom) = (n(at + 5)?, n(at + 6)?);
+                state.gradient(x, y, w, h, top as u32, bottom as u32);
+                Some(7)
+            })(),
+            // A text or sprite whose string was lost is left out; the calls after it are not.
+            3 => (|| {
+                let (x, y, c, shadow) = (f(at + 1)?, f(at + 2)?, n(at + 3)?, n(at + 4)?);
+                n(at + 5)?;
+                if let Some(t) = text(at + 5) {
+                    state.text(x, y, t, c as u32, shadow != 0);
+                }
+                Some(6)
+            })(),
+            4 => (|| {
+                let (x, y, w, h) = (f(at + 1)?, f(at + 2)?, f(at + 3)?, f(at + 4)?);
+                n(at + 5)?;
+                if let Some(s) = text(at + 5) {
+                    state.sprite(x, y, w, h, s);
+                }
+                Some(6)
+            })(),
+            5 => (|| {
+                state.push(f(at + 1)?, f(at + 2)?, f(at + 3)?);
+                Some(4)
+            })(),
+            6 => {
+                state.pop();
+                Some(1)
+            }
+            _ => None,
+        };
+        match drawn {
+            Some(len) => at += len,
+            None => break,
+        }
+    }
+}
+
 /// A JavaScript mod's linker: the interfaces its manifest declares (and the ones every mod has),
 /// the engine's `js-source` (and `js-draw` with `draw`), and a trap for every other import, which
 /// stops the mod.
@@ -1484,6 +1546,26 @@ fn js_linker(
                 store
                     .data_mut()
                     .gradient(x, y, w, h, top as u32, bottom as u32);
+                Ok(())
+            },
+        )?;
+        draw.func_wrap(
+            "batch",
+            |mut store: wasmtime::StoreContextMut<'_, State>,
+             (ops, count, texts): (Vec<u8>, u32, Vec<u8>)| {
+                let texts = String::from_utf8_lossy(&texts);
+                let parts: Vec<&str> = if count == 0 {
+                    Vec::new()
+                } else {
+                    texts.split('\0').collect()
+                };
+                // A text holding a NUL split in two: which is which is lost.
+                let parts = if parts.len() == count as usize {
+                    parts
+                } else {
+                    Vec::new()
+                };
+                draw_batch(store.data_mut(), &ops, &parts);
                 Ok(())
             },
         )?;

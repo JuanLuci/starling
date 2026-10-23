@@ -18,17 +18,148 @@ import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
 import { get as source } from "starling:mods/js-source@0.1.0";
-import { fill as fillBits, gradient as gradientBits } from "starling:mods/js-draw@0.1.0";
+import {
+  fill as fillBits, gradient as gradientBits, batch,
+} from "starling:mods/js-draw@0.1.0";
 
-// componentize-js passes a u32 of 2^31 or more (an ARGB colour with an alpha of 0x80 or more,
-// such as 0xF0100010) wrong, as the low bits of the number's double: fill and gradient go through
-// js-draw, which takes their colours as s32, the same bits.
+// A render hook's drawing reaches the game in one call when the hook returns: each call from
+// JavaScript into the game costs microseconds (the engine's interpreter crossing into native
+// code), and a HUD mod makes dozens a frame. Fills, gradients, texts, sprites, pushes and pops
+// are queued in order (their numbers in 32-bit slots, colours as their bits, so an alpha of 0x80
+// or more passes right: componentize-js passes such a u32 wrong); the other calls send the queue
+// first. A text's width, which `text` returns, comes from a cache of the game's measures. The
+// queue uses no builtin functions (push, Map, String...) but a join and an encode a frame: in
+// this interpreter each costs about as much as a call into the game, and a string passed to the
+// game costs a fifth of a microsecond a character where bytes pass whole, so the frame's texts
+// go joined, as UTF-8.
+const SLOTS = 8192;
+const buffer = new ArrayBuffer(SLOTS * 4);
+const floats = new Float32Array(buffer);
+const ints = new Int32Array(buffer);
+let used = 0;
+let texts = [];
+let count = 0;
+let rendering = false;
+let widths = Object.create(null);
+let measured = 0;
+// Measured again now and then: the player can change the font (Force Unicode).
+let flushes = 0;
+const utf8 = new TextEncoder();
+let textBytes = new Uint8Array(16384);
+
+function flush() {
+  if (++flushes >= 1200) {
+    widths = Object.create(null);
+    measured = 0;
+    flushes = 0;
+  }
+  if (used > 0) {
+    let written = 0;
+    if (count > 0) {
+      const joined = texts.join("\u0000");
+      // Up to three bytes a UTF-16 unit.
+      if (joined.length * 3 > textBytes.length) textBytes = new Uint8Array(joined.length * 3);
+      written = utf8.encodeInto(joined, textBytes).written;
+    }
+    batch(new Uint8Array(buffer, 0, used * 4), count, new Uint8Array(textBytes.buffer, 0, written));
+    used = 0;
+    texts = [];
+    count = 0;
+  }
+}
+function width(text) {
+  let w = widths[text];
+  if (w === undefined) {
+    if (measured >= 1024) {
+      widths = Object.create(null);
+      measured = 0;
+    }
+    measured++;
+    w = widths[text] = draw.textWidth(text);
+  }
+  return w;
+}
+// The calls not queued: the queue goes first, so that the order is kept.
+const after = (f) => (...args) => {
+  flush();
+  return f(...args);
+};
 const drawing = {
   ...draw,
-  fill: (x, y, width, height, colour) => fillBits(x, y, width, height, colour | 0),
-  gradient: (x, y, width, height, top, bottom) =>
-    gradientBits(x, y, width, height, top | 0, bottom | 0),
+  fill(x, y, width, height, colour) {
+    if (!rendering) return fillBits(x, y, width, height, colour | 0);
+    if (used + 6 > SLOTS) flush();
+    const at = used;
+    ints[at] = 1;
+    floats[at + 1] = x; floats[at + 2] = y; floats[at + 3] = width; floats[at + 4] = height;
+    ints[at + 5] = colour | 0;
+    used = at + 6;
+  },
+  gradient(x, y, width, height, top, bottom) {
+    if (!rendering) return gradientBits(x, y, width, height, top | 0, bottom | 0);
+    if (used + 7 > SLOTS) flush();
+    const at = used;
+    ints[at] = 2;
+    floats[at + 1] = x; floats[at + 2] = y; floats[at + 3] = width; floats[at + 4] = height;
+    ints[at + 5] = top | 0; ints[at + 6] = bottom | 0;
+    used = at + 7;
+  },
+  text(x, y, text, colour, shadow) {
+    if (!rendering) return draw.text(x, y, text, colour, shadow);
+    if (typeof text !== "string") text = `${text}`;
+    if (used + 6 > SLOTS) flush();
+    const at = used;
+    ints[at] = 3;
+    floats[at + 1] = x; floats[at + 2] = y;
+    ints[at + 3] = colour | 0; ints[at + 4] = shadow ? 1 : 0; ints[at + 5] = count;
+    texts[count++] = text;
+    used = at + 6;
+    return width(text);
+  },
+  textWidth: (text) => width(typeof text === "string" ? text : `${text}`),
+  sprite(x, y, width, height, sprite) {
+    if (!rendering) return draw.sprite(x, y, width, height, sprite);
+    if (used + 6 > SLOTS) flush();
+    const at = used;
+    ints[at] = 4;
+    floats[at + 1] = x; floats[at + 2] = y; floats[at + 3] = width; floats[at + 4] = height;
+    ints[at + 5] = count;
+    texts[count++] = typeof sprite === "string" ? sprite : `${sprite}`;
+    used = at + 6;
+  },
+  push(x, y, scale) {
+    if (!rendering) return draw.push(x, y, scale);
+    if (used + 4 > SLOTS) flush();
+    const at = used;
+    ints[at] = 5;
+    floats[at + 1] = x; floats[at + 2] = y; floats[at + 3] = scale;
+    used = at + 4;
+  },
+  pop() {
+    if (!rendering) return draw.pop();
+    if (used + 1 > SLOTS) flush();
+    ints[used] = 6;
+    used += 1;
+  },
+  item: after(draw.item),
+  itemId: after(draw.itemId),
+  tooltip: after(draw.tooltip),
+  button: after(draw.button),
+  panel: after(draw.panel),
 };
+// A render hook: its drawing queued, then sent when it returns.
+function render(name) {
+  const call = hook(name);
+  return (...args) => {
+    rendering = true;
+    try {
+      return call(...args);
+    } finally {
+      rendering = false;
+      flush();
+    }
+  };
+}
 
 // Buttons as Fabric's ButtonWidget.builder(label, onPress) makes them: the fields left out take
 // their usual values, and `onPress` runs when the button is pressed (the mod's `key` hook still
@@ -139,11 +270,11 @@ export const events = {
   command: hook("command", undefined, true),
   chatReceived: hook("chatReceived", { tag: "keep" }),
   chatSending: hook("chatSending", { tag: "send" }),
-  hudRender: hook("hudRender"),
-  renderHudElement: hook("renderHudElement"),
+  hudRender: render("hudRender"),
+  renderHudElement: render("renderHudElement"),
   screenOpened: hook("screenOpened"),
   screenClosed: hook("screenClosed"),
-  screenRender: hook("screenRender"),
+  screenRender: render("screenRender"),
   screenMouse: hook("screenMouse", false),
   screenKey: hook("screenKey", false),
   tooltip: hook("tooltip", []),

@@ -703,6 +703,14 @@ interface js-source {
 interface js-draw {
     fill: func(x: f32, y: f32, width: f32, height: f32, color: s32);
     gradient: func(x: f32, y: f32, width: f32, height: f32, top: s32, bottom: s32);
+    /// A render hook's drawing in one call (a call from the engine costs microseconds): 32-bit
+    /// little-endian slots, each call an opcode and its arguments (f32, colours as their bits):
+    /// 1 fill x y w h color, 2 gradient x y w h top bottom, 3 text x y color shadow text,
+    /// 4 sprite x y w h name, 5 push x y scale, 6 pop; `text` and `name` index the `count`
+    /// strings of `texts`, UTF-8 joined by NUL (bytes pass whole, a string by the character):
+    /// when it splits into another count (a text holding a NUL), the batch's texts and sprites
+    /// are left out.
+    batch: func(ops: list<u8>, count: u32, texts: list<u8>);
 }
 
 /// Starling's shared JavaScript engine (js-engine/): one component every JavaScript mod runs in,

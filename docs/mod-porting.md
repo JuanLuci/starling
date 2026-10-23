@@ -176,6 +176,13 @@ phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into
   componentize-js bug with values of 2^31 and more).
 - **A JavaScript hook that throws** stops the mod; the log says why and where (`[mod id]
   hookName: TypeError ...`). `init` and `command` throw to fail on purpose.
+- **JavaScript speed**: each call from JavaScript into the game costs a few microseconds (the
+  engine's interpreter crossing into native code), and so does each builtin (`push`, `Map.get`).
+  The engine queues a render hook's `fill`, `gradient`, `text`, `sprite`, `push` and `pop` and
+  sends them in one call when the hook returns, with text widths cached (40 texts a frame: 0.09
+  ms on the PC, were 0.4); `item`, `item-id`, `tooltip`, `button` and `panel` send the queue
+  first, so a frame with fewer of them is cheaper. The first start after the engine changed runs
+  on quick code (Winch, about two and a half times slower) until the full compile is kept.
 - **Out of memory**: a mod has 64 MiB. The engine is built with componentize-js 0.23 or later:
   before it every string passed to the game leaked, and a mod drawing text each frame ran out in
   minutes.
