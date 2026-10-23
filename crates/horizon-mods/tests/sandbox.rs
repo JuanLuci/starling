@@ -581,6 +581,43 @@ fn waypoints_has_a_pause_button_and_a_touch_button() {
     assert_eq!(w.touch[0].icon, "item/compass_16");
 }
 
+/// With nothing kept, the JavaScript engine starts on the quick compiler's code at once, and
+/// its full code is kept in the background for the next start, which reads it back.
+#[test]
+fn javascript_starts_quickly_and_keeps_its_full_code() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let example = root.join("crates/starling-mod-sdk/examples/hello-js");
+    let cache = mods_dir().join("quick_cache");
+    let _ = std::fs::remove_dir_all(&cache);
+    let started = Instant::now();
+    let mods = Mods::load_cached(
+        std::slice::from_ref(&example),
+        |_| true,
+        |_| false,
+        Some(&cache),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let quick = started.elapsed();
+    assert!(horizon_mods::finish_background_compiles());
+    let kept = std::fs::read_dir(&cache)
+        .unwrap()
+        .flatten()
+        .filter(|f| f.file_name().to_string_lossy().ends_with(".cwasm"))
+        .count();
+    assert!(kept >= 1, "the full code was not kept");
+    let started = Instant::now();
+    let again = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    assert_eq!(again.entries()[0].status, Status::Running);
+    assert!(
+        !horizon_mods::finish_background_compiles(),
+        "compiled again"
+    );
+    eprintln!(
+        "quick start {quick:?}, from the kept code {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn off_mods_cost_nothing() {
     let mods = Mods::load(&[mods_dir().join("coords_hud.hmod")], |_| false, |_| false);

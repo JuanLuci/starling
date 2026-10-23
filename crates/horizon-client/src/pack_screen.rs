@@ -20,7 +20,6 @@ pub enum Compat {
     Unknown,
 }
 
-
 /// The line under the title: where packs come from. A phone has no window to drop files on;
 /// they go in the game's folder in its shared storage.
 fn drop_info() -> Text {
@@ -791,14 +790,7 @@ impl PackScreen {
         }
         let [(tx, ty), (dx, dy), _] = self.header(m);
         d::string_widget(&mut out, m, &tr("resourcePack.title"), tx, ty, 0);
-        d::string_widget(
-            &mut out,
-            m,
-            &drop_info().with_color(d::GRAY),
-            dx,
-            dy,
-            0,
-        );
+        d::string_widget(&mut out, m, &drop_info().with_color(d::GRAY), dx, dy, 0);
         self.search.draw(&mut out, m, blink_ms, None);
         for side in 0..2 {
             self.draw_list(&mut out, m, side, mouse);

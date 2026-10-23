@@ -1305,7 +1305,13 @@ impl OptionsUi {
                 rows.push(Row::Header("options.video.display.header"));
                 // A phone's app always fills its screen.
                 let display: &[Opt] = if cfg!(target_os = "android") {
-                    &[Opt::MaxFps, Opt::Vsync, Opt::InactivityFps, Opt::GuiScale, Opt::Gamma]
+                    &[
+                        Opt::MaxFps,
+                        Opt::Vsync,
+                        Opt::InactivityFps,
+                        Opt::GuiScale,
+                        Opt::Gamma,
+                    ]
                 } else {
                     &[
                         Opt::MaxFps,

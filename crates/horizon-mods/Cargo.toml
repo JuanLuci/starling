@@ -13,7 +13,7 @@ toml = "1.1.6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
 # The 36 LTS line: security fixes until August 2027, and it builds on the client's Rust.
-wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "cranelift", "component-model", "std"], optional = true }
+wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "cranelift", "winch", "parallel-compilation", "component-model", "std"], optional = true }
 # Names a mod's compiled code in the cache by its WebAssembly.
 sha2 = { version = "0.10.9", optional = true }
 # Unpacks the shared JavaScript engine the build embeds (build.rs).
@@ -21,6 +21,10 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", 
 # Turns a mod's core module into a component (cargo horizon-mod build, the tests).
 wit-component = { version = "0.239", optional = true }
 wit-parser = { version = "0.239", optional = true }
+
+# Lowers the background compile's priority on phones (Linux and Android threads have their own).
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2"
 
 [features]
 default = ["runtime"]

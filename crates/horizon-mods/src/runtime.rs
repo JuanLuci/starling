@@ -578,9 +578,7 @@ impl Mods {
 
     fn engine(&mut self) -> Result<&(Engine, Linker<State>), String> {
         if self.engine.is_none() {
-            let mut config = Config::new();
-            config.wasm_component_model(true).consume_fuel(true);
-            let engine = Engine::new(&config).map_err(|e| e.to_string())?;
+            let engine = make_engine(wasmtime::Strategy::Cranelift, true)?;
             let mut linker = Linker::new(&engine);
             starling::StarlingMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
@@ -591,14 +589,18 @@ impl Mods {
         Ok(self.engine.as_ref().expect("made above"))
     }
 
-    /// The shared JavaScript engine's component, compiled (or read from the cache) once.
+    /// The shared JavaScript engine's component, compiled (or read from the cache) once. With
+    /// nothing kept, it is compiled by the quick compiler for now (seconds, where the full one
+    /// takes a phone tens of them) while the full one compiles it in the background for the next
+    /// start; the component then belongs to that quick engine ([`Component::engine`]).
     fn js_component(&mut self) -> Result<Component, String> {
         if let Some(component) = &self.js {
             return Ok(component.clone());
         }
         let cache = self.cache.clone();
         let (engine, _) = self.engine()?;
-        let component = js_engine::component(engine, cache.as_deref())?;
+        let engine = engine.clone();
+        let component = js_engine::component(&engine, cache.as_deref())?;
         self.js = Some(component.clone());
         Ok(component)
     }
@@ -647,12 +649,14 @@ impl Mods {
             (None, Some(component)) => {
                 // The engine imports every interface: the mod gets the ones its manifest
                 // declares, and a call into another stops it.
-                let linker =
-                    js_linker(engine, &m.capabilities, &component).map_err(|e| e.to_string())?;
+                let linker = js_linker(component.engine(), &m.capabilities, &component)
+                    .map_err(|e| e.to_string())?;
                 (component, Some(linker))
             }
             (None, None) => return Ok(None),
         };
+        // The quick compiler's engine for a JavaScript mod started before the full compile.
+        let engine = &component.engine().clone();
         let for_starling = js_linker.is_some() || {
             let ty = component.component_type();
             let imports: Vec<String> = ty
@@ -1321,6 +1325,12 @@ fn compile_named<'a>(
         }
     }
     let wasm = wasm()?;
+    // A big component (the JavaScript engine) runs on quick code until its full code is kept.
+    if wasm.len() >= QUICK_FIRST
+        && let Some(component) = compile_quick_then_full(engine, wasm.to_vec(), file.clone())
+    {
+        return Ok(component);
+    }
     let started = Instant::now();
     let component = fresh(&wasm)?;
     log::info!("Horizon: compiled a mod in {:?}", started.elapsed());
@@ -1330,11 +1340,20 @@ fn compile_named<'a>(
     Ok(component)
 }
 
+/// Components this big start on the quick compiler's code (a mod's own is tens of kilobytes;
+/// the JavaScript engine is 12 megabytes).
+const QUICK_FIRST: usize = 2 << 20;
+
 fn keep_compiled(component: &Component, file: &Path) -> std::io::Result<()> {
+    let bytes = component.serialize().map_err(std::io::Error::other)?;
+    keep_bytes(&bytes, file)
+}
+
+/// Compiled code written to `file` whole (a part renamed into place).
+fn keep_bytes(bytes: &[u8], file: &Path) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU32, Ordering};
     // Two loads at once (the player turning mods on and off quickly) each write their own.
     static PART: AtomicU32 = AtomicU32::new(0);
-    let bytes = component.serialize().map_err(std::io::Error::other)?;
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -1534,10 +1553,100 @@ fn prune(dir: &Path, engine: &Engine, digests: &[String]) {
     for file in read.flatten() {
         let name = file.file_name().to_string_lossy().into_owned();
         let compiled = name.ends_with(".cwasm") || name.ends_with(".part");
-        if compiled && !keep.contains(&name) {
+        // A background compile writing its part (`compile_later`) is left to finish.
+        let writing = name.ends_with(".part")
+            && file
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().unwrap_or_default() < Duration::from_secs(3600));
+        if compiled && !keep.contains(&name) && !writing {
             let _ = std::fs::remove_file(file.path());
         }
     }
+}
+
+/// An engine for mods: the component model, fuel, and `strategy`'s compiler (across every core
+/// when `parallel`).
+fn make_engine(strategy: wasmtime::Strategy, parallel: bool) -> Result<Engine, String> {
+    let mut config = Config::new();
+    config
+        .wasm_component_model(true)
+        .consume_fuel(true)
+        .strategy(strategy)
+        .parallel_compilation(parallel);
+    Engine::new(&config).map_err(|e| e.to_string())
+}
+
+/// `wasm` compiled by the quick compiler (Winch: about six times faster to compile than
+/// Cranelift, its code about two and a half times slower) for this session, while a thread
+/// compiles it with `engine`'s full compiler on one core into `file` for the next start. None
+/// where the quick compiler cannot compile it (the full one does, then).
+fn compile_quick_then_full(engine: &Engine, wasm: Vec<u8>, file: PathBuf) -> Option<Component> {
+    let quick = make_engine(wasmtime::Strategy::Winch, true).ok()?;
+    let started = Instant::now();
+    let component = Component::new(&quick, &wasm)
+        .inspect_err(|e| log::warn!("Horizon: the quick compiler could not: {e}"))
+        .ok()?;
+    log::info!(
+        "Horizon: compiled a mod quickly in {:?}; the full compile goes on in the background",
+        started.elapsed()
+    );
+    // The full compiler's settings, on one core: the game keeps the others.
+    let background = make_engine(wasmtime::Strategy::Cranelift, false);
+    let _ = engine;
+    let spawned = std::thread::Builder::new()
+        .name("mod-compile".into())
+        .spawn(move || {
+            // Behind the game's threads: a phone with few cores keeps its frames.
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            // SAFETY: setpriority with `who` 0 changes only this thread's niceness.
+            unsafe {
+                libc::setpriority(libc::PRIO_PROCESS as _, 0, 10);
+            }
+            let started = Instant::now();
+            let Ok(background) = background else {
+                return;
+            };
+            match background.precompile_component(&wasm) {
+                Ok(bytes) => match keep_bytes(&bytes, &file) {
+                    Ok(()) => log::info!(
+                        "Horizon: the full compile is kept for the next start ({:?})",
+                        started.elapsed()
+                    ),
+                    Err(e) => log::warn!("Horizon: could not keep {}: {e}", file.display()),
+                },
+                Err(e) => log::warn!("Horizon: the full compile failed: {e}"),
+            }
+        });
+    match spawned {
+        Ok(handle) => BACKGROUND
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(handle),
+        Err(e) => log::warn!("Horizon: no background compile: {e}"),
+    }
+    Some(component)
+}
+
+/// The full compiles going on in the background.
+static BACKGROUND: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Whether a full compile is still going on in the background.
+pub fn compiling_in_background() -> bool {
+    let handles = BACKGROUND.lock().unwrap_or_else(|e| e.into_inner());
+    handles.iter().any(|h| !h.is_finished())
+}
+
+/// Waits for the full compiles going on in the background to be kept (a program about to exit,
+/// such as `starling-mod run`, so that its next run has them). True when there were any.
+pub fn finish_background_compiles() -> bool {
+    let handles = std::mem::take(&mut *BACKGROUND.lock().unwrap_or_else(|e| e.into_inner()));
+    let any = !handles.is_empty();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    any
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {

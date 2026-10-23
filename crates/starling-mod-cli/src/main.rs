@@ -55,6 +55,11 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         _ => Err(USAGE.into()),
     };
+    // The JavaScript engine ran on quick code: its full code is kept for the next run.
+    if horizon_mods::compiling_in_background() {
+        emit(json!({ "event": "note", "text": "keeping the full compile for the next run" }));
+    }
+    horizon_mods::finish_background_compiles();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
