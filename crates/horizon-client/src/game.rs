@@ -9293,6 +9293,8 @@ impl Game<'_> {
                     &self.gui.atlas,
                     if loader.cancelled {
                         "Cancelling world"
+                    } else if loader.ready() && self.mods.starting() {
+                        "Starting mods"
                     } else {
                         "Opening world"
                     },
@@ -11629,7 +11631,9 @@ impl Game<'_> {
     fn resume_world_entry(&mut self) -> Result<()> {
         self.poll_world_rest()?;
         if let Some(loader) = &self.world_loader {
-            if !loader.ready() {
+            // The world opens with its mods running: entered before they start, it would play
+            // without them (they load in the background, a JavaScript mod for seconds).
+            if !loader.ready() || (!loader.cancelled && self.mods.starting()) {
                 return Ok(());
             }
             let loader = self

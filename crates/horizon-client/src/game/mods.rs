@@ -86,6 +86,10 @@ pub(super) struct ModsState {
     announced: bool,
 }
 impl ModsState {
+    /// The mods are starting (on their own thread): a world waits for them to open.
+    pub(super) fn starting(&self) -> bool {
+        self.loading.is_some()
+    }
     /// A press of `control` (one of [`horizon_mods::CONTROLS`]) counted as it comes: a click can
     /// start and end between two frames.
     pub(super) fn press(&mut self, control: &str) {
