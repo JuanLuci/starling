@@ -511,6 +511,8 @@ struct GameLevel<'w> {
     spill: &'w mut spill::Spill,
     /// Where the chunk tickets let blocks tick.
     tickets: horizon_client::ticket_levels::Levels,
+    /// Where the sections' randomly ticking blocks are.
+    random_ticks: &'w mut horizon_client::random_tick_sections::RandomTickSections,
 }
 struct PlayerCollision {
     y: f64,
@@ -663,6 +665,17 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn block_state(&self, pos: BlockPos) -> BlockStateId {
         self.world.block(pos.x, pos.y, pos.z)
+    }
+    fn may_random_tick(&mut self, pos: BlockPos) -> bool {
+        let key = (pos.x >> 4, pos.z >> 4);
+        let Some(chunk) = self.world.chunks.get(&key) else {
+            return true;
+        };
+        let b = self.behaviours;
+        self.random_ticks
+            .may_tick(key, chunk, pos.x, pos.y, pos.z, |id| {
+                b.takes_random_tick(BlockStateId(id))
+            })
     }
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
         if !self.world.loaded(pos.x, pos.z) || pos.y < MIN_Y || pos.y >= MIN_Y + HEIGHT {
@@ -2189,6 +2202,7 @@ impl Game<'_> {
             pending: &mut self.pending,
             spill: &mut self.spill,
             tickets: self.tickets.levels(),
+            random_ticks: &mut self.random_tick_sections,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
         self.flush_spill();

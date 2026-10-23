@@ -1642,7 +1642,10 @@ impl Behaviours {
         for min_y in sections {
             for _ in 0..speed {
                 let pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
-                self.sim(level, ticks).random_tick_at(pos);
+                // Most picks land on blocks that do nothing when ticked.
+                if level.may_random_tick(pos) {
+                    self.sim(level, ticks).random_tick_at(pos);
+                }
             }
         }
     }
