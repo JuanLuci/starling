@@ -102,6 +102,31 @@ fn tile(batch: &mut HudBatch, r: Rect, src: [f32; 4], dst: [f32; 4], color: u32)
     }
 }
 /// GuiGraphics.blitSprite with nine-slice scaling (inner parts tiled).
+/// A GUI sprite drawn at a size as vanilla's `blitSprite` does: nine-sliced when its `.mcmeta`
+/// says so (the buttons), stretched otherwise (an icon).
+pub fn sprite_sized(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    let sliced = NINE_SLICE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|m| m.contains_key(sprite))
+        || sprite.starts_with("gui/sprites/widget/");
+    if sliced {
+        nine_slice(batch, atlas, sprite, x, y, w, h, color);
+    } else if let Some(r) = atlas.sprites.get(sprite).copied() {
+        batch.rect_uv(x, y, w, h, r, color);
+    }
+}
+
 pub fn nine_slice(
     batch: &mut HudBatch,
     atlas: &HudAtlas,

@@ -508,8 +508,17 @@ pub fn render(ops: &[DrawOp], width: u32, height: u32, scale: u32, res: &mut Res
             DrawOp::Item { x, y, stack } => canvas.item(&stack.id, *x, *y),
             DrawOp::ItemId { x, y, id } => canvas.item(id, *x, *y),
             DrawOp::Sprite { x, y, w, h, sprite } => {
+                // As the game looks it up: a GUI sprite, else a texture (`item/compass_16`).
                 let (ns, path) = sprite.split_once(':').unwrap_or(("minecraft", sprite));
-                canvas.sprite(&format!("{ns}:gui/sprites/{path}"), *x, *y, *w, *h);
+                let gui = format!("{ns}:gui/sprites/{path}");
+                let id = if canvas.res.texture(&gui).is_none()
+                    && canvas.res.texture(&format!("{ns}:{path}")).is_some()
+                {
+                    format!("{ns}:{path}")
+                } else {
+                    gui
+                };
+                canvas.sprite(&id, *x, *y, *w, *h);
             }
             DrawOp::Tooltip { x, y, lines } => canvas.tooltip(*x, *y, lines),
             DrawOp::Button {

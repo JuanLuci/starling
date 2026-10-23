@@ -103,7 +103,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `DrawContext.fill`, `fillGradient` | `draw.fill`, `draw.gradient` (ARGB) |
 | `DrawContext.drawText`, `TextRenderer.getWidth` | `draw.text` (rich text: plain, `§` codes or JSON components), `draw.text-width` |
 | `DrawContext.drawItem` | `draw.item` (a stack), `draw.item-id` |
-| `DrawContext.drawGuiTexture` (sprites) | `draw.sprite("hud/heart/full")`: any sprite of the GUI atlas, nine-sliced per its `.mcmeta` |
+| `DrawContext.drawGuiTexture` (sprites) | `draw.sprite("hud/heart/full")`: any sprite of the GUI atlas, nine-sliced per its `.mcmeta`; `item/compass_16` (an item texture); a content mod's `<id>:my_icon` (`assets/<id>/textures/gui/sprites/my_icon.png`) |
 | `DrawContext.drawTooltip` | `draw.tooltip` |
 | `ButtonWidget` look | `draw.button(x, y, w, h, label, hovered, active)` |
 | a dialog background | `draw.panel` |
@@ -116,8 +116,11 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | a custom `Screen` | `screens.open("name")` opens `<mod id>:name`; `registration.screens`; `events.screen-render`, `screen-mouse`, `screen-key`, `screen-opened`, `screen-closed` |
 | `ScreenEvents.AFTER_INIT` / `afterRender` on the game's screens | the same hooks receive the game's screens (`pause`, `inventory`, `container`, `creative`, `title`, `worlds`, `multiplayer`, `death`, `options`...): draw over them, take their mouse and keys first |
 | Mod Menu's `getModConfigScreenFactory` | `screens.set-config("settings")` in `init`: a Config button on Options > Mods opens that screen |
+| `Screens.getButtons(screen).add(ButtonWidget.builder(text, onPress)...)` in `ScreenEvents.AFTER_INIT`, NeoForge's `ScreenEvent.Init.Post.addListener` | `widgets.add-screen-button` in `init` (capability `ui`): a button on a game screen (`pause`, `title`, `inventory`...) placed from an `anchor` (Bedrock's `anchor_from`/`anchor_to`), drawn as that screen's buttons, with an icon and a tooltip; a press is `events.key(id, true)` then `(id, false)`. JavaScript: `widgets.addScreenButton({...}, onPress)` |
+| Bedrock's touch buttons | `widgets.add-touch-button` (round, square or wide; an icon or a label; where it starts): the player moves, resizes and hides it in the touch layout editor; its id is a keybind's or its own. JavaScript: `widgets.addTouchButton({...}, onPress)` |
+| Bedrock's resource packs retexturing the touch controls | `widgets.style-control("jump", label, icon, shape)`, or a pack's `assets/starling/textures/gui/sprites/touch/<name>.png` (and `<name>_pressed.png`) |
 | a text field on a phone | `mobile.keyboard(true)` over the mod's screen |
-| `KeyBindingHelper.registerKeyBinding` + `wasPressed` | `registration.keybinds`, `events.key(id, pressed)`, `keys.is-down(id)`; each keybind also gets a touch button on phones |
+| `KeyBindingHelper.registerKeyBinding` + `wasPressed` | `registration.keybinds`, `events.key(id, pressed)`, `keys.is-down(id)`; each keybind also gets a touch button on phones (wide, its name on it; `widgets.add-touch-button` with its id gives it a look) |
 | `KeyBinding.setPressed` for sprint/sneak (ToggleSprint) | `input.hold("key.sprint", true)` (capability `input`; only sprint and sneak) |
 | `ItemTooltipCallback` | `registration.tooltips`, `events.tooltip(stack)` returning extra lines |
 | `ClientCommandRegistrationCallback` | `registration.commands`, `events.command(name, args)` |
@@ -149,7 +152,11 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
   "minecraft:iron_ore"}, "mining": 0.4, "gui": {"width": 533, "height": 240}, "steps": [...]}`;
   `target` can be an entity (`{"entity": "minecraft:zombie", "health": 14}`).
 - Steps: `tick`, `frame`, `hud`, `screen`, `click`, `type`, `press`, `close`, `command`, `chat`,
-  `send`, `tooltip`, `key`, `controls` (the game's controls held), `join`, `leave`, `hurt`.
+  `send`, `tooltip`, `key`, `controls` (the game's controls held), `join`, `leave`, `hurt`,
+  `touch` (a touch button pressed).
+- Buttons (`widgets`): a `widgets` line lists them whenever they change; `{"screen": "pause"}`
+  draws the mod's buttons on that game screen and `click` presses them; `{"hud": {"touch":
+  true}}` draws its touch buttons where they start.
 
 A phone's GUI is about 533 by 240 GUI pixels: try `"gui": {"width": 533, "height": 240}` before
 calling a layout done.
@@ -177,7 +184,12 @@ phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into
 - **Screens are named without a namespace** for the game's (`pause`, `inventory`) and
   `<mod id>:<name>` for a mod's.
 - **Touch**: no hover on a phone; anything shown on hover needs another way (a tap, a line on the
-  screen). Fingers are big: buttons of 20 GUI pixels or more.
+  screen; a screen button's tooltip only shows with a mouse). Fingers are big: buttons of 20 GUI
+  pixels or more. A phone's top right corner is crowded (the menus' buttons): put touch buttons
+  at the left or middle.
+- **Buttons are keybinds**: a button's press comes to `events.key` with the button's id, so a
+  button and a keybind with one id are one control (Waypoints' J key, its compass and its pause
+  button all open its screen).
 - **Storage keys** are `[a-z0-9_.-]{1,64}`; values are bytes (JSON as text is fine).
 
 ## Adding to the API
@@ -209,6 +221,7 @@ what is still missing (the next port's API work).
 | ToggleSprint | [toggle-sprint](../crates/starling-mod-sdk/examples/toggle-sprint) | Rust | done |
 | Keystrokes | [keystrokes](../crates/starling-mod-sdk/examples/keystrokes) | JavaScript | done, with settings |
 | Mod Menu | built into Options > Mods | game | list, descriptions, Config button done |
+| Xaero's / JourneyMap waypoints | [waypoints](../crates/starling-mod-sdk/examples/waypoints) | Rust | list screen, HUD pointer, pause and touch buttons |
 
 ### AppleSkin → food-info
 
@@ -248,6 +261,15 @@ what is still missing (the next port's API work).
   what it may do in its tooltip, and a Config button for mods that name a settings screen.
 - API added: `screens.set-config`.
 - Missing: icons, authors and links pages, search and filters.
+
+### Waypoints (Xaero's / JourneyMap's waypoints)
+
+- Does: a screen of saved places (add here, pick, forget, rename with the phone's keyboard), the
+  picked one's direction and distance at the top of the HUD; opened by J, by its touch button (a
+  compass, at the left) or by its button on the pause menu.
+- API added: the `widgets` interface (screen buttons, touch buttons, restyled controls); GUI
+  sprites of other namespaces in the atlas.
+- Missing: a minimap, waypoints drawn in the world (3D), death points.
 
 ### Candidates
 

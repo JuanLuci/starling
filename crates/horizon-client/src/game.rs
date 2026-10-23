@@ -90,6 +90,7 @@ mod minecarts;
 mod mob_blocks;
 mod mob_gear;
 mod mod_ui;
+mod mod_widgets;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -4532,11 +4533,11 @@ impl Game<'_> {
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
         self.draw_slot_touch(&mut batch);
+        self.draw_mod_screen_buttons(&mut batch);
         self.draw_mod_screens(&mut batch);
         self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
         self.draw_chat_bar(&mut batch);
-        self.draw_mod_keys(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);

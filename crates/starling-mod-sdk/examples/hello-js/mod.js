@@ -1,14 +1,29 @@
 // A Starling mod in JavaScript, shipped as it is (beside horizon-mod.toml): Starling's shared
-// engine runs it. /hello_js says where you are, the HUD shows the FPS, and tooltips name the
-// item's id.
+// engine runs it. /hello_js (or its button on the pause menu) says where you are, the HUD shows
+// the FPS, and tooltips name the item's id.
 import { write } from "starling:mods/log@0.1.0";
 import { getPlayer, getFps } from "starling:mods/game@0.1.0";
 import { show } from "starling:mods/chat@0.1.0";
 import { text } from "starling:mods/draw@0.1.0";
+import { addScreenButton } from "starling:mods/widgets@0.1.0";
+
+// Says where the player is. A button's onPress must not throw: like any hook, a throw stops the
+// mod.
+function hello() {
+  const p = getPlayer();
+  show(p ? `Hello from JS at ${p.x.toFixed(1)} ${p.y.toFixed(1)} ${p.z.toFixed(1)}` : "Not in a world");
+}
 
 export const events = {
   init() {
     write("info", "hello from JavaScript");
+    // As Fabric's Screens.getButtons(screen).add(ButtonWidget.builder(text, onPress)...): the
+    // fields left out take their usual values (20 tall, active, no icon).
+    addScreenButton(
+      { id: "hello", screen: "pause", anchor: "bottom-left", x: 4, y: -4, width: 70,
+        label: "Say hello", icon: "item/cookie", tooltip: ["Where am I?"] },
+      () => hello(),
+    );
     return {
       commands: ["hello_js"], tick: false, frame: false, chat: false, chatSend: false,
       hud: true, hudElements: [], screens: false, tooltips: true, keybinds: [], channels: [],
@@ -17,10 +32,8 @@ export const events = {
   },
   tick(_tick) {},
   frame(_seconds) {},
-  command(name, _args) {
-    const p = getPlayer();
-    if (!p) throw "not in a world";
-    show(`Hello from JS at ${p.x.toFixed(1)} ${p.y.toFixed(1)} ${p.z.toFixed(1)}`);
+  command(_name, _args) {
+    hello();
     return undefined;
   },
   chatReceived(_plain, _component) { return { tag: "keep" }; },

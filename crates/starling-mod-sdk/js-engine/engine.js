@@ -11,6 +11,7 @@ import * as chatSend from "starling:mods/chat-send@0.1.0";
 import * as draw from "starling:mods/draw@0.1.0";
 import * as hud from "starling:mods/hud@0.1.0";
 import * as screens from "starling:mods/screens@0.1.0";
+import * as widgetsApi from "starling:mods/widgets@0.1.0";
 import * as keys from "starling:mods/keys@0.1.0";
 import * as input from "starling:mods/input@0.1.0";
 import * as sound from "starling:mods/sound@0.1.0";
@@ -29,10 +30,40 @@ const drawing = {
     gradientBits(x, y, width, height, top | 0, bottom | 0),
 };
 
+// Buttons as Fabric's ButtonWidget.builder(label, onPress) makes them: the fields left out take
+// their usual values, and `onPress` runs when the button is pressed (the mod's `key` hook still
+// gets the press and the release, by the button's id).
+const presses = new Map();
+function withPress(add, defaults) {
+  return (button, onPress) => {
+    const full = { ...defaults, ...button };
+    add(full);
+    if (typeof onPress === "function") {
+      presses.set(full.id, onPress);
+    } else {
+      presses.delete(full.id);
+    }
+  };
+}
+const widgets = {
+  ...widgetsApi,
+  addScreenButton: withPress(widgetsApi.addScreenButton, {
+    anchor: "top-left", x: 0, y: 0, width: 100, height: 20, label: "", icon: "", tooltip: [],
+    active: true,
+  }),
+  addTouchButton: withPress(widgetsApi.addTouchButton, {
+    label: "", icon: "", shape: "round", x: 0.5, y: 0.5, size: 0.5,
+  }),
+  remove: (id) => {
+    presses.delete(id);
+    widgetsApi.remove(id);
+  },
+};
+
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game, level, inventory, chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, keys, input, sound, net, storage,
+  screens, widgets, keys, input, sound, net, storage,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.
@@ -92,6 +123,8 @@ function hook(name, fallback, says = false) {
   };
 }
 
+const keyHook = hook("key");
+
 export const events = {
   init() {
     try {
@@ -114,7 +147,18 @@ export const events = {
   screenMouse: hook("screenMouse", false),
   screenKey: hook("screenKey", false),
   tooltip: hook("tooltip", []),
-  key: hook("key"),
+  key(id, pressed) {
+    const onPress = presses.get(id);
+    if (pressed && onPress) {
+      try {
+        onPress();
+      } catch (e) {
+        log.write("error", `button ${id}: ${e}${e && e.stack ? `\n${e.stack}` : ""}`);
+        throw e;
+      }
+    }
+    return keyHook(id, pressed);
+  },
   payload: hook("payload"),
   joined: hook("joined"),
   left: hook("left"),

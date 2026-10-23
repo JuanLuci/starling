@@ -37,12 +37,13 @@ pub use starling::starling::mods::{
     inventory::{Container, Food, ItemInfo},
     level::{BlockInfo, Entity, EntityInfo},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
+    widgets::{Anchor, ScreenButton, Shape, TouchButton},
 };
 use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
         chat, chat_send, draw, game, hud, input, inventory, keys, level, log as mod_log, mobile,
-        net, screens, sound, storage, types,
+        net, screens, sound, storage, types, widgets,
     },
 };
 
@@ -70,6 +71,23 @@ const SEND_CHARS: usize = 256;
 const PAYLOAD_BYTES: usize = 32 << 10;
 /// `level.get-entities`' cap.
 const ENTITIES: usize = 128;
+/// Buttons one mod may put on the game's screens, and on the touch controls.
+const SCREEN_BUTTONS: usize = 32;
+const TOUCH_BUTTONS: usize = 16;
+/// The game's own touch buttons a mod may restyle (`widgets.style-control`).
+pub const TOUCH_CONTROLS: [&str; 11] = [
+    "jump",
+    "sneak",
+    "attack",
+    "use",
+    "inventory",
+    "chat",
+    "command",
+    "pause",
+    "camera",
+    "drop",
+    "offhand",
+];
 /// Total bytes a mod's `storage` may hold on disk, across all its keys.
 const STORAGE_QUOTA: u64 = 4 << 20;
 /// Distinct keys a mod's `storage` may hold: `STORAGE_QUOTA` alone doesn't
@@ -283,6 +301,25 @@ pub struct Entry {
     modified: Option<SystemTime>,
 }
 
+/// A mod's buttons (`widgets`): on the game's screens and on the touch controls, and the looks it
+/// gave the game's own touch buttons.
+#[derive(Clone, Debug, Default)]
+pub struct Widgets {
+    pub screen: Vec<ScreenButton>,
+    pub touch: Vec<TouchButton>,
+    pub styles: Vec<ControlStyle>,
+}
+
+/// `widgets.style-control`: one of [`TOUCH_CONTROLS`] with the mod's label, icon and shape ("" for
+/// the game's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlStyle {
+    pub control: String,
+    pub label: String,
+    pub icon: String,
+    pub shape: Shape,
+}
+
 /// The hooks a mod asked for, whichever API it was built for.
 #[derive(Clone, Default)]
 pub struct Hooks {
@@ -360,6 +397,7 @@ struct State {
     draw: Option<Vec<DrawOp>>,
     /// Its settings screen (`screens.set-config`), `<mod id>:<name>`.
     config: Option<String>,
+    widgets: Widgets,
     /// The mod's payload channels.
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
@@ -641,6 +679,7 @@ impl Mods {
             panel: None,
             draw: None,
             config: None,
+            widgets: Widgets::default(),
             channels: Vec::new(),
             sent: VecDeque::new(),
             data_dir,
@@ -716,6 +755,12 @@ impl Mods {
             .map(|r| r.store.data())
             .find(|s| s.id == id)?;
         state.config.clone()
+    }
+    /// Every running mod's buttons, with its id.
+    pub fn widgets(&self) -> impl Iterator<Item = (&str, &Widgets)> {
+        self.running()
+            .map(|r| r.store.data())
+            .map(|s| (s.id.as_str(), &s.widgets))
     }
     /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
     pub fn uses(&self, c: Capability) -> bool {
@@ -1384,6 +1429,7 @@ fn js_linker(
             "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "hud" => api::hud::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "screens" => api::screens::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "widgets" => api::widgets::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "keys" => api::keys::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "input" => api::input::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "sound" => api::sound::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -1870,6 +1916,93 @@ impl screens::Host for State {
         }
     }
 }
+impl widgets::Host for State {
+    fn add_screen_button(&mut self, b: ScreenButton) -> Result<(), String> {
+        button_id_ok(&b.id)?;
+        if !screen_name_ok(&b.screen.replace(':', "/")) {
+            return Err(format!("{:?} is not a screen's name", clip(b.screen)));
+        }
+        let finite = [b.x, b.y, b.width, b.height].iter().all(|n| n.is_finite());
+        if !finite || b.width < 1.0 || b.height < 1.0 {
+            return Err(format!("button {} has no size", b.id));
+        }
+        let all = &mut self.widgets.screen;
+        all.retain(|o| o.id != b.id);
+        if all.len() >= SCREEN_BUTTONS {
+            return Err(format!("a mod has at most {SCREEN_BUTTONS} screen buttons"));
+        }
+        all.push(ScreenButton {
+            x: b.x.clamp(-4096.0, 4096.0),
+            y: b.y.clamp(-4096.0, 4096.0),
+            width: b.width.min(4096.0),
+            height: b.height.min(4096.0),
+            label: clip(b.label),
+            icon: clip(b.icon),
+            tooltip: b.tooltip.into_iter().take(8).map(clip).collect(),
+            ..b
+        });
+        Ok(())
+    }
+    fn add_touch_button(&mut self, b: TouchButton) -> Result<(), String> {
+        button_id_ok(&b.id)?;
+        let all = &mut self.widgets.touch;
+        all.retain(|o| o.id != b.id);
+        if all.len() >= TOUCH_BUTTONS {
+            return Err(format!("a mod has at most {TOUCH_BUTTONS} touch buttons"));
+        }
+        let or = |n: f32, d: f32| if n.is_finite() { n } else { d };
+        all.push(TouchButton {
+            label: clip_to(b.label, 24),
+            icon: clip(b.icon),
+            x: or(b.x, 0.5).clamp(0.0, 1.0),
+            y: or(b.y, 0.5).clamp(0.0, 1.0),
+            size: or(b.size, 0.5).clamp(0.3, 2.0),
+            ..b
+        });
+        Ok(())
+    }
+    fn remove(&mut self, id: String) {
+        self.widgets.screen.retain(|b| b.id != id);
+        self.widgets.touch.retain(|b| b.id != id);
+    }
+    fn style_control(
+        &mut self,
+        control: String,
+        label: String,
+        icon: String,
+        shape: Shape,
+    ) -> bool {
+        if !TOUCH_CONTROLS.contains(&control.as_str()) {
+            return false;
+        }
+        let styles = &mut self.widgets.styles;
+        styles.retain(|s| s.control != control);
+        styles.push(ControlStyle {
+            control,
+            label: clip_to(label, 24),
+            icon: clip(icon),
+            shape,
+        });
+        true
+    }
+}
+
+/// A button's id: as a keybind's, `[a-z0-9_.-]{1,64}`.
+fn button_id_ok(id: &str) -> Result<(), String> {
+    let ok = (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "button id {:?} is not [a-z0-9_.-]{{1,64}}",
+            clip(id.to_owned())
+        ))
+    }
+}
+
 impl mobile::Host for State {
     fn has_touch(&mut self) -> bool {
         self.snapshot.touch

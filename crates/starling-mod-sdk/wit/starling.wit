@@ -369,6 +369,90 @@ interface screens {
     set-config: func(name: string);
 }
 
+/// Capability `ui`: buttons the mod puts on the game's own screens and on the touch controls. A
+/// button is pressed as a keybind of the mod is: `events.key(id, true)`, then `events.key(id,
+/// false)` when let go (a click on a screen sends both), `keys.is-down(id)` true meanwhile.
+/// Adding a button with an id the mod already gave one replaces that one (a new label, say).
+interface widgets {
+    use types.{rich-text};
+
+    /// The point of the screen, and the same point of the button, that a button's offset is
+    /// from (Bedrock's `anchor_from` and `anchor_to`): `top-right` with x -4 and y 4 puts the
+    /// button's top right corner 4 pixels left of and 4 below the screen's.
+    enum anchor {
+        top-left,
+        top-middle,
+        top-right,
+        left-middle,
+        center,
+        right-middle,
+        bottom-left,
+        bottom-middle,
+        bottom-right,
+    }
+    /// Fabric's `Screens.getButtons(screen).add(ButtonWidget.builder(...).build())`, NeoForge's
+    /// `ScreenEvent.Init.Post.addListener`: a button drawn as the screen's own are.
+    record screen-button {
+        id: string,
+        /// Which screen, by the names `events.screen-opened` gives: `pause`, `title`,
+        /// `inventory`, `creative`, `container`, `options`, `worlds`, `multiplayer`, `death`...
+        screen: string,
+        anchor: anchor,
+        /// Its offset from the anchor and its size, in GUI pixels (vanilla's buttons are 20
+        /// tall).
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        label: rich-text,
+        /// A GUI sprite drawn before the label, as tall as the button lets it be ("" for none):
+        /// `icon/accessibility`, `item/compass`, a content mod's `<id>:my_icon`.
+        icon: string,
+        /// Shown while the mouse is over it.
+        tooltip: list<rich-text>,
+        /// Greyed and not pressed when false.
+        active: bool,
+    }
+    enum shape {
+        /// A circle, as the game's own touch buttons.
+        round,
+        /// A rounded square, as Bedrock's.
+        square,
+        /// As wide as its label: a keybind's button.
+        wide,
+    }
+    /// One of Bedrock's touch buttons: on the touch controls while playing on a touch screen,
+    /// moved, resized, faded and hidden by the player in the touch layout editor as the game's
+    /// own buttons are. Each keybind of the mod has one already, wide and labelled with its name;
+    /// one with a keybind's id gives that one its look and place.
+    record touch-button {
+        id: string,
+        /// Shown on it when it has no icon, and in the editor. Short: "Zoom", "Map".
+        label: string,
+        /// A GUI sprite drawn on it instead of the label ("" for none): `item/spyglass`,
+        /// `hud/heart/full`, a content mod's `<id>:my_icon`.
+        icon: string,
+        shape: shape,
+        /// Where it is until the player moves it: its centre as a share of the screen's width
+        /// and height (0 to 1), and its size in the controls' units (a ninth of the screen's
+        /// shorter side across its middle; the game's Jump is 0.8, Pause 0.45).
+        x: f32,
+        y: f32,
+        size: f32,
+    }
+    add-screen-button: func(button: screen-button) -> result<_, string>;
+    add-touch-button: func(button: touch-button) -> result<_, string>;
+    /// Takes away the mod's button with this id, of either kind.
+    remove: func(id: string);
+    /// Restyles one of the game's own touch buttons, as Bedrock's resource packs retexture
+    /// theirs: `jump`, `sneak`, `attack`, `use`, `inventory`, `chat`, `command`, `pause`,
+    /// `camera`, `drop` or `offhand`. `label` and `icon` as a touch button's ("" keeps the
+    /// game's); `wide` draws it round. False for another name. A resource pack can do this too,
+    /// with `assets/starling/textures/gui/sprites/touch/<name>.png` (and `<name>_pressed.png`),
+    /// drawn over the whole button; a mod's style wins over a pack's.
+    style-control: func(control: string, label: string, icon: string, shape: shape) -> bool;
+}
+
 /// The device: always granted, on every device (where a part does not apply it does nothing).
 interface mobile {
     /// Whether the player plays with a touch screen (the phone), so a mod can lay its screens
@@ -598,6 +682,7 @@ world starling-mod {
     import draw;
     import hud;
     import screens;
+    import widgets;
     import keys;
     import input;
     import sound;

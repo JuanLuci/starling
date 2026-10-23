@@ -32,6 +32,8 @@ pitfalls and the port log. Then:
    Read every JSON line (a `stopped` line has the reason) and look at every PNG. Use a phone-sized
    GUI (`"gui": {"width": 533, "height": 240}`) and the scenario fields `player`, `target`,
    `mining`, `blocks` and the `controls` step to set the scene. `--watch` reruns on every save.
+   Buttons a mod adds (`widgets`): `{"screen": "pause"}` draws them on that game screen, `click`
+   and `touch` press them, `{"hud": {"touch": true}}` shows its touch buttons.
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

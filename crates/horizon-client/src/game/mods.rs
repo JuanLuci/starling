@@ -53,6 +53,8 @@ pub(super) struct ModsState {
     health: Option<f32>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub(super) keys_down: Vec<String>,
+    /// A mod's button on the game's screen held down by the mouse: mod id, button id.
+    pub(super) pressed_button: Option<(String, String)>,
     /// The game's controls for `keys.is-control-down` and `keys.presses`, as last framed.
     controls: Controls,
     /// Controls whose press since the last frame was counted as it came ([`ModsState::press`]).
@@ -425,6 +427,11 @@ impl Game<'_> {
         self.list_mods();
         self.sync_mod_commands();
         self.register_mod_channels();
+        // What they read until the next tick, now: a game paused while they started has none.
+        if self.mods.mods.is_running() {
+            let snapshot = self.mod_snapshot();
+            self.mods.mods.set_snapshot(snapshot);
+        }
         self.show_mod_output();
     }
     /// The Mods page's rows, from what loaded.
@@ -1236,6 +1243,9 @@ impl Game<'_> {
         }
         if pressed {
             self.mods.keys_down.push(full);
+            // A press on a paused game's screen (a mod's button there) comes between no ticks.
+            let snapshot = self.mod_snapshot();
+            self.mods.mods.set_snapshot(snapshot);
         } else {
             self.mods.keys_down.retain(|k| *k != full);
         }

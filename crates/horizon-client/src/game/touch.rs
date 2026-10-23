@@ -3,17 +3,18 @@
 //! touch-layout.json says (edited in place: a long press on pause); on every other screen the
 //! first finger is the pointer, with a close button over the screens a world opens. Android's
 //! back key is Escape, and the chat raises the on-screen keyboard and moves above it. On the
-//! screens with slots a finger works them as Bedrock's touch inventory does (slots.rs).
+//! screens with slots a finger works them as Bedrock's touch inventory does (slots.rs). The mods'
+//! buttons are in the layout as the game's own (game/mod_widgets.rs).
 mod slots;
 
-use super::{Game, Screen};
+use super::{Game, Screen, mod_widgets::ModFace};
 use horizon_client::{
     Result,
     gamepad::Button as Pad,
     hud::HudBatch,
     touch::{
-        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Show, Target,
-        TouchControls,
+        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Shape, Show,
+        Target, TouchControls,
     },
     ui_theme::{Face, Ui, color},
 };
@@ -66,8 +67,10 @@ pub(super) struct Touch {
     chat_key: Option<(usize, Instant)>,
     /// The finger on the chat bar: its moves and lift are the bar's.
     chat_finger: Option<u64>,
-    /// Fingers on the mods' keybind buttons: (finger, mod id, keybind id).
+    /// Fingers on the mods' buttons: (finger, mod id, button id).
     mod_keys: Vec<(u64, String, String)>,
+    /// The mods' buttons as last offered to the layout.
+    faces: Vec<ModFace>,
 }
 
 /// The chat bar's keys, left to right: history up and down, completion, the cursor.
@@ -210,9 +213,9 @@ impl Game<'_> {
             }
             return true;
         }
-        // The mods' keybinds: held while a finger is on their button.
+        // The mods' buttons: held while a finger is on them.
         if t.phase == TouchPhase::Started
-            && let Some((id, bind)) = self.mod_key_at(p)
+            && let Some((id, bind)) = self.mod_button_at(p)
         {
             self.touch.mod_keys.push((t.id, id.clone(), bind.clone()));
             self.mod_bind(&id, &bind, true);
@@ -309,6 +312,23 @@ impl Game<'_> {
                 .and_then(|path| std::fs::read_to_string(path).ok());
             self.touch.config =
                 Some(text.map_or_else(LayoutConfig::default, |t| LayoutConfig::from_json(&t)));
+        }
+        // The mods' buttons, where the player put them (or their mods do).
+        if self.touch.seen || cfg!(target_os = "android") {
+            let (faces, offered): (Vec<_>, Vec<_>) = self
+                .mod_touch_buttons()
+                .into_iter()
+                .map(|(face, place)| {
+                    let offer = (face.key.clone(), place, face.shape);
+                    (face, offer)
+                })
+                .unzip();
+            if let Some(config) = &mut self.touch.config
+                && (!offered.is_empty() || config.extra.iter().any(|e| e.live))
+            {
+                config.offer(&offered);
+            }
+            self.touch.faces = faces;
         }
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             for mouse in self.touch.pointer.frame_events(now) {
@@ -533,16 +553,6 @@ impl Game<'_> {
                 fill,
             );
         };
-        let ring = |ui: &mut Ui, c: [f32; 2], r: f32, line: u32| {
-            ui.border(
-                (c[0] - r) / d,
-                (c[1] - r) / d,
-                2.0 * r / d,
-                2.0 * r / d,
-                r / d,
-                line,
-            );
-        };
         let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str, tint: u32| {
             let size = (r / d * 0.5).clamp(9.0, 16.0);
             ui.text_centered(
@@ -554,6 +564,55 @@ impl Game<'_> {
                 text,
             );
         };
+        // A plate and an outline of any shape (circles as above).
+        let plate_of = |ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, fill: u32| {
+            let [hw, hh] = shape.half(r);
+            let corner = match shape {
+                Shape::Square => r * 0.3,
+                Shape::Round | Shape::Wide(_) => r,
+            };
+            ui.rounded(
+                (c[0] - hw) / d,
+                (c[1] - hh) / d,
+                2.0 * hw / d,
+                2.0 * hh / d,
+                corner / d,
+                fill,
+            );
+        };
+        let ring_of = |ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, line: u32| {
+            let [hw, hh] = shape.half(r);
+            let corner = match shape {
+                Shape::Square => r * 0.3,
+                Shape::Round | Shape::Wide(_) => r,
+            };
+            ui.border(
+                (c[0] - hw) / d,
+                (c[1] - hh) / d,
+                2.0 * hw / d,
+                2.0 * hh / d,
+                corner / d,
+                line,
+            );
+        };
+        // A sprite over a button, `share` of its height, at an opacity.
+        let gui = ui.batch.scale;
+        let icon = |ui: &mut Ui, sprite: &str, c: [f32; 2], r: f32, share: f32, a: f32| {
+            let side = (2.0 * r * share / gui).round();
+            let (x, y) = (
+                (c[0] / gui - side / 2.0).round(),
+                (c[1] / gui - side / 2.0).round(),
+            );
+            let tint = horizon_client::hud::rgba(255, 255, 255, (a.clamp(0.0, 1.0) * 255.0) as u8);
+            horizon_client::ui::sprite_sized(ui.batch, ui.atlas, sprite, x, y, side, side, tint);
+        };
+        // A mod's button: its plate, its icon or its label.
+        let face_of = |key: &str| self.touch.faces.iter().find(|f| f.key == key);
+        // A label's size for a button's radius: a wide button's is its height's, not its width's.
+        let text_r = |shape: Shape, r: f32| match shape {
+            Shape::Wide(_) => r * 1.5,
+            Shape::Round | Shape::Square => r,
+        };
         if closable {
             let (c, r) = layout.close;
             circle(&mut ui, c, r, color::with_alpha(color::BG, 0.7));
@@ -564,24 +623,52 @@ impl Game<'_> {
             for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
                 // As it will look (at least faintly, to be found again), outlined if a ghost.
                 let a = (place.opacity * config.opacity).max(0.35);
+                let shape = match target {
+                    Target::Extra(i) => config.extra[i].shape,
+                    Target::Button(b) => self.control_face(b).shape,
+                    Target::Stick => Shape::Round,
+                };
                 match place.show {
-                    Show::On => circle(&mut ui, c, r, pressed(a)),
-                    Show::Ghost => ring(&mut ui, c, r, ink(0.5)),
-                    Show::Off => circle(&mut ui, c, r, plate(0.5)),
+                    Show::On => plate_of(&mut ui, shape, c, r, pressed(a)),
+                    Show::Ghost => ring_of(&mut ui, shape, c, r, ink(0.5)),
+                    Show::Off => plate_of(&mut ui, shape, c, r, plate(0.5)),
                 }
                 if editor.selected == Some(target) {
-                    ring(&mut ui, c, r, color::ACCENT);
+                    ring_of(&mut ui, shape, c, r, color::ACCENT);
                 }
+                let name;
                 let text = match target {
                     Target::Stick => "Move",
-                    Target::Button(b) => b.label(),
+                    Target::Button(b) => {
+                        name = self.control_face(b).label;
+                        &name
+                    }
+                    Target::Extra(i) => {
+                        let key = &config.extra[i].key;
+                        name = face_of(key).map_or_else(|| key.clone(), |f| f.label.clone());
+                        &name
+                    }
                 };
                 let tint = if place.show == Show::Off {
                     ink(0.4)
                 } else {
                     ink(1.0)
                 };
-                label(&mut ui, c, r, text, tint);
+                // A mod's button with an icon shows it, as while playing (its name is on the
+                // opacity slider once picked).
+                let drawn = match target {
+                    Target::Extra(i) if !matches!(shape, Shape::Wide(_)) => {
+                        face_of(&config.extra[i].key).and_then(|f| f.icon.clone())
+                    }
+                    _ => None,
+                };
+                match drawn {
+                    Some(sprite) => {
+                        let a = if place.show == Show::Off { 0.4 } else { 1.0 };
+                        icon(&mut ui, &sprite, c, r, 0.6, a);
+                    }
+                    None => label(&mut ui, c, text_r(shape, r), text, tint),
+                }
             }
             let shown = editor.selected.and_then(|t| {
                 LayoutEditor::targets(config, w, h)
@@ -623,9 +710,15 @@ impl Game<'_> {
                 color::ACCENT,
             );
             circle(&mut ui, [x0 + (x1 - x0) * value, y], 0.28 * u, ink(1.0));
+            let named;
             let whose = match editor.selected {
                 Some(Target::Stick) => "Move",
                 Some(Target::Button(b)) => b.label(),
+                Some(Target::Extra(i)) => {
+                    let key = &config.extra[i].key;
+                    named = face_of(key).map_or_else(|| key.clone(), |f| f.label.clone());
+                    &named
+                }
                 None => "all",
             };
             ui.text_centered(
@@ -671,8 +764,38 @@ impl Game<'_> {
                 }
                 let on =
                     self.touch.controls.held(*button) || (*button == Button::Sneak && sneaking);
-                circle(&mut ui, *c, *r, if on { pressed(*a) } else { plate(*a) });
-                label(&mut ui, *c, *r, button.label(), ink(*a));
+                let face = self.control_face(*button);
+                // A pack's button is drawn whole; a mod's look is a plate with its icon or label.
+                if let Some((skin, lit)) = &face.skin {
+                    let sprite = lit.as_ref().filter(|_| on).unwrap_or(skin);
+                    icon(&mut ui, sprite, *c, *r, 1.0, *a);
+                    continue;
+                }
+                let fill = if on { pressed(*a) } else { plate(*a) };
+                plate_of(&mut ui, face.shape, *c, *r, fill);
+                match &face.icon {
+                    Some(sprite) => icon(&mut ui, sprite, *c, *r, 0.55, *a),
+                    None => label(&mut ui, *c, *r, &face.label, ink(*a)),
+                }
+            }
+            // The mods' buttons, lit while held.
+            for (i, c, r, a, shape) in &layout.extra {
+                let extra = self.touch.config.as_ref().and_then(|c| c.extra.get(*i));
+                let (Some(extra), true) = (extra.map(|e| e.key.clone()), *a > 0.0) else {
+                    continue;
+                };
+                let Some(face) = face_of(&extra) else {
+                    continue;
+                };
+                let on = self.mods.keys_down.contains(&extra);
+                let fill = if on { pressed(*a) } else { plate(*a) };
+                plate_of(&mut ui, *shape, *c, *r, fill);
+                match (&face.icon, shape) {
+                    (Some(sprite), Shape::Round | Shape::Square) => {
+                        icon(&mut ui, sprite, *c, *r, 0.6, *a)
+                    }
+                    _ => label(&mut ui, *c, text_r(*shape, *r), &face.label, ink(*a)),
+                }
             }
         }
         ui.finish();
@@ -688,57 +811,16 @@ impl Game<'_> {
         self.touch.keyboard = false;
     }
 
-    /// The mods' keybinds as a row of buttons while playing on a touch screen (there are no
-    /// keys to press): (x, y, w, h) in GUI pixels, mod id, keybind id, label.
-    fn mod_key_buttons(&self, batch: &HudBatch) -> Vec<([f32; 4], String, String, String)> {
-        if !self.touch_playing() || !(self.touch.seen || cfg!(target_os = "android")) {
-            return Vec::new();
+    /// The mod's button under window pixel `p` while playing (not in the layout editor): mod id,
+    /// button id.
+    fn mod_button_at(&self, p: [f32; 2]) -> Option<(String, String)> {
+        if !self.touch_playing() || self.touch.editor.is_some() {
+            return None;
         }
-        let binds = self.mods.mods.keybinds();
-        if binds.is_empty() {
-            return Vec::new();
-        }
-        let atlas = &self.gui.atlas;
-        let labels: Vec<String> = binds
-            .iter()
-            .map(|(_, b)| b.name.chars().take(14).collect())
-            .collect();
-        let widths: Vec<f32> = labels
-            .iter()
-            .map(|l| HudBatch::text_width(atlas, l) + 10.0)
-            .collect();
-        // At the left, under the top row of the default layout and over the stick.
-        let y = (batch.height * 0.2).floor();
-        let mut x = 4.0;
-        let mut out = Vec::new();
-        for (((id, bind), label), w) in binds.into_iter().zip(labels).zip(widths) {
-            out.push(([x, y, w, 16.0], id, bind.id, label));
-            x += w + 3.0;
-        }
-        out
-    }
-    /// The mod keybind button under window pixel `p`.
-    fn mod_key_at(&self, p: [f32; 2]) -> Option<(String, String)> {
-        let batch = HudBatch::new(self.touch_size());
-        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
-        self.mod_key_buttons(&batch)
-            .into_iter()
-            .find(|(r, ..)| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
-            .map(|(_, id, bind, _)| (id, bind))
-    }
-    /// The mods' keybind buttons, lit while held.
-    pub(super) fn draw_mod_keys(&self, batch: &mut HudBatch) {
-        let atlas = &self.gui.atlas;
-        for (r, id, bind, label) in self.mod_key_buttons(batch) {
-            let held = self.mods.keys_down.contains(&format!("{id}:{bind}"));
-            let sprite = if held {
-                "gui/sprites/widget/button_highlighted"
-            } else {
-                "gui/sprites/widget/button"
-            };
-            horizon_client::ui::nine_slice(batch, atlas, sprite, r[0], r[1], r[2], r[3], u32::MAX);
-            batch.text(atlas, &label, r[0] + 5.0, r[1] + 4.0, u32::MAX, true);
-        }
+        let config = self.touch.config.as_ref()?;
+        let i = self.touch_layout().extra_at(p)?;
+        let (id, button) = config.extra.get(i)?.key.split_once(':')?;
+        Some((id.to_owned(), button.to_owned()))
     }
     /// Whether the chat bar shows: the chat open on a touch screen.
     fn chat_bar_shown(&self) -> bool {
@@ -906,8 +988,9 @@ impl Game<'_> {
             "ok": true,
             "editing": self.touch.editor.is_some(),
             "selected": self.touch.editor.as_ref().and_then(|e| e.selected).map(|t| match t {
-                Target::Stick => "stick",
-                Target::Button(b) => b.id(),
+                Target::Stick => "stick".to_owned(),
+                Target::Button(b) => b.id().to_owned(),
+                Target::Extra(i) => config.extra.get(i).map_or_else(String::new, |e| e.key.clone()),
             }),
             "layout": layout,
         })))

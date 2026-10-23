@@ -127,6 +127,38 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> Vec<PackedImage> {
     }
     out
 }
+/// The GUI sprites of every namespace but vanilla's (content mods', packs' own such as
+/// `starling:touch/jump`), as `<namespace>:gui/sprites/<path>`: the GUI atlas's directory source
+/// lists them, and `draw.sprite("<namespace>:<path>")` looks them up by that name.
+fn namespaced_gui_sprites(root: &Path) -> Vec<PackedImage> {
+    let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ns in namespaces.flatten() {
+        let name = ns.file_name().to_string_lossy().into_owned();
+        if name == "minecraft" {
+            continue;
+        }
+        let sprites = ns.path().join("textures/gui/sprites");
+        let mut files = Vec::new();
+        walk(&sprites, &mut files);
+        for path in files {
+            let Ok(rel) = path.strip_prefix(&sprites) else {
+                continue;
+            };
+            let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
+            if let Ok((w, h, pixels)) = decode(&path)
+                && w <= 512
+                && h <= 512
+            {
+                out.push((format!("{name}:gui/sprites/{rel}"), w, h, pixels));
+            }
+        }
+    }
+    out
+}
+
 impl HudAtlas {
     /// A font glyph's atlas cell (8x8 GUI pixels) and advance.
     pub fn glyph(&self, ch: char) -> Option<(Rect, f32)> {
@@ -244,6 +276,7 @@ impl HudAtlas {
         });
         if full {
             images.extend(atlas_sprites(root, &images));
+            images.extend(namespaced_gui_sprites(root));
         }
         // The title screen's "JAVA EDITION" banner reads "RUST EDITION".
         if let Some(edition) = images

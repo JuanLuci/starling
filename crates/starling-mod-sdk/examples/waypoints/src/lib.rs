@@ -1,11 +1,12 @@
-//! Example Horizon mod (`docs/mods.md`) for the screen API: J (or its touch button) opens a
-//! screen of saved places drawn with vanilla buttons; "Add here" saves where the player stands,
+//! Example Horizon mod (`docs/mods.md`) for the screen API: J, its touch button (a compass) or
+//! its button on the pause menu opens a screen of saved places drawn with vanilla buttons; "Add
+//! here" saves where the player stands,
 //! a place's button picks it, "x" forgets it and "Rename" names the picked one (bringing up the
 //! on-screen keyboard on a phone; Enter keeps the name). The chosen place's distance and
 //! direction show at the top of the HUD. Places are kept with `storage`, one per line.
 use starling_mod_sdk::{
-    KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, draw, game, mobile,
-    screens, storage,
+    Anchor, KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, ScreenButton,
+    Shape, TouchButton, draw, game, mobile, screens, storage, widgets,
 };
 
 struct Place {
@@ -104,6 +105,29 @@ impl Mod for Waypoints {
         let hooks = Registration::new()
             .keybind("open", "Waypoints", "key.keyboard.j")
             .on_hud();
+        // The keybind's touch button, a compass at the left; and a button on the pause menu.
+        widgets::add_touch_button(&TouchButton {
+            id: "open".into(),
+            label: "Waypoints".into(),
+            icon: "item/compass_16".into(),
+            shape: Shape::Square,
+            x: 0.045,
+            y: 0.32,
+            size: 0.42,
+        })?;
+        widgets::add_screen_button(&ScreenButton {
+            id: "open".into(),
+            screen: "pause".into(),
+            anchor: Anchor::TopLeft,
+            x: 4.0,
+            y: 4.0,
+            width: 84.0,
+            height: 20.0,
+            label: "Waypoints".into(),
+            icon: "item/compass_16".into(),
+            tooltip: vec!["Your saved places".into()],
+            active: true,
+        })?;
         Ok((
             Waypoints {
                 places: Self::load(),

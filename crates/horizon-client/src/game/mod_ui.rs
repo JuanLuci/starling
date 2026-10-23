@@ -144,20 +144,10 @@ impl Game<'_> {
                     }
                 }
                 DrawOp::Sprite { x, y, w, h, sprite } => {
-                    let atlas = &self.gui.atlas;
-                    let (ns, path) = sprite.split_once(':').unwrap_or(("minecraft", sprite));
-                    let key = [
-                        format!("gui/sprites/{path}"),
-                        format!("{ns}:gui/sprites/{path}"),
-                        sprite.clone(),
-                    ]
-                    .into_iter()
-                    .filter(|k| ns == "minecraft" || !k.starts_with("gui/"))
-                    .find(|k| atlas.sprites.contains_key(k));
-                    if let Some(key) = key {
-                        horizon_client::ui::nine_slice(
+                    if let Some(key) = self.mod_sprite(sprite) {
+                        horizon_client::ui::sprite_sized(
                             batch,
-                            atlas,
+                            &self.gui.atlas,
                             &key,
                             *x,
                             *y,
@@ -449,6 +439,16 @@ impl Game<'_> {
                     _ => return own,
                 };
                 let pressed = *state == ElementState::Pressed;
+                // The mods' buttons on the game's screen, before the screen and the mods' hooks;
+                // a button's release is its own wherever it lands (its press may have opened a
+                // mod's screen over it).
+                let release = !pressed && self.mods.pressed_button.is_some();
+                if b == 0
+                    && (release || (!own && screen.is_some()))
+                    && self.mod_screen_button_click(pressed)
+                {
+                    return true;
+                }
                 if screen_events && let Some(screen) = &screen {
                     self.mods.held = pressed.then_some(b);
                     let event = MouseEvent {

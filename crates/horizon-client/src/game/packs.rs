@@ -146,7 +146,11 @@ impl Game<'_> {
             self.ui.vanilla_root = vanilla.clone();
         }
         let server = self.server_packs.applied();
+        // The content mods over the packs, as at start: their textures, sounds and languages
+        // stay.
+        let (enabled, dev) = (&self.settings.mods.enabled, &self.mods.dev);
         root_with_server(&vanilla, &self.settings.resource_packs, &server)
+            .map(|root| super::mods::content_root(&root, enabled, dev))
             .map_err(Into::into)
             .and_then(|root| self.reload_resources(&root))
     }

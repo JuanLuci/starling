@@ -12,11 +12,15 @@
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
 //! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
-//! it), `{"click": [x, y], "button": 0}`, `{"type": "text"}`, `{"press": "key.keyboard.enter"}`,
-//! `{"close": true}`, `{"join": "server"}`, `{"leave": true}`, `{"hurt": 2.0}`,
-//! `{"controls": ["key.forward", "key.attack"]}` (the game's controls held from then on, the
-//! others let go; mods' `input.hold` adds sprint and sneak).
-//! Without steps it ticks once and draws the HUD.
+//! it; a game screen's name, `pause` or `inventory`, draws the mod's buttons on it),
+//! `{"click": [x, y], "button": 0}` (a mod's button on a game screen first), `{"type": "text"}`,
+//! `{"press": "key.keyboard.enter"}`, `{"close": true}`, `{"join": "server"}`, `{"leave": true}`,
+//! `{"hurt": 2.0}`, `{"touch": "<button id>", "pressed": true}` (a touch button, pressed and
+//! let go without `pressed`), `{"controls": ["key.forward", "key.attack"]}` (the game's controls
+//! held from then on, the others let go; mods' `input.hold` adds sprint and sneak).
+//! `{"hud": {"touch": true}}` draws the mod's touch buttons too, where they start.
+//! Without steps it ticks once and draws the HUD. The mod's buttons (`widgets`) are a `widgets`
+//! line whenever they change.
 //!
 //! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
 //! `--watch` runs it again whenever the mod (a `.hmod`, or a folder's files) or the scenario
@@ -29,8 +33,8 @@ mod render;
 mod world;
 
 use horizon_mods::{
-    CONTROLS, Controls, Corner, DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction,
-    MouseEvent, Output, RenderContext, Snapshot, Status,
+    Anchor, CONTROLS, Controls, Corner, DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods,
+    MouseAction, MouseEvent, Output, RenderContext, ScreenButton, Shape, Snapshot, Status,
 };
 use serde_json::{Value, json};
 use std::{
@@ -252,6 +256,7 @@ fn run_once(options: &Options) -> Result<(), String> {
     if status != "running" {
         return Ok(());
     }
+    let mut buttons = widgets_line(&mods, &mut Value::Null);
     let gui = Gui {
         width: scenario["gui"]["width"].as_u64().unwrap_or(427) as u32,
         height: scenario["gui"]["height"].as_u64().unwrap_or(240) as u32,
@@ -298,6 +303,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         };
         emit(json!({ "event": "step", "step": step, "result": result, "png": file }));
         outputs(&mut mods, &mut screen, &mut hands);
+        buttons = widgets_line(&mods, &mut buttons);
         hands.apply(&mut mods, &world);
         if !mods.is_running() {
             break;
@@ -451,6 +457,175 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands) {
     }
 }
 
+/// The mod's buttons as JSON, a `widgets` line when they are not `last` (and there are any).
+fn widgets_line(mods: &Mods, last: &mut Value) -> Value {
+    let Some((_, w)) = mods.widgets().next() else {
+        return Value::Null;
+    };
+    let shape = |s: Shape| match s {
+        Shape::Round => "round",
+        Shape::Square => "square",
+        Shape::Wide => "wide",
+    };
+    let anchor = |a: Anchor| match a {
+        Anchor::TopLeft => "top-left",
+        Anchor::TopMiddle => "top-middle",
+        Anchor::TopRight => "top-right",
+        Anchor::LeftMiddle => "left-middle",
+        Anchor::Center => "center",
+        Anchor::RightMiddle => "right-middle",
+        Anchor::BottomLeft => "bottom-left",
+        Anchor::BottomMiddle => "bottom-middle",
+        Anchor::BottomRight => "bottom-right",
+    };
+    let now = json!({
+        "screen": w.screen.iter().map(|b| json!({
+            "id": b.id, "screen": b.screen, "anchor": anchor(b.anchor),
+            "x": b.x, "y": b.y, "width": b.width, "height": b.height, "label": b.label,
+            "icon": b.icon, "tooltip": b.tooltip, "active": b.active,
+        })).collect::<Vec<_>>(),
+        "touch": w.touch.iter().map(|b| json!({
+            "id": b.id, "label": b.label, "icon": b.icon, "shape": shape(b.shape),
+            "x": b.x, "y": b.y, "size": b.size,
+        })).collect::<Vec<_>>(),
+        "styles": w.styles.iter().map(|s| json!({
+            "control": s.control, "label": s.label, "icon": s.icon, "shape": shape(s.shape),
+        })).collect::<Vec<_>>(),
+    });
+    let empty = ["screen", "touch", "styles"]
+        .iter()
+        .all(|k| now[k].as_array().is_some_and(Vec::is_empty));
+    if now != *last && !(empty && last.is_null()) {
+        let mut line = now.clone();
+        line["event"] = json!("widgets");
+        emit(line);
+    }
+    now
+}
+
+/// A screen button's box on a GUI this size, as the game places it.
+fn anchored(b: &ScreenButton, gui: &Gui) -> [f32; 4] {
+    let (fx, fy) = match b.anchor {
+        Anchor::TopLeft => (0.0, 0.0),
+        Anchor::TopMiddle => (0.5, 0.0),
+        Anchor::TopRight => (1.0, 0.0),
+        Anchor::LeftMiddle => (0.0, 0.5),
+        Anchor::Center => (0.5, 0.5),
+        Anchor::RightMiddle => (1.0, 0.5),
+        Anchor::BottomLeft => (0.0, 1.0),
+        Anchor::BottomMiddle => (0.5, 1.0),
+        Anchor::BottomRight => (1.0, 1.0),
+    };
+    let (w, h) = (b.width.floor(), b.height.floor());
+    let (sw, sh) = (gui.width as f32, gui.height as f32);
+    [
+        ((sw - w) * fx + b.x).floor(),
+        ((sh - h) * fy + b.y).floor(),
+        w,
+        h,
+    ]
+}
+
+/// The mod's buttons on game screen `screen`: owner, button, box.
+fn screen_buttons(mods: &Mods, screen: &str, gui: &Gui) -> Vec<(String, ScreenButton, [f32; 4])> {
+    mods.widgets()
+        .flat_map(|(id, w)| w.screen.iter().map(move |b| (id, b)))
+        .filter(|(_, b)| b.screen == screen)
+        .map(|(id, b)| (id.to_owned(), b.clone(), anchored(b, gui)))
+        .collect()
+}
+
+/// A game screen with the mod's buttons on it, as the game draws them (vanilla's look): a dark
+/// backdrop for the screen itself, which is not drawn here.
+fn screen_button_ops(mods: &Mods, screen: &str, gui: &Gui) -> Vec<DrawOp> {
+    let (w, h) = (gui.width as f32, gui.height as f32);
+    let mut ops = vec![DrawOp::Gradient {
+        x: 0.0,
+        y: 0.0,
+        w,
+        h,
+        top: 0xC010_1010,
+        bottom: 0xD010_1010,
+    }];
+    for (_, b, r) in screen_buttons(mods, screen, gui) {
+        let side = (r[3] - 4.0).clamp(0.0, 16.0);
+        let with_icon = !b.icon.is_empty();
+        ops.push(DrawOp::Button {
+            x: r[0],
+            y: r[1],
+            w: r[2],
+            h: r[3],
+            label: if with_icon {
+                format!("   {}", b.label)
+            } else {
+                b.label.clone()
+            },
+            hovered: false,
+            active: b.active,
+        });
+        if with_icon {
+            ops.push(DrawOp::Sprite {
+                x: r[0] + 3.0,
+                y: r[1] + ((r[3] - side) / 2.0).floor(),
+                w: side,
+                h: side,
+                sprite: b.icon.clone(),
+            });
+        }
+    }
+    ops
+}
+
+/// The mod's touch buttons where they start, on a GUI this size: plates with their icon or
+/// label (the game draws them rounder).
+fn touch_ops(mods: &Mods, gui: &Gui) -> Vec<DrawOp> {
+    let (w, h) = (gui.width as f32, gui.height as f32);
+    // A ninth of the shorter side, the controls' unit.
+    let unit = w.min(h) / 9.0;
+    let mut ops = Vec::new();
+    for (_, widgets) in mods.widgets() {
+        for b in &widgets.touch {
+            let r = if b.shape == Shape::Wide {
+                8.0
+            } else {
+                b.size * unit
+            };
+            let half = if b.shape == Shape::Wide {
+                (b.label.chars().count() as f32 * 3.0 + 5.0).max(r)
+            } else {
+                r
+            };
+            let (cx, cy) = (b.x * w, b.y * h);
+            ops.push(DrawOp::Fill {
+                x: cx - half,
+                y: cy - r,
+                w: 2.0 * half,
+                h: 2.0 * r,
+                color: 0x40FF_FFFF,
+            });
+            if b.icon.is_empty() || b.shape == Shape::Wide {
+                ops.push(DrawOp::Text {
+                    x: cx - half + 3.0,
+                    y: cy - 4.0,
+                    text: b.label.clone(),
+                    color: 0xFFFFFF,
+                    shadow: true,
+                });
+            } else {
+                let side = (2.0 * r * 0.6).round();
+                ops.push(DrawOp::Sprite {
+                    x: (cx - side / 2.0).round(),
+                    y: (cy - side / 2.0).round(),
+                    w: side,
+                    h: side,
+                    sprite: b.icon.clone(),
+                });
+            }
+        }
+    }
+    ops
+}
+
 /// One step on the mod; what its hook returned, and what it drew.
 fn play(
     mods: &mut Mods,
@@ -492,7 +667,23 @@ fn play(
     if step.get("hud").is_some() {
         let mut ops = panel_ops(mods, gui);
         ops.extend(mods.hud_render(context(&step["hud"])));
+        if step["hud"]["touch"].as_bool() == Some(true) {
+            ops.extend(touch_ops(mods, gui));
+        }
         return drawn(ops);
+    }
+    if let Some(id) = step["touch"].as_str() {
+        let Some(owner) = touch_owner(mods, id) else {
+            return (json!({ "error": format!("no touch button {id}") }), None);
+        };
+        match step["pressed"].as_bool() {
+            Some(pressed) => mods.key(&owner, id, pressed),
+            None => {
+                mods.key(&owner, id, true);
+                mods.key(&owner, id, false);
+            }
+        }
+        return (Value::Null, None);
     }
     if let Some(id) = step["tooltip"].as_str() {
         let info = data.info(id);
@@ -542,7 +733,13 @@ fn play(
             mods.screen_opened(name);
             *screen = Some(name.to_owned());
         }
-        return drawn(mods.screen_render(name, context(step)));
+        // A game screen: the mod's buttons on it, then what the mod draws over it.
+        let mut ops = Vec::new();
+        if !name.contains(':') {
+            ops = screen_button_ops(mods, name, gui);
+        }
+        ops.extend(mods.screen_render(name, context(step)));
+        return drawn(ops);
     }
     let Some(open) = screen.clone() else {
         let error = format!("unknown step, or one for a screen while none is open: {step}");
@@ -557,6 +754,21 @@ fn play(
             button,
             scroll: 0.0,
         };
+        // The mod's buttons on a game screen take a left click first, as in the game.
+        let at = (event(MouseAction::Press).x, event(MouseAction::Press).y);
+        let hit = screen_buttons(mods, &open, gui)
+            .into_iter()
+            .rev()
+            .find(|(_, _, r)| {
+                at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3]
+            });
+        if let (Some((owner, b, _)), 0) = (hit, button) {
+            if b.active {
+                mods.key(&owner, &b.id, true);
+                mods.key(&owner, &b.id, false);
+            }
+            return (json!({ "button": b.id, "active": b.active }), None);
+        }
         let handled = mods.screen_mouse(&open, event(MouseAction::Press));
         mods.screen_mouse(&open, event(MouseAction::Release));
         let (then, ops) = drawn(mods.screen_render(&open, context(step)));
@@ -593,6 +805,19 @@ fn play(
         return (Value::Null, None);
     }
     (json!({ "error": format!("unknown step: {step}") }), None)
+}
+
+/// The mod owning touch button `id`: one of its own, or a keybind's (each has one).
+fn touch_owner(mods: &Mods, id: &str) -> Option<String> {
+    mods.widgets()
+        .find(|(_, w)| w.touch.iter().any(|b| b.id == id))
+        .map(|(owner, _)| owner.to_owned())
+        .or_else(|| {
+            mods.keybinds()
+                .into_iter()
+                .find(|(_, k)| k.id == id)
+                .map(|(owner, _)| owner)
+        })
 }
 
 /// The mods' HUD panels (`hud.set-panel`) as the game draws them: lines on a dark box in their

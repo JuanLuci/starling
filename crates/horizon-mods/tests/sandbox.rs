@@ -539,6 +539,48 @@ fn waypoints_screen_keeps_and_points() {
     assert!(labels(&ops).iter().any(|l| l.starts_with("Home")));
 }
 
+/// A mod's buttons (`widgets`): on a game screen, replaced by id and removed, on the touch
+/// controls kept in bounds, the game's own restyled; wrong ones refused; a press is its keybind.
+#[test]
+fn mods_add_buttons_to_screens_and_touch_controls() {
+    let mut mods = load("horizon_mods_test_guest.hmod");
+    assert!(mods.command("buttons"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "refused 2; laser false, jump true".into(),
+            error: false
+        }]
+    );
+    let (id, w) = mods.widgets().next().unwrap();
+    assert_eq!(id, "test_guest");
+    let labels: Vec<_> = w.screen.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["Home again"]);
+    let zoom = &w.touch[0];
+    assert_eq!((zoom.x, zoom.size), (1.0, 2.0));
+    assert_eq!(w.styles[0].control, "jump");
+    assert_eq!(w.styles[0].label, "Hop");
+    // A press reaches the mod as its keybinds do.
+    mods.key("test_guest", "home", true);
+    mods.key("test_guest", "home", false);
+    assert!(mods.command("send hi"));
+    assert!(mods.drain().iter().any(|o| matches!(
+        o,
+        Output::Feedback { text, .. } if text == "keys home:true,home:false"
+    )));
+}
+
+/// The Waypoints example's buttons: one on the pause menu, one on the touch controls, both
+/// opening its screen.
+#[test]
+fn waypoints_has_a_pause_button_and_a_touch_button() {
+    let mods = load("waypoints.hmod");
+    let (_, w) = mods.widgets().next().unwrap();
+    assert_eq!(w.screen[0].screen, "pause");
+    assert_eq!(w.screen[0].id, "open");
+    assert_eq!(w.touch[0].icon, "item/compass_16");
+}
+
 #[test]
 fn off_mods_cost_nothing() {
     let mods = Mods::load(&[mods_dir().join("coords_hud.hmod")], |_| false, |_| false);

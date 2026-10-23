@@ -23,7 +23,7 @@
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
 //! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `chat`, `chat-send`,
-//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`], `keys`, `input`, `sound`, `net`,
+//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`, `net`,
 //! `storage`).
 //!
 //! # Coming from Fabric
@@ -40,6 +40,8 @@
 //! | `ScreenEvents.AFTER_INIT/afterRender/remove`, `ScreenMouseEvents`, `ScreenKeyboardEvents` | [`Mod::screen_opened`], [`Mod::screen_render`], [`Mod::screen_closed`], [`Mod::screen_mouse`], [`Mod::screen_key`] |
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
+//! | `Screens.getButtons(screen).add(ButtonWidget...)` (in `ScreenEvents.AFTER_INIT`) | [`widgets::add_screen_button`] in [`Mod::init`]; a press is [`Mod::key`] with its id |
+//! | Bedrock's touch buttons (a keybind's button on a phone) | [`widgets::add_touch_button`], [`widgets::style_control`] for the game's own |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
 //! | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | [`Registration::keybind`], [`Mod::key`], [`keys::is_down`] |
 //! | `options.forwardKey.isPressed()`, `KeyBinding.setPressed` (sprint, sneak) | [`keys::is_control_down`], [`keys::presses`], [`input::hold`] |
@@ -66,6 +68,7 @@ pub use starling::mods::{
     chat, chat_send, draw, game, hud, input, inventory, keys, level, log, mobile, net, screens,
     sound, storage,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},
+    widgets::{self, Anchor, ScreenButton, Shape, TouchButton},
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

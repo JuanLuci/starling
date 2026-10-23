@@ -7,10 +7,12 @@
 //! API 0.3's hooks: it draws over the HUD and after the hotbar, opens `/open` its screen
 //! `test_guest:menu` (a click inside 10..50 is its own), hides chat lines with "secret",
 //! rewrites "swap", cancels `/blocked`, adds a tooltip line, sends `/send <text>` as chat,
-//! echoes payloads on `test:echo` and refuses to use the off hand.
+//! echoes payloads on `test:echo` and refuses to use the off hand. `/buttons` adds buttons to
+//! the game's screens and touch controls, some of them wrong, and says what was refused.
 use starling_mod_sdk::{
-    ChatAction, Hand, HudPart, ItemStack, Mod, MouseAction, MouseEvent, Placement, Registration,
-    RenderContext, SendAction, chat, chat_send, draw, game, net, screens, storage,
+    Anchor, ChatAction, Hand, HudPart, ItemStack, Mod, MouseAction, MouseEvent, Placement,
+    Registration, RenderContext, ScreenButton, SendAction, Shape, TouchButton, chat, chat_send,
+    draw, game, net, screens, storage, widgets,
 };
 
 struct Guest {
@@ -21,7 +23,7 @@ struct Guest {
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = [
-            "spin", "panic", "grow", "hello", "save", "load", "save_key", "open", "send",
+            "spin", "panic", "grow", "hello", "save", "load", "save_key", "open", "send", "buttons",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -86,6 +88,45 @@ impl Mod for Guest {
             "send" => {
                 chat_send::send(args)?;
                 Ok(Some(format!("keys {}", self.keys.join(","))))
+            }
+            "buttons" => {
+                let screen = |id: &str, label: &str| ScreenButton {
+                    id: id.into(),
+                    screen: "pause".into(),
+                    anchor: Anchor::BottomRight,
+                    x: -4.0,
+                    y: -4.0,
+                    width: 60.0,
+                    height: 20.0,
+                    label: label.into(),
+                    icon: String::new(),
+                    tooltip: Vec::new(),
+                    active: true,
+                };
+                let mut refused = Vec::new();
+                refused.extend(widgets::add_screen_button(&screen("Bad Id", "x")).err());
+                widgets::add_screen_button(&screen("home", "Home"))?;
+                widgets::add_screen_button(&screen("home", "Home again"))?;
+                widgets::add_screen_button(&screen("gone", "Gone"))?;
+                widgets::remove("gone");
+                let mut flat = screen("flat", "Flat");
+                flat.height = 0.0;
+                refused.extend(widgets::add_screen_button(&flat).err());
+                widgets::add_touch_button(&TouchButton {
+                    id: "zoom".into(),
+                    label: "Zoom".into(),
+                    icon: "item/spyglass".into(),
+                    shape: Shape::Square,
+                    x: 5.0,
+                    y: 0.5,
+                    size: 9.0,
+                })?;
+                let laser = widgets::style_control("laser", "", "", Shape::Round);
+                let jump = widgets::style_control("jump", "Hop", "", Shape::Square);
+                Ok(Some(format!(
+                    "refused {}; laser {laser}, jump {jump}",
+                    refused.len()
+                )))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

@@ -6,6 +6,7 @@
 //!
 //! Where the controls are is a [`LayoutConfig`] the player edits in place ([`LayoutEditor`]):
 //! a long press on pause opens it. It is kept as JSON beside options.txt (touch-layout.json).
+//! Mods add buttons of their own ([`Extra`]), placed and edited as the game's.
 //!
 //! This is the state machine only: positions are window pixels, and the game turns the
 //! [`Action`]s into its virtual pad, mouse motion and hotbar (game/touch.rs). Off the playing
@@ -148,13 +149,60 @@ const fn place(x: f32, y: f32, size: f32) -> Place {
 
 /// The lowest opacity the editor sets: an invisible control is a ghost.
 pub const MIN_OPACITY: f32 = 0.1;
+/// The smallest a control gets, and a mod's button (a keybind's is as tall as a vanilla button,
+/// less than that on a large screen).
+const MIN_SIZE: f32 = 0.3;
+const MIN_EXTRA_SIZE: f32 = 0.2;
 
-/// The player's layout: the stick's resting place and every button's, and the opacity of them
-/// all.
+/// How a button is shaped, which is also where a finger presses it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shape {
+    /// A circle, as the game's own buttons.
+    Round,
+    /// A rounded square, as Bedrock's.
+    Square,
+    /// This many times as wide as it is tall: a button with a label.
+    Wide(f32),
+}
+
+impl Shape {
+    /// Half its width and height, for its radius (half its height).
+    pub fn half(self, r: f32) -> [f32; 2] {
+        match self {
+            Shape::Wide(aspect) => [r * aspect.max(1.0), r],
+            Shape::Round | Shape::Square => [r, r],
+        }
+    }
+    /// Whether `p` presses a button of this shape centred on `c`, a little past its edge too.
+    pub fn hits(self, c: [f32; 2], r: f32, p: [f32; 2]) -> bool {
+        match self {
+            Shape::Round => dist(p, c) <= r * 1.15,
+            _ => {
+                let [hw, hh] = self.half(r);
+                (p[0] - c[0]).abs() <= hw * 1.15 && (p[1] - c[1]).abs() <= hh * 1.15
+            }
+        }
+    }
+}
+
+/// A button a mod put on the touch controls (one of its keybinds, or its own).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Extra {
+    /// `<mod id>:<button id>`: its name in touch-layout.json.
+    pub key: String,
+    pub place: Place,
+    pub shape: Shape,
+    /// Its mod runs and offers it now; otherwise it only keeps its place for when it does.
+    pub live: bool,
+}
+
+/// The player's layout: the stick's resting place and every button's (the mods' too), and the
+/// opacity of them all.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutConfig {
     pub stick: Place,
     pub buttons: Vec<(Button, Place)>,
+    pub extra: Vec<Extra>,
     pub opacity: f32,
 }
 
@@ -177,6 +225,7 @@ impl Default for LayoutConfig {
                 (Button::Drop, place(0.711, 0.951, 0.4)),
                 (Button::Offhand, place(0.289, 0.951, 0.4)),
             ],
+            extra: Vec::new(),
             opacity: 1.0,
         }
     }
@@ -190,7 +239,7 @@ impl LayoutConfig {
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             return config;
         };
-        let read = |v: &Value, into: &mut Place| {
+        let read = |v: &Value, into: &mut Place, min_size: f32| {
             let num = |k: &str, d: f32| v[k].as_f64().map_or(d, |n| n as f32);
             // The first layouts said `visible` before ghosts existed.
             let legacy = v["visible"]
@@ -199,7 +248,7 @@ impl LayoutConfig {
             *into = Place {
                 x: num("x", into.x).clamp(0.0, 1.0),
                 y: num("y", into.y).clamp(0.0, 1.0),
-                size: num("size", into.size).clamp(0.3, 2.5),
+                size: num("size", into.size).clamp(min_size, 2.5),
                 show: v["show"]
                     .as_str()
                     .and_then(Show::from_id)
@@ -212,14 +261,27 @@ impl LayoutConfig {
             config.opacity = (opacity as f32).clamp(MIN_OPACITY, 1.0);
         }
         if value["stick"].is_object() {
-            read(&value["stick"], &mut config.stick);
+            read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
                 config.stick.show = Show::On;
             }
         }
         for (button, place) in &mut config.buttons {
             if value["buttons"][button.id()].is_object() {
-                read(&value["buttons"][button.id()], place);
+                read(&value["buttons"][button.id()], place, MIN_SIZE);
+            }
+        }
+        // The mods' buttons, those of mods not running now too (they keep their places).
+        if let Some(mods) = value["mods"].as_object() {
+            for (key, v) in mods.iter().filter(|(_, v)| v.is_object()).take(256) {
+                let mut place = place(0.5, 0.5, 0.5);
+                read(v, &mut place, MIN_EXTRA_SIZE);
+                config.extra.push(Extra {
+                    key: key.clone(),
+                    place,
+                    shape: Shape::Round,
+                    live: false,
+                });
             }
         }
         config
@@ -232,13 +294,50 @@ impl LayoutConfig {
             .iter()
             .map(|(b, p)| (b.id().to_owned(), entry(p)))
             .collect();
+        let mods: Map<String, Value> = self
+            .extra
+            .iter()
+            .map(|e| (e.key.clone(), entry(&e.place)))
+            .collect();
         let value = json!({
             "version": 2,
             "opacity": self.opacity,
             "stick": entry(&self.stick),
             "buttons": buttons,
+            "mods": mods,
         });
         serde_json::to_string_pretty(&value).unwrap_or_default()
+    }
+
+    /// The mods' buttons this frame (`<mod id>:<button id>`, the place its mod gives it, its
+    /// shape): each keeps the place the player gave it, if any; the rest are no longer live.
+    pub fn offer(&mut self, offered: &[(String, Place, Shape)]) {
+        for e in &mut self.extra {
+            e.live = false;
+        }
+        for (key, place, shape) in offered {
+            match self.extra.iter_mut().find(|e| e.key == *key) {
+                Some(e) => {
+                    e.live = true;
+                    e.shape = *shape;
+                }
+                None => self.extra.push(Extra {
+                    key: key.clone(),
+                    place: *place,
+                    shape: *shape,
+                    live: true,
+                }),
+            }
+        }
+    }
+
+    /// Whether `p` presses `target`, drawn centred on `c` with radius `r`.
+    fn hits(&self, target: Target, c: [f32; 2], r: f32, p: [f32; 2]) -> bool {
+        let shape = match target {
+            Target::Extra(i) => self.extra.get(i).map_or(Shape::Round, |e| e.shape),
+            Target::Stick | Target::Button(_) => Shape::Round,
+        };
+        shape.hits(c, r, p)
     }
 
     /// How opaque a control is drawn while playing: 0 for a ghost.
@@ -257,6 +356,7 @@ impl LayoutConfig {
                 .iter_mut()
                 .find(|(b, _)| *b == button)
                 .map(|(_, p)| p),
+            Target::Extra(i) => self.extra.get_mut(i).map(|e| &mut e.place),
         }
     }
 }
@@ -303,6 +403,9 @@ pub struct Layout {
     pub stick_alpha: f32,
     /// The buttons that work: centre, radius, and how opaque they are drawn (0 for a ghost).
     pub buttons: Vec<(Button, [f32; 2], f32, f32)>,
+    /// The mods' buttons that work, the same way: their index in [`LayoutConfig::extra`], and
+    /// their shape.
+    pub extra: Vec<(usize, [f32; 2], f32, f32, Shape)>,
     /// The hotbar: its left edge, top, slot width (vanilla's 182x22 at the GUI scale).
     pub hotbar: [f32; 3],
     /// The close button over screens opened in a world (they have none for touch).
@@ -338,6 +441,16 @@ impl Layout {
                 .filter(|(_, p)| p.show != Show::Off)
                 .map(|(b, p)| (*b, [p.x * w, p.y * h], p.size * u, config.alpha(p)))
                 .collect(),
+            extra: config
+                .extra
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.live && e.place.show != Show::Off)
+                .map(|(i, e)| {
+                    let p = &e.place;
+                    (i, [p.x * w, p.y * h], p.size * u, config.alpha(p), e.shape)
+                })
+                .collect(),
             hotbar: [hotbar_left, (gui_h - 22.0) * s, 20.0 * s],
             close: ([w - 0.8 * u, 0.8 * u], 0.5 * u),
         }
@@ -345,6 +458,15 @@ impl Layout {
     /// Whether `p` presses the close button.
     pub fn close_at(&self, p: [f32; 2]) -> bool {
         dist(p, self.close.0) <= self.close.1 * 1.2
+    }
+    /// The mod button `p` presses, by its index in [`LayoutConfig::extra`] (drawn last, so the
+    /// topmost).
+    pub fn extra_at(&self, p: [f32; 2]) -> Option<usize> {
+        self.extra
+            .iter()
+            .rev()
+            .find(|(_, c, r, _, shape)| shape.hits(*c, *r, p))
+            .map(|(i, ..)| *i)
     }
     fn button_at(&self, p: [f32; 2]) -> Option<Button> {
         self.buttons
@@ -604,6 +726,8 @@ impl TouchControls {
 pub enum Target {
     Stick,
     Button(Button),
+    /// A mod's button, by its index in [`LayoutConfig::extra`].
+    Extra(usize),
 }
 
 /// The buttons beside the control being edited.
@@ -671,6 +795,10 @@ impl LayoutEditor {
                 .iter()
                 .find(|(x, _)| *x == b)
                 .map_or(config.opacity, |(_, p)| p.opacity),
+            Some(Target::Extra(i)) => config
+                .extra
+                .get(i)
+                .map_or(config.opacity, |e| e.place.opacity),
             None => config.opacity,
         }
     }
@@ -685,7 +813,8 @@ impl LayoutEditor {
         }
     }
 
-    /// Every control, ghosts and those off too, with its centre and radius in pixels.
+    /// Every control, ghosts and those off too (the running mods' buttons last), with its centre
+    /// and radius in pixels.
     pub fn targets(
         config: &LayoutConfig,
         width: f32,
@@ -704,6 +833,14 @@ impl LayoutEditor {
                 .buttons
                 .iter()
                 .map(|(b, p)| (Target::Button(*b), *p, at(p), p.size * u)),
+        )
+        .chain(
+            config
+                .extra
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.live)
+                .map(|(i, e)| (Target::Extra(i), e.place, at(&e.place), e.place.size * u)),
         )
         .collect()
     }
@@ -777,7 +914,12 @@ impl LayoutEditor {
                 {
                     if let Some(place) = self.selected.and_then(|t| config.place_mut(t)) {
                         let stick = self.selected == Some(Target::Stick);
-                        let (min, max) = if stick { (0.8, 2.5) } else { (0.3, 2.0) };
+                        let extra = matches!(self.selected, Some(Target::Extra(_)));
+                        let (min, max) = match (stick, extra) {
+                            (true, _) => (0.8, 2.5),
+                            (false, true) => (MIN_EXTRA_SIZE, 2.0),
+                            (false, false) => (MIN_SIZE, 2.0),
+                        };
                         match chip {
                             Chip::Smaller => place.size = (place.size - SIZE_STEP).max(min),
                             Chip::Bigger => place.size = (place.size + SIZE_STEP).min(max),
@@ -790,7 +932,7 @@ impl LayoutEditor {
                 let touched = Self::targets(config, width, height)
                     .into_iter()
                     .rev()
-                    .find(|(_, _, c, r)| hit(*c, *r));
+                    .find(|(t, _, c, r)| config.hits(*t, *c, *r, p));
                 match touched {
                     Some((target, _, c, _)) => {
                         self.selected = Some(target);
@@ -1289,6 +1431,62 @@ mod tests {
             Some(EditorAction::Reset)
         );
         assert_eq!(config, LayoutConfig::default());
+    }
+
+    #[test]
+    fn mod_buttons_keep_the_place_the_player_gave_them() {
+        let (w, h) = (3200.0, 1440.0);
+        let mut config = LayoutConfig::default();
+        let wide = Shape::Wide(3.0);
+        let offered = [
+            ("zoom:zoom".to_owned(), place(0.6, 0.5, 0.5), Shape::Square),
+            ("sprint:toggle".to_owned(), place(0.1, 0.2, 0.24), wide),
+        ];
+        config.offer(&offered);
+        assert_eq!(config.extra.len(), 2);
+        // Pressed where they are, by their shape: the wide one far from its middle too.
+        let layout = Layout::from_config(&config, w, h, 6.0);
+        assert_eq!(layout.extra_at([0.6 * w, 0.5 * h]), Some(0));
+        let r = 0.24 * unit(w, h);
+        assert_eq!(layout.extra_at([0.1 * w + 2.5 * r, 0.2 * h]), Some(1));
+        assert_eq!(
+            layout.extra_at([0.1 * w + 2.5 * r, 0.2 * h + 1.5 * r]),
+            None
+        );
+        // Moved in the editor, then saved and read back: the place is the player's.
+        let mut editor = LayoutEditor::default();
+        editor.event(
+            &mut config,
+            w,
+            h,
+            1,
+            TouchPhase::Started,
+            [0.6 * w, 0.5 * h],
+        );
+        assert_eq!(editor.selected, Some(Target::Extra(0)));
+        editor.event(&mut config, w, h, 1, TouchPhase::Moved, [0.7 * w, 0.4 * h]);
+        editor.event(&mut config, w, h, 1, TouchPhase::Ended, [0.7 * w, 0.4 * h]);
+        let mut back = LayoutConfig::from_json(&config.to_json());
+        assert!(back.extra.iter().all(|e| !e.live));
+        back.offer(&offered[..1]);
+        let find = |key: &str| back.extra.iter().find(|e| e.key == key).unwrap();
+        let zoom = find("zoom:zoom");
+        assert!(zoom.live && zoom.shape == Shape::Square);
+        assert!((zoom.place.x - 0.7).abs() < 1e-5 && (zoom.place.y - 0.4).abs() < 1e-5);
+        // A mod that stopped keeps its place (a small size too) but takes no fingers and is not
+        // edited.
+        let sprint = find("sprint:toggle");
+        assert!(!sprint.live && (sprint.place.size - 0.24).abs() < 1e-5);
+        let layout = Layout::from_config(&back, w, h, 6.0);
+        assert_eq!(layout.extra.len(), 1);
+        assert_eq!(
+            LayoutEditor::targets(&back, w, h).len(),
+            1 + Button::ALL.len() + 1
+        );
+        // Reset brings back the mods' own places.
+        let mut reset = LayoutConfig::default();
+        reset.offer(&offered);
+        assert_eq!(reset.extra[0].place, offered[0].1);
     }
 
     #[test]
