@@ -548,8 +548,9 @@ impl Game<'_> {
             }
             _ => {}
         }
-        let ctrl = self.keys.contains(&KeyCode::ControlLeft);
-        let shift = self.keys.contains(&KeyCode::ShiftLeft);
+        // The keys the player holds, not those Toggle Sprint and Toggle Sneak hold.
+        let ctrl = self.has_control_down();
+        let shift = self.has_shift_down();
         let shortcut = self.edit_shortcut(event);
         let Some(s) = self.command_block_screen.as_mut() else {
             return;

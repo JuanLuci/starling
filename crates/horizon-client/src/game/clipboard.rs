@@ -13,7 +13,8 @@ impl Game<'_> {
             return None;
         }
         let m = self.modifiers;
-        let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.keys.contains(k));
+        // The keys the player holds: Toggle Sprint and Toggle Sneak hold Ctrl and Shift too.
+        let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.physical_keys.contains(k));
         // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
         let edit = if cfg!(target_os = "macos") {
             m.super_key() || held([KeyCode::SuperLeft, KeyCode::SuperRight])

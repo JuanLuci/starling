@@ -485,15 +485,16 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
-        // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
+        // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere. The keys the
+        // player holds, not the sprint and sneak keys a toggle holds for them (Toggle Sprint
+        // holding Ctrl turned every letter into a shortcut, and the chat took no text).
         let (left, right) = if cfg!(target_os = "macos") {
             (KeyCode::SuperLeft, KeyCode::SuperRight)
         } else {
             (KeyCode::ControlLeft, KeyCode::ControlRight)
         };
-        let ctrl = self.keys.contains(&left) || self.keys.contains(&right);
-        let shift =
-            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        let ctrl = self.physical_keys.contains(&left) || self.physical_keys.contains(&right);
+        let shift = self.has_shift_down();
         match key {
             // ChatScreen.keyPressed: the chat scrolls a page.
             KeyCode::PageUp | KeyCode::PageDown
@@ -613,7 +614,7 @@ impl Game<'_> {
         {
             return;
         }
-        let shift = self.keys.contains(&KeyCode::ShiftLeft);
+        let shift = self.has_shift_down();
         let amount = amount.clamp(-1.0, 1.0) * if shift { 1.0 } else { 7.0 };
         self.ui.chat.scroll_by(amount as i32, true);
     }
