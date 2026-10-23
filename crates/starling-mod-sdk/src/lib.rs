@@ -23,7 +23,8 @@
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
 //! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `chat`, `chat-send`,
-//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`], `keys`, `sound`, `net`, `storage`).
+//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`], `keys`, `input`, `sound`, `net`,
+//! `storage`).
 //!
 //! # Coming from Fabric
 //!
@@ -40,6 +41,7 @@
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
 //! | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | [`Registration::keybind`], [`Mod::key`], [`keys::is_down`] |
+//! | `options.forwardKey.isPressed()`, `KeyBinding.setPressed` (sprint, sneak) | [`keys::is_control_down`], [`keys::presses`], [`input::hold`] |
 //! | `ClientPlayNetworking.registerGlobalReceiver` / `send` | [`Registration::channel`], [`Mod::payload`], [`net::send`] |
 //! | `ClientPlayConnectionEvents.JOIN/DISCONNECT` | [`Mod::joined`], [`Mod::left`] |
 //! | `UseItemCallback`, `UseBlockCallback`, `AttackEntityCallback`, `AttackBlockCallback` | [`Mod::use_item`], [`Mod::use_block`], [`Mod::attack_entity`], [`Mod::attack_block`] |
@@ -60,8 +62,8 @@ pub use exports::starling::mods::events::{
     Placement, Registration, RenderContext, SendAction,
 };
 pub use starling::mods::{
-    chat, chat_send, draw, game, hud, inventory, keys, level, log, mobile, net, screens, sound,
-    storage,
+    chat, chat_send, draw, game, hud, input, inventory, keys, level, log, mobile, net, screens,
+    sound, storage,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},
 };
 

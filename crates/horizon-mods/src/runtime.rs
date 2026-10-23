@@ -41,8 +41,8 @@ pub use starling::starling::mods::{
 use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
-        chat, chat_send, draw, game, hud, inventory, keys, level, log as mod_log, mobile, net,
-        screens, sound, storage, types,
+        chat, chat_send, draw, game, hud, input, inventory, keys, level, log as mod_log, mobile,
+        net, screens, sound, storage, types,
     },
 };
 
@@ -137,6 +137,23 @@ pub struct Snapshot {
     pub touch: bool,
 }
 
+/// The game's controls mods read and hold (`keys.is-control-down`, `keys.presses`,
+/// `input.hold`), in the order of [`Controls`].
+pub const CONTROLS: [&str; 9] = [
+    "key.forward",
+    "key.back",
+    "key.left",
+    "key.right",
+    "key.jump",
+    "key.sneak",
+    "key.sprint",
+    "key.attack",
+    "key.use",
+];
+/// Each of [`CONTROLS`] now: held, and how many times it has been pressed. The game sets them
+/// every frame ([`Mods::set_controls`]).
+pub type Controls = [(bool, u64); 9];
+
 /// What mods asked the game to do since the last [`Mods::drain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
@@ -160,6 +177,12 @@ pub enum Output {
     CloseScreen { id: String },
     /// `screens.keyboard`: the on-screen keyboard over the mod's screen.
     Keyboard { id: String, shown: bool },
+    /// `input.hold`: mod `id` holds `control` (`key.sprint` or `key.sneak`), or lets it go.
+    Hold {
+        id: String,
+        control: String,
+        held: bool,
+    },
 }
 
 /// One drawing call of a mod's render hook, in GUI pixels.
@@ -330,6 +353,7 @@ struct State {
     /// A JavaScript mod's source, which the shared engine asks for (`js-source.get`).
     js_source: Option<String>,
     snapshot: Arc<Snapshot>,
+    controls: Controls,
     out: Vec<Output>,
     panel: Option<Panel>,
     /// Some while a render hook runs: what it drew.
@@ -355,6 +379,7 @@ pub struct Mods {
     engine: Option<(Engine, Linker<State>)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
+    controls: Controls,
     out: Vec<Output>,
     /// Where compiled mods are kept ([`Mods::load_cached`]).
     cache: Option<PathBuf>,
@@ -569,6 +594,7 @@ impl Mods {
             id: m.id.clone(),
             js_source: package.js.clone(),
             snapshot,
+            controls: Controls::default(),
             out: Vec::new(),
             panel: None,
             draw: None,
@@ -649,6 +675,10 @@ impl Mods {
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.snapshot = Arc::new(snapshot);
     }
+    /// The game's controls now: every frame, so a mod drawing them keeps up with the keys.
+    pub fn set_controls(&mut self, controls: Controls) {
+        self.controls = controls;
+    }
     /// The snapshot mods read now.
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
@@ -685,6 +715,7 @@ impl Mods {
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
+        run.store.data_mut().controls = self.controls;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
         let result = run
@@ -1293,6 +1324,7 @@ fn js_linker(
             "hud" => api::hud::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "screens" => api::screens::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "keys" => api::keys::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "input" => api::input::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "sound" => api::sound::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "net" => api::net::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "storage" => api::storage::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -1781,6 +1813,27 @@ impl keys::Host for State {
     fn is_down(&mut self, id: String) -> bool {
         let full = format!("{}:{id}", self.id);
         self.snapshot.keys_down.contains(&full)
+    }
+    fn is_control_down(&mut self, control: String) -> bool {
+        let i = CONTROLS.iter().position(|c| *c == control);
+        i.is_some_and(|i| self.controls[i].0)
+    }
+    fn presses(&mut self, control: String) -> u64 {
+        let i = CONTROLS.iter().position(|c| *c == control);
+        i.map_or(0, |i| self.controls[i].1)
+    }
+}
+impl input::Host for State {
+    fn hold(&mut self, control: String, held: bool) -> bool {
+        if !matches!(control.as_str(), "key.sprint" | "key.sneak") {
+            return false;
+        }
+        // The last word for each control is enough.
+        self.out
+            .retain(|o| !matches!(o, Output::Hold { control: c, .. } if *c == control));
+        let id = self.id.clone();
+        self.out.push(Output::Hold { id, control, held });
+        true
     }
 }
 impl sound::Host for State {

@@ -378,7 +378,23 @@ interface mobile {
 
 /// Capability `keys`: whether the mod's keybinds (from its registration) are held.
 interface keys {
+    /// One of the mod's own keybinds (`registration.keybinds`), by its id.
     is-down: func(id: string) -> bool;
+    /// One of the game's controls as the player holds it now, by keyboard, mouse, controller or
+    /// touch: `key.forward`, `key.back`, `key.left`, `key.right`, `key.jump`, `key.sneak`,
+    /// `key.sprint`, `key.attack` or `key.use`. False behind a screen.
+    is-control-down: func(control: string) -> bool;
+    /// How many times one of those controls has been pressed since the game started (clicks per
+    /// second: how much it grew over the last second).
+    presses: func(control: string) -> u64;
+}
+
+/// Capability `input`: hold the game's sprint and sneak controls for the player, as its Toggle
+/// Sprint and Toggle Sneak options do.
+interface input {
+    /// Holds `key.sprint` or `key.sneak` (`held`) until let go; the player's own keys still work.
+    /// False for any other control.
+    hold: func(control: string, held: bool) -> bool;
 }
 
 /// Capability `sound`: sounds only the player hears.
@@ -579,6 +595,7 @@ world starling-mod {
     import hud;
     import screens;
     import keys;
+    import input;
     import sound;
     import net;
     import storage;

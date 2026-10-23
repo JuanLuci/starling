@@ -12,6 +12,7 @@ import * as draw from "starling:mods/draw@0.1.0";
 import * as hud from "starling:mods/hud@0.1.0";
 import * as screens from "starling:mods/screens@0.1.0";
 import * as keys from "starling:mods/keys@0.1.0";
+import * as input from "starling:mods/input@0.1.0";
 import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
@@ -31,7 +32,7 @@ const drawing = {
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game, level, inventory, chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, keys, sound, net, storage,
+  screens, keys, input, sound, net, storage,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.

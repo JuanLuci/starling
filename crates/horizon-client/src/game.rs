@@ -4214,10 +4214,11 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
+    /// Keep the held-key state of toggled sneak and sprint in step with their mapping, and with
+    /// the mods holding them (`input.hold`).
     fn sync_toggle(&mut self, slot: usize) {
         let key = [KeyCode::ShiftLeft, KeyCode::ControlLeft][slot];
-        if self.toggles.is_down(slot) {
+        if self.toggles.is_down(slot) || self.mods.holding(slot) {
             self.keys.insert(key);
         } else {
             self.keys.remove(&key);
@@ -9913,6 +9914,11 @@ impl Game<'_> {
     }
     /// A mouse button while playing (window or control socket).
     fn play_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+        match button {
+            MouseButton::Left if pressed => self.mods.press("key.attack"),
+            MouseButton::Right if pressed => self.mods.press("key.use"),
+            _ => {}
+        }
         if self.sleeping.is_some() {
             return Ok(());
         }

@@ -13,7 +13,9 @@
 //! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
 //! it), `{"click": [x, y], "button": 0}`, `{"type": "text"}`, `{"press": "key.keyboard.enter"}`,
-//! `{"close": true}`, `{"join": "server"}`, `{"leave": true}`, `{"hurt": 2.0}`.
+//! `{"close": true}`, `{"join": "server"}`, `{"leave": true}`, `{"hurt": 2.0}`,
+//! `{"controls": ["key.forward", "key.attack"]}` (the game's controls held from then on, the
+//! others let go; mods' `input.hold` adds sprint and sneak).
 //! Without steps it ticks once and draws the HUD.
 //!
 //! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
@@ -27,8 +29,8 @@ mod render;
 mod world;
 
 use horizon_mods::{
-    DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output,
-    RenderContext, Status,
+    CONTROLS, Controls, Corner, DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction,
+    MouseEvent, Output, RenderContext, Snapshot, Status,
 };
 use serde_json::{Value, json};
 use std::{
@@ -244,7 +246,8 @@ fn run_once(options: &Options) -> Result<(), String> {
         "keybinds": mods.keybinds().iter().map(|(_, k)| json!({ "id": k.id, "name": k.name, "key": k.key })).collect::<Vec<_>>(),
         "channels": mods.channels(),
     }));
-    outputs(&mut mods, &mut None);
+    let mut hands = Hands::default();
+    outputs(&mut mods, &mut None, &mut hands);
     if status != "running" {
         return Ok(());
     }
@@ -259,7 +262,7 @@ fn run_once(options: &Options) -> Result<(), String> {
     let mut world = world::world(&scenario, data.clone());
     world.gui = Some(gui);
     world.measure = resources.measure();
-    mods.set_snapshot(world);
+    hands.apply(&mut mods, &world);
     let mut screen: Option<String> = None;
     let mut ticks = 0;
     let png = &options.png;
@@ -279,7 +282,10 @@ fn run_once(options: &Options) -> Result<(), String> {
         }
     }
     for (n, step) in steps.into_iter().enumerate() {
-        let (result, drawn) = play(&mut mods, &step, &mut screen, &mut ticks, &gui, &data);
+        let (result, drawn) = match step.get("controls") {
+            Some(held) => (hands.hold(held, &mut mods, &world), None),
+            None => play(&mut mods, &step, &mut screen, &mut ticks, &gui, &data),
+        };
         let file = match (png, drawn) {
             (Some(dir), Some(ops)) if !ops.is_empty() => {
                 let scale = gui.scale.round().max(1.0) as u32;
@@ -290,7 +296,8 @@ fn run_once(options: &Options) -> Result<(), String> {
             _ => None,
         };
         emit(json!({ "event": "step", "step": step, "result": result, "png": file }));
-        outputs(&mut mods, &mut screen);
+        outputs(&mut mods, &mut screen, &mut hands);
+        hands.apply(&mut mods, &world);
         if !mods.is_running() {
             break;
         }
@@ -342,9 +349,70 @@ fn copy_all(from: &Path, to: &Path) -> Result<(), String> {
     }
 }
 
+/// The pretend player's hands on the game's controls: what the scenario holds and what mods
+/// hold (`input.hold`), with presses counted as the game counts them.
+#[derive(Default)]
+struct Hands {
+    scenario: [bool; 9],
+    /// Sneak and sprint, held by mods.
+    held: [bool; 2],
+    controls: Controls,
+}
+
+/// Where a control is in [`CONTROLS`].
+fn control(name: &str) -> Option<usize> {
+    CONTROLS.iter().position(|c| *c == name)
+}
+
+impl Hands {
+    /// Holds the scenario's `list` of controls and lets go of the others; the controls held.
+    fn hold(&mut self, list: &Value, mods: &mut Mods, world: &Snapshot) -> Value {
+        self.scenario = [false; 9];
+        for name in list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            match control(name) {
+                Some(i) => self.scenario[i] = true,
+                None => {
+                    return json!({ "error": format!("no control {name}: one of {CONTROLS:?}") });
+                }
+            }
+        }
+        self.apply(mods, world);
+        let held: Vec<&str> = (0..9)
+            .filter(|&i| self.controls[i].0)
+            .map(|i| CONTROLS[i])
+            .collect();
+        json!({ "held": held })
+    }
+    /// The controls as now held, told to the mods; the player sprints and sneaks with them.
+    fn apply(&mut self, mods: &mut Mods, world: &Snapshot) {
+        let at = |name| control(name).expect("one of CONTROLS");
+        let (forward, sneak, sprint) = (at("key.forward"), at("key.sneak"), at("key.sprint"));
+        for (i, control) in self.controls.iter_mut().enumerate() {
+            let down =
+                self.scenario[i] || (i == sneak && self.held[0]) || (i == sprint && self.held[1]);
+            if down && !control.0 {
+                control.1 += 1;
+            }
+            control.0 = down;
+        }
+        mods.set_controls(self.controls);
+        let mut world = world.clone();
+        if let Some(p) = &mut world.player {
+            p.sneaking = self.controls[sneak].0;
+            p.sprinting = self.controls[sprint].0 && self.controls[forward].0 && !p.sneaking;
+        }
+        mods.set_snapshot(world);
+    }
+}
+
 /// What the mod asked of the game since the last look, a line each; a screen it opened or
-/// closed is followed.
-fn outputs(mods: &mut Mods, screen: &mut Option<String>) {
+/// closed is followed, and so are sprint and sneak held.
+fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands) {
     for output in mods.drain() {
         let line = match output {
             Output::Chat { name, text } => json!({ "event": "chat", "name": name, "text": text }),
@@ -372,6 +440,10 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>) {
             }
             Output::Keyboard { id, shown } => {
                 json!({ "event": "keyboard", "id": id, "shown": shown })
+            }
+            Output::Hold { control, held, .. } => {
+                hands.held[usize::from(control == "key.sprint")] = held;
+                json!({ "event": "hold", "control": control, "held": held })
             }
         };
         emit(line);
@@ -417,7 +489,9 @@ fn play(
         return (json!({ "sent": mods.chat_sending(text) }), None);
     }
     if step.get("hud").is_some() {
-        return drawn(mods.hud_render(context(&step["hud"])));
+        let mut ops = panel_ops(mods, gui);
+        ops.extend(mods.hud_render(context(&step["hud"])));
+        return drawn(ops);
     }
     if let Some(id) = step["tooltip"].as_str() {
         let info = data.info(id);
@@ -518,6 +592,64 @@ fn play(
         return (Value::Null, None);
     }
     (json!({ "error": format!("unknown step: {step}") }), None)
+}
+
+/// The mods' HUD panels (`hud.set-panel`) as the game draws them: lines on a dark box in their
+/// corner, each panel below (or above) the last in the same corner.
+fn panel_ops(mods: &Mods, gui: &Gui) -> Vec<DrawOp> {
+    const MARGIN: f32 = 2.0;
+    let measure = mods.snapshot().measure.clone();
+    let width = |text: &str| {
+        measure
+            .as_ref()
+            .map_or(text.chars().count() as f32 * 6.0, |m| m(text))
+    };
+    let mut used = [0.0f32; 4];
+    let mut ops = Vec::new();
+    for panel in mods.panels().filter(|p| !p.lines.is_empty()) {
+        let (i, left, top) = match panel.corner {
+            Corner::TopLeft => (0, true, true),
+            Corner::TopRight => (1, false, true),
+            Corner::BottomLeft => (2, true, false),
+            Corner::BottomRight => (3, false, false),
+        };
+        let w = panel
+            .lines
+            .iter()
+            .map(|l| width(&l.text))
+            .fold(0.0, f32::max)
+            + 4.0;
+        let h = 10.0 * panel.lines.len() as f32 + 2.0;
+        let edge = used[i] + MARGIN;
+        used[i] = edge + h;
+        let x = if left {
+            MARGIN
+        } else {
+            gui.width as f32 - MARGIN - w
+        };
+        let y = if top {
+            edge
+        } else {
+            gui.height as f32 - edge - h
+        };
+        ops.push(DrawOp::Fill {
+            x,
+            y,
+            w,
+            h,
+            color: 0x7800_0000,
+        });
+        for (n, line) in panel.lines.iter().enumerate() {
+            ops.push(DrawOp::Text {
+                x: x + 2.0,
+                y: y + 2.0 + 10.0 * n as f32,
+                text: line.text.clone(),
+                color: line.color,
+                shadow: true,
+            });
+        }
+    }
+    ops
 }
 
 /// What a render hook drew, an object a call.

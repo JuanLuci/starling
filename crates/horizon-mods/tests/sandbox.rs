@@ -20,7 +20,7 @@ api = "starling-0.1"
 capabilities = ["chat", "storage", "hud", "ui", "chat-send", "net", "game-read"]
 "#;
 
-/// Builds both mods once and writes their `.hmod` files; returns the folder.
+/// Builds the test mods once and writes their `.hmod` files; returns the folder.
 fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -36,6 +36,8 @@ fn mods_dir() -> &'static Path {
                 "food-info",
                 "-p",
                 "waypoints",
+                "-p",
+                "toggle-sprint",
                 "-p",
                 "horizon-mods-test-guest",
                 "--target-dir",
@@ -59,6 +61,10 @@ fn mods_dir() -> &'static Path {
             ("coords_hud", example("horizon-mod-sdk", "coords-hud")),
             ("food_info", example("starling-mod-sdk", "food-info")),
             ("waypoints", example("starling-mod-sdk", "waypoints")),
+            (
+                "toggle_sprint",
+                example("starling-mod-sdk", "toggle-sprint"),
+            ),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
@@ -932,4 +938,46 @@ capabilities = ["registries"]
     assert!(matches!(&mods.entries()[1].status, Status::Failed(e) if e.contains("own namespace")));
     // Content has no hooks: the game's per-tick mod work stays skipped.
     assert!(!mods.is_running());
+}
+
+/// Toggle Sprint holds sprint for the player on its key, and reads the game's controls: its
+/// panel says sneak is held with the key.
+#[test]
+fn toggle_sprint_holds_and_reads_controls() {
+    let dir = mods_dir().join("toggle_sprint_run");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("toggle_sprint.hmod");
+    std::fs::copy(mods_dir().join("toggle_sprint.hmod"), &path).unwrap();
+    let mut mods = Mods::load(&[path], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let hold = |control: &str, held| Output::Hold {
+        id: "toggle_sprint".into(),
+        control: control.into(),
+        held,
+    };
+    // Nothing saved yet: both let go.
+    assert_eq!(
+        mods.drain(),
+        [hold("key.sprint", false), hold("key.sneak", false)]
+    );
+    mods.key("toggle_sprint", "sprint", true);
+    assert_eq!(
+        mods.drain(),
+        [hold("key.sprint", true), hold("key.sneak", false)]
+    );
+    let mut controls = horizon_mods::Controls::default();
+    let sneak = horizon_mods::CONTROLS
+        .iter()
+        .position(|c| *c == "key.sneak")
+        .unwrap();
+    controls[sneak] = (true, 1);
+    mods.set_snapshot(player());
+    mods.set_controls(controls);
+    mods.tick(1);
+    let lines: Vec<String> = mods
+        .panels()
+        .flat_map(|p| p.lines.iter().map(|l| l.text.clone()))
+        .collect();
+    assert_eq!(lines, ["[Sneaking (Key Held)]", "[Sprinting (Toggled)]"]);
 }

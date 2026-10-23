@@ -15,7 +15,7 @@ use horizon_client::{
     text::{self, Text},
 };
 use horizon_mods::{
-    BlockInfo, Capability, ChatVerdict, Clock, Effect, Entity, EntityInfo, GameMode, Gui,
+    BlockInfo, Capability, ChatVerdict, Clock, Controls, Effect, Entity, EntityInfo, GameMode, Gui,
     ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
 };
 use std::{
@@ -27,6 +27,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use winit::keyboard::KeyCode;
 
 #[derive(Default)]
 pub(super) struct ModsState {
@@ -52,6 +53,12 @@ pub(super) struct ModsState {
     health: Option<f32>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub(super) keys_down: Vec<String>,
+    /// The game's controls for `keys.is-control-down` and `keys.presses`, as last framed.
+    controls: Controls,
+    /// Controls whose press since the last frame was counted as it came ([`ModsState::press`]).
+    counted: [bool; 9],
+    /// The mods holding sneak (slot 0) or sprint (slot 1) for the player (`input.hold`), by id.
+    holds: Vec<(String, usize)>,
     /// Every block state's name, for `world-read` (made once).
     states: Option<Arc<Vec<String>>>,
     /// What `level.get-block-info` says of every block state, made once for the language its
@@ -77,6 +84,18 @@ pub(super) struct ModsState {
     announced: bool,
 }
 impl ModsState {
+    /// A press of `control` (one of [`horizon_mods::CONTROLS`]) counted as it comes: a click can
+    /// start and end between two frames.
+    pub(super) fn press(&mut self, control: &str) {
+        if let Some(i) = horizon_mods::CONTROLS.iter().position(|c| *c == control) {
+            self.controls[i].1 += 1;
+            self.counted[i] = true;
+        }
+    }
+    /// A mod holds sneak (slot 0) or sprint (slot 1): the player's toggle state, as it were.
+    pub(super) fn holding(&self, slot: usize) -> bool {
+        self.holds.iter().any(|(_, s)| *s == slot)
+    }
     /// The chat's command tree: vanilla's, plus the running mods' commands.
     pub(super) fn dispatcher(&self) -> &Dispatcher {
         self.tree
@@ -402,6 +421,7 @@ impl Game<'_> {
         self.mods.mods = mods;
         self.mods.screen = None;
         self.mods.joined = None;
+        self.release_mod_holds(|_| false);
         self.list_mods();
         self.sync_mod_commands();
         self.register_mod_channels();
@@ -1028,6 +1048,18 @@ impl Game<'_> {
     }
     /// A game tick: the snapshot, the connection and damage events, then the tick hook.
     pub(super) fn tick_mods(&mut self) {
+        // A mod that stopped lets go of what it held.
+        if !self.mods.holds.is_empty() {
+            let running: Vec<String> = self
+                .mods
+                .mods
+                .entries()
+                .iter()
+                .filter(|e| e.status == Status::Running)
+                .filter_map(|e| e.manifest.as_ref().map(|m| m.id.clone()))
+                .collect();
+            self.release_mod_holds(|id| running.iter().any(|r| r == id));
+        }
         if !self.mods.mods.is_running() {
             return;
         }
@@ -1086,8 +1118,44 @@ impl Game<'_> {
             return;
         }
         self.mods_screen_events();
+        self.frame_mod_controls();
         self.mods.mods.frame(elapsed.as_secs_f32());
         self.show_mod_output();
+    }
+    /// The game's controls for mods this frame: held (behind a screen, none), and a press counted
+    /// each time one goes down.
+    fn frame_mod_controls(&mut self) {
+        let playing = self.screen == Screen::Playing && self.title.is_none();
+        let key = |k| playing && self.keys.contains(&k);
+        let [left, forward] = self.pad_move().filter(|_| playing).unwrap_or([0.0, 0.0]);
+        let held = [
+            key(KeyCode::KeyW) || forward > 0.3,
+            key(KeyCode::KeyS) || forward < -0.3,
+            key(KeyCode::KeyA) || left > 0.3,
+            key(KeyCode::KeyD) || left < -0.3,
+            key(KeyCode::Space),
+            key(KeyCode::ShiftLeft),
+            key(KeyCode::ControlLeft),
+            playing && self.left,
+            playing && self.right,
+        ];
+        let counted = std::mem::take(&mut self.mods.counted);
+        for ((control, down), counted) in self.mods.controls.iter_mut().zip(held).zip(counted) {
+            if down && !control.0 && !counted {
+                control.1 += 1;
+            }
+            control.0 = down;
+        }
+        self.mods.mods.set_controls(self.mods.controls);
+    }
+    /// Lets go of what mods hold for the player but those `keep` says (when they stop or reload).
+    pub(super) fn release_mod_holds(&mut self, keep: impl Fn(&str) -> bool) {
+        let before = self.mods.holds.len();
+        self.mods.holds.retain(|(id, _)| keep(id));
+        if self.mods.holds.len() != before {
+            self.sync_toggle(0);
+            self.sync_toggle(1);
+        }
     }
     /// `/command` typed in chat: true when a mod owns it.
     pub(super) fn mod_command(&mut self, command: &str) -> bool {
@@ -1307,6 +1375,17 @@ impl Game<'_> {
                 }
                 Output::OpenScreen { screen } => {
                     self.open_mod_screen(screen);
+                    continue;
+                }
+                Output::Hold { id, control, held } => {
+                    let slot = usize::from(control == "key.sprint");
+                    self.mods
+                        .holds
+                        .retain(|(owner, s)| !(*owner == id && *s == slot));
+                    if held {
+                        self.mods.holds.push((id, slot));
+                    }
+                    self.sync_toggle(slot);
                     continue;
                 }
                 Output::Keyboard { id, shown } => {

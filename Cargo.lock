@@ -3831,6 +3831,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "toggle-sprint"
+version = "0.1.0"
+dependencies = [
+ "starling-mod-sdk",
+]
+
+[[package]]
 name = "tokio"
 version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

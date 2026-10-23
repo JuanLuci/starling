@@ -79,6 +79,8 @@ pub enum Capability {
     Hud,
     Ui,
     Keys,
+    /// Holding sprint and sneak for the player (Starling's `input`).
+    Input,
     Sound,
     Net,
     Storage,
@@ -87,7 +89,7 @@ pub enum Capability {
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
@@ -96,6 +98,7 @@ impl Capability {
         Capability::Hud,
         Capability::Ui,
         Capability::Keys,
+        Capability::Input,
         Capability::Sound,
         Capability::Net,
         Capability::Storage,
@@ -112,6 +115,7 @@ impl Capability {
             Capability::Hud => &["hud", "draw"],
             Capability::Ui => &["screens"],
             Capability::Keys => &["keys"],
+            Capability::Input => &["input"],
             Capability::Sound => &["sound"],
             Capability::Net => &["net"],
             Capability::Storage => &["storage"],
@@ -129,6 +133,7 @@ impl Capability {
             Capability::Hud => "draw on your screen",
             Capability::Ui => "open its own screens",
             Capability::Keys => "use keys you press",
+            Capability::Input => "hold sprint or sneak for you",
             Capability::Sound => "play sounds",
             Capability::Net => "talk to servers on its own channels",
             Capability::Storage => "save its own settings to disk",
@@ -179,6 +184,7 @@ impl fmt::Display for Capability {
             Capability::Hud => "hud",
             Capability::Ui => "ui",
             Capability::Keys => "keys",
+            Capability::Input => "input",
             Capability::Sound => "sound",
             Capability::Net => "net",
             Capability::Storage => "storage",
