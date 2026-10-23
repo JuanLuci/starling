@@ -64,6 +64,7 @@ Starling runs mods made for it and Horizon's API 0.1 mods. A mod is a sandboxed 
 - **JavaScript:** a mod is its `horizon-mod.toml` and a `mod.js`, an ES module importing `starling:mods/...` and exporting `events`; Starling's shared JavaScript engine runs it. See [hello-js](crates/starling-mod-sdk/examples/hello-js), [peek](crates/starling-mod-sdk/examples/peek) (what the crosshair is on, in the spirit of Jade) and [keystrokes](crates/starling-mod-sdk/examples/keystrokes).
 - **Rust:** `cargo horizon-mod new`, then `cargo horizon-mod build`, with [starling-mod-sdk](crates/starling-mod-sdk). See [food-info](crates/starling-mod-sdk/examples/food-info) (in the spirit of AppleSkin), [waypoints](crates/starling-mod-sdk/examples/waypoints) (a screen of its own) and [toggle-sprint](crates/starling-mod-sdk/examples/toggle-sprint).
 - **Trying a mod:** `starling-mod run <mod>` (`cargo run -p starling-mod-cli -- run <mod>` from this repository) runs it without the game, in a pretend world, and says in JSON what it did (`--png <dir>` also draws its HUD, screens and tooltips to images, with the game's look when `--resources` names your prepared resources); `cargo horizon-mod push` copies it to the phone over adb, and the game reloads it.
+- **Porting a Java mod:** [mod-porting](docs/mod-porting.md) maps Fabric's API to Starling's, shows how to test a port without the game, and logs every port made so far and what each still needs from the API (an AI agent working in this repository follows it as the `starling-mod-porting` skill).
 
 ## Build from source
 
