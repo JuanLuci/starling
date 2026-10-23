@@ -589,13 +589,25 @@ impl Title {
             Mode::Main => {
                 let cx = (w / 2.0).floor();
                 let y = (h / 4.0).floor() + 48.0;
-                let mut buttons = vec![
-                    b(cx - 100.0, y, 200.0, "Singleplayer", true, 1),
-                    b(cx - 100.0, y + 24.0, 200.0, "Multiplayer", true, 4),
-                    b(cx - 100.0, y + 48.0, 200.0, "Minecraft Realms", false, 0),
-                    b(cx - 100.0, y + 96.0, 98.0, "Options...", true, 3),
-                    b(cx + 2.0, y + 96.0, 98.0, "Quit Game", true, 2),
-                ];
+                // A phone has no Realms and leaves an app without its menu: the icons and
+                // Options move up into their rows.
+                let phone = cfg!(target_os = "android");
+                let mut buttons = if phone {
+                    vec![
+                        b(cx - 100.0, y, 200.0, "Singleplayer", true, 1),
+                        b(cx - 100.0, y + 24.0, 200.0, "Multiplayer", true, 4),
+                        b(cx - 100.0, y + 72.0, 200.0, "Options...", true, 3),
+                    ]
+                } else {
+                    vec![
+                        b(cx - 100.0, y, 200.0, "Singleplayer", true, 1),
+                        b(cx - 100.0, y + 24.0, 200.0, "Multiplayer", true, 4),
+                        b(cx - 100.0, y + 48.0, 200.0, "Minecraft Realms", false, 0),
+                        b(cx - 100.0, y + 96.0, 98.0, "Options...", true, 3),
+                        b(cx + 2.0, y + 96.0, 98.0, "Quit Game", true, 2),
+                    ]
+                };
+                let icons = if phone { y + 48.0 } else { y + 72.0 };
                 for (i, (label, enabled, id, icon, size)) in [
                     ("Friends", false, 5, "friends/friends", 15.0),
                     ("Language", true, 6, "icon/language", 15.0),
@@ -612,7 +624,7 @@ impl Title {
                 {
                     let mut button = b(
                         cx - 34.0 + i as f32 * 24.0,
-                        y + 72.0,
+                        icons,
                         20.0,
                         label,
                         enabled,

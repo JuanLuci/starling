@@ -1303,14 +1303,20 @@ impl OptionsUi {
                     ));
                 }
                 rows.push(Row::Header("options.video.display.header"));
-                rows.extend(pairs(&[
-                    Opt::MaxFps,
-                    Opt::Vsync,
-                    Opt::InactivityFps,
-                    Opt::GuiScale,
-                    Opt::Fullscreen,
-                    Opt::Gamma,
-                ]));
+                // A phone's app always fills its screen.
+                let display: &[Opt] = if cfg!(target_os = "android") {
+                    &[Opt::MaxFps, Opt::Vsync, Opt::InactivityFps, Opt::GuiScale, Opt::Gamma]
+                } else {
+                    &[
+                        Opt::MaxFps,
+                        Opt::Vsync,
+                        Opt::InactivityFps,
+                        Opt::GuiScale,
+                        Opt::Fullscreen,
+                        Opt::Gamma,
+                    ]
+                };
+                rows.extend(pairs(display));
                 rows.push(Row::Header("options.video.quality.header"));
                 rows.push(Row::Big(Opt::Preset));
                 rows.extend(pairs(&[

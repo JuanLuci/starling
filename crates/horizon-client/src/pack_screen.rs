@@ -20,6 +20,16 @@ pub enum Compat {
     Unknown,
 }
 
+
+/// The line under the title: where packs come from. A phone has no window to drop files on;
+/// they go in the game's folder in its shared storage.
+fn drop_info() -> Text {
+    if cfg!(target_os = "android") {
+        Text::literal("Put packs in Starling/resourcepacks")
+    } else {
+        tr("pack.dropInfo")
+    }
+}
 impl Compat {
     fn key(self) -> &'static str {
         match self {
@@ -352,7 +362,7 @@ impl PackScreen {
     /// The header layout: title, drop info and search box, centred.
     fn header(&self, m: &Measure) -> [(i32, i32); 3] {
         let tw = m.width(&tr("resourcePack.title"));
-        let dw = m.width(&tr("pack.dropInfo"));
+        let dw = m.width(&drop_info());
         let col = tw.max(dw).max(200);
         let frame = self.width.max(col);
         let lx = (0.5 * (frame - col) as f32) as i32;
@@ -784,7 +794,7 @@ impl PackScreen {
         d::string_widget(
             &mut out,
             m,
-            &tr("pack.dropInfo").with_color(d::GRAY),
+            &drop_info().with_color(d::GRAY),
             dx,
             dy,
             0,
