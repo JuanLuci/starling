@@ -371,7 +371,47 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
-    limits: StoreLimits,
+    limits: Limits,
+}
+
+/// A mod's memory and instance limits, noting a memory growth they refused: a mod that runs out
+/// of memory usually traps right after, and says so instead of "a panic".
+struct Limits {
+    inner: StoreLimits,
+    /// The bytes a refused growth asked for.
+    refused: Option<usize>,
+}
+
+impl wasmtime::ResourceLimiter for Limits {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let grows = self.inner.memory_growing(current, desired, maximum)?;
+        if !grows {
+            self.refused = Some(desired);
+        }
+        Ok(grows)
+    }
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.inner.table_growing(current, desired, maximum)
+    }
+    fn instances(&self) -> usize {
+        self.inner.instances()
+    }
+    fn tables(&self) -> usize {
+        self.inner.tables()
+    }
+    fn memories(&self) -> usize {
+        self.inner.memories()
+    }
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -605,10 +645,13 @@ impl Mods {
             sent: VecDeque::new(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
-            limits: StoreLimitsBuilder::new()
-                .memory_size(MEMORY)
-                .instances(16)
-                .build(),
+            limits: Limits {
+                inner: StoreLimitsBuilder::new()
+                    .memory_size(MEMORY)
+                    .instances(16)
+                    .build(),
+                refused: None,
+            },
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -739,7 +782,14 @@ impl Mods {
         match result {
             Ok(r) => Some(r),
             Err(e) => {
-                let reason = reason(&e);
+                let reason = match run.store.data().limits.refused {
+                    Some(bytes) => format!(
+                        "it ran out of memory (it asked for {} MiB; a mod has {} MiB)",
+                        bytes >> 20,
+                        MEMORY >> 20
+                    ),
+                    None => reason(&e),
+                };
                 log::warn!("Horizon: mod {} stopped: {reason}", run.store.data().id);
                 let name = run.store.data().name.clone();
                 self.out.push(Output::Stopped {

@@ -578,7 +578,10 @@ fn a_misbehaving_mod_is_stopped_alone() {
     for (command, reason) in [
         ("spin", "it took too long (an endless loop?)"),
         ("panic", "it crashed (a panic)"),
-        ("grow", "it crashed (a panic)"),
+        (
+            "grow",
+            "it ran out of memory (it asked for 1025 MiB; a mod has 64 MiB)",
+        ),
     ] {
         let paths = [
             mods_dir().join("coords_hud.hmod"),
@@ -980,4 +983,51 @@ fn toggle_sprint_holds_and_reads_controls() {
         .flat_map(|p| p.lines.iter().map(|l| l.text.clone()))
         .collect();
     assert_eq!(lines, ["[Sneaking (Key Held)]", "[Sprinting (Toggled)]"]);
+}
+
+/// A JavaScript mod passing the game strings every frame keeps its memory: with componentize-js
+/// before 0.23 each string a call took leaked, and a mod drawing text ran out in minutes.
+#[test]
+fn javascript_mods_keep_their_memory() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-strings");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"strings\"
+name = \"Strings\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"hud\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { textWidth } from "starling:mods/draw@0.1.0";
+export const events = {
+  init() {
+    return {
+      commands: [], tick: false, frame: false, chat: false, chatSend: false, hud: true,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  hudRender(_context) { for (let i = 0; i < 100; i++) textWidth("Clicks per second"); },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    // 400 000 strings: about 50 MiB leaked before.
+    for _ in 0..4000 {
+        mods.hud_render(context());
+    }
+    assert_eq!(mods.drain(), []);
+    assert_eq!(mods.entries()[0].status, Status::Running);
 }

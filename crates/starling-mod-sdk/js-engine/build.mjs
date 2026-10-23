@@ -1,12 +1,13 @@
 // Builds Starling's shared JavaScript engine (engine.js, the starling-js world) with
-// componentize-js into target/js-engine/engine.wasm, which the game embeds (horizon-mods'
-// build.rs), keeping this computer out of it. The JavaScript engine's
+// componentize-js (componentize.mjs) into target/js-engine/engine.wasm, which the game embeds
+// (horizon-mods' build.rs), keeping this computer out of it. Version 0.23 or later: before it,
+// every string a mod passed to the game (draw.text, keys.is-control-down...) leaked its memory,
+// and a mod drawing text each frame ran out in minutes. The JavaScript engine's
 // snapshot keeps the environment its pre-initializer ran in and the paths of the files it loaded,
 // so the build runs with an almost empty environment and a temporary folder that names no one,
 // and the result is refused if it still holds the home folder or the user name.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, platform, userInfo } from "node:os";
@@ -19,8 +20,6 @@ const temp = windows ? join(process.env.SystemDrive || "C:", "\\hmod-build") : "
 mkdirSync(temp, { recursive: true });
 mkdirSync(dirname(here(OUT)), { recursive: true });
 
-// jco's command line, beside its main module.
-const jco = join(dirname(createRequire(import.meta.url).resolve("@bytecodealliance/jco")), "jco.js");
 // On Windows libuv gives a child the parent's "required" variables it lacks (USERNAME,
 // USERPROFILE, HOMEPATH, PATH...), so they are all set here, to values that name no one. The
 // pre-initializer runs through the shell, hence ComSpec.
@@ -43,15 +42,17 @@ if (windows) {
     mkdirSync(join(temp, "AppData", dir), { recursive: true });
   }
 }
-// Run from the neutral folder (Windows keeps the current folder in a variable too), with the
-// files by full path.
+// Run from a neutral folder (Windows keeps the current folder in a variable too), with the
+// files by full path. Not the temporary folder itself: componentize-js takes its work folder,
+// made there, for one under the current folder and loses the source.
+const cwd = join(temp, "cwd");
+mkdirSync(cwd, { recursive: true });
 const built = spawnSync(
   process.execPath,
   [
-    jco, "componentize", here("engine.js"), "--wit", here("../wit"),
-    "--world-name", "starling-js", "--out", here(OUT), "--disable", "all",
+    here("componentize.mjs"), here("engine.js"), here("../wit/starling.wit"), here(OUT),
   ],
-  { env, cwd: temp, stdio: "inherit" },
+  { env, cwd, stdio: "inherit" },
 );
 if (built.status !== 0) {
   process.exit(built.status ?? 1);
