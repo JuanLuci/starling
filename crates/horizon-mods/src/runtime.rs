@@ -299,6 +299,8 @@ pub struct Entry {
     pub cost: Duration,
     run: Option<Running>,
     modified: Option<SystemTime>,
+    /// It stopped on the quick compiler's code: it starts again once its full code is kept.
+    retry_full: bool,
 }
 
 /// A mod's buttons (`widgets`): on the game's screens and on the touch controls, and the looks it
@@ -540,6 +542,7 @@ impl Mods {
                 cost: Duration::ZERO,
                 run: None,
                 modified,
+                retry_full: false,
             };
             match Package::read(path) {
                 Err(e) => entry.status = Status::Failed(e),
@@ -621,8 +624,9 @@ impl Mods {
         reserved: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Running>, String> {
         STARTED_QUICK.set(false);
+        QUICK_TRAPPED.set(false);
         match self.start_once(path, package, reserved) {
-            Err(e) if STARTED_QUICK.get() => {
+            Err(e) if STARTED_QUICK.get() && QUICK_TRAPPED.get() => {
                 log::warn!(
                     "Horizon: mod {} failed on quick code ({e}): compiling it fully",
                     package.manifest.id
@@ -730,19 +734,19 @@ impl Mods {
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
         let (guest, mut hooks): (Guest, Hooks) = if for_starling {
             let exports = starling::StarlingMod::instantiate(&mut store, &component, linker)
-                .map_err(|e| reason(&e))?;
+                .map_err(|e| quick_detail(&m.id, &e))?;
             let hooks = exports
                 .starling_mods_events()
                 .call_init(&mut store)
-                .map_err(|e| reason(&e))??;
+                .map_err(|e| quick_detail(&m.id, &e))??;
             (Guest::Starling(exports), hooks.into())
         } else {
             let exports = v1::HorizonMod::instantiate(&mut store, &component, linker)
-                .map_err(|e| reason(&e))?;
+                .map_err(|e| quick_detail(&m.id, &e))?;
             let hooks = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
-                .map_err(|e| reason(&e))??;
+                .map_err(|e| quick_detail(&m.id, &e))??;
             (Guest::Horizon(exports), hooks.into())
         };
         hooks.commands.retain(|c| {
@@ -862,11 +866,31 @@ impl Mods {
         match result {
             Ok(r) => Some(r),
             Err(e) => {
+                // On the quick compiler's code the fault may be the compiler's: the mod starts
+                // again on full code once the background compile has kept it.
+                let quick = self
+                    .engine
+                    .as_ref()
+                    .is_some_and(|(main, _)| !Engine::same(run.store.engine(), main))
+                    && compiler_fault(&e);
+                if quick {
+                    log::warn!(
+                        "Horizon: mod {} on quick code ({}): {e:?}",
+                        run.store.data().id,
+                        std::env::consts::ARCH
+                    );
+                    QUICK_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    entry.retry_full = true;
+                }
                 let reason = match run.store.data().limits.refused {
                     Some(bytes) => format!(
                         "it ran out of memory (it asked for {} MiB; a mod has {} MiB)",
                         bytes >> 20,
                         MEMORY >> 20
+                    ),
+                    None if quick => format!(
+                        "{} on quick code; it starts again on full code shortly",
+                        reason(&e)
                     ),
                     None => reason(&e),
                 };
@@ -1290,6 +1314,37 @@ impl Mods {
         std::mem::take(&mut self.out)
     }
 
+    /// Starts again the mods that stopped on the quick compiler's code, once the full compile
+    /// is kept (read back in milliseconds): true when any did. Called now and then.
+    pub fn restart_on_full_code(&mut self, reserved: impl Fn(&str) -> bool) -> bool {
+        if !self.entries.iter().any(|e| e.retry_full) || compiling_in_background() {
+            return false;
+        }
+        finish_background_compiles();
+        self.js = None;
+        for i in 0..self.entries.len() {
+            if !std::mem::take(&mut self.entries[i].retry_full) {
+                continue;
+            }
+            let path = self.entries[i].path.clone();
+            let started = Package::read(&path).and_then(|p| self.start(&path, &p, &reserved));
+            let entry = &mut self.entries[i];
+            let id = entry.manifest.as_ref().map_or("?", |m| m.id.as_str());
+            match started {
+                Ok(run) => {
+                    log::info!("Horizon: mod {id} runs on full code");
+                    entry.run = run;
+                    entry.status = Status::Running;
+                }
+                Err(e) => {
+                    log::warn!("Horizon: mod {id} did not start on full code: {e}");
+                    entry.status = Status::Failed(e);
+                }
+            }
+        }
+        true
+    }
+
     /// Restarts the mods whose file changed since they loaded (mod
     /// development: rebuild, and the game picks it up). True when any did.
     pub fn reload_changed(&mut self, reserved: impl Fn(&str) -> bool) -> bool {
@@ -1379,26 +1434,42 @@ const QUICK_FIRST: usize = 2 << 20;
 thread_local! {
     /// The mod being started (on this thread) runs on the quick compiler's code.
     static STARTED_QUICK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// ...and trapped as wrong code would ([`compiler_fault`]).
+    static QUICK_TRAPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether `e` could be the compiler's fault: a trap (an `unreachable`, a memory access out of
+/// bounds...), not a mod's own error (a missing capability, an error it returned) nor its fuel
+/// running out (fuel counts instructions, which the compilers do not change).
+fn compiler_fault(e: &wasmtime::Error) -> bool {
+    matches!(e.downcast_ref::<Trap>(), Some(t) if *t != Trap::OutOfFuel)
 }
 
 /// A mod failed on the quick compiler's code: this run compiles fully.
 static QUICK_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether big components start on the quick compiler's code: on x86-64, where Winch's code
-/// runs the JavaScript engine right; on ARM (phones) its code crashed it (wasmtime 36), so they
-/// compile fully there. `STARLING_QUICK_COMPILER=on` or `off` says otherwise (testing a newer
-/// wasmtime on a phone).
+/// Whether big components start on the quick compiler's code, which compiles the JavaScript
+/// engine in two seconds on one core where the full one takes fifteen. Wasmtime 36's Winch
+/// crashed the engine on ARM (phones); 50's is on trial there, a mod failing on its code being
+/// started again on full code. `STARLING_QUICK_COMPILER=off` turns it off.
 fn quick_wanted() -> bool {
     static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let wanted =
-        *WANTED.get_or_init(
-            || match std::env::var("STARLING_QUICK_COMPILER").as_deref() {
-                Ok("on") => true,
-                Ok("off") => false,
-                _ => cfg!(target_arch = "x86_64"),
-            },
-        );
+        *WANTED.get_or_init(|| std::env::var("STARLING_QUICK_COMPILER").as_deref() != Ok("off"));
     wanted && !QUICK_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A mod's start failing, as the player reads it; on the quick compiler's code the whole error
+/// (with the WebAssembly backtrace) goes to the log too, which says what its code got wrong.
+fn quick_detail(id: &str, e: &wasmtime::Error) -> String {
+    if STARTED_QUICK.get() && compiler_fault(e) {
+        QUICK_TRAPPED.set(true);
+        log::warn!(
+            "Horizon: mod {id} on quick code ({}): {e:?}",
+            std::env::consts::ARCH
+        );
+    }
+    reason(e)
 }
 
 fn keep_compiled(component: &Component, file: &Path) -> std::io::Result<()> {
@@ -1651,7 +1722,7 @@ fn js_linker(
             .strip_prefix("starling:mods/")
             .and_then(|rest| rest.split_once('@'))
             .map(|(interface, _)| interface);
-        let (Some(interface), ComponentItem::ComponentInstance(instance)) = (interface, item)
+        let (Some(interface), ComponentItem::ComponentInstance(instance)) = (interface, item.ty)
         else {
             continue;
         };
@@ -1670,11 +1741,11 @@ fn js_linker(
             .map_or_else(|| interface.to_owned(), |c| c.to_string());
         let mut functions = linker.instance(name)?;
         for (function, item) in instance.exports(engine) {
-            if let ComponentItem::ComponentFunc(_) = item {
+            if let ComponentItem::ComponentFunc(_) = item.ty {
                 let message = format!(
                     "uses {interface}.{function}: capability {capability} is missing from its manifest"
                 );
-                functions.func_new(function, move |_, _, _| {
+                functions.func_new(function, move |_, _, _, _| {
                     Err(wasmtime::Error::msg(message.clone()))
                 })?;
             }

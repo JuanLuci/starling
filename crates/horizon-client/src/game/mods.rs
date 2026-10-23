@@ -36,6 +36,8 @@ pub(super) struct ModsState {
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
     checked: Option<Instant>,
+    /// When the mods stopped on quick code were last looked at ([`Mods::restart_on_full_code`]).
+    retried: Option<Instant>,
     /// The chat's command tree while a running mod owns commands.
     tree: Option<Dispatcher>,
     /// The mod screen open now, `<mod id>:<name>`, over everything else.
@@ -1132,6 +1134,18 @@ impl Game<'_> {
                 self.list_mods();
                 self.sync_mod_commands();
                 self.system_message(Text::literal("Mods reloaded").with_color(text::GRAY));
+            }
+        }
+        // A mod stopped on the quick compiler's code starts again on full code once it is kept.
+        if self
+            .mods
+            .retried
+            .is_none_or(|t| t.elapsed() >= RELOAD_CHECK)
+        {
+            self.mods.retried = Some(Instant::now());
+            if self.mods.mods.restart_on_full_code(vanilla_command) {
+                self.list_mods();
+                self.sync_mod_commands();
             }
         }
         if !self.mods.mods.is_running() {
