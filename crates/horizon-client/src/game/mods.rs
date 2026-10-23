@@ -755,9 +755,11 @@ impl Game<'_> {
                 .iter()
                 .map(|s| s.as_ref().map(|s| self.mod_stack(s)))
                 .collect();
+            // Feet to head, as vanilla's Inventory and the API say (the game keeps head first).
             slots.extend(
                 self.armor
                     .iter()
+                    .rev()
                     .map(|s| s.as_ref().map(|s| self.mod_stack(s))),
             );
             slots.push(self.offhand.as_ref().map(|s| self.mod_stack(s)));
@@ -766,6 +768,9 @@ impl Game<'_> {
             snapshot.hovered = self.hovered_stack().map(|s| self.mod_stack(&s));
             snapshot.container = self.mod_container();
             snapshot.items = Some(self.mod_items());
+        }
+        if self.mods.mods.uses(Capability::InventoryClick) {
+            snapshot.menu = self.mod_menu();
         }
         if world_read && in_world {
             snapshot.level = Some(self.mod_level());
@@ -830,8 +835,9 @@ impl Game<'_> {
             return None;
         }
         let (kind, title) = match self.remote.as_ref().and_then(|r| r.menu.clone()) {
+            // The server names it in full already (`minecraft:generic_9x3`).
             Some((_, menu)) => (
-                format!("minecraft:{menu}"),
+                menu,
                 self.remote
                     .as_ref()
                     .and_then(|r| r.menu_title.clone())
@@ -851,6 +857,61 @@ impl Game<'_> {
             slots.push(stack.map(|s| self.mod_stack(&s)));
         }
         Some(horizon_mods::Container { kind, title, slots })
+    }
+    /// The open menu by vanilla's slot ids (`slots.get-menu`): the screen's, or the player's
+    /// inventory with none open; None on a screen without slots.
+    fn mod_menu(&mut self) -> Option<horizon_mods::Menu> {
+        let slotted = matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || (self.screen == Screen::Playing && self.player.is_some());
+        if !slotted || self.title.is_some() {
+            return None;
+        }
+        let mut read = None;
+        // Read, nothing kept.
+        self.menu_session(|m, _, _| {
+            read = Some((m.kind(), super::remote::menu_items(m)));
+            Some(false)
+        });
+        let (kind, items) = read?;
+        let kind = match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
+            Some((_, name)) if self.screen == Screen::Inventory => name.clone(),
+            _ => kind.registry_name(),
+        };
+        Some(horizon_mods::Menu {
+            kind,
+            slots: items
+                .iter()
+                .map(|s| s.as_ref().map(|s| self.mod_stack(s)))
+                .collect(),
+            carried: self.carried.as_ref().map(|s| self.mod_stack(s)),
+        })
+    }
+    /// `slots.click`: a click on the open menu's slot `slot` (vanilla's id), as the mouse's: on
+    /// a server predicted and sent, here done on the menu.
+    pub(super) fn mod_slot_click(&mut self, slot: i32, button: u8, kind: horizon_mods::ClickKind) {
+        use horizon_client::menu::Input;
+        use horizon_mods::ClickKind;
+        let input = match kind {
+            ClickKind::Pickup => Input::Pickup,
+            ClickKind::QuickMove => Input::QuickMove,
+            ClickKind::Swap => Input::Swap,
+            ClickKind::Clone => Input::Clone,
+            ClickKind::Throw => Input::Throw,
+            ClickKind::PickupAll => Input::PickupAll,
+        };
+        let button = i32::from(button);
+        // The creative screen's clicks are this client's, sent as set slots (as vanilla's).
+        if self.remote.is_some() && self.screen != Screen::Creative {
+            let Ok(slot) = i16::try_from(slot) else {
+                return;
+            };
+            self.remote_menu_clicks(&[(slot, button, input)]);
+            return;
+        }
+        let done = self.menu_session(|m, env, _| Some(m.click(env, slot, button, input).is_ok()));
+        if done && let Some(key) = self.container {
+            self.container_changed(key);
+        }
     }
     /// The stack under the cursor in a screen.
     fn hovered_stack(&mut self) -> Option<ItemStack> {
@@ -1411,6 +1472,12 @@ impl Game<'_> {
                 }
                 Output::OpenScreen { screen } => {
                     self.open_mod_screen(screen);
+                    continue;
+                }
+                Output::Click {
+                    slot, button, kind, ..
+                } => {
+                    self.mod_slot_click(slot, button, kind);
                     continue;
                 }
                 Output::Hold { id, control, held } => {

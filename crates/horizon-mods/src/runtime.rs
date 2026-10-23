@@ -36,6 +36,7 @@ pub use starling::starling::mods::{
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
     level::{BlockInfo, Entity, EntityInfo},
+    slots::{ClickKind, Menu},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{Anchor, ScreenButton, Shape, TouchButton},
 };
@@ -43,7 +44,7 @@ use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
         chat, chat_send, draw, game, hud, input, inventory, keys, level, log as mod_log, mobile,
-        net, screens, sound, storage, types, widgets,
+        net, screens, slots, sound, storage, types, widgets,
     },
 };
 
@@ -71,6 +72,8 @@ const SEND_CHARS: usize = 256;
 const PAYLOAD_BYTES: usize = 32 << 10;
 /// `level.get-entities`' cap.
 const ENTITIES: usize = 128;
+/// `slots.click`s one call may queue.
+const CLICKS_PER_CALL: usize = 64;
 /// Buttons one mod may put on the game's screens, and on the touch controls.
 const SCREEN_BUTTONS: usize = 32;
 const TOUCH_BUTTONS: usize = 16;
@@ -142,6 +145,8 @@ pub struct Snapshot {
     pub cursor: Option<ItemStack>,
     pub hovered: Option<ItemStack>,
     pub container: Option<Container>,
+    /// The open menu by vanilla's slot ids (`slots.get-menu`).
+    pub menu: Option<Menu>,
     /// Nearest first.
     pub entities: Vec<Entity>,
     /// What the game shows of `entities` (`level.get-entity-info`).
@@ -195,6 +200,13 @@ pub enum Output {
     CloseScreen { id: String },
     /// `screens.keyboard`: the on-screen keyboard over the mod's screen.
     Keyboard { id: String, shown: bool },
+    /// `slots.click`: a click on the open menu's slot (vanilla's id, -999 outside).
+    Click {
+        id: String,
+        slot: i32,
+        button: u8,
+        kind: ClickKind,
+    },
     /// `input.hold`: mod `id` holds `control` (`key.sprint` or `key.sneak`), or lets it go.
     Hold {
         id: String,
@@ -792,6 +804,14 @@ impl Mods {
             .map(|r| r.store.data())
             .find(|s| s.id == id)?;
         state.config.clone()
+    }
+    /// Whether a running mod runs on the quick compiler's code (its full code not kept yet).
+    pub fn on_quick_code(&self) -> bool {
+        let Some((main, _)) = &self.engine else {
+            return false;
+        };
+        self.running()
+            .any(|r| !Engine::same(r.store.engine(), main))
     }
     /// Every running mod's buttons, with its id.
     pub fn widgets(&self) -> impl Iterator<Item = (&str, &Widgets)> {
@@ -1633,6 +1653,7 @@ fn js_linker(
             "game" => api::game::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "level" => api::level::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "inventory" => api::inventory::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "slots" => api::slots::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat" => api::chat::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat-send" => api::chat_send::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -2253,6 +2274,33 @@ impl screens::Host for State {
         }
     }
 }
+impl slots::Host for State {
+    fn get_menu(&mut self) -> Option<Menu> {
+        self.snapshot.menu.clone()
+    }
+    fn click(&mut self, slot: i32, button: u8, kind: ClickKind) -> Result<(), String> {
+        if slot != -999 && !(0..128).contains(&slot) {
+            return Err(format!("no menu has slot {slot}"));
+        }
+        let queued = self
+            .out
+            .iter()
+            .filter(|o| matches!(o, Output::Click { .. }))
+            .count();
+        if queued >= CLICKS_PER_CALL {
+            return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
+        }
+        let id = self.id.clone();
+        self.out.push(Output::Click {
+            id,
+            slot,
+            button,
+            kind,
+        });
+        Ok(())
+    }
+}
+
 impl widgets::Host for State {
     fn add_screen_button(&mut self, b: ScreenButton) -> Result<(), String> {
         button_id_ok(&b.id)?;

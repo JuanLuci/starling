@@ -6,6 +6,7 @@ import * as log from "starling:mods/log@0.1.0";
 import * as game from "starling:mods/game@0.1.0";
 import * as level from "starling:mods/level@0.1.0";
 import * as inventory from "starling:mods/inventory@0.1.0";
+import * as slots from "starling:mods/slots@0.1.0";
 import * as chat from "starling:mods/chat@0.1.0";
 import * as chatSend from "starling:mods/chat-send@0.1.0";
 import * as draw from "starling:mods/draw@0.1.0";
@@ -233,6 +234,7 @@ const reading = {
     getContainer: keep("container", inventory.getContainer),
     getItemInfo: keep("itemInfo", inventory.getItemInfo, one),
   },
+  slots: { ...slots, getMenu: keep("menu", slots.getMenu) },
 };
 
 // The controls held, read once a hook (they change between frames, not during a hook) instead of
@@ -289,6 +291,7 @@ const widgets = {
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
+  slots: reading.slots,
   chat, "chat-send": chatSend, draw: drawing, hud,
   screens, widgets, keys: controls, input, sound, net, storage,
 };

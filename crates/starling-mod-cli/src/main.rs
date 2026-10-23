@@ -18,7 +18,8 @@
 //! `{"hurt": 2.0}`, `{"touch": "<button id>", "pressed": true}` (a touch button, pressed and
 //! let go without `pressed`), `{"controls": ["key.forward", "key.attack"]}` (the game's controls
 //! held from then on, the others let go; mods' `input.hold` adds sprint and sneak).
-//! `{"hud": {"touch": true}}` draws the mod's touch buttons too, where they start.
+//! `{"hud": {"touch": true}}` draws the mod's touch buttons too, where they start. `"menu"` (see
+//! `world::world`) is the open menu `slots.get-menu` reads; each `slots.click` is a `click` line.
 //! Without steps it ticks once and draws the HUD. The mod's buttons (`widgets`) are a `widgets`
 //! line whenever they change.
 //!
@@ -452,6 +453,20 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands) {
             }
             Output::Keyboard { id, shown } => {
                 json!({ "event": "keyboard", "id": id, "shown": shown })
+            }
+            Output::Click {
+                slot, button, kind, ..
+            } => {
+                use horizon_mods::ClickKind;
+                let kind = match kind {
+                    ClickKind::Pickup => "pickup",
+                    ClickKind::QuickMove => "quick-move",
+                    ClickKind::Swap => "swap",
+                    ClickKind::Clone => "clone",
+                    ClickKind::Throw => "throw",
+                    ClickKind::PickupAll => "pickup-all",
+                };
+                json!({ "event": "click", "slot": slot, "button": button, "kind": kind })
             }
             Output::Hold { control, held, .. } => {
                 hands.held[usize::from(control == "key.sprint")] = held;

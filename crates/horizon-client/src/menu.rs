@@ -79,6 +79,27 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The menu type's registry name as a server names it (`minecraft:generic_9x3`); the
+    /// player's own menus as `minecraft:inventory` and `minecraft:crafting`.
+    pub fn registry_name(self) -> String {
+        let name = match self {
+            Kind::Inventory => "inventory",
+            Kind::Crafting => "crafting",
+            Kind::Chest(rows) => return format!("minecraft:generic_9x{rows}"),
+            Kind::Hopper => "hopper",
+            Kind::Dispenser => "generic_3x3",
+            Kind::Shulker => "shulker_box",
+            Kind::Furnace("blasting") => "blast_furnace",
+            Kind::Furnace("smoking") => "smoker",
+            Kind::Furnace(_) => "furnace",
+            Kind::Brewing => "brewing_stand",
+            Kind::Crafter | Kind::CrafterBlock => "crafter_3x3",
+            Kind::Loom => "loom",
+            Kind::Merchant => "merchant",
+            Kind::ItemPicker => "creative",
+        };
+        format!("minecraft:{name}")
+    }
     pub fn parse(name: &str) -> Option<Self> {
         if let Some(rows) = name.strip_prefix("chest") {
             return rows.parse().ok().map(Self::Chest);

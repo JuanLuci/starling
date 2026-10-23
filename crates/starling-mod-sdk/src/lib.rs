@@ -40,6 +40,7 @@
 //! | `ScreenEvents.AFTER_INIT/afterRender/remove`, `ScreenMouseEvents`, `ScreenKeyboardEvents` | [`Mod::screen_opened`], [`Mod::screen_render`], [`Mod::screen_closed`], [`Mod::screen_mouse`], [`Mod::screen_key`] |
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
+//! | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | [`slots::click`] (capability `inventory-click`), the menu by vanilla's ids from [`slots::get_menu`] |
 //! | `Screens.getButtons(screen).add(ButtonWidget...)` (in `ScreenEvents.AFTER_INIT`) | [`widgets::add_screen_button`] in [`Mod::init`]; a press is [`Mod::key`] with its id |
 //! | Bedrock's touch buttons (a keybind's button on a phone) | [`widgets::add_touch_button`], [`widgets::style_control`] for the game's own |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
@@ -66,6 +67,7 @@ pub use exports::starling::mods::events::{
 };
 pub use starling::mods::{
     chat, chat_send, draw, game, hud, input, inventory, keys, level, log, mobile, net, screens,
+    slots::{self, ClickKind},
     sound, storage,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{self, Anchor, ScreenButton, Shape, TouchButton},

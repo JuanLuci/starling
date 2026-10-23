@@ -598,7 +598,9 @@ fn javascript_starts_quickly_and_keeps_its_full_code() {
     );
     assert_eq!(mods.entries()[0].status, Status::Running);
     let quick = started.elapsed();
-    assert!(horizon_mods::finish_background_compiles());
+    assert!(mods.on_quick_code());
+    // (Other tests compile in the background at the same time: the list is everyone's.)
+    horizon_mods::finish_background_compiles();
     let kept = std::fs::read_dir(&cache)
         .unwrap()
         .flatten()
@@ -608,14 +610,58 @@ fn javascript_starts_quickly_and_keeps_its_full_code() {
     let started = Instant::now();
     let again = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
     assert_eq!(again.entries()[0].status, Status::Running);
-    assert!(
-        !horizon_mods::finish_background_compiles(),
-        "compiled again"
-    );
+    assert!(!again.on_quick_code(), "the full code was not read back");
     eprintln!(
         "quick start {quick:?}, from the kept code {:?}",
         started.elapsed()
     );
+}
+
+/// The Elytra Swap example on the player's inventory menu (`slots`): R takes the elytra from
+/// the inventory onto the chest in three vanilla clicks, and says so.
+#[test]
+fn elytra_swap_clicks_the_elytra_on() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let example = root.join("crates/starling-mod-sdk/examples/elytra-swap");
+    let mut mods = Mods::load(&[example], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let stack = |id: &str| ItemStack {
+        id: id.into(),
+        count: 1,
+        damage: 0,
+        max_damage: 0,
+        name: id.into(),
+        components: String::new(),
+    };
+    let mut slots = vec![None; 46];
+    slots[6] = Some(stack("minecraft:iron_chestplate"));
+    slots[22] = Some(stack("minecraft:elytra"));
+    let mut snapshot = player();
+    snapshot.menu = Some(horizon_mods::Menu {
+        kind: "minecraft:inventory".into(),
+        slots,
+        carried: None,
+    });
+    mods.set_snapshot(snapshot);
+    mods.key("elytra_swap", "swap", true);
+    let clicks: Vec<(i32, u8)> = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Click {
+                slot,
+                button,
+                kind: horizon_mods::ClickKind::Pickup,
+                ..
+            } => Some((slot, button)),
+            Output::Overlay { text } => {
+                assert_eq!(text, "Elytra on");
+                None
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(clicks, [(22, 0), (6, 0), (22, 0)]);
 }
 
 #[test]

@@ -74,6 +74,8 @@ pub enum Capability {
     GameRead,
     WorldRead,
     InventoryRead,
+    /// The open menu's slots and clicks in them (Starling's `slots`).
+    InventoryClick,
     Chat,
     ChatSend,
     Hud,
@@ -89,10 +91,11 @@ pub enum Capability {
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
+        Capability::InventoryClick,
         Capability::Chat,
         Capability::ChatSend,
         Capability::Hud,
@@ -110,6 +113,7 @@ impl Capability {
             Capability::GameRead => &["game"],
             Capability::WorldRead => &["level"],
             Capability::InventoryRead => &["inventory"],
+            Capability::InventoryClick => &["slots"],
             Capability::Chat => &["chat"],
             Capability::ChatSend => &["chat-send"],
             Capability::Hud => &["hud", "draw"],
@@ -128,6 +132,7 @@ impl Capability {
             Capability::GameRead => "see your position, health, effects and the time",
             Capability::WorldRead => "see the blocks and creatures around you",
             Capability::InventoryRead => "see your items",
+            Capability::InventoryClick => "move your items, in your inventory and what you open",
             Capability::Chat => "show you chat messages",
             Capability::ChatSend => "send chat messages and commands as you",
             Capability::Hud => "draw on your screen",
@@ -179,6 +184,7 @@ impl fmt::Display for Capability {
             Capability::GameRead => "game-read",
             Capability::WorldRead => "world-read",
             Capability::InventoryRead => "inventory-read",
+            Capability::InventoryClick => "inventory-click",
             Capability::Chat => "chat",
             Capability::ChatSend => "chat-send",
             Capability::Hud => "hud",

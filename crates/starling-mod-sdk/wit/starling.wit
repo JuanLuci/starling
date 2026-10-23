@@ -290,6 +290,48 @@ interface inventory {
     get-item-info: func(id: string) -> option<item-info>;
 }
 
+/// Capability `inventory-click`: the open menu's slots, and clicks in them as the player's mouse
+/// makes them (Fabric's `ClientPlayerInteractionManager.clickSlot`): a server gets vanilla's
+/// clicks, predicted here as vanilla predicts them. With no screen open the menu is the player's
+/// inventory, as vanilla's clicks there need none (a mod swapping armour while flying).
+interface slots {
+    use types.{item-stack};
+
+    /// `ClickType`: what a click does.
+    enum click-kind {
+        /// Button 0 (left) or 1 (right): pick up, put down, swap, take half.
+        pickup,
+        /// Shift-click: to the other part of the menu.
+        quick-move,
+        /// Button 0 to 8 swaps with that hotbar slot, 40 with the off hand.
+        swap,
+        /// Button 2 in creative: a full stack of the slot's item on the cursor.
+        clone,
+        /// Button 0 drops one of the slot's items, 1 the whole stack.
+        throw,
+        /// A double click (button 0): the same item from the other slots onto the cursor.
+        pickup-all,
+    }
+    record menu {
+        /// `minecraft:inventory` (the player's own, no screen open too), `minecraft:crafting`,
+        /// `minecraft:generic_9x3`, `minecraft:furnace`, `minecraft:merchant`...
+        kind: string,
+        /// Every slot by its id in vanilla's menu, the ids `click` takes. The player's
+        /// inventory menu: 0 the crafting result, 1 to 4 its grid, 5 to 8 the armour from head
+        /// to feet, 9 to 35 the inventory, 36 to 44 the hotbar, 45 the off hand. A container's
+        /// menu: the container's slots, then the inventory's 27 and the hotbar's 9.
+        slots: list<option<item-stack>>,
+        /// The stack on the cursor.
+        carried: option<item-stack>,
+    }
+    /// The open menu as this tick began; none on a screen without slots (the pause menu).
+    get-menu: func() -> option<menu>;
+    /// A click on menu slot `slot` (-999 outside the window: a throw), done in order once the
+    /// hook returns; `get-menu` shows its result from the next tick. Errs past 64 clicks in one
+    /// call, or on a slot no menu has.
+    click: func(slot: s32, button: u8, kind: click-kind) -> result<_, string>;
+}
+
 /// Capability `chat`: messages only the local player sees.
 interface chat {
     use types.{rich-text};
@@ -677,6 +719,7 @@ world starling-mod {
     import game;
     import level;
     import inventory;
+    import slots;
     import chat;
     import chat-send;
     import draw;

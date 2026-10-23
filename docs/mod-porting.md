@@ -88,6 +88,8 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | an entity's display name, max health, armor, `isBaby` | `level.get-entity-info` |
 | `player.getInventory()`, main/off hand, cursor stack, hovered slot | `inventory.get-slot`, `get-held`, `get-cursor`, `get-hovered` |
 | the open container's slots | `inventory.get-container` |
+| `ScreenHandler.slots` by id, the cursor stack | `slots.get-menu` (capability `inventory-click`): the open menu by vanilla's slot ids, the player's inventory menu with no screen open |
+| `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
 | `options.forwardKey.isPressed()` (the game's controls) | `keys.is-control-down` (`key.forward`, `key.jump`, `key.attack`...) |
 | click counting (CPS) | `keys.presses` (counts every press, even shorter than a frame) |
@@ -236,6 +238,7 @@ what is still missing (the next port's API work).
 | Keystrokes | [keystrokes](../crates/starling-mod-sdk/examples/keystrokes) | JavaScript | done, with settings |
 | Mod Menu | built into Options > Mods | game | list, descriptions, Config button done |
 | Xaero's / JourneyMap waypoints | [waypoints](../crates/starling-mod-sdk/examples/waypoints) | Rust | list screen, HUD pointer, pause and touch buttons |
+| Elytra Swapper | [elytra-swap](../crates/starling-mod-sdk/examples/elytra-swap) | JavaScript | done, with a touch button |
 
 ### AppleSkin → food-info
 
@@ -276,6 +279,16 @@ what is still missing (the next port's API work).
 - API added: `screens.set-config`.
 - Missing: icons, authors and links pages, search and filters.
 
+### Elytra Swapper → elytra-swap
+
+- Does: R (or the elytra on the touch controls) puts on the elytra from the inventory in place
+  of the chestplate worn, or the best chestplate in place of the elytra, with no screen open;
+  says which in the action bar.
+- API added: the `slots` interface (capability `inventory-click`): `get-menu` by vanilla's slot
+  ids and `click`. Tested on a vanilla server: its own `execute if items` saw the swap.
+- Missing: swapping on take-off (needs a flying event or reading the player's gliding each tick:
+  `game.get-player().gliding` and a tick hook would do).
+
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 
 - Does: a screen of saved places (add here, pick, forget, rename with the phone's keyboard), the
@@ -291,6 +304,7 @@ what is still missing (the next port's API work).
 |---|---|
 | JEI / EMI / REI | recipes read (`recipes` interface), an overlay beside inventories |
 | Xaero's / JourneyMap world map | world-read over a wider area, map storage, a full-screen map screen |
-| Mouse Tweaks / Inventory Profiles | a sanctioned slot-click call (the touch inventory has the click sequences) |
+| Inventory Profiles (auto refill) | `slots` (done) and a tick hook: refill the held stack when it runs out |
+| Mouse Tweaks / sorting | built into Horizon's extras already (tweaks.rs) |
 | Litematica | world-read, drawing in the world (3D), storage |
 | Simple Voice Chat | server side, audio |

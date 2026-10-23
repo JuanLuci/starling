@@ -286,6 +286,45 @@ pub fn world(scenario: &Value, data: Arc<Data>) -> Snapshot {
             components: String::new(),
         });
     }
+    // The open menu (`slots.get-menu`): the scenario's `menu`, `{"kind": "minecraft:generic_9x3",
+    // "slots": {"6": "minecraft:elytra", "20": {"id": "minecraft:arrow", "count": 16}},
+    // "size": 63}`; the player's inventory menu by default (46 slots, the held item in 36).
+    let stack = |v: &Value| -> Option<ItemStack> {
+        let id = v.as_str().or_else(|| v["id"].as_str())?.to_owned();
+        let info = data.info(&id);
+        Some(ItemStack {
+            count: v["count"].as_u64().unwrap_or(1) as u32,
+            damage: 0,
+            max_damage: info.as_ref().map_or(0, |i| i.max_damage),
+            name: info.map_or_else(|| short(&id), |i| i.name),
+            components: String::new(),
+            id,
+        })
+    };
+    let menu = &scenario["menu"];
+    let size = menu["size"].as_u64().unwrap_or(46) as usize;
+    let mut slots = vec![None; size.min(128)];
+    if menu.is_null()
+        && let Some(held) = world.inventory.first().cloned().flatten()
+        && slots.len() > 36
+    {
+        slots[36] = Some(held);
+    }
+    for (i, v) in menu["slots"].as_object().into_iter().flatten() {
+        if let (Ok(i), Some(s)) = (i.parse::<usize>(), stack(v))
+            && i < slots.len()
+        {
+            slots[i] = Some(s);
+        }
+    }
+    world.menu = Some(horizon_mods::Menu {
+        kind: menu["kind"]
+            .as_str()
+            .unwrap_or("minecraft:inventory")
+            .to_owned(),
+        slots,
+        carried: stack(&menu["carried"]),
+    });
     let pos = |v: &Value| -> Option<[i32; 3]> {
         let a = v.as_array()?;
         Some([

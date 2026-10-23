@@ -4377,13 +4377,14 @@ impl Game<'_> {
     /// engine doesn't model sends the clicks unpredicted. False when a click's
     /// slot isn't one of the menu's.
     pub(super) fn remote_menu_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
-        let (container, menu) = self.remote_menu();
+        let (_, menu) = self.remote_menu();
         let mut clicks = Vec::with_capacity(ops.len());
         for &(slot, button, input) in ops {
             let slot = match slot {
                 None => -999,
+                // A double chest's menu has 90 slots.
                 Some(internal) => {
-                    match (0..64).find(|&s| Self::menu_slot(&menu, s) == Some(internal)) {
+                    match (0..128).find(|&s| Self::menu_slot(&menu, s) == Some(internal)) {
                         Some(s) => s as i16,
                         None => return false,
                     }
@@ -4391,6 +4392,12 @@ impl Game<'_> {
             };
             clicks.push((slot, button, input));
         }
+        self.remote_menu_clicks(&clicks);
+        true
+    }
+    /// [`Game::remote_menu_ops`]'s clicks by the menu's own slot ids (a mod's `slots.click`).
+    pub(super) fn remote_menu_clicks(&mut self, clicks: &[(i16, i32, Input)]) {
+        let (container, _) = self.remote_menu();
         // Unpredicted: nothing changed, the carried stack as it is.
         let mut sent: Vec<Predicted> = clicks
             .iter()
@@ -4399,7 +4406,7 @@ impl Game<'_> {
         // The engine's slot indices are the menu's own, as on the network.
         self.menu_session(|m, env, _| {
             let mut predicted = Vec::with_capacity(clicks.len());
-            for &(slot, button, input) in &clicks {
+            for &(slot, button, input) in clicks {
                 let before = menu_items(m);
                 if m.click(env, i32::from(slot), button, input).is_err() {
                     // The server throws on it too: nothing is predicted.
@@ -4412,7 +4419,6 @@ impl Game<'_> {
             Some(true)
         });
         self.send_clicks(container, sent);
-        true
     }
     /// A Shift double click on a server (`AbstractContainerScreen.mouseReleased`):
     /// a predicted QUICK_MOVE for every slot the engine moves, each sent.
@@ -4456,7 +4462,7 @@ impl Game<'_> {
     /// such slot.
     pub(super) fn remote_slot_click(&mut self, internal: usize, button: i8, input: i32) -> bool {
         let (container, menu) = self.remote_menu();
-        let slot = (0..64).find(|&s| Self::menu_slot(&menu, s) == Some(internal));
+        let slot = (0..128).find(|&s| Self::menu_slot(&menu, s) == Some(internal));
         let Some(slot) = slot else { return false };
         let carried = self.to_network(&self.carried).map(|s| Hashed::of(&s));
         let state = self.remote.as_ref().map_or(0, |r| r.state_id);
@@ -4908,7 +4914,7 @@ type Predicted = (
     Option<ItemStack>,
 );
 
-fn menu_items(m: &horizon_client::menu::Menu) -> Vec<Option<ItemStack>> {
+pub(super) fn menu_items(m: &horizon_client::menu::Menu) -> Vec<Option<ItemStack>> {
     (0..m.slot_count()).map(|i| m.slot(i).cloned()).collect()
 }
 
