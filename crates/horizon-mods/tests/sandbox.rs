@@ -991,6 +991,83 @@ fn hook_overhead() {
     );
 }
 
+/// What a JavaScript mod's calls into the game cost, a frame of 40 of each (docs/mod-porting.md,
+/// JavaScript speed): `cargo test --release -p horizon-mods --test sandbox javascript_call_costs
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn javascript_call_costs() {
+    const MOD_JS: &str = r#"
+import { getPlayer, getGui, getTarget } from "starling:mods/game@0.1.0";
+import { text, fill, textWidth } from "starling:mods/draw@0.1.0";
+import { isControlDown } from "starling:mods/keys@0.1.0";
+let mode = 0;
+const calls = [
+  () => {},
+  () => { for (let i = 0; i < 40; i++) getPlayer(); },
+  () => { for (let i = 0; i < 40; i++) getGui(); },
+  () => { for (let i = 0; i < 40; i++) getTarget(); },
+  () => { for (let i = 0; i < 40; i++) isControlDown("key.forward"); },
+  () => { for (let i = 0; i < 40; i++) fill(4, 4, 120, 9, 0x80000000); },
+  () => { for (let i = 0; i < 40; i++) text(6, 5, `Line ${i}: 533x240`, 0xFFFFFF, true); },
+  () => { for (let i = 0; i < 40; i++) textWidth("Line 12: 533x240"); },
+];
+export const events = {
+  init() {
+    return { commands: ["mode"], tick: false, frame: false, chat: false, chatSend: false,
+      hud: true, hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false };
+  },
+  command(_name, args) { mode = Number(args); return undefined; },
+  hudRender(_context) { calls[mode](); },
+};
+"#;
+    let dir = mods_dir().join("call_costs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"call_costs\"\nname = \"Call Costs\"\nversion = \"0.1.0\"\n\
+         api = \"starling-0.1\"\ncapabilities = [\"game-read\", \"hud\", \"keys\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("mod.js"), MOD_JS).unwrap();
+    let mut mods = Mods::load(&[dir], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    let names = [
+        "empty hook",
+        "40 getPlayer",
+        "40 getGui",
+        "40 getTarget",
+        "40 isControlDown",
+        "40 fill",
+        "40 text",
+        "40 textWidth (cached)",
+    ];
+    for (mode, name) in names.iter().enumerate() {
+        assert!(mods.command(&format!("mode {mode}")));
+        for _ in 0..100 {
+            mods.hud_render(context());
+        }
+        let started = Instant::now();
+        for _ in 0..1000 {
+            mods.hud_render(context());
+        }
+        println!(
+            "{name:24} {:8.1} us a frame",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+    }
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::Stopped { .. })),
+        "the mod stopped"
+    );
+}
+
 #[test]
 fn content_only_mods_load_without_an_engine() {
     let manifest = r#"

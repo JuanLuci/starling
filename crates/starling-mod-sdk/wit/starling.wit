@@ -695,6 +695,9 @@ world starling-mod {
 /// which the engine runs. The game refuses a mod component importing it.
 interface js-source {
     get: func() -> string;
+    /// A number that changes whenever what mods read of the game does (once a tick, and before a
+    /// command or a press): the engine keeps the game's answers until it changes.
+    snapshot: func() -> u32;
 }
 
 /// The JavaScript engine's own import too: `draw.fill` and `draw.gradient` with their ARGB
@@ -713,6 +716,13 @@ interface js-draw {
     batch: func(ops: list<u8>, count: u32, texts: list<u8>);
 }
 
+/// The JavaScript engine's own import too, linked with `keys`: the game's controls held now, one
+/// bit each in `keys.is-control-down`'s order (`key.forward` the lowest), which the engine reads
+/// once a hook instead of a call a control.
+interface js-keys {
+    held: func() -> u32;
+}
+
 /// Starling's shared JavaScript engine (js-engine/): one component every JavaScript mod runs in,
 /// its source given by `js-source`. A JavaScript mod ships `mod.js` (an ES module importing these
 /// interfaces and exporting `events`) instead of a component.
@@ -720,4 +730,5 @@ world starling-js {
     include starling-mod;
     import js-source;
     import js-draw;
+    import js-keys;
 }

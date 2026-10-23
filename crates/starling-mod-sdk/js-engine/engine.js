@@ -17,7 +17,8 @@ import * as input from "starling:mods/input@0.1.0";
 import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
-import { get as source } from "starling:mods/js-source@0.1.0";
+import { get as source, snapshot as snapshotNow } from "starling:mods/js-source@0.1.0";
+import { held as heldNow } from "starling:mods/js-keys@0.1.0";
 import {
   fill as fillBits, gradient as gradientBits, batch,
 } from "starling:mods/js-draw@0.1.0";
@@ -161,6 +162,100 @@ function render(name) {
   };
 }
 
+// What mods read of the game (game, level, inventory) changes once a tick, and frames come
+// faster; a read costs microseconds a field (the player, 33 fields: 37 us). Each answer is kept
+// until the game's snapshot changes, which is asked at most once a hook (it cannot change during
+// one), and handed out as a shallow copy, so a mod changing it changes only its own.
+let epoch = 0;
+let checked = -1;
+let generation = -1;
+let kept = Object.create(null);
+const NONE = {};
+function current() {
+  if (checked !== epoch) {
+    checked = epoch;
+    const g = snapshotNow();
+    if (g !== generation) {
+      generation = g;
+      kept = Object.create(null);
+    }
+  }
+}
+function copied(v) {
+  if (v === null || typeof v !== "object") return v;
+  return Array.isArray(v) ? v.slice() : Object.assign({}, v);
+}
+// `read` kept by its name and its arguments' key.
+function keep(name, read, key) {
+  return (...args) => {
+    current();
+    const k = key ? name + key(...args) : name;
+    let v = kept[k];
+    if (v === undefined) {
+      v = read(...args);
+      kept[k] = v === undefined ? NONE : v;
+    } else if (v === NONE) {
+      return undefined;
+    }
+    return copied(v);
+  };
+}
+const pos = (p) => `${p.x},${p.y},${p.z}`;
+const one = (a) => `${a}`;
+const reading = {
+  game: {
+    ...game,
+    getPlayer: keep("player", game.getPlayer),
+    getEffects: keep("effects", game.getEffects),
+    getClock: keep("clock", game.getClock),
+    getWorldInfo: keep("world", game.getWorldInfo),
+    getTarget: keep("target", game.getTarget),
+    getScreen: keep("screen", game.getScreen),
+    getGui: keep("gui", game.getGui),
+    getFps: keep("fps", game.getFps),
+    getMining: keep("mining", game.getMining),
+  },
+  level: {
+    ...level,
+    getBlock: keep("block", level.getBlock, pos),
+    getBlockInfo: keep("blockInfo", level.getBlockInfo, pos),
+    getEntityInfo: keep("entityInfo", level.getEntityInfo, one),
+    getBiome: keep("biome", level.getBiome, pos),
+    getLight: keep("light", level.getLight, pos),
+    getEntities: keep("entities", level.getEntities, one),
+  },
+  inventory: {
+    ...inventory,
+    getSlot: keep("slot", inventory.getSlot, one),
+    getHeld: keep("held", inventory.getHeld, one),
+    getCursor: keep("cursor", inventory.getCursor),
+    getHovered: keep("hovered", inventory.getHovered),
+    getContainer: keep("container", inventory.getContainer),
+    getItemInfo: keep("itemInfo", inventory.getItemInfo, one),
+  },
+};
+
+// The controls held, read once a hook (they change between frames, not during a hook) instead of
+// a call a control.
+const CONTROLS = Object.assign(Object.create(null), {
+  "key.forward": 1, "key.back": 2, "key.left": 4, "key.right": 8, "key.jump": 16,
+  "key.sneak": 32, "key.sprint": 64, "key.attack": 128, "key.use": 256,
+});
+let heldEpoch = -1;
+let heldBits = 0;
+const controls = {
+  ...keys,
+  isControlDown(control) {
+    const bit = CONTROLS[control];
+    if (bit === undefined) return false;
+    if (heldEpoch !== epoch) {
+      heldEpoch = epoch;
+      heldBits = heldNow();
+    }
+    return (heldBits & bit) !== 0;
+  },
+};
+
 // Buttons as Fabric's ButtonWidget.builder(label, onPress) makes them: the fields left out take
 // their usual values, and `onPress` runs when the button is pressed (the mod's `key` hook still
 // gets the press and the release, by the button's id).
@@ -193,8 +288,9 @@ const widgets = {
 
 // `types` holds only types: nothing to import from it.
 const API = {
-  types: {}, mobile, log, game, level, inventory, chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, widgets, keys, input, sound, net, storage,
+  types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
+  chat, "chat-send": chatSend, draw: drawing, hud,
+  screens, widgets, keys: controls, input, sound, net, storage,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.
@@ -244,6 +340,8 @@ function load() {
 // mod, and only `init` and `command` can say why, so the others log it (with where it was) first.
 function hook(name, fallback, says = false) {
   return (...args) => {
+    // A new hook: the game's snapshot may have changed since the last.
+    epoch++;
     if (!mod[name]) return fallback;
     try {
       return mod[name](...args);
@@ -279,6 +377,8 @@ export const events = {
   screenKey: hook("screenKey", false),
   tooltip: hook("tooltip", []),
   key(id, pressed) {
+    // A press comes with a fresh snapshot, and onPress reads before the key hook does.
+    epoch++;
     const onPress = presses.get(id);
     if (pressed && onPress) {
       try {

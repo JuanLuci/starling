@@ -181,7 +181,10 @@ phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into
   The engine queues a render hook's `fill`, `gradient`, `text`, `sprite`, `push` and `pop` and
   sends them in one call when the hook returns, with text widths cached (40 texts a frame: 0.09
   ms on the PC, were 0.4); `item`, `item-id`, `tooltip`, `button` and `panel` send the queue
-  first, so a frame with fewer of them is cheaper. The first start after the engine changed runs
+  first, so a frame with fewer of them is cheaper. Reads of `game`, `level` and `inventory` are
+  kept until the game's snapshot changes (once a tick) and handed out as shallow copies (the
+  player: 37 us a read, 2 us kept); `keys.is-control-down` reads every control at once a hook.
+  The first start after the engine changed runs
   on quick code (Winch, about two and a half times slower) until the full compile is kept.
 - **Out of memory**: a mod has 64 MiB. The engine is built with componentize-js 0.23 or later:
   before it every string passed to the game leaked, and a mod drawing text each frame ran out in

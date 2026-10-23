@@ -390,6 +390,8 @@ struct State {
     /// A JavaScript mod's source, which the shared engine asks for (`js-source.get`).
     js_source: Option<String>,
     snapshot: Arc<Snapshot>,
+    /// Which snapshot it is (`js-source.snapshot`): changed with it.
+    snapshot_id: u32,
     controls: Controls,
     out: Vec<Output>,
     panel: Option<Panel>,
@@ -465,6 +467,8 @@ pub struct Mods {
     cache: Option<PathBuf>,
     /// The shared JavaScript engine, compiled once for every JavaScript mod.
     js: Option<Component>,
+    /// Counts the snapshots ([`Mods::set_snapshot`]).
+    snapshot_id: u32,
 }
 
 // The game loads mods on a thread of their own: compiling one can take seconds.
@@ -638,6 +642,7 @@ impl Mods {
             .flat_map(|r| r.hooks.commands.iter().cloned())
             .collect();
         let snapshot = self.snapshot.clone();
+        let snapshot_id = self.snapshot_id;
         let cache = self.cache.clone();
         let js_component = match &package.js {
             Some(_) => Some(self.js_component()?),
@@ -678,6 +683,7 @@ impl Mods {
             id: m.id.clone(),
             js_source: package.js.clone(),
             snapshot,
+            snapshot_id,
             controls: Controls::default(),
             out: Vec::new(),
             panel: None,
@@ -777,6 +783,7 @@ impl Mods {
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.snapshot = Arc::new(snapshot);
+        self.snapshot_id = self.snapshot_id.wrapping_add(1);
     }
     /// The game's controls now: every frame, so a mod drawing them keeps up with the keys.
     pub fn set_controls(&mut self, controls: Controls) {
@@ -818,6 +825,7 @@ impl Mods {
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
+        run.store.data_mut().snapshot_id = self.snapshot_id;
         run.store.data_mut().controls = self.controls;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
@@ -1519,14 +1527,17 @@ fn js_linker(
             _ => {}
         }
     }
-    linker
-        .instance("starling:mods/js-source@0.1.0")?
-        .func_wrap(
-            "get",
-            |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
-                Ok((store.data().js_source.clone().unwrap_or_default(),))
-            },
-        )?;
+    let mut js_source = linker.instance("starling:mods/js-source@0.1.0")?;
+    js_source.func_wrap(
+        "get",
+        |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+            Ok((store.data().js_source.clone().unwrap_or_default(),))
+        },
+    )?;
+    js_source.func_wrap(
+        "snapshot",
+        |store: wasmtime::StoreContextMut<'_, State>, (): ()| Ok((store.data().snapshot_id,)),
+    )?;
     if interfaces.contains(&"draw") {
         use api::draw::Host;
         type Colour = (f32, f32, f32, f32, i32);
@@ -1570,6 +1581,21 @@ fn js_linker(
             },
         )?;
     }
+    if interfaces.contains(&"keys") {
+        linker.instance("starling:mods/js-keys@0.1.0")?.func_wrap(
+            "held",
+            |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+                let bits = store
+                    .data()
+                    .controls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (down, _))| *down)
+                    .fold(0u32, |bits, (i, _)| bits | 1 << i);
+                Ok((bits,))
+            },
+        )?;
+    }
     // The other interfaces: each function says which capability the manifest lacks.
     for (name, item) in component.component_type().imports(engine) {
         let interface = name
@@ -1580,11 +1606,11 @@ fn js_linker(
         else {
             continue;
         };
-        // js-draw goes with draw.
-        let granting = if interface == "js-draw" {
-            "draw"
-        } else {
-            interface
+        // js-draw goes with draw, js-keys with keys.
+        let granting = match interface {
+            "js-draw" => "draw",
+            "js-keys" => "keys",
+            other => other,
         };
         if interface == "js-source" || interfaces.contains(&granting) {
             continue;
