@@ -178,6 +178,15 @@ impl Chunk {
     pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         BlockStateId(self.get(x, y, z))
     }
+    /// The blocks of the section at `section` (`y >> 4`); None outside the
+    /// world's height, where [`Self::get`] reads 0.
+    pub fn section_blocks(&self, section: i32) -> Option<&PalettedContainer> {
+        let s = section - (MIN_Y >> 4);
+        usize::try_from(s)
+            .ok()
+            .and_then(|s| self.sections.get(s))
+            .map(|section| &section.blocks)
+    }
     /// The highest y where `matches`, scanning down. Sections holding only
     /// `skip` are passed over whole: `matches` must be false for it.
     pub fn highest(&self, skip: u32, mut matches: impl FnMut(i32) -> bool) -> Option<i32> {

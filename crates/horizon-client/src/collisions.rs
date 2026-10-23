@@ -88,6 +88,13 @@ impl<W: BlockCollisionWorld> BlockCollisionWorld for EntityCollisions<'_, W> {
     ) -> std::result::Result<bool, Self::Error> {
         self.blocks.is_suffocating(chunk, block, p)
     }
+    fn section_may_reach(
+        &mut self,
+        chunk: Self::Chunk,
+        section: i32,
+    ) -> std::result::Result<bool, Self::Error> {
+        self.blocks.section_may_reach(chunk, section)
+    }
     fn context_shape(
         &mut self,
         block: CollisionBlock,
@@ -185,6 +192,22 @@ impl SceneCollisions<'_, '_> {
         )?)
     }
 }
+/// Whether a section of `chunk` may hold a block colliding outside its own
+/// cell: one of its palette's states may (the global palette always may).
+pub fn section_may_reach(
+    binding: &BlockCollisionRegistry<'_>,
+    chunk: &crate::chunk::Chunk,
+    section: i32,
+) -> bool {
+    match chunk.section_blocks(section) {
+        Some(blocks) => blocks.palette_values().is_none_or(|values| {
+            values
+                .iter()
+                .any(|&v| binding.reaches_outside(horizon_world::registry::BlockStateId(v)))
+        }),
+        None => binding.reaches_outside(horizon_world::registry::BlockStateId(0)),
+    }
+}
 /// `noCollision(null, box)`: block collisions under the empty collision
 /// context, as entity-less queries such as spawn checks use.
 pub fn no_collision_empty<W, E>(world: &mut W, bounds: Aabb) -> bool
@@ -233,6 +256,9 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
         _: BlockPos,
     ) -> io::Result<bool> {
         Ok(false)
+    }
+    fn section_may_reach(&mut self, chunk: Self::Chunk, section: i32) -> io::Result<bool> {
+        Ok(section_may_reach(self.binding, chunk, section))
     }
     fn context_shape(
         &mut self,

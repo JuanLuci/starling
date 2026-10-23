@@ -17,6 +17,17 @@ thread_local! {
 pub fn enable(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
+/// Whether spans are being recorded (a caller summing many small timings itself).
+#[inline]
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+/// Records `ms` under `name`, measured by the caller (the sum of a loop's parts).
+pub fn add(name: &'static str, ms: f32) {
+    if enabled() {
+        SPANS.with(|s| s.borrow_mut().push((name, ms)));
+    }
+}
 /// Run `f`, recording its duration under `name` when spans are enabled.
 #[inline]
 pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {

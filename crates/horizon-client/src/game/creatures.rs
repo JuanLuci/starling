@@ -502,6 +502,9 @@ impl Game<'_> {
             let mut keep = Vec::with_capacity(mobs.len());
             let mut grid =
                 horizon_client::mobs::seen_grid::SeenGrid::new(snapshot.iter().map(|s| s.bounds));
+            // The mob ticks' time and count, summed (spans: HORIZON_SPIKES).
+            let timed = horizon_client::spans::enabled();
+            let (mut tick_ms, mut ticked) = (0.0f32, 0usize);
             for i in 0..mobs.len() {
                 let mut w = self.mob_world_base(&snapshot);
                 w.others_grid = Some(&grid);
@@ -550,7 +553,12 @@ impl Game<'_> {
                 }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 let from = events.len();
+                let started = timed.then(std::time::Instant::now);
                 let kept = m.tick(&w, &mut scratch, &mut events);
+                if let Some(t) = started {
+                    tick_ms += t.elapsed().as_secs_f32() * 1000.0;
+                    ticked += 1;
+                }
                 horizon_client::mobs::take_mob_pushes(&mut events, from, &mut pushes);
                 if let Some(conn) = seen_guest {
                     let mut k = from;
@@ -577,6 +585,9 @@ impl Game<'_> {
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
             }
+            horizon_client::spans::add("entities.mob_tick", tick_ms);
+            horizon_client::spans::add("entities.ticked_count", ticked as f32);
+            horizon_client::mobs::ai::parts::flush();
             let mut flags = keep.into_iter();
             mobs.retain(|_| flags.next().unwrap_or(true));
             for m in &mut mobs {

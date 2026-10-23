@@ -286,6 +286,15 @@ impl PalettedContainer {
     pub fn is_global(&self) -> bool {
         matches!(self.palette, Palette::Global)
     }
+    /// The palette's values, among which is every stored value; None for the
+    /// global palette, which stores values directly.
+    pub fn palette_values(&self) -> Option<&[u32]> {
+        match &self.palette {
+            Palette::Single(value) => Some(std::slice::from_ref(value)),
+            Palette::List(list) => Some(list),
+            Palette::Global => None,
+        }
+    }
     #[inline]
     fn raw(&self, i: usize) -> usize {
         let (word, shift) = locate(self.bits, i);

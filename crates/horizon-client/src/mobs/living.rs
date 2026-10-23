@@ -136,6 +136,43 @@ impl MobWorld<'_> {
             .map(|shape| shape.boxes().iter().map(|b| b.move_by(offset)).collect())
             .unwrap_or_default()
     }
+    /// Whether one of [`Self::block_collision_boxes`] meets `area`, without
+    /// building the list.
+    pub fn block_collision_meets(&self, x: i32, y: i32, z: i32, area: Aabb) -> bool {
+        self.state_collision_meets(self.world.block(x, y, z), x, y, z, area)
+    }
+    /// [`Self::block_collision_meets`] for the state already read there.
+    fn state_collision_meets(
+        &self,
+        state: horizon_world::registry::BlockStateId,
+        x: i32,
+        y: i32,
+        z: i32,
+        area: Aabb,
+    ) -> bool {
+        let offset = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
+        let meets = |shape: &horizon_core::geometry::VoxelShape| {
+            shape
+                .boxes()
+                .iter()
+                .any(|b| b.move_by(offset).intersects(area))
+        };
+        // Most states' shapes need neither context nor world: borrowed, not
+        // cloned (each clone counts several shared references up and down).
+        if let Some(shape) = self.collision.plain_shape(state) {
+            return meets(shape);
+        }
+        let mut scene = SceneCollisions {
+            world: self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let at = horizon_core::position::BlockPos::new(x, y, z);
+        let context = horizon_world::collision_context::CollisionContext::empty(false);
+        self.collision
+            .collision_shape_with_context(&mut scene, state, at, &context)
+            .is_ok_and(|shape| meets(&shape))
+    }
     /// `Level.findSupportingBlock`: of the blocks whose collision shape
     /// meets `area`, the one whose centre is nearest `from` (ties: the
     /// greatest by `Vec3i.compareTo`, y then z then x).
@@ -155,14 +192,43 @@ impl MobWorld<'_> {
             let c = f64::from(c);
             c < area.max(axis) && c + 1.0 > area.min(axis)
         };
+        // Off the cells meeting `area` only those blocks count: sections
+        // holding none skip their reads (each section asked once).
+        let mut reaches = [((0, 0, 0), false); 8];
+        let mut asked = 0;
+        let mut may_reach = |chunk: &crate::chunk::Chunk, key: (i32, i32, i32)| {
+            if let Some((_, reach)) = reaches[..asked].iter().find(|(k, _)| *k == key) {
+                return *reach;
+            }
+            let reach = crate::collisions::section_may_reach(self.collision, chunk, key.2);
+            if asked < reaches.len() {
+                reaches[asked] = (key, reach);
+                asked += 1;
+            }
+            reach
+        };
         let mut best: Option<(f64, [i32; 3])> = None;
+        let mut last: Option<((i32, i32), Option<&crate::chunk::Chunk>)> = None;
         for x in range(Axis::X) {
             for z in range(Axis::Z) {
-                let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4)) else {
+                let key = (x >> 4, z >> 4);
+                let chunk = match last {
+                    Some((at, chunk)) if at == key => chunk,
+                    _ => {
+                        let chunk = self.world.chunks.get(&key).map(|c| &**c);
+                        last = Some((key, chunk));
+                        chunk
+                    }
+                };
+                let Some(chunk) = chunk else {
                     continue;
                 };
                 let column = meets(Axis::X, x) && meets(Axis::Z, z);
                 for y in range(Axis::Y) {
+                    if !(column && meets(Axis::Y, y)) && !may_reach(chunk, (x >> 4, z >> 4, y >> 4))
+                    {
+                        continue;
+                    }
                     let state = chunk.block(x & 15, y, z & 15);
                     let Ok(block) = self.collision.collision_block(state) else {
                         continue;
@@ -173,11 +239,7 @@ impl MobWorld<'_> {
                     {
                         continue;
                     }
-                    if !self
-                        .block_collision_boxes(x, y, z)
-                        .iter()
-                        .any(|b| b.intersects(area))
-                    {
+                    if !self.state_collision_meets(state, x, y, z, area) {
                         continue;
                     }
                     let d = (f64::from(x) + 0.5 - from.x).powi(2)
@@ -346,9 +408,14 @@ impl Mob {
                 ..Default::default()
             }),
         };
-        let moved = scene
-            .resolve(self.bounds(), wanted, step, self.on_ground)
-            .unwrap_or(Vec3::ZERO);
+        use super::ai::parts;
+        let bounds = self.bounds();
+        let on_ground = self.on_ground;
+        let moved = parts::time(6, || {
+            scene
+                .resolve(bounds, wanted, step, on_ground)
+                .unwrap_or(Vec3::ZERO)
+        });
         let length = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z;
         let wanted_length = wanted.x * wanted.x + wanted.y * wanted.y + wanted.z * wanted.z;
         if length > 1.0e-7 || wanted_length - length < 1.0e-7 {
@@ -374,7 +441,7 @@ impl Mob {
         if self.kind.flags.lava_walker && self.fluids.in_lava {
             self.fall_distance = 0.0;
         } else if !matches!(self.kind.species, super::Species::Bat | super::Species::Bee) {
-            self.check_fall_damage(w, moved, events);
+            parts::time(7, || self.check_fall_damage(w, moved, events));
         }
         // restituteMovementAfterCollisions with no bounciness: the colliding
         // components become (signed) zero.
@@ -391,8 +458,8 @@ impl Mob {
             }
         }
         // Entity.checkSupportingBlock
-        self.supporting = self.supporting_block(w, moved);
-        self.movement_emission(w, moved, events);
+        self.supporting = parts::time(8, || self.supporting_block(w, moved));
+        parts::time(9, || self.movement_emission(w, moved, events));
     }
     /// LivingEntity.checkFallDamage: the fluid state refreshed out of water
     /// (touching water resets the fall), then Entity.checkFallDamage.

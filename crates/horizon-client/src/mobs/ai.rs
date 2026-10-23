@@ -350,6 +350,46 @@ pub fn is_monster(s: Species) -> bool {
             | S::Wither
     )
 }
+/// The parts of every mob's tick, summed over a game tick while spans are recorded
+/// (`HORIZON_SPIKES`): [`PARTS`]' names, milliseconds.
+pub mod parts {
+    use std::cell::Cell;
+    pub const PARTS: [&str; 10] = [
+        "mob.despawn",
+        "mob.base",
+        "mob.goals",
+        "mob.travel",
+        "mob.push",
+        "mob.after",
+        "travel.collide",
+        "travel.fall_fluids",
+        "travel.support",
+        "travel.emission",
+    ];
+    thread_local! {
+        static SUMS: [Cell<f32>; 10] = const { [const { Cell::new(0.0) }; 10] };
+    }
+    /// `f`, its time added to part `i` when spans are on.
+    #[inline]
+    pub fn time<T>(i: usize, f: impl FnOnce() -> T) -> T {
+        if !crate::spans::enabled() {
+            return f();
+        }
+        let started = std::time::Instant::now();
+        let out = f();
+        SUMS.with(|s| s[i].set(s[i].get() + started.elapsed().as_secs_f32() * 1000.0));
+        out
+    }
+    /// The sums since the last call, as spans.
+    pub fn flush() {
+        SUMS.with(|s| {
+            for (i, name) in PARTS.iter().enumerate() {
+                crate::spans::add(name, s[i].replace(0.0));
+            }
+        });
+    }
+}
+
 /// One full entity tick. Returns false when the mob is gone.
 pub fn tick(
     m: &mut Mob,
@@ -361,7 +401,7 @@ pub fn tick(
         return false;
     }
     // ServerLevel.tick checks despawning before ticking the entity.
-    if !check_despawn(m, w) {
+    if !parts::time(0, || check_despawn(m, w)) {
         m.removed = true;
         return false;
     }
@@ -386,7 +426,7 @@ pub fn tick(
     if m.species() == Species::Strider {
         super::strider::pre_tick(m, w, events);
     }
-    base_tick(m, w, events);
+    parts::time(1, || base_tick(m, w, events));
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
@@ -400,6 +440,17 @@ pub fn tick(
     if !m.no_ai {
         ai_step(m, w, level_random, events);
     }
+    parts::time(5, || after_step(m, w, level_random, events));
+    true
+}
+
+/// The tick's end: head turn, sounds out, animations, species extras.
+fn after_step(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
     if m.species() == Species::Rabbit {
         super::rabbit::post_tick(m);
     }
@@ -426,7 +477,6 @@ pub fn tick(
     if m.species() == Species::Bee {
         super::bee::tick(m, level_random);
     }
-    true
 }
 /// LivingEntity.updateSwingTime (6-tick swing duration).
 pub fn tick_swing(m: &mut Mob) {
@@ -667,7 +717,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     // roaring ravager).
     let immobile = m.species() == Species::Ravager && super::ravager::immobile(m);
     if m.alive() && !immobile {
-        server_ai_step(m, w, level_random, events);
+        parts::time(2, || server_ai_step(m, w, level_random, events));
     } else {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
@@ -679,8 +729,8 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
-    m.travel(w, input, events);
-    push_entities(m, w, events);
+    parts::time(3, || m.travel(w, input, events));
+    parts::time(4, || push_entities(m, w, events));
     // Spider.tick: climbing while pressed against a wall.
     if m.kind.flags.climber {
         m.climbing = m.horizontal_collision;

@@ -109,9 +109,11 @@ fn invalid_or_excessive_domains_fail_before_world_queries() {
 }
 
 /// Records every cell the scan reads; every block passes the edge filters
-/// and has an empty shape.
+/// and has an empty shape. `reach` answers every section query.
 struct Recording {
     cells: Vec<BlockPos>,
+    reach: bool,
+    sections: usize,
 }
 impl BlockCollisionWorld for Recording {
     type Error = io::Error;
@@ -126,10 +128,15 @@ impl BlockCollisionWorld for Recording {
             large_collision_shape: true,
             moving_piston: true,
             empty_shape: true,
+            full_block: false,
         })
     }
     fn is_suffocating(&mut self, _: (), _: CollisionBlock, _: BlockPos) -> io::Result<bool> {
         unreachable!()
+    }
+    fn section_may_reach(&mut self, _: (), _: i32) -> io::Result<bool> {
+        self.sections += 1;
+        Ok(self.reach)
     }
     fn context_shape(
         &mut self,
@@ -150,7 +157,11 @@ fn cells_follow_the_cursor_order_without_corners() {
         Aabb::new(Vec3::new(-0.3, 0.0, -0.3), Vec3::new(0.3, 0.9, 0.3)),
     ];
     for bounds in boxes {
-        let mut world = Recording { cells: Vec::new() };
+        let mut world = Recording {
+            cells: Vec::new(),
+            reach: true,
+            sections: 0,
+        };
         let hits = BlockCollisionScan::new(
             &mut world,
             CollisionContext::empty(false),
@@ -187,5 +198,36 @@ fn cells_follow_the_cursor_order_without_corners() {
             }
         }
         assert_eq!(world.cells, expected);
+        // Sections without blocks reaching out of their cells: only the
+        // cells off the cursor's faces are read.
+        let mut world = Recording {
+            cells: Vec::new(),
+            reach: false,
+            sections: 0,
+        };
+        let hits = BlockCollisionScan::new(
+            &mut world,
+            CollisionContext::empty(false),
+            bounds,
+            false,
+            1_000_000,
+        )
+        .unwrap()
+        .count();
+        assert_eq!(hits, 0);
+        let inner: Vec<_> = expected
+            .into_iter()
+            .filter(|p| {
+                let r = [p.x - start.x, p.y - start.y, p.z - start.z];
+                (0..3).all(|a| r[a] != 0 && r[a] != sizes[a] - 1)
+            })
+            .collect();
+        assert_eq!(world.cells, inner);
+        let sections = (start.y >> 4..=end.y >> 4).count();
+        assert!(
+            world.sections >= sections,
+            "{} < {sections}",
+            world.sections
+        );
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     entity_obstruction::EntityIdentity,
 };
 use horizon_core::geometry::{
-    Aabb, Vec3, VoxelShape, entity_collision_bounds, try_resolve_step_movement,
+    Aabb, Collider, Vec3, VoxelShape, entity_collision_bounds, try_resolve_step_movement,
 };
 
 pub trait EntityMovementWorld {
@@ -59,21 +59,23 @@ where
         request.max_step,
         request.on_ground,
         |bounds| {
-            let mut shapes = entities.clone();
+            let mut shapes = Vec::with_capacity(entities.len() + 8);
+            shapes.extend(entities.iter().cloned().map(Collider::Shape));
             if let Some(border) = world
                 .movement_border(request.entity, bounds)
                 .map_err(CollisionScanError::World)?
             {
-                shapes.push(border);
+                shapes.push(Collider::Shape(border));
             }
-            for hit in BlockCollisionScan::new(
+            let mut scan = BlockCollisionScan::new(
                 world,
                 request.context,
                 bounds,
                 false,
                 request.candidate_budget,
-            )? {
-                shapes.push(hit?.shape);
+            )?;
+            while let Some(hit) = scan.next_collider() {
+                shapes.push(hit?.1);
             }
             Ok(shapes)
         },
@@ -96,14 +98,15 @@ pub fn no_world_collision<W, E>(
 where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
-    for hit in BlockCollisionScan::new(
+    let mut scan = BlockCollisionScan::new(
         world,
         request.context,
         request.bounds,
         false,
         request.candidate_budget,
-    )? {
-        if !hit?.shape.is_empty() {
+    )?;
+    while let Some(hit) = scan.next_collider() {
+        if !hit?.1.is_empty() {
             return Ok(false);
         }
     }
