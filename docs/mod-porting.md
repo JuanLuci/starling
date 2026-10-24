@@ -45,7 +45,8 @@ the source. Never take anything from Mojang's assets or code.
 4. **Close the gaps in the API** (see [Adding to the API](#adding-to-the-api)), or leave them in
    the port log as "later" when they are big.
 5. **Declare capabilities**: only what the mod uses (`game-read`, `world-read`, `inventory-read`,
-   `chat`, `chat-send`, `hud`, `ui`, `keys`, `input`, `sound`, `net`, `storage`). A JavaScript mod
+   `inventory-click`, `creative`, `chat`, `chat-send`, `hud`, `ui`, `keys`, `input`, `sound`,
+   `net`, `storage`). A JavaScript mod
    calling an interface it did not declare stops with "uses X: capability Y is missing from its
    manifest".
 6. **Test without the game** with `starling-mod run` (below), then in the game.
@@ -91,6 +92,9 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `ScreenHandler.slots` by id, the cursor stack | `slots.get-menu` (capability `inventory-click`): the open menu by vanilla's slot ids, the player's inventory menu with no screen open |
 | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
+| `ItemGroups` and `ItemGroup.getDisplayStacks()`, the creative search (`SearchManager`) | `creative.get-tabs`, `creative.get-items(tab, search, start, count)` (capability `creative`): the tabs and items the game's creative screen shows, searched as its box searches |
+| `CreativeInventoryScreen.onMouseClick` on a tab's slot | `creative.click(tab, search, index, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw` with the creative screen's semantics (creative mode only) |
+| `ClientPlayerInteractionManager.clickCreativeStack` / `dropCreativeStack`, the creative cursor | `creative.set-slot(slot, stack)` (the player's inventory menu's ids, 1 to 45), `creative.set-carried(stack)` (none: Destroy Item); a server gets vanilla's `SetCreativeModeSlot` |
 | `options.forwardKey.isPressed()` (the game's controls) | `keys.is-control-down` (`key.forward`, `key.jump`, `key.attack`...) |
 | click counting (CPS) | `keys.presses` (counts every press, even shorter than a frame) |
 | touch screen? | `mobile.has-touch` |
@@ -110,6 +114,8 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `ButtonWidget` look | `draw.button(x, y, w, h, label, hovered, active)` |
 | a dialog background | `draw.panel` |
 | `MatrixStack.push/translate/scale/pop` | `draw.push(x, y, scale)`, `draw.pop` |
+| `InventoryScreen.drawEntity` (the player in the inventory) | `draw.player(x, y, width, height, size, turn)`: the head follows the mouse (ahead on a phone), `turn` degrees more |
+| `Screen.getTooltipFromItem` + `drawTooltip` (an item's full tooltip) | `draw.item-tooltip(x, y, stack)`: name, lore, enchantments, attributes, the mods' lines |
 
 ### Screens and input
 
@@ -118,6 +124,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | a custom `Screen` | `screens.open("name")` opens `<mod id>:name`; `registration.screens`; `events.screen-render`, `screen-mouse`, `screen-key`, `screen-opened`, `screen-closed` |
 | `ScreenEvents.AFTER_INIT` / `afterRender` on the game's screens | the same hooks receive the game's screens (`pause`, `inventory`, `container`, `creative`, `title`, `worlds`, `multiplayer`, `death`, `options`...): draw over them, take their mouse and keys first |
 | Mod Menu's `getModConfigScreenFactory` | `screens.set-config("settings")` in `init`: a Config button on Options > Mods opens that screen |
+| `MinecraftClient.setScreen` mixin swapping `CreativeInventoryScreen` for the mod's | `screens.replace("creative", "name")`: the mod's screen opens wherever the game's would (the inventory key in creative), `""` gives it back (the screen open changes over at once); there `slots` clicks the player's inventory as the creative screen does and the inventory key closes it |
 | `Screens.getButtons(screen).add(ButtonWidget.builder(text, onPress)...)` in `ScreenEvents.AFTER_INIT`, NeoForge's `ScreenEvent.Init.Post.addListener` | `widgets.add-screen-button` in `init` (capability `ui`): a button on a game screen (`pause`, `title`, `inventory`...) placed from an `anchor` (Bedrock's `anchor_from`/`anchor_to`), drawn as that screen's buttons, with an icon and a tooltip; a press is `events.key(id, true)` then `(id, false)`. JavaScript: `widgets.addScreenButton({...}, onPress)` |
 | Bedrock's touch buttons | `widgets.add-touch-button` (round, square or wide; an icon or a label; where it starts): the player moves, resizes and hides it in the touch layout editor; its id is a keybind's or its own. JavaScript: `widgets.addTouchButton({...}, onPress)` |
 | Bedrock's resource packs retexturing the touch controls | `widgets.style-control("jump", label, icon, shape)`, or a pack's `assets/starling/textures/gui/sprites/touch/<name>.png` (and `<name>_pressed.png`) |
@@ -155,7 +162,15 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
   `target` can be an entity (`{"entity": "minecraft:zombie", "health": 14}`).
 - Steps: `tick`, `frame`, `hud`, `screen`, `click`, `type`, `press`, `close`, `command`, `chat`,
   `send`, `tooltip`, `key`, `controls` (the game's controls held), `join`, `leave`, `hurt`,
-  `touch` (a touch button pressed).
+  `touch` (a touch button pressed). For screens with slots: `{"click": [x, y], "press": false}`
+  (a press held), `{"release": [x, y]}`, `{"drag": [x, y]}`, `{"scroll": [x, y], "lines": -1}`,
+  `{"key-press": "key.keyboard.left.shift", "pressed": true}`.
+- Slots: the scenario's `menu` (`{"slots": {"36": {"id": "minecraft:stone", "count": 32}},
+  "carried": ...}`) is what `slots.get-menu` reads. Pickup clicks (buttons 0 and 1, -999 outside),
+  `creative`'s clicks and sets change it before the step draws, as the game's simplest clicks do;
+  the other clicks are lines only (`"pretended": false`).
+- Creative: `"player": {"game_mode": "creative"}`; the tabs are the resources'
+  `creative-inventory.json`, else a few made up; `"player": {"touch": true}` for a phone.
 - Buttons (`widgets`): a `widgets` line lists them whenever they change; `{"screen": "pause"}`
   draws the mod's buttons on that game screen and `click` presses them; `{"hud": {"touch":
   true}}` draws its touch buttons where they start.
@@ -177,13 +192,15 @@ phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into
   for `text`. In JavaScript they pass right whatever the alpha (the engine works around a
   componentize-js bug with values of 2^31 and more).
 - **A JavaScript hook that throws** stops the mod; the log says why and where (`[mod id]
-  hookName: TypeError ...`). `init` and `command` throw to fail on purpose.
+  hookName: TypeError ...`). `init` and `command` throw to fail on purpose. A call returning
+  `result` (`slots.click`, `creative.set-slot`, `widgets.add-screen-button`...) throws when it
+  errs: wrap the ones that can (outside creative mode, a full click queue) in `try`.
 - **JavaScript speed**: each call from JavaScript into the game costs a few microseconds (the
   engine's interpreter crossing into native code), and so does each builtin (`push`, `Map.get`).
-  The engine queues a render hook's `fill`, `gradient`, `text`, `sprite`, `push` and `pop` and
-  sends them in one call when the hook returns, with text widths cached (40 texts a frame: 0.09
-  ms on the PC, were 0.4); `item`, `item-id`, `tooltip`, `button` and `panel` send the queue
-  first, so a frame with fewer of them is cheaper. Reads of `game`, `level` and `inventory` are
+  The engine queues a render hook's `fill`, `gradient`, `text`, `sprite`, `item`, `item-id`,
+  `push` and `pop` and sends them in one call when the hook returns, with text widths cached (40
+  texts a frame: 0.09 ms on the PC, were 0.4); `tooltip`, `item-tooltip`, `button`, `panel` and
+  `player` send the queue first, so a frame with fewer of them is cheaper. Reads of `game`, `level` and `inventory` are
   kept until the game's snapshot changes (once a tick) and handed out as shallow copies (the
   player: 37 us a read, 2 us kept); `keys.is-control-down` reads every control at once a hook.
   The first start after the engine changed runs on
@@ -239,6 +256,7 @@ what is still missing (the next port's API work).
 | Mod Menu | built into Options > Mods | game | list, descriptions, Config button done |
 | Xaero's / JourneyMap waypoints | [waypoints](../crates/starling-mod-sdk/examples/waypoints) | Rust | list screen, HUD pointer, pause and touch buttons |
 | Elytra Swapper | [elytra-swap](../crates/starling-mod-sdk/examples/elytra-swap) | JavaScript | done, with a touch button |
+| Bedrock Edition's creative inventory | [bedrock-inventory](../crates/starling-mod-sdk/examples/bedrock-inventory) | JavaScript | in place of the creative screen, mouse and touch |
 
 ### AppleSkin → food-info
 
@@ -289,6 +307,25 @@ what is still missing (the next port's API work).
 - Missing: swapping on take-off (needs a flying event or reading the player's gliding each tick:
   `game.get-player().gliding` and a tick hook would do).
 
+### Bedrock's creative inventory → bedrock-inventory
+
+- Does: in creative mode, in place of the creative screen: the creative screen as the game draws
+  it (its tabs above and below, the tab's items, the search, the scrollbar, the hotbar row) with
+  the survival inventory beside it as Bedrock puts it (the player, armour, off hand, 2x2
+  crafting, inventory, hotbar, Destroy Item), both at once; the Survival Inventory tab shows only
+  the inventory, the tabs around it. The windows are the game's textures (a resource pack's too).
+  The mouse as on the game's screens (Shift, double click, middle click, 1-9/F/Q, a click outside
+  throws); fingers as the game's touch inventory (tap to pick and to put, hold for half, double
+  tap across, drag and drop, tap outside to throw). Java UI goes back to the game's screen, Bedrock
+  UI (a button there) comes back; the choice and the inventory-only view are kept.
+- API added: the `creative` interface and capability (`get-tabs`, `get-items`, `click`,
+  `set-slot`, `set-carried`), `screens.replace`, `draw.player`, `draw.item-tooltip`; `slots.click`
+  on the stand-in clicks as the creative screen (each changed slot sent as `SetCreativeModeSlot`,
+  the crafting grid, armour and off hand too); `get-menu` shows clicks from the next hook.
+- Missing: dragging a carried stack across slots to share it (vanilla's quick craft: a `slots`
+  call for it); saved hotbars (C and X); the survival inventory in its place (`replace` takes only
+  `creative`).
+
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 
 - Does: a screen of saved places (add here, pick, forget, rename with the phone's keyboard), the
@@ -302,7 +339,7 @@ what is still missing (the next port's API work).
 
 | Original | What it needs |
 |---|---|
-| JEI / EMI / REI | recipes read (`recipes` interface), an overlay beside inventories |
+| JEI / EMI / REI | recipes read (`recipes` interface), an overlay beside inventories; the item list is `creative.get-items` |
 | Xaero's / JourneyMap world map | world-read over a wider area, map storage, a full-screen map screen |
 | Inventory Profiles (auto refill) | `slots` (done) and a tick hook: refill the held stack when it runs out |
 | Mouse Tweaks / sorting | built into Horizon's extras already (tweaks.rs) |

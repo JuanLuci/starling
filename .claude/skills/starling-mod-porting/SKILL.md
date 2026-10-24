@@ -33,7 +33,10 @@ pitfalls and the port log. Then:
    GUI (`"gui": {"width": 533, "height": 240}`) and the scenario fields `player`, `target`,
    `mining`, `blocks` and the `controls` step to set the scene. `--watch` reruns on every save.
    Buttons a mod adds (`widgets`): `{"screen": "pause"}` draws them on that game screen, `click`
-   and `touch` press them, `{"hud": {"touch": true}}` shows its touch buttons.
+   and `touch` press them, `{"hud": {"touch": true}}` shows its touch buttons. Inventory screens:
+   the scenario's `menu` and `"player": {"game_mode": "creative", "touch": true}`; pickup and
+   `creative` clicks change the pretend menu before the step draws (`release`, `drag`, `scroll`,
+   `key-press` steps too). A mod screen standing in for a game screen: `screens.replace`.
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

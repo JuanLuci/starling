@@ -76,6 +76,8 @@ pub enum Capability {
     InventoryRead,
     /// The open menu's slots and clicks in them (Starling's `slots`).
     InventoryClick,
+    /// The creative tabs' items, taken in creative mode (Starling's `creative`).
+    Creative,
     Chat,
     ChatSend,
     Hud,
@@ -91,11 +93,12 @@ pub enum Capability {
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
         Capability::InventoryClick,
+        Capability::Creative,
         Capability::Chat,
         Capability::ChatSend,
         Capability::Hud,
@@ -114,6 +117,7 @@ impl Capability {
             Capability::WorldRead => &["level"],
             Capability::InventoryRead => &["inventory"],
             Capability::InventoryClick => &["slots"],
+            Capability::Creative => &["creative"],
             Capability::Chat => &["chat"],
             Capability::ChatSend => &["chat-send"],
             Capability::Hud => &["hud", "draw"],
@@ -133,6 +137,7 @@ impl Capability {
             Capability::WorldRead => "see the blocks and creatures around you",
             Capability::InventoryRead => "see your items",
             Capability::InventoryClick => "move your items, in your inventory and what you open",
+            Capability::Creative => "take items from the creative tabs, in creative mode",
             Capability::Chat => "show you chat messages",
             Capability::ChatSend => "send chat messages and commands as you",
             Capability::Hud => "draw on your screen",
@@ -185,6 +190,7 @@ impl fmt::Display for Capability {
             Capability::WorldRead => "world-read",
             Capability::InventoryRead => "inventory-read",
             Capability::InventoryClick => "inventory-click",
+            Capability::Creative => "creative",
             Capability::Chat => "chat",
             Capability::ChatSend => "chat-send",
             Capability::Hud => "hud",

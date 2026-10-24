@@ -505,7 +505,15 @@ pub fn render(ops: &[DrawOp], width: u32, height: u32, scale: u32, res: &mut Res
             } => {
                 canvas.text(*x, *y, text, *color, *shadow);
             }
-            DrawOp::Item { x, y, stack } => canvas.item(&stack.id, *x, *y),
+            DrawOp::Item { x, y, stack } => {
+                canvas.item(&stack.id, *x, *y);
+                // The count, as an inventory shows it.
+                if stack.count > 1 {
+                    let count = stack.count.to_string();
+                    let w = canvas.text_width(&count) - 1.0;
+                    canvas.text(x + 17.0 - w - 1.0, y + 9.0, &count, 0xFFFFFF, true);
+                }
+            }
             DrawOp::ItemId { x, y, id } => canvas.item(id, *x, *y),
             DrawOp::Sprite { x, y, w, h, sprite } => {
                 // As the game looks it up: a GUI sprite, else a texture (`item/compass_16`).
@@ -551,6 +559,24 @@ pub fn render(ops: &[DrawOp], width: u32, height: u32, scale: u32, res: &mut Res
                 if canvas.poses.len() > 1 {
                     canvas.poses.pop();
                 }
+            }
+            // The game draws the player's model: here a figure of its size, standing in the box.
+            DrawOp::Player {
+                x, y, w, h, size, ..
+            } => {
+                let (cx, bottom) = (x + w / 2.0, y + h / 2.0 + size * 0.9625);
+                let px = size / 16.0;
+                let part = |c: &mut Canvas, dx: f32, top: f32, pw: f32, ph: f32, colour: u32| {
+                    c.fill(cx + dx * px, bottom - top * px, pw * px, ph * px, colour);
+                };
+                part(&mut canvas, -4.0, 32.0, 8.0, 8.0, 0xFFB5_8D6E);
+                part(&mut canvas, -4.0, 24.0, 8.0, 12.0, 0xFF2F_8FA8);
+                part(&mut canvas, -8.0, 24.0, 4.0, 12.0, 0xFFB5_8D6E);
+                part(&mut canvas, 4.0, 24.0, 4.0, 12.0, 0xFFB5_8D6E);
+                part(&mut canvas, -4.0, 12.0, 8.0, 12.0, 0xFF3B_3B8F);
+            }
+            DrawOp::ItemTooltip { x, y, stack } => {
+                canvas.tooltip(*x, *y, std::slice::from_ref(&stack.name));
             }
         }
     }

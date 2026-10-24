@@ -15,8 +15,9 @@ use horizon_client::{
     text::{self, Text},
 };
 use horizon_mods::{
-    BlockInfo, Capability, ChatVerdict, Clock, Controls, Effect, Entity, EntityInfo, GameMode, Gui,
-    ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
+    BlockInfo, Capability, ChatVerdict, Clock, Controls, CreativeCatalog, Effect, Entity,
+    EntityInfo, GameMode, Gui, ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot,
+    Status, Target, WorldInfo,
 };
 use std::{
     collections::HashSet,
@@ -42,6 +43,8 @@ pub(super) struct ModsState {
     tree: Option<Dispatcher>,
     /// The mod screen open now, `<mod id>:<name>`, over everything else.
     pub(super) screen: Option<String>,
+    /// That screen stands in for the creative screen (`screens.replace`).
+    pub(super) replacing: bool,
     /// The screen the mods were last told of (`screen-opened` / `screen-closed`).
     pub(super) shown: Option<String>,
     /// The mouse button held on a screen, for drag events.
@@ -72,6 +75,8 @@ pub(super) struct ModsState {
     harvest: Option<(String, Arc<HashSet<Arc<str>>>)>,
     biomes: Option<Arc<Vec<String>>>,
     items: Option<Arc<dyn ItemCatalog>>,
+    /// The creative tabs for `creative`, made once for the language their names are in.
+    pub(super) creative: Option<(String, Arc<dyn CreativeCatalog>)>,
     measure: Option<Measure>,
     /// Mods loading on their own thread ([`Game::start_mods`]), and since when.
     loading: Option<(Receiver<Mods>, Instant)>,
@@ -99,6 +104,10 @@ impl ModsState {
             self.controls[i].1 += 1;
             self.counted[i] = true;
         }
+    }
+    /// A mod's screen is open in the creative screen's place.
+    pub(super) fn standing_in(&self) -> bool {
+        self.replacing && self.screen.is_some()
     }
     /// A mod holds sneak (slot 0) or sprint (slot 1): the player's toggle state, as it were.
     pub(super) fn holding(&self, slot: usize) -> bool {
@@ -767,7 +776,14 @@ impl Game<'_> {
             snapshot.cursor = self.carried.as_ref().map(|s| self.mod_stack(s));
             snapshot.hovered = self.hovered_stack().map(|s| self.mod_stack(&s));
             snapshot.container = self.mod_container();
+        }
+        let creative = self.mods.mods.uses(Capability::Creative);
+        // `creative` checks the stacks it is given against the items.
+        if inventory_read || creative {
             snapshot.items = Some(self.mod_items());
+        }
+        if creative && self.res.rest_ready() {
+            snapshot.creative = Some(self.mod_creative_tabs());
         }
         if self.mods.mods.uses(Capability::InventoryClick) {
             snapshot.menu = self.mod_menu();
@@ -901,7 +917,7 @@ impl Game<'_> {
         };
         let button = i32::from(button);
         // The creative screen's clicks are this client's, sent as set slots (as vanilla's).
-        if self.remote.is_some() && self.screen != Screen::Creative {
+        if self.remote.is_some() && !self.creative_menu_open() {
             let Ok(slot) = i16::try_from(slot) else {
                 return;
             };
@@ -915,7 +931,9 @@ impl Game<'_> {
     }
     /// The stack under the cursor in a screen.
     fn hovered_stack(&mut self) -> Option<ItemStack> {
-        if !matches!(self.screen, Screen::Inventory | Screen::Creative) {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || self.mods.screen.is_some()
+        {
             return None;
         }
         let renderer = self.renderer.as_ref()?;
@@ -1209,6 +1227,7 @@ impl Game<'_> {
                 self.sync_mod_commands();
             }
         }
+        self.swap_creative_screen();
         if !self.mods.mods.is_running() {
             return;
         }
@@ -1430,6 +1449,8 @@ impl Game<'_> {
     }
     /// Chat lines, command feedback, stopped mods, and what mods asked for.
     pub(super) fn show_mod_output(&mut self) {
+        // Slots a mod clicked or set: its next hook reads them as they are now.
+        let mut clicked = false;
         for output in self.mods.mods.drain() {
             let line = match output {
                 Output::Chat { name, text } => {
@@ -1478,6 +1499,29 @@ impl Game<'_> {
                     slot, button, kind, ..
                 } => {
                     self.mod_slot_click(slot, button, kind);
+                    clicked = true;
+                    continue;
+                }
+                Output::CreativeClick {
+                    tab,
+                    search,
+                    index,
+                    button,
+                    kind,
+                    ..
+                } => {
+                    self.mod_creative_click(&tab, &search, index, button, kind);
+                    clicked = true;
+                    continue;
+                }
+                Output::CreativeSlot { slot, stack, .. } => {
+                    self.mod_creative_slot(slot, stack.as_ref());
+                    clicked = true;
+                    continue;
+                }
+                Output::CreativeCarried { stack, .. } => {
+                    self.mod_creative_carried(stack.as_ref());
+                    clicked = true;
                     continue;
                 }
                 Output::Hold { id, control, held } => {
@@ -1519,6 +1563,9 @@ impl Game<'_> {
             self.ui
                 .chat
                 .add(&self.gui.atlas, line, None, self.ticks, focused);
+        }
+        if clicked {
+            self.refresh_mod_snapshot();
         }
     }
     /// `chat-send.send`: a line or `/command` as the player typed it, past the chat hooks.

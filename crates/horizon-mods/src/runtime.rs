@@ -19,6 +19,8 @@ mod starling {
     wasmtime::component::bindgen!({
         path: "../starling-mod-sdk/wit",
         world: "starling-mod",
+        // `creative`'s outputs carry stacks, and outputs compare.
+        additional_derives: [PartialEq],
     });
 }
 mod v1 {
@@ -32,6 +34,7 @@ pub use starling::exports::starling::mods::events::{
     RenderContext, SendAction,
 };
 pub use starling::starling::mods::{
+    creative::{ClickKind as CreativeClick, ItemPage, Tab, TabKind},
     game::{BlockHit, Clock, Effect, EntityHit, Gui, Mining, Player, Target, WorldInfo},
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
@@ -43,8 +46,8 @@ pub use starling::starling::mods::{
 use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
-        chat, chat_send, draw, game, hud, input, inventory, keys, level, log as mod_log, mobile,
-        net, screens, slots, sound, storage, types, widgets,
+        chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log as mod_log,
+        mobile, net, screens, slots, sound, storage, types, widgets,
     },
 };
 
@@ -72,8 +75,12 @@ const SEND_CHARS: usize = 256;
 const PAYLOAD_BYTES: usize = 32 << 10;
 /// `level.get-entities`' cap.
 const ENTITIES: usize = 128;
-/// `slots.click`s one call may queue.
+/// `slots.click`s (and `creative`'s clicks and sets) one call may queue.
 const CLICKS_PER_CALL: usize = 64;
+/// The items one `creative.get-items` may list.
+const CREATIVE_PAGE: u32 = 256;
+/// The game's screens a mod's may stand in for (`screens.replace`).
+pub const REPLACEABLE_SCREENS: [&str; 1] = ["creative"];
 /// Buttons one mod may put on the game's screens, and on the touch controls.
 const SCREEN_BUTTONS: usize = 32;
 const TOUCH_BUTTONS: usize = 16;
@@ -123,6 +130,12 @@ pub trait LevelView: Send + Sync {
 pub trait ItemCatalog: Send + Sync {
     fn info(&self, id: &str) -> Option<ItemInfo>;
 }
+/// The creative screen's tabs and their items, for `creative`.
+pub trait CreativeCatalog: Send + Sync {
+    fn tabs(&self) -> Vec<Tab>;
+    /// Up to `count` of tab `tab`'s items from `start` (the search tab's that match `search`).
+    fn items(&self, tab: &str, search: &str, start: usize, count: usize) -> ItemPage;
+}
 /// A text's width in GUI pixels.
 pub type Measure = Arc<dyn Fn(&str) -> f32 + Send + Sync>;
 
@@ -153,6 +166,8 @@ pub struct Snapshot {
     pub entity_info: Vec<EntityInfo>,
     pub level: Option<Arc<dyn LevelView>>,
     pub items: Option<Arc<dyn ItemCatalog>>,
+    /// The creative tabs (`creative`).
+    pub creative: Option<Arc<dyn CreativeCatalog>>,
     pub measure: Option<Measure>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub keys_down: Vec<String>,
@@ -206,6 +221,26 @@ pub enum Output {
         slot: i32,
         button: u8,
         kind: ClickKind,
+    },
+    /// `creative.click`: a click on item `index` of tab `tab`'s list for `search`.
+    CreativeClick {
+        id: String,
+        tab: String,
+        search: String,
+        index: u32,
+        button: u8,
+        kind: CreativeClick,
+    },
+    /// `creative.set-slot`: the player's inventory menu's slot `slot` set.
+    CreativeSlot {
+        id: String,
+        slot: u32,
+        stack: Option<ItemStack>,
+    },
+    /// `creative.set-carried`: the cursor's stack set.
+    CreativeCarried {
+        id: String,
+        stack: Option<ItemStack>,
     },
     /// `input.hold`: mod `id` holds `control` (`key.sprint` or `key.sneak`), or lets it go.
     Hold {
@@ -283,6 +318,21 @@ pub enum DrawOp {
         scale: f32,
     },
     Pop,
+    /// `draw.player`.
+    Player {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        size: f32,
+        turn: f32,
+    },
+    /// `draw.item-tooltip`.
+    ItemTooltip {
+        x: f32,
+        y: f32,
+        stack: ItemStack,
+    },
 }
 
 /// A mod's text panel, drawn every frame until it changes.
@@ -413,6 +463,9 @@ struct State {
     draw: Option<Vec<DrawOp>>,
     /// Its settings screen (`screens.set-config`), `<mod id>:<name>`.
     config: Option<String>,
+    /// The game's screens its own stand in for (`screens.replace`): the game's name, then
+    /// `<mod id>:<name>`.
+    replaces: Vec<(String, String)>,
     widgets: Widgets,
     /// The mod's payload channels.
     channels: Vec<String>,
@@ -728,6 +781,7 @@ impl Mods {
             panel: None,
             draw: None,
             config: None,
+            replaces: Vec::new(),
             widgets: Widgets::default(),
             channels: Vec::new(),
             sent: VecDeque::new(),
@@ -812,6 +866,18 @@ impl Mods {
         };
         self.running()
             .any(|r| !Engine::same(r.store.engine(), main))
+    }
+    /// The mod screen (`<mod id>:<name>`) standing in for the game's `screen`
+    /// (`screens.replace`): the first running mod's that asked.
+    pub fn replacement(&self, screen: &str) -> Option<String> {
+        self.running().find_map(|r| {
+            let state = r.store.data();
+            state
+                .replaces
+                .iter()
+                .find(|(game, _)| game == screen)
+                .map(|(_, own)| own.clone())
+        })
     }
     /// Every running mod's buttons, with its id.
     pub fn widgets(&self) -> impl Iterator<Item = (&str, &Widgets)> {
@@ -1619,6 +1685,31 @@ fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
                 state.pop();
                 Some(1)
             }
+            // An item stack's icon: what `draw.item` draws of it (its id, count and components).
+            7 => (|| {
+                let (x, y, count, damage) = (f(at + 1)?, f(at + 2)?, n(at + 3)?, n(at + 4)?);
+                n(at + 6)?;
+                if let (Some(id), Some(components)) = (text(at + 5), text(at + 6)) {
+                    let stack = ItemStack {
+                        id,
+                        count: count as u32,
+                        damage: damage as u32,
+                        max_damage: 0,
+                        name: String::new(),
+                        components,
+                    };
+                    state.item(x, y, stack);
+                }
+                Some(7)
+            })(),
+            8 => (|| {
+                let (x, y) = (f(at + 1)?, f(at + 2)?);
+                n(at + 3)?;
+                if let Some(id) = text(at + 3) {
+                    state.item_id(x, y, id);
+                }
+                Some(4)
+            })(),
             _ => None,
         };
         match drawn {
@@ -1654,6 +1745,7 @@ fn js_linker(
             "level" => api::level::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "inventory" => api::inventory::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "slots" => api::slots::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "creative" => api::creative::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat" => api::chat::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat-send" => api::chat_send::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -2226,6 +2318,19 @@ impl draw::Host for State {
     fn pop(&mut self) {
         self.draw(DrawOp::Pop);
     }
+    fn player(&mut self, x: f32, y: f32, width: f32, height: f32, size: f32, turn: f32) {
+        self.draw(DrawOp::Player {
+            x,
+            y,
+            w: width,
+            h: height,
+            size,
+            turn,
+        });
+    }
+    fn item_tooltip(&mut self, x: f32, y: f32, stack: ItemStack) {
+        self.draw(DrawOp::ItemTooltip { x, y, stack });
+    }
 }
 impl hud::Host for State {
     fn set_panel(&mut self, corner: Corner, lines: Vec<Line>) {
@@ -2273,6 +2378,19 @@ impl screens::Host for State {
             );
         }
     }
+    fn replace(&mut self, screen: String, name: String) -> bool {
+        if !REPLACEABLE_SCREENS.contains(&screen.as_str())
+            || !(name.is_empty() || screen_name_ok(&name))
+        {
+            return false;
+        }
+        self.replaces.retain(|(game, _)| *game != screen);
+        if !name.is_empty() {
+            let own = format!("{}:{name}", self.id);
+            self.replaces.push((screen, own));
+        }
+        true
+    }
 }
 impl slots::Host for State {
     fn get_menu(&mut self) -> Option<Menu> {
@@ -2282,14 +2400,7 @@ impl slots::Host for State {
         if slot != -999 && !(0..128).contains(&slot) {
             return Err(format!("no menu has slot {slot}"));
         }
-        let queued = self
-            .out
-            .iter()
-            .filter(|o| matches!(o, Output::Click { .. }))
-            .count();
-        if queued >= CLICKS_PER_CALL {
-            return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
-        }
+        self.room_for_click()?;
         let id = self.id.clone();
         self.out.push(Output::Click {
             id,
@@ -2297,6 +2408,121 @@ impl slots::Host for State {
             button,
             kind,
         });
+        Ok(())
+    }
+}
+
+impl State {
+    /// Whether one more click (of `slots` or `creative`) fits in this call.
+    fn room_for_click(&self) -> Result<(), String> {
+        let queued = self
+            .out
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o,
+                    Output::Click { .. }
+                        | Output::CreativeClick { .. }
+                        | Output::CreativeSlot { .. }
+                        | Output::CreativeCarried { .. }
+                )
+            })
+            .count();
+        if queued >= CLICKS_PER_CALL {
+            return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
+        }
+        Ok(())
+    }
+    /// `creative`'s takings need the player in creative mode.
+    fn in_creative(&self) -> Result<(), String> {
+        match &self.snapshot.player {
+            Some(p) if p.game_mode == GameMode::Creative => Ok(()),
+            _ => Err("only in creative mode".into()),
+        }
+    }
+    /// A stack a mod gives: a known item, no more than it stacks to.
+    fn stack_ok(&self, stack: &ItemStack) -> Result<(), String> {
+        let Some(info) = self.snapshot.items.as_ref().and_then(|i| i.info(&stack.id)) else {
+            return Err(format!("no item {}", clip(stack.id.clone())));
+        };
+        if stack.count == 0 || stack.count > info.max_stack_size {
+            return Err(format!(
+                "{} of {} (it stacks to {})",
+                stack.count, stack.id, info.max_stack_size
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl creative::Host for State {
+    fn get_tabs(&mut self) -> Vec<Tab> {
+        self.snapshot
+            .creative
+            .as_ref()
+            .map(|c| c.tabs())
+            .unwrap_or_default()
+    }
+    fn get_items(&mut self, tab: String, search: String, start: u32, count: u32) -> ItemPage {
+        let empty = ItemPage {
+            total: 0,
+            items: Vec::new(),
+        };
+        let Some(c) = self.snapshot.creative.as_ref() else {
+            return empty;
+        };
+        let search = clip(search);
+        c.items(
+            &tab,
+            &search,
+            start as usize,
+            count.min(CREATIVE_PAGE) as usize,
+        )
+    }
+    fn click(
+        &mut self,
+        tab: String,
+        search: String,
+        index: u32,
+        button: u8,
+        kind: CreativeClick,
+    ) -> Result<(), String> {
+        self.in_creative()?;
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeClick {
+            id,
+            tab: clip(tab),
+            search: clip(search),
+            index,
+            button,
+            kind,
+        });
+        Ok(())
+    }
+    fn set_slot(&mut self, slot: u32, stack: Option<ItemStack>) -> Result<(), String> {
+        self.in_creative()?;
+        if !(1..=45).contains(&slot) {
+            return Err(format!(
+                "the inventory menu's slot {slot} takes no item: 1 to 45 do"
+            ));
+        }
+        if let Some(s) = &stack {
+            self.stack_ok(s)?;
+        }
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeSlot { id, slot, stack });
+        Ok(())
+    }
+    fn set_carried(&mut self, stack: Option<ItemStack>) -> Result<(), String> {
+        self.in_creative()?;
+        if let Some(s) = &stack {
+            self.stack_ok(s)?;
+        }
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeCarried { id, stack });
         Ok(())
     }
 }

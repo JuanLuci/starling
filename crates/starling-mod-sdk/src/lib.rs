@@ -22,9 +22,9 @@
 //! ```
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
-//! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `chat`, `chat-send`,
-//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`, `net`,
-//! `storage`).
+//! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `inventory-click` for
+//! [`slots`], `creative`, `chat`, `chat-send`, `hud` for [`hud`] and [`draw`], `ui` for [`screens`]
+//! and [`widgets`], `keys`, `input`, `sound`, `net`, `storage`).
 //!
 //! # Coming from Fabric
 //!
@@ -41,6 +41,10 @@
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
 //! | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | [`slots::click`] (capability `inventory-click`), the menu by vanilla's ids from [`slots::get_menu`] |
+//! | `ItemGroups` / `ItemGroup.getDisplayStacks()`, the creative search | [`creative::get_tabs`], [`creative::get_items`] (capability `creative`) |
+//! | `CreativeInventoryScreen.onMouseClick`, `ClientPlayerInteractionManager.clickCreativeStack` | [`creative::click`], [`creative::set_slot`], [`creative::set_carried`] |
+//! | `MinecraftClient.setScreen` swapped for `CreativeInventoryScreen` | [`screens::replace`] |
+//! | `InventoryScreen.drawEntity` | [`draw::player`] |
 //! | `Screens.getButtons(screen).add(ButtonWidget...)` (in `ScreenEvents.AFTER_INIT`) | [`widgets::add_screen_button`] in [`Mod::init`]; a press is [`Mod::key`] with its id |
 //! | Bedrock's touch buttons (a keybind's button on a phone) | [`widgets::add_touch_button`], [`widgets::style_control`] for the game's own |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
@@ -66,7 +70,8 @@ pub use exports::starling::mods::events::{
     Placement, Registration, RenderContext, SendAction,
 };
 pub use starling::mods::{
-    chat, chat_send, draw, game, hud, input, inventory, keys, level, log, mobile, net, screens,
+    chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log, mobile, net,
+    screens,
     slots::{self, ClickKind},
     sound, storage,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},

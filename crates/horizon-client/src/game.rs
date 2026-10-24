@@ -89,6 +89,7 @@ mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
+mod mod_creative;
 mod mod_ui;
 mod mod_widgets;
 mod mods;
@@ -5255,7 +5256,7 @@ impl Game<'_> {
         button: i32,
         input: horizon_client::menu::Input,
     ) {
-        use horizon_client::creative::{DisplayClick, click_display};
+        use horizon_client::creative::click_display;
         if self.creative_screen.tab().search {
             // CreativeModeInventoryScreen.slotClicked: moveCursorToEnd, then
             // setHighlightPos(0), so typing replaces the whole query.
@@ -5267,11 +5268,8 @@ impl Game<'_> {
         let shown = items.get(first * 9 + slot - Creative::DISPLAY);
         let catalog = self.res.items();
         let max = |s: &ItemStack| catalog.get(&s.item).map_or(64, |i| i.max_stack);
-        match click_display(&mut self.carried, shown, max, button, input) {
-            DisplayClick::Hotbar(i, stack) => self.inventory[i] = Some(stack),
-            DisplayClick::Drop(stack) => self.player_drop(stack),
-            DisplayClick::Nothing => {}
-        }
+        let effect = click_display(&mut self.carried, shown, max, button, input);
+        self.creative_display_effect(effect);
     }
     /// Several clicks on one menu instance (a quick craft drag is three).
     fn menu_ops(&mut self, ops: &[(Option<usize>, i32, horizon_client::menu::Input)]) -> bool {
@@ -5495,7 +5493,7 @@ impl Game<'_> {
         let creative = self.creative;
         // CreativeModeInventoryScreen clicks the menu itself and sends every
         // changed slot, which the server sets by player.
-        let equipment_before = (self.screen == Screen::Creative).then(|| self.player_equipment());
+        let equipment_before = self.creative_menu_open().then(|| self.player_equipment());
         let station_menu = self.station.as_ref().map(|s| {
             (
                 s.loom.selected.map_or(-1, |i| i as i32),
@@ -5602,6 +5600,12 @@ impl Game<'_> {
                 self.player_drop(stack);
             }
             self.award_crafted(&crafted);
+        } else if self.creative_menu_open() {
+            // The creative screen's clicks are not the server's: it drops what they throw
+            // (handleCreativeModeItemDrop).
+            for stack in dropped {
+                self.creative_drop(stack);
+            }
         }
         if kind == Kind::Loom {
             if let Some(s) = self.station.as_mut() {

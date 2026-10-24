@@ -42,6 +42,20 @@ fn sane(op: &DrawOp) -> bool {
         DrawOp::Tooltip { x, y, lines } => ok(&[*x, *y]) && !lines.is_empty(),
         DrawOp::Push { x, y, scale } => ok(&[*x, *y, *scale]),
         DrawOp::Pop => true,
+        DrawOp::Player {
+            x,
+            y,
+            w,
+            h,
+            size,
+            turn,
+        } => {
+            ok(&[*x, *y, *turn])
+                && (1.0..=4096.0).contains(w)
+                && (1.0..=4096.0).contains(h)
+                && (1.0..=1024.0).contains(size)
+        }
+        DrawOp::ItemTooltip { x, y, .. } => ok(&[*x, *y]),
     }
 }
 
@@ -200,6 +214,28 @@ impl Game<'_> {
                         *h,
                         u32::MAX,
                     );
+                }
+                // Drawn in 3D in its box: placed by the pose itself.
+                DrawOp::Player {
+                    x,
+                    y,
+                    w,
+                    h,
+                    size,
+                    turn,
+                } => {
+                    let (x0, y0) = (tx + x * s, ty + y * s);
+                    let (x1, y1) = (x0 + w * s, y0 + h * s);
+                    self.draw_player_preview_turned(batch, [x0, y0, x1, y1], size * s, *turn);
+                    continue;
+                }
+                // Placed on the screen as the game places tooltips (inside it), so not posed.
+                DrawOp::ItemTooltip { x, y, stack } => {
+                    if let Some(stack) = self.game_stack(stack) {
+                        let lines = self.stack_tooltip(&stack);
+                        self.draw_tooltip_lines(batch, &lines, tx + x * s, ty + y * s);
+                    }
+                    continue;
                 }
                 DrawOp::Push { x, y, scale } => {
                     poses.push((tx + x * s, ty + y * s, s * scale));
@@ -364,11 +400,13 @@ impl Game<'_> {
     }
     /// `screens.open`: the mod's screen over everything, the mouse freed.
     pub(super) fn open_mod_screen(&mut self, screen: String) {
+        self.begin_creative_stand_in(&screen);
         self.mods.screen = Some(screen);
         self.mods.keyboard = false;
         self.capture(false);
     }
     pub(super) fn close_mod_screen(&mut self) {
+        self.end_creative_stand_in(false);
         self.mods.screen = None;
         self.mods.held = None;
         self.mods.keyboard = false;
@@ -422,6 +460,17 @@ impl Game<'_> {
                     };
                     let used = self.mods.mods.screen_key(screen, &event);
                     self.show_mod_output();
+                    // The inventory key closes the creative screen's stand-in, as it closes the
+                    // creative screen, when the mod's screen did not use it (to type, say).
+                    if !used
+                        && pressed
+                        && !k.repeat
+                        && self.mods.standing_in()
+                        && self.settings.keys.translate(code) == Some(Ok(KeyCode::KeyE))
+                    {
+                        self.close_mod_screen();
+                        return true;
+                    }
                     if used || own {
                         return true;
                     }

@@ -459,6 +459,42 @@ impl Game<'_> {
         size: f32,
         offset_y: f32,
     ) {
+        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        // On a touch screen there is no cursor to follow (the touch inventory parks it out of
+        // the window): the player looks ahead, turned as far as a finger dragged it.
+        let (cursor, spin) = match self.player_spin() {
+            Some(spin) => ((cx, cy), spin),
+            None => (self.cursor, 0.0),
+        };
+        self.player_preview(batch, [x0, y0, x1, y1], size, offset_y, cursor, spin);
+    }
+    /// A mod's `draw.player`: the inventory's player in the box `[x0, y0, x1, y1]`, turned `turn`
+    /// degrees more than it faces (the mouse, or ahead on a touch screen).
+    pub(super) fn draw_player_preview_turned(
+        &self,
+        batch: &mut HudBatch,
+        [x0, y0, x1, y1]: [f32; 4],
+        size: f32,
+        turn: f32,
+    ) {
+        let centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let cursor = if self.has_touch() {
+            centre
+        } else {
+            self.cursor
+        };
+        // InventoryScreen's offset.
+        self.player_preview(batch, [x0, y0, x1, y1], size, 0.0625, cursor, turn);
+    }
+    fn player_preview(
+        &self,
+        batch: &mut HudBatch,
+        [x0, y0, x1, y1]: [f32; 4],
+        size: f32,
+        offset_y: f32,
+        cursor: (f32, f32),
+        spin: f32,
+    ) {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
@@ -470,12 +506,6 @@ impl Game<'_> {
             return;
         }
         let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        // On a touch screen there is no cursor to follow (the touch inventory parks it out of
-        // the window): the player looks ahead, turned as far as a finger dragged it.
-        let (cursor, spin) = match self.player_spin() {
-            Some(spin) => ((cx, cy), spin),
-            None => (self.cursor, 0.0),
-        };
         let x_angle = ((cx - cursor.0) / 40.0).atan();
         let y_angle = ((cy - cursor.1) / 40.0).atan();
         let mut m = m.clone();
