@@ -253,20 +253,57 @@ impl Game<'_> {
         true
     }
 
-    /// The open menu's kind as `slots.get-menu` names it (`minecraft:generic_9x3`).
-    fn open_menu_kind(&mut self) -> Option<String> {
+    /// The open menu's kind as `slots.get-menu` names it (`minecraft:generic_9x3`), and how many
+    /// slots it has.
+    fn open_menu_shape(&mut self) -> Option<(String, usize)> {
+        let mut shape = None;
+        // Read, nothing kept.
+        self.menu_session(|m, _, _| {
+            shape = Some((m.kind().registry_name(), super::remote::menu_items(m).len()));
+            Some(false)
+        });
         if self.screen == Screen::Inventory
             && let Some((_, name)) = self.remote.as_ref().and_then(|r| r.menu.as_ref())
         {
-            return Some(name.clone());
+            return shape.map(|(_, n)| (name.clone(), n));
         }
-        let mut kind = None;
-        // Read, nothing kept.
-        self.menu_session(|m, _, _| {
-            kind = Some(m.kind().registry_name());
-            Some(false)
-        });
-        kind
+        shape
+    }
+
+    /// The parts' boxes on a mod's screen, from the slots it says it draws where
+    /// (`screens.set-slots`): the menu's own slots, and the player's inventory and hotbar while
+    /// its 27 main slots show, by the ids vanilla's menus give them.
+    fn declared_parts(&self, kind: &str, size: usize) -> (Option<[f32; 4]>, Option<[f32; 4]>) {
+        let (own, main) = if kind == "minecraft:inventory" {
+            (0..0, 9..36)
+        } else {
+            let own = size.saturating_sub(36);
+            (0..own, own..own + 27)
+        };
+        let player = main.start..main.start + 36;
+        let (mut container, mut inventory, mut shown) = (None, None, false);
+        let grow = |part: &mut Option<[f32; 4]>, x: f32, y: f32| {
+            let cell = [x - 1.0, y - 1.0, x + 17.0, y + 17.0];
+            *part = Some(part.map_or(cell, |p| {
+                [
+                    p[0].min(cell[0]),
+                    p[1].min(cell[1]),
+                    p[2].max(cell[2]),
+                    p[3].max(cell[3]),
+                ]
+            }));
+        };
+        for &(slot, x, y) in &self.mods.screen_slots {
+            let slot = slot as usize;
+            if own.contains(&slot) {
+                grow(&mut container, x, y);
+            } else if player.contains(&slot) && !(kind == "minecraft:inventory" && slot == 45) {
+                shown |= main.contains(&slot);
+                grow(&mut inventory, x, y);
+            }
+        }
+        let rect = |p: [f32; 4]| [p[0], p[1], p[2] - p[0], p[3] - p[1]];
+        (container.map(rect), inventory.filter(|_| shown).map(rect))
     }
 
     /// The boxes window buttons are placed from on the screen open (x, y, width, height in GUI
@@ -301,12 +338,14 @@ impl Game<'_> {
         (container.map(rect), inventory.filter(|_| main).map(rect))
     }
 
-    /// The mods' window buttons on the screen open: mod id, button and its box in GUI pixels.
+    /// The mods' window buttons on the screen open (a game screen with slots, or a mod's screen
+    /// that says where it draws them): mod id, button and its box in GUI pixels.
     fn mod_window_buttons(&mut self) -> Vec<(String, WindowButton, [f32; 4])> {
+        let over_mod = self.mods.screen.is_some();
         if !self.mods.mods.is_running()
-            || self.mods.screen.is_some()
             || self.title.is_some()
-            || !matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || (over_mod && self.mods.screen_slots.is_empty())
+            || (!over_mod && !matches!(self.screen, Screen::Inventory | Screen::Creative))
         {
             return Vec::new();
         }
@@ -319,8 +358,12 @@ impl Game<'_> {
         if buttons.is_empty() {
             return Vec::new();
         }
-        let (container, inventory) = self.window_parts();
-        let kind = self.open_menu_kind().unwrap_or_default();
+        let (kind, size) = self.open_menu_shape().unwrap_or_default();
+        let (container, inventory) = if over_mod {
+            self.declared_parts(&kind, size)
+        } else {
+            self.window_parts()
+        };
         buttons
             .into_iter()
             .filter(|(_, b)| b.menus.is_empty() || b.menus.contains(&kind))
@@ -367,8 +410,12 @@ impl Game<'_> {
 
     /// The mods' window buttons over the window: each its icon, the highlighted one under the
     /// mouse or while pressed (or a plain button with its label while the icon is not in the
-    /// atlas), the hovered one's tooltip last.
-    pub(super) fn draw_mod_window_buttons(&mut self, batch: &mut HudBatch) {
+    /// atlas), the hovered one's tooltip last. Over a game screen's window (`over_mod_screen`
+    /// false), or over a mod's screen, drawn after it.
+    pub(super) fn draw_mod_window_buttons(&mut self, batch: &mut HudBatch, over_mod_screen: bool) {
+        if self.mods.screen.is_some() != over_mod_screen {
+            return;
+        }
         let buttons = self.mod_window_buttons();
         if buttons.is_empty() {
             return;

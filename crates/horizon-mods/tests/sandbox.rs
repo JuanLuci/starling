@@ -1698,6 +1698,15 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         delta: 0.016,
     };
     let ops = mods.screen_render(screen, phone);
+    // The screen says where it draws the slots (screens.set-slots): the inventory's first at
+    // (277, 106), for other mods' window buttons.
+    let declared = mods.drain();
+    assert!(
+        declared.iter().any(
+            |o| matches!(o, Output::ScreenSlots { slots, .. } if slots.contains(&(9, 277.0, 106.0)))
+        ),
+        "{declared:?}"
+    );
     let items: Vec<(String, f32, f32)> = ops
         .iter()
         .filter_map(|op| match op {
@@ -2094,7 +2103,12 @@ fn bedrock_inventory_frame_cost() {
         }
         let us = started.elapsed().as_secs_f64() * 1e6 / 200.0;
         println!("a frame, new snapshot each: {snapshot_each_frame}: {us:.0} us");
-        assert_eq!(mods.drain(), []);
+        // Nothing but where the screen draws its slots.
+        let out = mods.drain();
+        assert!(
+            out.iter().all(|o| matches!(o, Output::ScreenSlots { .. })),
+            "{out:?}"
+        );
     }
     assert_eq!(mods.entries()[0].status, Status::Running);
 }

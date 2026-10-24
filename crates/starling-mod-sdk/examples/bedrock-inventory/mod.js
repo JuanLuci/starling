@@ -25,7 +25,7 @@ import { getItemInfo } from "starling:mods/inventory@0.1.0";
 import {
   fill, text, textWidth, item, itemId, sprite, tooltip, itemTooltip, player, button, push, pop,
 } from "starling:mods/draw@0.1.0";
-import { replace } from "starling:mods/screens@0.1.0";
+import { replace, setSlots } from "starling:mods/screens@0.1.0";
 import { addScreenButton } from "starling:mods/widgets@0.1.0";
 import { hasTouch, keyboard, dragAreas } from "starling:mods/mobile@0.1.0";
 import { get, set } from "starling:mods/storage@0.1.0";
@@ -70,14 +70,15 @@ const SEARCH_TEXTURE = "gui/container/creative_inventory/tab_item_search";
 // slots by the inventory menu's ids (slots.get-menu's), where selectTab puts them: the armour
 // either side of the player (head and chest at its left, legs and feet at its right), the off
 // hand, the inventory, the hotbar. The crafting grid (1 to 4) and its result (0) are this mod's,
-// in the room at the player's right, the result over the Destroy Item slot.
+// in the room at the player's right (clear of the row over the inventory, where a window's
+// label and buttons go), the result over the Destroy Item slot.
 const INV_W = W, INV_H = H;
 const INVENTORY_TEXTURE = "gui/container/creative_inventory/tab_inventory";
 const SLOTS = [];
 for (let i = 0; i < 9; i++) SLOTS.push([36 + i, 9 + i * CELL, 112]);
 for (let i = 0; i < 27; i++) SLOTS.push([9 + i, 9 + (i % 9) * CELL, 54 + Math.floor(i / 9) * CELL]);
 SLOTS.push([5, 54, 6], [6, 54, 33], [7, 108, 6], [8, 108, 33], [45, 35, 20]);
-const CRAFTING = [[1, 129, 7], [2, 147, 7], [3, 129, 25], [4, 147, 25], [0, 173, 16]];
+const CRAFTING = [[1, 129, 5], [2, 147, 5], [3, 129, 23], [4, 147, 23], [0, 173, 14]];
 SLOTS.push(...CRAFTING);
 const PLACE = new Map(SLOTS.map(([slot, x, y]) => [slot, [x, y]]));
 // Where a stack goes into the inventory: the hotbar first.
@@ -124,8 +125,10 @@ let finger = null;
 let pending = null;
 let moving = null;
 let slides = [];
-// The drag areas last given (mobile.drag-areas), as text.
+// The drag areas last given (mobile.drag-areas), and the layout the slots were last given for
+// (screens.set-slots), as text.
 let areasGiven = "";
+let slotsGiven = "";
 // Mouse: the press waiting for its release, the last click (for double clicks), the scrollbar
 // or the player held.
 let down = null;
@@ -873,8 +876,8 @@ function drawInventory(L, m, touch, hovered) {
   sprite(ox, oy, 256, 256, INVENTORY_TEXTURE);
   // The crafting grid, an arrow, its result: not in the game's window, drawn on it.
   for (const [, sx, sy] of CRAFTING) slotBox(ox + sx, oy + sy);
-  fill(ox + 165, oy + 23, 3, 2, 0xFF8B8B8B);
-  for (let i = 0; i < 3; i++) fill(ox + 168 + i, oy + 21 + i, 1, 6 - 2 * i, 0xFF8B8B8B);
+  fill(ox + 165, oy + 21, 3, 2, 0xFF8B8B8B);
+  for (let i = 0; i < 3; i++) fill(ox + 168 + i, oy + 19 + i, 1, 6 - 2 * i, 0xFF8B8B8B);
   player(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 20, turn);
   for (const [slot, sx, sy] of SLOTS) {
     const landing = slides.find((s) => s.slot === slot);
@@ -891,6 +894,15 @@ function drawSlides() {
     const eased = 1 - Math.pow(1 - t, 3);
     item(s.from[0] + (s.to[0] - s.from[0]) * eased, s.from[1] + (s.to[1] - s.from[1]) * eased, s.stack);
   }
+}
+// Where this screen draws the menu's slots (screens.set-slots), as a game screen's slots are
+// known: other mods' window buttons (a Sort button, say) are placed from them.
+function giveSlots(L) {
+  const s = L.scale;
+  const given = `${L.inv.x},${L.inv.y},${s}`;
+  if (given === slotsGiven) return;
+  slotsGiven = given;
+  setSlots(SLOTS.map(([slot, x, y]) => ({ slot, x: (L.inv.x + x) * s, y: (L.inv.y + y) * s })));
 }
 // Where a finger drags instead of scrolling (mobile.drag-areas): the scrollbar, which follows it,
 // and the inventory's window, where a picked stack is drawn across slots.
@@ -924,7 +936,7 @@ export const events = {
   screenOpened(screen) {
     if (screen !== OWN) return;
     pick = null; finger = null; pending = null; down = null; last = null; holding = null;
-    moving = null; slides = []; areasGiven = "";
+    moving = null; slides = []; areasGiven = ""; slotsGiven = "";
     tabsKept = null;
     pages.clear();
     search = "";
@@ -944,6 +956,7 @@ export const events = {
     const L = layout(context.width, context.height);
     const touch = hasTouch();
     if (touch) giveDragAreas(L);
+    giveSlots(L);
     const mx = context.mouseX / L.scale, my = context.mouseY / L.scale;
     const m = menu();
     // A move the game has done (and settled): its stacks slide.

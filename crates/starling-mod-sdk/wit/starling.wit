@@ -518,6 +518,18 @@ interface screens {
     /// the inventory key when `screen-key` does not use it, its `slots` clicks are the creative
     /// screen's, and closing it destroys what the cursor carries, as the creative screen's does.
     replace: func(screen: string, name: string) -> bool;
+    /// Where the mod's open screen draws a slot of the open menu: its id (as `slots.get-menu`
+    /// numbers it) and the top left of its 16-pixel square, in the screen's GUI pixels.
+    record screen-slot {
+        slot: u32,
+        x: f32,
+        y: f32,
+    }
+    /// The open menu's slots as the mod's open screen draws them, as a modded container screen's
+    /// slots tell Quark where they are: other mods' window buttons (`widgets.add-window-button`)
+    /// are then placed from them and pressed on the mod's screen as on the game's own. The last
+    /// call's, until the screen closes; at most 128.
+    set-slots: func(slots: list<screen-slot>);
 }
 
 /// Capability `ui`: buttons the mod puts on the game's own screens and on the touch controls. A

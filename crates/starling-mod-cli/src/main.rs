@@ -795,6 +795,9 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
             Output::DragAreas { areas, .. } => {
                 json!({ "event": "drag-areas", "areas": areas })
             }
+            Output::ScreenSlots { slots, .. } => {
+                json!({ "event": "screen-slots", "slots": slots })
+            }
             Output::CreativeClick {
                 tab,
                 search,

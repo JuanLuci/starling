@@ -404,6 +404,7 @@ impl Game<'_> {
         self.mods.screen = Some(screen);
         self.mods.keyboard = false;
         self.mods.drag_areas.clear();
+        self.mods.screen_slots.clear();
         self.capture(false);
     }
     pub(super) fn close_mod_screen(&mut self) {
@@ -412,6 +413,7 @@ impl Game<'_> {
         self.mods.held = None;
         self.mods.keyboard = false;
         self.mods.drag_areas.clear();
+        self.mods.screen_slots.clear();
         if self.screen == Screen::Playing
             && self.title.is_none()
             && self.player.is_some()
@@ -490,13 +492,12 @@ impl Game<'_> {
                     _ => return own,
                 };
                 let pressed = *state == ElementState::Pressed;
-                // The mods' buttons on the game's screen, before the screen and the mods' hooks;
+                // The mods' buttons on the game's screen (and their window buttons on a mod's
+                // screen that says where its slots are), before the screen and the mods' hooks;
                 // a button's release is its own wherever it lands (its press may have opened a
                 // mod's screen over it).
                 let release = !pressed && self.mods.pressed_button.is_some();
-                if b == 0
-                    && (release || (!own && screen.is_some()))
-                    && self.mod_screen_button_click(pressed)
+                if b == 0 && (release || screen.is_some()) && self.mod_screen_button_click(pressed)
                 {
                     return true;
                 }

@@ -242,6 +242,12 @@ pub enum Output {
     /// `mobile.drag-areas`: where on mod `id`'s open screen a finger drags instead of scrolling
     /// (x, y, width, height in GUI pixels).
     DragAreas { id: String, areas: Vec<[f32; 4]> },
+    /// `screens.set-slots`: where mod `id`'s open screen draws the open menu's slots (menu slot,
+    /// x, y of its 16-pixel square in GUI pixels).
+    ScreenSlots {
+        id: String,
+        slots: Vec<(u32, f32, f32)>,
+    },
     /// `creative.click`: a click on item `index` of tab `tab`'s list for `search`.
     CreativeClick {
         id: String,
@@ -2423,6 +2429,19 @@ impl screens::Host for State {
             self.replaces.push((screen, own));
         }
         true
+    }
+    fn set_slots(&mut self, slots: Vec<screens::ScreenSlot>) {
+        let slots: Vec<(u32, f32, f32)> = slots
+            .into_iter()
+            .filter(|s| s.slot < 128 && s.x.is_finite() && s.y.is_finite())
+            .take(128)
+            .map(|s| (s.slot, s.x, s.y))
+            .collect();
+        // The last call's slots are the ones.
+        let id = self.id.clone();
+        self.out
+            .retain(|o| !matches!(o, Output::ScreenSlots { id: owner, .. } if *owner == id));
+        self.out.push(Output::ScreenSlots { id, slots });
     }
 }
 impl slots::Host for State {

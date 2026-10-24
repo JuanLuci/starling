@@ -44,6 +44,7 @@
 //! | `SlotActionType.QUICK_CRAFT`, a stack dragged across slots | [`slots::drag`] |
 //! | A scrollbar a finger drags on a phone | [`mobile::drag_areas`] |
 //! | Quark's chest buttons, placed from a container's slots | [`widgets::add_window_button`] (capability `ui`) |
+//! | A modded container screen's slots, for others' buttons | [`screens::set_slots`] |
 //! | The creative inventory's order of items (Inventory Profiles' default sort) | [`inventory::get_item_order`] |
 //! | `ItemGroups` / `ItemGroup.getDisplayStacks()`, the creative search | [`creative::get_tabs`], [`creative::get_items`] (capability `creative`) |
 //! | `CreativeInventoryScreen.onMouseClick`, `ClientPlayerInteractionManager.clickCreativeStack` | [`creative::click`], [`creative::set_slot`], [`creative::set_carried`] |

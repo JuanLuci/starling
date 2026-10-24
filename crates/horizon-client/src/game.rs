@@ -4552,9 +4552,10 @@ impl Game<'_> {
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
         self.draw_slot_touch(&mut batch);
-        self.draw_mod_window_buttons(&mut batch);
+        self.draw_mod_window_buttons(&mut batch, false);
         self.draw_mod_screen_buttons(&mut batch);
         self.draw_mod_screens(&mut batch);
+        self.draw_mod_window_buttons(&mut batch, true);
         self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
         self.draw_chat_bar(&mut batch);

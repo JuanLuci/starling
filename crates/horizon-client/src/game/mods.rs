@@ -54,6 +54,9 @@ pub(super) struct ModsState {
     /// Where on the mod screen a finger drags instead of scrolling (`mobile.drag-areas`), in
     /// GUI pixels.
     pub(super) drag_areas: Vec<[f32; 4]>,
+    /// Where the mod screen draws the open menu's slots (`screens.set-slots`): menu slot and the
+    /// top left of its square, in GUI pixels.
+    pub(super) screen_slots: Vec<(u32, f32, f32)>,
     /// The world the mods were last told of: None out of a world, Some(server address).
     joined: Option<Option<String>>,
     dimension: Option<String>,
@@ -1550,6 +1553,14 @@ impl Game<'_> {
                             s.split_once(':').is_some_and(|(owner, _)| owner == id)
                         }) {
                             self.mods.drag_areas = areas;
+                        }
+                        continue;
+                    }
+                    Output::ScreenSlots { id, slots } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.screen_slots = slots;
                         }
                         continue;
                     }

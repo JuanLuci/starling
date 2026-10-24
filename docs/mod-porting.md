@@ -93,6 +93,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
 | Buttons on a container's window placed from its slots (Quark's chest buttons, Inventory Profiles' sort buttons: `leftPos`/`topPos` and a slot's `x`/`y`) | `widgets.add-window-button` (capability `ui`): a small button placed from the box around the container's slots or the player's inventory, as the game lays them out on the screen open (any chest size, a shulker box, the inventory, the creative inventory tab), shown on the menus it names; its icon the whole button (`<icon>_highlighted` under the mouse). JavaScript: `widgets.addWindowButton({...}, onPress)` |
 | An item's place in the creative inventory (Inventory Profiles' default sort, `CreativeModeTabs` search tab order) | `inventory.get-item-order(stack)` |
+| A modded container screen's `Slot`s (what Quark and Inventory Profiles read to place their buttons on it) | `screens.set-slots([{slot, x, y}, ...])` from the mod's own screen: other mods' window buttons are placed and pressed on it as on the game's screens |
 | A mod's own button icons | `assets/<id>/textures/gui/sprites/*.png` in the `.hmod`, as `<id>:<name>`; no capability needed (they load as the game starts) |
 | `SlotActionType.QUICK_CRAFT` (the mouse dragging a stack across slots) | `slots.drag(slots, button)`: 0 shares the cursor's stack out evenly, 1 one each, 2 a full stack each (creative); the start, slot and end clicks in one call |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
@@ -328,7 +329,8 @@ what is still missing (the next port's API work).
   is put on them. Java UI goes back to the game's screen, Bedrock UI (a button there) comes back;
   the choice and the inventory-only view are kept.
 - API added: the `creative` interface and capability (`get-tabs`, `get-items`, `click`,
-  `set-slot`, `set-carried`), `screens.replace`, `draw.player`, `draw.item-tooltip`, `slots.drag`
+  `set-slot`, `set-carried`), `screens.replace`, `screens.set-slots` (its slots, so other mods'
+  window buttons sit on it), `draw.player`, `draw.item-tooltip`, `slots.drag`
   (vanilla's quick craft), `mobile.drag-areas` (where a finger drags instead of scrolling: the
   scrollbar, the inventory); `slots.click` on the stand-in clicks as the creative screen (each
   changed slot sent as `SetCreativeModeSlot`, the crafting grid, armour and off hand too);
@@ -351,8 +353,9 @@ what is still missing (the next port's API work).
   of the mod's own layout: a modded container screen whose slots the game knows gets them too);
   `inventory.get-item-order`; a mod's own GUI sprites without `registries`.
 - Missing: Quark's Shift variants (only the items already on the other side), sorting locked
-  slots, Inventory Profiles' column and row sorts. A mod's own screen (Bedrock Inventory's) shows
-  no window buttons: the game does not know where its slots are.
+  slots, Inventory Profiles' column and row sorts. A mod's own screen shows the buttons when it
+  says where it draws its slots (`screens.set-slots`), as Bedrock Inventory does: neither mod
+  knows the other.
 
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 
