@@ -5,4 +5,4 @@ description = "Bedrock's creative inventory: the creative screen's tabs, items a
 authors = ["Starling"]
 api = "starling-0.1"
 side = "client"
-capabilities = ["creative", "inventory-click", "hud", "ui", "storage"]
+capabilities = ["creative", "inventory-read", "inventory-click", "hud", "ui", "storage"]

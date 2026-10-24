@@ -333,6 +333,13 @@ interface slots {
     /// (`screens.replace`) the menu is the player's inventory and the clicks are the creative
     /// screen's: done here, each slot they change sent to a server as it sends them.
     click: func(slot: s32, button: u8, kind: click-kind) -> result<_, string>;
+    /// The stack on the cursor dragged across menu slots `slots` with button `button` held, as
+    /// the mouse drags it (`ClickType.QUICK_CRAFT`): 0 shares it out evenly, 1 puts one in each,
+    /// 2 (in creative) a full stack in each. The slots that cannot take it are left out and the
+    /// rest stays on the cursor, as vanilla's drag leaves them. Done in order with the clicks, as
+    /// clicks of their own (its start, one a slot, its end: the slots and 2 of the 64 a call may
+    /// make); errs as `click` does, or on a button past 2.
+    drag: func(slots: list<s32>, button: u8) -> result<_, string>;
 }
 
 /// Capability `creative`: the creative inventory's tabs and items as the game's creative screen
@@ -601,6 +608,12 @@ interface mobile {
     /// draws: on a phone there is no keyboard otherwise. Its keys come to `screen-key` with
     /// their text. Closing the screen hides it. Without a touch screen it does nothing.
     keyboard: func(shown: bool);
+    /// Where on the mod's open screen a finger drags whichever way it moves (pressed, then a
+    /// `drag` for each move, as the mouse held) instead of scrolling when it moves up or down:
+    /// a scrollbar that follows the finger, slots a stack is spread across. Boxes as (x, y,
+    /// width, height) in the screen's GUI pixels, kept until the next call or until the screen
+    /// closes; at most 64. Without a touch screen it does nothing.
+    drag-areas: func(areas: list<tuple<f32, f32, f32, f32>>);
 }
 
 /// Capability `keys`: whether the mod's keybinds (from its registration) are held.

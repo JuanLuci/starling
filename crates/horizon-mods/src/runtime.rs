@@ -81,6 +81,8 @@ const PAYLOAD_BYTES: usize = 32 << 10;
 const ENTITIES: usize = 128;
 /// `slots.click`s (and `creative`'s clicks and sets) one call may queue.
 const CLICKS_PER_CALL: usize = 64;
+/// `mobile.drag-areas` kept.
+const DRAG_AREAS: usize = 64;
 /// The items one `creative.get-items` may list.
 const CREATIVE_PAGE: u32 = 256;
 /// The game's screens a mod's may stand in for (`screens.replace`).
@@ -226,6 +228,16 @@ pub enum Output {
         button: u8,
         kind: ClickKind,
     },
+    /// `slots.drag`: the cursor's stack dragged across the open menu's slots `slots` with
+    /// button `button` held (QUICK_CRAFT).
+    Drag {
+        id: String,
+        slots: Vec<i32>,
+        button: u8,
+    },
+    /// `mobile.drag-areas`: where on mod `id`'s open screen a finger drags instead of scrolling
+    /// (x, y, width, height in GUI pixels).
+    DragAreas { id: String, areas: Vec<[f32; 4]> },
     /// `creative.click`: a click on item `index` of tab `tab`'s list for `search`.
     CreativeClick {
         id: String,
@@ -2423,25 +2435,41 @@ impl slots::Host for State {
         });
         Ok(())
     }
+    fn drag(&mut self, slots: Vec<i32>, button: u8) -> Result<(), String> {
+        if button > 2 {
+            return Err(format!("no drag with button {button}: 0 to 2"));
+        }
+        if let Some(slot) = slots.iter().find(|s| !(0..128).contains(*s)) {
+            return Err(format!("no menu has slot {slot}"));
+        }
+        // Its start, a click a slot, its end.
+        self.room_for_clicks(slots.len() + 2)?;
+        let id = self.id.clone();
+        self.out.push(Output::Drag { id, slots, button });
+        Ok(())
+    }
 }
 
 impl State {
     /// Whether one more click (of `slots` or `creative`) fits in this call.
     fn room_for_click(&self) -> Result<(), String> {
-        let queued = self
+        self.room_for_clicks(1)
+    }
+    /// Whether `more` clicks fit in this call.
+    fn room_for_clicks(&self, more: usize) -> Result<(), String> {
+        let queued: usize = self
             .out
             .iter()
-            .filter(|o| {
-                matches!(
-                    o,
-                    Output::Click { .. }
-                        | Output::CreativeClick { .. }
-                        | Output::CreativeSlot { .. }
-                        | Output::CreativeCarried { .. }
-                )
+            .map(|o| match o {
+                Output::Click { .. }
+                | Output::CreativeClick { .. }
+                | Output::CreativeSlot { .. }
+                | Output::CreativeCarried { .. } => 1,
+                Output::Drag { slots, .. } => slots.len() + 2,
+                _ => 0,
             })
-            .count();
-        if queued >= CLICKS_PER_CALL {
+            .sum();
+        if queued + more > CLICKS_PER_CALL {
             return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
         }
         Ok(())
@@ -2636,6 +2664,19 @@ impl mobile::Host for State {
             id: self.id.clone(),
             shown,
         });
+    }
+    fn drag_areas(&mut self, areas: Vec<(f32, f32, f32, f32)>) {
+        let areas: Vec<[f32; 4]> = areas
+            .into_iter()
+            .take(DRAG_AREAS)
+            .map(|(x, y, w, h)| [x, y, w, h])
+            .filter(|a| a.iter().all(|v| v.is_finite()) && a[2] > 0.0 && a[3] > 0.0)
+            .collect();
+        // The last call's areas are the ones.
+        let id = self.id.clone();
+        self.out
+            .retain(|o| !matches!(o, Output::DragAreas { id: owner, .. } if *owner == id));
+        self.out.push(Output::DragAreas { id, areas });
     }
 }
 impl keys::Host for State {

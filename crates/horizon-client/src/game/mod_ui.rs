@@ -403,6 +403,7 @@ impl Game<'_> {
         self.begin_creative_stand_in(&screen);
         self.mods.screen = Some(screen);
         self.mods.keyboard = false;
+        self.mods.drag_areas.clear();
         self.capture(false);
     }
     pub(super) fn close_mod_screen(&mut self) {
@@ -410,6 +411,7 @@ impl Game<'_> {
         self.mods.screen = None;
         self.mods.held = None;
         self.mods.keyboard = false;
+        self.mods.drag_areas.clear();
         if self.screen == Screen::Playing
             && self.title.is_none()
             && self.player.is_some()

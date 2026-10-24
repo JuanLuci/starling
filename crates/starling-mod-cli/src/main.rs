@@ -542,6 +542,57 @@ fn pretend_pickup(world: &mut Snapshot, slot: i32, button: u8) -> bool {
     true
 }
 
+/// `slots.drag` on the pretend menu, as vanilla's QUICK_CRAFT ends: the cursor's stack shared
+/// out evenly (button 0), one each (1) or a full stack each (2) among the slots that take it
+/// (empty, or the same item with room; not the crafting result), the rest left on the cursor.
+/// Armour and other slots that take only some items are not pretended: any item goes.
+fn pretend_drag(world: &mut Snapshot, slots: &[i32], button: u8) {
+    let Some(carried) = world.menu.as_ref().and_then(|m| m.carried.clone()) else {
+        return;
+    };
+    let full = max_stack(world, &carried.id);
+    let menu = world.menu.as_mut().expect("there is a menu");
+    let mut taking: Vec<usize> = Vec::new();
+    for &s in slots {
+        let Some(i) = usize::try_from(s)
+            .ok()
+            .filter(|&i| i != 0 && i < menu.slots.len())
+        else {
+            continue;
+        };
+        let takes = match &menu.slots[i] {
+            None => true,
+            Some(have) => same_item(have, &carried) && have.count < full,
+        };
+        // A drag adds a slot while the cursor has an item for it (AbstractContainerMenu).
+        if takes && !taking.contains(&i) && (button == 2 || carried.count as usize > taking.len()) {
+            taking.push(i);
+        }
+    }
+    if taking.is_empty() {
+        return;
+    }
+    let mut left = i64::from(carried.count);
+    for &i in &taking {
+        let have = menu.slots[i].as_ref().map_or(0, |s| s.count);
+        let each = match button {
+            0 => carried.count / taking.len() as u32,
+            1 => 1,
+            _ => full,
+        };
+        let count = (have + each).min(full);
+        left -= i64::from(count) - i64::from(have);
+        menu.slots[i] = Some(ItemStack {
+            count,
+            ..carried.clone()
+        });
+    }
+    menu.carried = (left > 0).then_some(ItemStack {
+        count: left as u32,
+        ..carried
+    });
+}
+
 /// `creative.click` on the pretend tabs, as `creative::click_display` does it; the hotbar slot
 /// it fills, if any.
 fn pretend_creative(
@@ -665,6 +716,13 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
                 };
                 let pretended = kind == "pickup" && pretend_pickup(world, slot, button);
                 json!({ "event": "click", "slot": slot, "button": button, "kind": kind, "pretended": pretended })
+            }
+            Output::Drag { slots, button, .. } => {
+                pretend_drag(world, &slots, button);
+                json!({ "event": "drag", "slots": slots, "button": button })
+            }
+            Output::DragAreas { areas, .. } => {
+                json!({ "event": "drag-areas", "areas": areas })
             }
             Output::CreativeClick {
                 tab,

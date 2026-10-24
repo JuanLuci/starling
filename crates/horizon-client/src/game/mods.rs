@@ -51,6 +51,9 @@ pub(super) struct ModsState {
     pub(super) held: Option<u8>,
     /// The mod screen asked for the on-screen keyboard (`screens.keyboard`).
     pub(super) keyboard: bool,
+    /// Where on the mod screen a finger drags instead of scrolling (`mobile.drag-areas`), in
+    /// GUI pixels.
+    pub(super) drag_areas: Vec<[f32; 4]>,
     /// The world the mods were last told of: None out of a world, Some(server address).
     joined: Option<Option<String>>,
     dimension: Option<String>,
@@ -929,6 +932,35 @@ impl Game<'_> {
             self.container_changed(key);
         }
     }
+    /// `slots.drag`: the mouse's drag across slots (AbstractContainerScreen's QUICK_CRAFT
+    /// clicks: its start outside the window, each slot, its end).
+    pub(super) fn mod_slot_drag(&mut self, slots: &[i32], button: u8) {
+        use horizon_client::menu::Input;
+        // AbstractContainerMenu.getQuickcraftMask: the phase, and the drag's kind above it.
+        let mask = |phase: i32| phase | (i32::from(button) << 2);
+        let clicks: Vec<(i32, i32)> = std::iter::once((-999, mask(0)))
+            .chain(slots.iter().map(|&s| (s, mask(1))))
+            .chain(std::iter::once((-999, mask(2))))
+            .collect();
+        if self.remote.is_some() && !self.creative_menu_open() {
+            let clicks: Vec<(i16, i32, Input)> = clicks
+                .iter()
+                .filter_map(|&(s, b)| Some((i16::try_from(s).ok()?, b, Input::QuickCraft)))
+                .collect();
+            self.remote_menu_clicks(&clicks);
+            return;
+        }
+        let done = self.menu_session(|m, env, _| {
+            let mut done = false;
+            for &(slot, b) in &clicks {
+                done |= m.click(env, slot, b, Input::QuickCraft).is_ok();
+            }
+            Some(done)
+        });
+        if done && let Some(key) = self.container {
+            self.container_changed(key);
+        }
+    }
     /// The stack under the cursor in a screen.
     fn hovered_stack(&mut self) -> Option<ItemStack> {
         if !matches!(self.screen, Screen::Inventory | Screen::Creative)
@@ -1452,112 +1484,125 @@ impl Game<'_> {
         // Slots a mod clicked or set: its next hook reads them as they are now.
         let mut clicked = false;
         for output in self.mods.mods.drain() {
-            let line = match output {
-                Output::Chat { name, text } => {
-                    let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
-                    line.push(rich_text(&text));
-                    line
-                }
-                Output::Feedback { text, error: false } => Text::literal(text),
-                Output::Feedback { text, error: true } => Text::literal(text).with_color(text::RED),
-                Output::Stopped { name, reason } => {
-                    self.list_mods();
-                    self.sync_mod_commands();
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| !self.mods.mods.wants(|_| true) || s.is_empty())
-                    {
-                        self.mods.screen = None;
+            let line =
+                match output {
+                    Output::Chat { name, text } => {
+                        let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
+                        line.push(rich_text(&text));
+                        line
                     }
-                    Text::literal(format!("Mod {name} stopped: {reason}")).with_color(text::RED)
-                }
-                Output::Overlay { text } => {
-                    self.titles.set_overlay(rich_text(&text), false);
-                    continue;
-                }
-                Output::Send { message } => {
-                    self.mod_send(&message);
-                    continue;
-                }
-                Output::Sound { id, volume, pitch } => {
-                    self.audio.play(&id, None, volume, pitch);
-                    continue;
-                }
-                Output::Payload { channel, data } => {
-                    self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
-                        horizon_protocol::packets::configuration::CustomPayload { channel, data },
-                    ));
-                    continue;
-                }
-                Output::OpenScreen { screen } => {
-                    self.open_mod_screen(screen);
-                    continue;
-                }
-                Output::Click {
-                    slot, button, kind, ..
-                } => {
-                    self.mod_slot_click(slot, button, kind);
-                    clicked = true;
-                    continue;
-                }
-                Output::CreativeClick {
-                    tab,
-                    search,
-                    index,
-                    button,
-                    kind,
-                    ..
-                } => {
-                    self.mod_creative_click(&tab, &search, index, button, kind);
-                    clicked = true;
-                    continue;
-                }
-                Output::CreativeSlot { slot, stack, .. } => {
-                    self.mod_creative_slot(slot, stack.as_ref());
-                    clicked = true;
-                    continue;
-                }
-                Output::CreativeCarried { stack, .. } => {
-                    self.mod_creative_carried(stack.as_ref());
-                    clicked = true;
-                    continue;
-                }
-                Output::Hold { id, control, held } => {
-                    let slot = usize::from(control == "key.sprint");
-                    self.mods
-                        .holds
-                        .retain(|(owner, s)| !(*owner == id && *s == slot));
-                    if held {
-                        self.mods.holds.push((id, slot));
+                    Output::Feedback { text, error: false } => Text::literal(text),
+                    Output::Feedback { text, error: true } => {
+                        Text::literal(text).with_color(text::RED)
                     }
-                    self.sync_toggle(slot);
-                    continue;
-                }
-                Output::Keyboard { id, shown } => {
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
-                    {
-                        self.mods.keyboard = shown;
+                    Output::Stopped { name, reason } => {
+                        self.list_mods();
+                        self.sync_mod_commands();
+                        if self
+                            .mods
+                            .screen
+                            .as_ref()
+                            .is_some_and(|s| !self.mods.mods.wants(|_| true) || s.is_empty())
+                        {
+                            self.mods.screen = None;
+                        }
+                        Text::literal(format!("Mod {name} stopped: {reason}")).with_color(text::RED)
                     }
-                    continue;
-                }
-                Output::CloseScreen { id } => {
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
-                    {
-                        self.close_mod_screen();
+                    Output::Overlay { text } => {
+                        self.titles.set_overlay(rich_text(&text), false);
+                        continue;
                     }
-                    continue;
-                }
-            };
+                    Output::Send { message } => {
+                        self.mod_send(&message);
+                        continue;
+                    }
+                    Output::Sound { id, volume, pitch } => {
+                        self.audio.play(&id, None, volume, pitch);
+                        continue;
+                    }
+                    Output::Payload { channel, data } => {
+                        self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                            horizon_protocol::packets::configuration::CustomPayload {
+                                channel,
+                                data,
+                            },
+                        ));
+                        continue;
+                    }
+                    Output::OpenScreen { screen } => {
+                        self.open_mod_screen(screen);
+                        continue;
+                    }
+                    Output::Click {
+                        slot, button, kind, ..
+                    } => {
+                        self.mod_slot_click(slot, button, kind);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::Drag { slots, button, .. } => {
+                        self.mod_slot_drag(&slots, button);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::DragAreas { id, areas } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.drag_areas = areas;
+                        }
+                        continue;
+                    }
+                    Output::CreativeClick {
+                        tab,
+                        search,
+                        index,
+                        button,
+                        kind,
+                        ..
+                    } => {
+                        self.mod_creative_click(&tab, &search, index, button, kind);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::CreativeSlot { slot, stack, .. } => {
+                        self.mod_creative_slot(slot, stack.as_ref());
+                        clicked = true;
+                        continue;
+                    }
+                    Output::CreativeCarried { stack, .. } => {
+                        self.mod_creative_carried(stack.as_ref());
+                        clicked = true;
+                        continue;
+                    }
+                    Output::Hold { id, control, held } => {
+                        let slot = usize::from(control == "key.sprint");
+                        self.mods
+                            .holds
+                            .retain(|(owner, s)| !(*owner == id && *s == slot));
+                        if held {
+                            self.mods.holds.push((id, slot));
+                        }
+                        self.sync_toggle(slot);
+                        continue;
+                    }
+                    Output::Keyboard { id, shown } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.keyboard = shown;
+                        }
+                        continue;
+                    }
+                    Output::CloseScreen { id } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.close_mod_screen();
+                        }
+                        continue;
+                    }
+                };
             // Not through system_message: a mod must not hear its own lines.
             let focused = self.screen == Screen::Chat;
             self.ui

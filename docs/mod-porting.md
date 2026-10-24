@@ -91,6 +91,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | the open container's slots | `inventory.get-container` |
 | `ScreenHandler.slots` by id, the cursor stack | `slots.get-menu` (capability `inventory-click`): the open menu by vanilla's slot ids, the player's inventory menu with no screen open |
 | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
+| `SlotActionType.QUICK_CRAFT` (the mouse dragging a stack across slots) | `slots.drag(slots, button)`: 0 shares the cursor's stack out evenly, 1 one each, 2 a full stack each (creative); the start, slot and end clicks in one call |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
 | `ItemGroups` and `ItemGroup.getDisplayStacks()`, the creative search (`SearchManager`) | `creative.get-tabs`, `creative.get-items(tab, search, start, count)` (capability `creative`): the tabs and items the game's creative screen shows, searched as its box searches |
 | `CreativeInventoryScreen.onMouseClick` on a tab's slot | `creative.click(tab, search, index, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw` with the creative screen's semantics (creative mode only) |
@@ -129,6 +130,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | Bedrock's touch buttons | `widgets.add-touch-button` (round, square or wide; an icon or a label; where it starts): the player moves, resizes and hides it in the touch layout editor; its id is a keybind's or its own. JavaScript: `widgets.addTouchButton({...}, onPress)` |
 | Bedrock's resource packs retexturing the touch controls | `widgets.style-control("jump", label, icon, shape)`, or a pack's `assets/starling/textures/gui/sprites/touch/<name>.png` (and `<name>_pressed.png`) |
 | a text field on a phone | `mobile.keyboard(true)` over the mod's screen |
+| a scrollbar or slots a finger drags across, on a phone (fingers moving up or down scroll otherwise) | `mobile.drag-areas([[x, y, w, h], ...])`: there a finger presses and drags whichever way it moves |
 | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | `registration.keybinds`, `events.key(id, pressed)`, `keys.is-down(id)`; each keybind also gets a touch button on phones (wide, its name on it; `widgets.add-touch-button` with its id gives it a look) |
 | `KeyBinding.setPressed` for sprint/sneak (ToggleSprint) | `input.hold("key.sprint", true)` (capability `input`; only sprint and sneak) |
 | `ItemTooltipCallback` | `registration.tooltips`, `events.tooltip(stack)` returning extra lines |
@@ -310,21 +312,25 @@ what is still missing (the next port's API work).
 ### Bedrock's creative inventory → bedrock-inventory
 
 - Does: in creative mode, in place of the creative screen: the creative screen as the game draws
-  it (its tabs above and below, the tab's items, the search, the scrollbar, the hotbar row) with
-  its Survival Inventory tab's window beside it, as Bedrock puts the inventory beside the items
-  (the armour around the player, the off hand, inventory, hotbar, Destroy Item, and a 2x2
-  crafting grid in the room at the player's right), both at once; the Survival Inventory tab
-  shows only that window, the tabs around it. The windows are the game's textures (a resource
-  pack's too). The mouse as on the game's screens (Shift, double click, middle click, 1-9/F/Q, a
-  click outside throws); fingers as the game's touch inventory (tap to pick and to put, hold for
-  half, double tap across, drag and drop, tap outside to throw). Java UI goes back to the game's
-  screen, Bedrock UI (a button there) comes back; the choice and the inventory-only view are kept.
+  it (its tabs above and below, the tab's items, the search, the scrollbar; its hotbar row a
+  sixth row of items) with its Survival Inventory tab's window beside it, as Bedrock puts the
+  inventory beside the items (the armour around the player, the off hand, inventory, hotbar,
+  Destroy Item, and a 2x2 crafting grid in the room at the player's right), both at once; the
+  Survival Inventory tab shows only that window, the tabs around it. The windows are the game's
+  textures (a resource pack's too). The mouse as on the game's screens (Shift, double click, a
+  drag sharing a stack out, middle click, 1-9/F/Q, a click outside throws); fingers as Bedrock's
+  (tap to pick and to put, hold to choose how much (on the crafting result, how many crafts),
+  double tap across or to craft all, a finger drawn across slots shares the pick out, drag and
+  drop, tap outside to throw); stacks slide to where they went; the tabs' items take away what
+  is put on them. Java UI goes back to the game's screen, Bedrock UI (a button there) comes back;
+  the choice and the inventory-only view are kept.
 - API added: the `creative` interface and capability (`get-tabs`, `get-items`, `click`,
-  `set-slot`, `set-carried`), `screens.replace`, `draw.player`, `draw.item-tooltip`; `slots.click`
-  on the stand-in clicks as the creative screen (each changed slot sent as `SetCreativeModeSlot`,
-  the crafting grid, armour and off hand too); `get-menu` shows clicks from the next hook.
-- Missing: dragging a carried stack across slots to share it (vanilla's quick craft: a `slots`
-  call for it); saved hotbars (C and X); the survival inventory in its place (`replace` takes only
+  `set-slot`, `set-carried`), `screens.replace`, `draw.player`, `draw.item-tooltip`, `slots.drag`
+  (vanilla's quick craft), `mobile.drag-areas` (where a finger drags instead of scrolling: the
+  scrollbar, the inventory); `slots.click` on the stand-in clicks as the creative screen (each
+  changed slot sent as `SetCreativeModeSlot`, the crafting grid, armour and off hand too);
+  `get-menu` shows clicks from the next hook.
+- Missing: saved hotbars (C and X); the survival inventory in its place (`replace` takes only
   `creative`).
 
 ### Waypoints (Xaero's / JourneyMap's waypoints)

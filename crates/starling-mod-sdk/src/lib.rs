@@ -41,6 +41,8 @@
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
 //! | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | [`slots::click`] (capability `inventory-click`), the menu by vanilla's ids from [`slots::get_menu`] |
+//! | `SlotActionType.QUICK_CRAFT`, a stack dragged across slots | [`slots::drag`] |
+//! | A scrollbar a finger drags on a phone | [`mobile::drag_areas`] |
 //! | `ItemGroups` / `ItemGroup.getDisplayStacks()`, the creative search | [`creative::get_tabs`], [`creative::get_items`] (capability `creative`) |
 //! | `CreativeInventoryScreen.onMouseClick`, `ClientPlayerInteractionManager.clickCreativeStack` | [`creative::click`], [`creative::set_slot`], [`creative::set_carried`] |
 //! | `MinecraftClient.setScreen` swapped for `CreativeInventoryScreen` | [`screens::replace`] |

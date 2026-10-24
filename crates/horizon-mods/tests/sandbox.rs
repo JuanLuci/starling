@@ -1493,6 +1493,126 @@ export const events = {
     );
 }
 
+/// `slots.drag`: the mouse's drag across slots (QUICK_CRAFT), its clicks (its start, a slot each,
+/// its end) counted with a call's other clicks; a button past 2 or a slot no menu has refused.
+/// `mobile.drag-areas`: the last call's boxes, the bad ones left out.
+#[test]
+fn slots_drag_is_the_mouses_drag() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-drag");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"
+name = \"Probe\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"inventory-click\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { click, drag } from "starling:mods/slots@0.1.0";
+import { dragAreas } from "starling:mods/mobile@0.1.0";
+const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
+export const events = {
+  init() {
+    return {
+      commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) {
+    if (args === "areas") {
+      dragAreas([[0, 0, 10, 10], [1, 2, -3, 4]]);
+      dragAreas([[5, 6, 7, 8], [1, 2, 0, 4]]);
+      return "ok";
+    }
+    const many = Array.from({ length: 60 }, (_, i) => i + 1);
+    return [
+      tryIt(() => drag([1, 2, 3], 3)),
+      tryIt(() => drag([1, 200], 0)),
+      tryIt(() => drag([1, 2, 3], 1)),
+      tryIt(() => click(5, 0, "pickup")),
+      tryIt(() => drag(many, 0)),
+    ].join(",");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("probe drag"));
+    let mut said = None;
+    let rest: Vec<Output> = mods
+        .drain()
+        .into_iter()
+        .filter(|o| match o {
+            Output::Feedback { text, .. } => {
+                said = Some(text.clone());
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    // 5 clicks queued (3 slots and the drag's start and end) and 1: 60 more and 2 are too many.
+    assert_eq!(
+        said.as_deref(),
+        Some("no drag with button 3: 0 to 2,no menu has slot 200,ok,ok,at most 64 clicks a call")
+    );
+    assert_eq!(
+        rest,
+        [
+            Output::Drag {
+                id: "probe".into(),
+                slots: vec![1, 2, 3],
+                button: 1,
+            },
+            Output::Click {
+                id: "probe".into(),
+                slot: 5,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+        ]
+    );
+    assert!(mods.command("probe areas"));
+    let areas: Vec<Output> = mods
+        .drain()
+        .into_iter()
+        .filter(|o| matches!(o, Output::DragAreas { .. }))
+        .collect();
+    assert_eq!(
+        areas,
+        [Output::DragAreas {
+            id: "probe".into(),
+            areas: vec![[5.0, 6.0, 7.0, 8.0]],
+        }]
+    );
+}
+
+/// A copy of the Bedrock Inventory example in a folder of its own, its storage (kept beside the
+/// mod: the settings a game with it as a dev mod saved) fresh.
+fn bedrock_inventory(test: &str) -> PathBuf {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples/bedrock-inventory");
+    let home = mods_dir().join(format!("bedrock-{test}"));
+    let _ = std::fs::remove_dir_all(&home);
+    let dir = home.join("bedrock-inventory");
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in ["horizon-mod.toml", "mod.js"] {
+        std::fs::copy(example.join(file), dir.join(file)).unwrap();
+    }
+    dir
+}
+
 /// Bedrock Inventory stands in for the creative screen and takes from the tabs with the mouse.
 #[test]
 fn bedrock_inventory_takes_from_the_creative_tabs() {
@@ -1500,8 +1620,7 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         eprintln!("no JavaScript engine in this build: skipped");
         return;
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let example = root.join("crates/starling-mod-sdk/examples/bedrock-inventory");
+    let example = bedrock_inventory("takes");
     let cache = mods_dir().join("js-cache");
     let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
     assert_eq!(mods.entries()[0].status, Status::Running);
@@ -1516,8 +1635,8 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
     mods.set_snapshot(world);
     let screen = "bedrock_inventory:inventory";
     mods.screen_opened(screen);
-    // A phone's GUI: the creative window (the building blocks' two items, the hotbar row) and its
-    // inventory tab's window beside it.
+    // A phone's GUI: the creative window (the building blocks' two items, no hotbar row: the
+    // hotbar is the inventory's) and its inventory tab's window beside it.
     let phone = RenderContext {
         width: 533,
         height: 240,
@@ -1536,7 +1655,6 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
     for shown in [
         ("minecraft:stone", 78.0, 70.0),
         ("minecraft:dirt", 96.0, 70.0),
-        ("minecraft:bow", 78.0, 164.0),
         ("minecraft:bow", 277.0, 164.0),
     ] {
         assert!(
@@ -1544,6 +1662,11 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
             "{shown:?} in {items:?}"
         );
     }
+    assert_eq!(
+        items.iter().filter(|i| i.0 == "minecraft:bow").count(),
+        1,
+        "{items:?}"
+    );
     assert!(ops.iter().any(|op| matches!(op, DrawOp::Player { .. })));
     // A click on the dirt takes it onto the cursor, as the creative screen's grid does.
     let press = |x, y, action| MouseEvent {
@@ -1589,6 +1712,120 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         })
         .collect();
     assert_eq!(clicked, [(9, 0)]);
+}
+
+/// Bedrock Inventory on a touch screen: a finger held on a stack chooses how much of it, a picked
+/// stack drawn across slots is shared out among them (`slots.drag`), and the tabs' items take
+/// away a stack put on them.
+#[test]
+fn bedrock_inventory_fingers_choose_spread_and_take_away() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let example = bedrock_inventory("fingers");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    let mut world = creative_world(GameMode::Creative);
+    world.touch = true;
+    if let Some(menu) = &mut world.menu {
+        menu.slots[36] = Some(stack("minecraft:oak_log", 16));
+        menu.slots[37] = Some(stack("minecraft:oak_planks", 64));
+        menu.slots[9] = Some(stack("minecraft:bow", 1));
+    }
+    mods.set_snapshot(world);
+    let screen = "bedrock_inventory:inventory";
+    mods.screen_opened(screen);
+    let phone = RenderContext {
+        width: 533,
+        height: 240,
+        mouse_x: 0.0,
+        mouse_y: 0.0,
+        delta: 0.05,
+    };
+    let finger = |action, x, y| MouseEvent {
+        action,
+        x,
+        y,
+        button: 0,
+        scroll: 0.0,
+    };
+    let tap = |mods: &mut Mods, x, y| {
+        mods.screen_mouse(screen, finger(MouseAction::Press, x, y));
+        mods.screen_mouse(screen, finger(MouseAction::Release, x, y));
+    };
+    mods.screen_render(screen, phone);
+    // Fingers drag (not scroll) on the inventory's window and on the scrollbar.
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::DragAreas { areas, .. } if areas.len() == 2))
+    );
+    let id = || "bedrock_inventory".to_owned();
+    // A tap picks the logs; a finger drawn across the crafting grid shares them out.
+    tap(&mut mods, 277.0, 164.0);
+    mods.screen_render(screen, phone);
+    mods.screen_mouse(screen, finger(MouseAction::Press, 397.0, 59.0));
+    for (x, y) in [(415.0, 59.0), (397.0, 77.0), (415.0, 77.0)] {
+        mods.screen_mouse(screen, finger(MouseAction::Drag, x, y));
+    }
+    mods.screen_mouse(screen, finger(MouseAction::Release, 415.0, 77.0));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::Click {
+                id: id(),
+                slot: 36,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+            Output::Drag {
+                id: id(),
+                slots: vec![1, 2, 3, 4],
+                button: 0,
+            },
+        ]
+    );
+    // A finger resting on the planks for a second chooses 9 of them (one, then faster), and a
+    // tap puts those 9 in another slot.
+    mods.screen_mouse(screen, finger(MouseAction::Press, 295.0, 164.0));
+    for _ in 0..14 {
+        mods.screen_render(screen, phone);
+    }
+    mods.screen_mouse(screen, finger(MouseAction::Release, 295.0, 164.0));
+    mods.screen_render(screen, phone);
+    tap(&mut mods, 313.0, 106.0);
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::CreativeSlot {
+                id: id(),
+                slot: 37,
+                stack: Some(stack("minecraft:oak_planks", 55)),
+            },
+            Output::CreativeCarried {
+                id: id(),
+                stack: Some(stack("minecraft:oak_planks", 9)),
+            },
+            Output::Click {
+                id: id(),
+                slot: 11,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+        ]
+    );
+    // The bow tapped onto a tab's item goes away.
+    tap(&mut mods, 277.0, 106.0);
+    tap(&mut mods, 114.0, 88.0);
+    assert_eq!(
+        mods.drain(),
+        [Output::CreativeSlot {
+            id: id(),
+            slot: 9,
+            stack: None,
+        }]
+    );
 }
 
 /// What a frame of Bedrock Inventory costs: the creative window full (a tab of 475 items), the
