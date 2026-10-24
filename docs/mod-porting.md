@@ -387,10 +387,13 @@ what is still missing (the next port's API work).
 
 - Does: a screen of saved places (add here, pick, forget, rename with the phone's keyboard), the
   picked one's direction and distance at the top of the HUD; opened by J, by its touch button (a
-  compass, at the left) or by its button on the pause menu.
+  compass, at the left) or by its button on the pause menu. In the world, each place of the
+  dimension has a beam of its colour up from it (hidden by what is in front, as JourneyMap's
+  beacons) and its name and distance over it, seen through hills and the same size at any
+  distance (as Xaero's waypoints); the picked one marked.
 - API added: the `widgets` interface (screen buttons, touch buttons, restyled controls); GUI
-  sprites of other namespaces in the atlas.
-- Missing: a minimap, waypoints drawn in the world (3D), death points.
+  sprites of other namespaces in the atlas; `world-draw` (the beams and names).
+- Missing: a minimap, death points, waypoint colours and icons of the player's choosing.
 
 ### Candidates
 

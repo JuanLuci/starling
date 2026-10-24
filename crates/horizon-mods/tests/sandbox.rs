@@ -530,6 +530,30 @@ fn waypoints_screen_keeps_and_points() {
     assert!(mods.screen_key(&screen, &key("key.keyboard.enter", "")));
     let ops = mods.screen_render(&screen, context());
     assert_eq!(labels(&ops)[0], "> Home (0 m)");
+    // In the world: a beam up from it, its name and distance over it seen through hills, the
+    // distance by the metre as the player walks away.
+    let mut away = player();
+    away.player.as_mut().unwrap().x += 30.4;
+    mods.set_snapshot(away);
+    mods.tick(1);
+    let layers: Vec<(String, horizon_mods::WorldLayer)> =
+        mods.world_layers().flat_map(|(_, l)| l.to_vec()).collect();
+    let names: Vec<&str> = layers.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(names, ["beams", "names"]);
+    let beam = &layers[0].1.lines[0];
+    assert_eq!(
+        (beam.origin.x, beam.origin.y, beam.origin.z),
+        (12.5, 64.0, -3.25)
+    );
+    assert_eq!(beam.ends, [0.0, 0.0, 0.0, 0.0, 256.0, 0.0]);
+    assert_eq!(
+        (beam.colors[0], layers[0].1.through_walls),
+        (0xC0FF_5555, false)
+    );
+    let label = &layers[1].1.labels[0];
+    assert_eq!(label.text, r##"{"text":"> Home 30 m","color":"#FF5555"}"##);
+    assert!(label.fixed_size && layers[1].1.through_walls);
+    assert_eq!(label.at.y, 66.2);
     // Kept on disk: a reload has it.
     let entries = Mods::load(&[dir.join("waypoints.hmod")], |_| true, |_| false);
     let mut reloaded = entries;
