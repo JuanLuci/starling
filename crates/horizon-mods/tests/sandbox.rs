@@ -2954,6 +2954,59 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
             |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
         )
     );
+    let button_at = |ops: &[DrawOp], name: &str| {
+        ops.iter().find_map(|o| match o {
+            DrawOp::Button { x, y, label, .. } if label == name => Some((*x, *y)),
+            _ => None,
+        })
+    };
+    // Every key has a button, for a phone: Back for Backspace (shown with somewhere to go back
+    // to), the star for A.
+    assert_eq!(button_at(&ops, "Back"), None);
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    let (bx, by) = button_at(&ops, "Back").unwrap();
+    mods.screen_mouse("emi:recipes", press(bx + 2.0, by + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter().any(
+            |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
+        )
+    );
+    let (tx, ty) = button_at(&ops, "").unwrap();
+    mods.screen_mouse("emi:recipes", press(tx + 2.0, ty + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    // Framed in gold now: the stick is a favourite, left of the window.
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Fill { color: 0xFFFF_D700, .. }))
+    );
+    let beside = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let left: Vec<&str> = beside
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { x, stack, .. } if *x < 72.0 => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left, ["minecraft:stick"]);
+    mods.screen_mouse("emi:recipes", press(tx + 2.0, ty + 2.0, 0));
+    let beside = mods.screen_render("inventory", ctx(0.0, 0.0));
+    assert!(
+        !beside
+            .iter()
+            .any(|o| matches!(o, DrawOp::Item { x, .. } if *x < 72.0))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    // ++ fills as many as can be, as Shift and +.
+    let (ax, ay) = button_at(&ops, "++").unwrap();
+    mods.drain();
+    mods.screen_mouse("emi:recipes", press(ax + 2.0, ay + 2.0, 0));
+    let out = mods.drain();
+    assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: true, .. } if recipe == "minecraft:stick")), "{out:?}");
+    // The stick's recipes again, for +.
+    mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
     // + fills the grid with the recipe and closes the screen.
     let plus = ops
         .iter()
@@ -3033,6 +3086,48 @@ fn shulker_box_tooltip_shows_the_contents_as_slots() {
     assert_eq!(at(1), None);
     assert_eq!(at(9), Some(("minecraft:stone", 10)));
     assert_eq!(at(26), Some(("minecraft:dirt", 3)));
+    // A phone has no Shift: the Config screen picks the preview shown without it, kept; Shift
+    // then shows the other.
+    mods.screen_key("inventory", &key(false));
+    assert_eq!(
+        mods.config_screen("shulker_box_tooltip").as_deref(),
+        Some("shulker_box_tooltip:settings")
+    );
+    let settings = "shulker_box_tooltip:settings";
+    let ctx = RenderContext {
+        width: 427,
+        height: 240,
+        mouse_x: 0.0,
+        mouse_y: 0.0,
+        delta: 0.05,
+    };
+    let preview = |ops: &[DrawOp]| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::Button { x, y, label, .. } if label.starts_with("Preview") => {
+                    Some((*x, *y, label.clone()))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (bx, by, label) = preview(&mods.screen_render(settings, ctx));
+    assert_eq!(label, "Preview: Compact");
+    let tap = MouseEvent {
+        action: MouseAction::Press,
+        x: bx + 4.0,
+        y: by + 4.0,
+        button: 0,
+        scroll: 0.0,
+    };
+    assert!(mods.screen_mouse(settings, tap));
+    assert_eq!(preview(&mods.screen_render(settings, ctx)).2, "Preview: Each slot");
+    let (lines, grids, _) = mods.tooltip_grids(&boxed);
+    assert_eq!(lines, ["§8Shift: together"]);
+    assert_eq!(grids[0].stacks.len(), 27);
+    mods.screen_key("inventory", &key(true));
+    let (_, grids, _) = mods.tooltip_grids(&boxed);
+    assert_eq!(grids[0].stacks.len(), 3);
     // An empty box, and a stick: the game's own tooltip.
     let (lines, grids, instead) = mods.tooltip_grids(&stack("minecraft:shulker_box", 1));
     assert!(lines.is_empty() && grids.is_empty() && !instead);

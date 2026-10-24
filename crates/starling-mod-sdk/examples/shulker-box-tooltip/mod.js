@@ -1,10 +1,14 @@
 // ShulkerBoxTooltip: a shulker box's tooltip shows what it holds as slots on the box's colour, in
 // place of the game's list of its first five stacks; so does any stack carrying a container's
 // items (`minecraft:container`: a chest, a barrel, a dispenser picked with its contents). Each
-// kind of item once with how many there are, as ShulkerBoxTooltip's compact preview; with Shift
-// held, each slot where it is, as its full one. The stack's components come as SNBT, read here.
+// kind of item once with how many there are, as ShulkerBoxTooltip's compact preview, or each slot
+// where it is, as its full one: its Config (on the Mods page; a phone has no Shift) picks which,
+// and Shift held shows the other. The stack's components come as SNBT, read here.
 import { addGrid } from "starling:mods/tooltips@0.1.0";
 import { hasTouch } from "starling:mods/mobile@0.1.0";
+import { button, panel, text, textWidth } from "starling:mods/draw@0.1.0";
+import { close, setConfig } from "starling:mods/screens@0.1.0";
+import { get, set } from "starling:mods/storage@0.1.0";
 import { write } from "starling:mods/log@0.1.0";
 
 // The colours of the boxes (DyeColor's texture diffuse colours; the plain box's purple).
@@ -125,8 +129,39 @@ function color(id) {
 
 let shift = false;
 
+// The preview shown without Shift, kept: each slot where it is, or each kind once.
+let full = false;
+{
+  const saved = get("settings");
+  if (saved && saved.length > 0) full = saved[0] === 1;
+}
+
+// The settings screen: its panel and buttons, centred in the GUI.
+const SETTINGS = "shulker_box_tooltip:settings";
+function layout(context) {
+  const x = Math.round(context.width / 2 - 100), y = Math.round(context.height / 2 - 38);
+  return {
+    panel: [x, y, 200, 76],
+    buttons: [
+      { rect: [x + 10, y + 24, 180, 20], label: `Preview: ${full ? "Each slot" : "Compact"}`,
+        press: () => {
+          full = !full;
+          try {
+            set("settings", new Uint8Array([full ? 1 : 0]));
+          } catch (e) {
+            // A full storage keeps the old setting.
+          }
+        } },
+      { rect: [x + 10, y + 48, 180, 20], label: "Done", press: () => close() },
+    ],
+  };
+}
+const inside = ([x, y, w, h], px, py) => px >= x && px < x + w && py >= y && py < y + h;
+let size = { width: 0, height: 0 };
+
 export const events = {
   init() {
+    setConfig("settings");
     return {
       commands: [], tick: false, frame: false, chat: false, chatSend: false, hud: false,
       hudElements: [], screens: true, tooltips: true, keybinds: [], channels: [],
@@ -143,13 +178,32 @@ export const events = {
   screenClosed() {
     shift = false;
   },
+  screenRender(screen, context) {
+    if (screen !== SETTINGS) return;
+    size = context;
+    const { panel: [x, y, w, h], buttons } = layout(context);
+    panel(x, y, w, h);
+    const title = "ShulkerBoxTooltip";
+    text(x + Math.round((w - textWidth(title) + 1) / 2), y + 8, title, 0xFFFFFF, true);
+    for (const b of buttons) {
+      button(...b.rect, b.label, inside(b.rect, context.mouseX, context.mouseY), true);
+    }
+  },
+  screenMouse(screen, event) {
+    if (screen !== SETTINGS) return false;
+    if (event.action === "press" && event.button === 0) {
+      const hit = layout(size).buttons.find((b) => inside(b.rect, event.x, event.y));
+      if (hit) hit.press();
+    }
+    return true;
+  },
   tooltip(stack) {
     const held = contents(stack);
     if (held.length === 0) return [];
     const tint = color(stack.id);
     const background = tint ? (TINT | tint) >>> 0 : 0;
     let grid;
-    if (shift) {
+    if (full !== shift) {
       // Each slot where it is.
       const [size, columns] = SIZES[stack.id] || [27, 9];
       const last = held.reduce((m, [slot]) => Math.max(m, slot), 0);
@@ -178,6 +232,7 @@ export const events = {
       return [];
     }
     // ShulkerBoxTooltip's hint, where there is a Shift to hold.
-    return shift || hasTouch() ? [] : ["§8Shift: each slot"];
+    if (shift || hasTouch()) return [];
+    return [full ? "§8Shift: together" : "§8Shift: each slot"];
   },
 };

@@ -392,7 +392,9 @@ what is still missing (the next port's API work).
   table, furnace, blast furnace, smoker, campfire, stonecutter, smithing table, brewing stand),
   recipes laid out as their station's window, a slot's choices in turn each second, cooking time
   and experience; Recipes and Uses switch, Backspace goes back. + puts a crafting or furnace
-  recipe's ingredients in the open grid (Shift: as many as can be) and goes back to it.
+  recipe's ingredients in the open grid (Shift: as many as can be) and goes back to it. Every key
+  has a button for a phone: ++ for Shift +, Back for Backspace, a star (the favourite, framed in
+  gold) for A.
 - API added: the `recipes` interface and capability (`count-recipes`, `get-recipes`, `fill`),
   `screens.get-window`. Item stacks' `name` is the name the player sees, as the interface says
   (it was the chat's bracketed one: `[Oak Planks]`). A page of recipes can be hundreds of stacks:
@@ -423,15 +425,16 @@ what is still missing (the next port's API work).
 - Does: a shulker box's tooltip shows what it holds as slots in the box's colour, in place of the
   game's list of its first five stacks; so does any stack carrying a container's items (a chest
   or barrel picked with its contents). Each kind of item once with how many there are
-  (ShulkerBoxTooltip's compact preview); Shift shows each slot where it is (its full one). On a
-  phone the long press's tooltip shows the compact one.
+  (ShulkerBoxTooltip's compact preview), or each slot where it is (its full one): its Config
+  (on the Mods page) picks which, kept, and Shift shows the other. A phone has no Shift: there
+  the Config is the way, the tap's tooltip showing the one picked.
 - API added: `tooltips.add-grid` (with the `hud` capability). The game's tooltips (inventory,
   creative, stations, the recipe book, a finger's long press) draw a mod's grids under the
   lines, the box placed as vanilla places it. A grid's colour crosses from JavaScript as its
   bits (the engine's `js-tooltips`): componentize-js passes a u32 of 2^31 or more wrong when it
   is a function's argument rather than inside a list.
 - Missing: ShulkerBoxTooltip's ender chest preview (the server keeps that inventory), its lock
-  key and settings screen, the preview of a box placed in the world.
+  key, the preview of a box placed in the world.
 
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 

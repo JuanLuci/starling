@@ -38,6 +38,9 @@ pitfalls and the port log. Then:
    `slots.drag` and `creative` clicks change the pretend menu before the step draws (`release`,
    `drag`, `scroll`, `key-press` steps too). On a phone a finger moving up or down scrolls, so a
    screen with a scrollbar or slots to drag across names them with `mobile.drag-areas`.
+   A phone has no keyboard, no Shift, no right click and no hover: everything a key, Shift or a
+   right click does needs a button too (EMI's ++, Back and star), or a setting in the mod's
+   Config (`screens.set-config`; ShulkerBoxTooltip's preview), and nothing may only show on hover.
    `{"screen": "container"}` (a menu `{"kind": "minecraft:generic_9x3", "size": 63}`) and
    `{"screen": "inventory"}` draw a plain window of vanilla's layout with the menu's stacks and
    the mod's window buttons (`widgets.add-window-button`), which `click` presses; Shift-clicks

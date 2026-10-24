@@ -4,14 +4,16 @@
 // - The index, right of the window: the creative inventory's items in its order, a page at a
 //   time (the arrows over it, or the wheel), searched as the creative search searches by the
 //   box under the window (a tap on a phone brings up the keyboard).
-// - Favourites, left of the window: A over an item adds it, A again takes it away; kept.
+// - Favourites, left of the window: A over an item adds it, A again takes it away, as does the
+//   star on its recipes screen (a phone has no A); kept.
 // - R over an item, or a click (a tap) on one in the index or a recipe: its recipes. U, or a right
 //   click: its uses. Over the game's slots too.
 // - The recipes screen: a tab for each station there are recipes at (crafting table, furnaces,
 //   campfire, stonecutter, smithing table, brewing stand) with how many, the recipes laid out as
 //   their station's window lays them, a slot's choices shown in turn each second; Recipes and Uses
-//   switch over, Backspace goes back. The + beside a crafting or furnace recipe puts its
-//   ingredients in the open grid or furnace, as the recipe book does (Shift: as many as can be).
+//   switch over, Backspace or Back goes back. The + beside a crafting or furnace recipe puts its
+//   ingredients in the open grid or furnace, as the recipe book does; ++ (or Shift +) as many as
+//   can be. Every key has a button, for a phone.
 import { button, item, itemId, itemTooltip, fill, panel, sprite, text, textWidth, tooltip }
   from "starling:mods/draw@0.1.0";
 import { getTabs, getItems } from "starling:mods/creative@0.1.0";
@@ -307,6 +309,9 @@ function screenLayout(width, height) {
     back: [x + 8, y + h - 22, 12, 17],
     next: [x + w - 20, y + h - 22, 12, 17],
     pageLabel: [x + w / 2, y + h - 17],
+    // Back to the view before (Backspace), and the star adding the stack to the favourites (A).
+    history: [x + 24, y + h - 23, 34, 18],
+    star: [x + w - 46, y + h - 23, 20, 18],
   };
 }
 function perPage(v, area) {
@@ -315,7 +320,8 @@ function perPage(v, area) {
 }
 
 let seconds = 0;
-// What the recipes screen drew last: stacks by box, the + buttons by recipe.
+// What the recipes screen drew last: stacks by box, the + and ++ buttons by recipe (and whether
+// as many as can be).
 let hits = { stacks: [], fills: [], tabs: [] };
 
 function drawRecipes(context) {
@@ -388,10 +394,13 @@ function drawRecipes(context) {
       text(x + 20, y + SLOT + 4, t, 0xA0A0A0, false);
     }
     if (FILLED.includes(r.kind)) {
-      const b = [L.area[0] + L.area[2] - 14, y + 2, 12, 12];
-      button(...b, "+", inside(b, mx, my), true);
-      hits.fills.push([b, r]);
-      if (inside(b, mx, my)) hint = ["Fill the grid", "§7Shift: as many as can be"];
+      const once = [L.area[0] + L.area[2] - 20, y + 2, 18, 12];
+      const all = [once[0], y + 16, 18, 12];
+      button(...once, "+", inside(once, mx, my), true);
+      button(...all, "++", inside(all, mx, my), true);
+      hits.fills.push([once, r, false], [all, r, true]);
+      if (inside(once, mx, my)) hint = ["Fill the grid", "§7Shift: as many as can be"];
+      if (inside(all, mx, my)) hint = ["Fill the grid", "§7As many as can be"];
     }
     y += recipeHeight(kind);
   }
@@ -401,6 +410,16 @@ function drawRecipes(context) {
   }
   const label = `${view.page + 1}/${pagesTotal}`;
   text(Math.round(L.pageLabel[0] - textWidth(label) / 2), L.pageLabel[1], label, 0xFFFFFF, true);
+  if (history.length > 0) button(...L.history, "Back", inside(L.history, mx, my), true);
+  // The star, framed in gold while the stack is a favourite.
+  const starred = favourites.some((f) => key(f) === key(view.stack));
+  const [sx, sy, sw, sh] = L.star;
+  if (starred) fill(sx - 1, sy - 1, sw + 2, sh + 2, 0xFFFFD700);
+  button(sx, sy, sw, sh, "", inside(L.star, mx, my), true);
+  itemId(sx + 2, sy + 1, "minecraft:nether_star");
+  if (inside(L.star, mx, my)) {
+    hint = starred ? ["Favourite", "§7Click: take it away"] : ["Add to the favourites"];
+  }
   if (hovered) {
     itemTooltip(mx, my, hovered);
   } else if (hint || tabHint) {
@@ -431,9 +450,17 @@ function pressRecipes(event) {
     load(view);
     return;
   }
+  if (history.length > 0 && inside(L.history, x, y)) {
+    back();
+    return;
+  }
+  if (inside(L.star, x, y)) {
+    toggleFavourite(view.stack);
+    return;
+  }
   const f = hits.fills.find(([r]) => inside(r, x, y));
   if (f) {
-    if (act(() => fillRecipe(f[1].id, shiftHeld), false)) {
+    if (act(() => fillRecipe(f[1].id, f[2] || shiftHeld), false)) {
       close();
     } else {
       act(() => showOverlay(`Open a ${KINDS[f[1].kind][1].toLowerCase()} grid to fill`));
