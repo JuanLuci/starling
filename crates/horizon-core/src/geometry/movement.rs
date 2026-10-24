@@ -47,6 +47,8 @@ impl MovedBlock {
         VoxelShape::block().moved(self.offset)
     }
     /// VoxelShape.findIndex: the upper-bound search over two coordinates.
+    /// A NaN value is past both, as the search's `value < coordinate` says.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     fn find_index(&self, axis: Axis, value: f64) -> i32 {
         let [low, high] = self.coords[axis as usize];
         if !(value < high) {
@@ -74,7 +76,7 @@ impl Collides for MovedBlock {
         let occupied = || meets(Axis::ALL[(i + 1) % 3]) && meets(Axis::ALL[(i + 2) % 3]);
         if amount > 0.0 {
             // The layers from the one above the box's top: the cell, if it is there.
-            if self.find_index(axis, aabb.max(axis) - COLLISION_EPSILON) + 1 <= 0 && occupied() {
+            if self.find_index(axis, aabb.max(axis) - COLLISION_EPSILON) < 0 && occupied() {
                 let distance = self.coords[i][0] - aabb.max(axis);
                 return if distance >= -COLLISION_EPSILON {
                     java_min(amount, distance)
