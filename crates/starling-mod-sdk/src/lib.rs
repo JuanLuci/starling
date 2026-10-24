@@ -64,6 +64,7 @@
 //! | `MinecraftClient.player` / `.world` / `.crosshairTarget` | [`game::get_player`], [`level`], [`game::get_target`] |
 //! | `DrawContext.fill/drawText/drawItem/drawGuiTexture/drawTooltip` | [`draw::fill`], [`draw::text`], [`draw::item`], [`draw::sprite`], [`draw::tooltip`] |
 //! | `WorldRenderEvents`, a `DebugRenderer`: lines, boxes and text in the world | [`world_draw::set_layer`] (capability `world-draw`), kept until set again |
+//! | Xaero's / JourneyMap's waypoint marks: a sprite facing the camera, a name and a distance | [`world_draw::set_icons`] (the mod's own sprites from the crate's `assets/`) |
 //! | Light Overlay's spawn checks over an area | [`level::get_spawn_spots`] |
 //! | JEI's / EMI's recipe lookups, the recipe book's placing | [`recipes::get_recipes`], [`recipes::fill`] (capability `recipes`) |
 //! | `AbstractContainerScreen.leftPos/topPos/imageWidth/imageHeight` | [`screens::get_window`] |

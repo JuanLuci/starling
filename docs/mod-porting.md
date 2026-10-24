@@ -126,6 +126,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `InventoryScreen.drawEntity` (the player in the inventory) | `draw.player(x, y, width, height, size, turn)`: the head follows the mouse (ahead on a phone), `turn` degrees more |
 | `Screen.getTooltipFromItem` + `drawTooltip` (an item's full tooltip) | `draw.item-tooltip(x, y, stack)`: name, lore, enchantments, attributes, the mods' lines |
 | `WorldRenderEvents.AFTER_TRANSLUCENT` / a `DebugRenderer` with `RenderType.lines()` (Light Overlay's crosses, chunk borders, waypoint beams) | `world-draw.set-layer(id, {lines: [...]})` (capability `world-draw`): coloured lines with a width in pixels, from an origin, depth tested or `through-walls`; the game keeps drawing the layer until the mod sets it again or `remove-layer`s it, so no frame hook |
+| Xaero's / JourneyMap's waypoint marks (a textured quad facing the camera, its name and distance) | `world-draw.set-icons(id, [...])`: a GUI sprite (the mod's own from its `assets/`) at a point, tinted, with a text over it and one under it, the same size on screen at any distance (`fixed-size`) and seen through walls if asked; the nearer drawn over the farther |
 | a translucent quad layer (Lighty's carpet, a marker, a schematic's ghost) | the layer's `boxes`: see-through filled boxes, unlit |
 | `Font.drawInBatch` in the world (name tags, Lighty's numbers, a waypoint's name) | the layer's `texts` (many at once: places and colours as numbers, the texts the lines of one string, `facing` `up` to lie on the ground) and `labels` (a few, rich text, `fixed-size` for a waypoint's) |
 
@@ -196,7 +197,8 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
   [...]}"}` gives the stack those components (SNBT, as the game does); the step's result lists
   the mod's lines and its grids (`tooltips.add-grid`), each stack as `[id, count]`.
 - The world (`world-draw`): a `world` line whenever the layers change, each layer's lines and
-  boxes counted by colour, its texts by text, the box they span and its labels. The scenario's
+  boxes counted by colour, its texts by text, the box they span and its labels; the icons
+  (`set-icons`) under `icons`. The scenario's
   `blocks` are the level (`level.get-spawn-spots` finds air over air on any of them but liquids)
   and `"light": [block, sky]` its light everywhere.
 
@@ -437,10 +439,13 @@ what is still missing (the next port's API work).
   picked one's direction and distance at the top of the HUD; opened by J, by its touch button (a
   compass, at the left) or by its button on the pause menu. In the world, each place of the
   dimension has a beam of its colour up from it (hidden by what is in front, as JourneyMap's
-  beacons) and its name and distance over it, seen through hills and the same size at any
-  distance (as Xaero's waypoints); the picked one marked.
+  beacons) and on the beam a diamond of its colour, its name over it and its distance under it,
+  seen through hills and the same size at any distance (as Xaero's waypoints); the picked one
+  ringed in white. The diamonds are the mod's own sprites.
 - API added: the `widgets` interface (screen buttons, touch buttons, restyled controls); GUI
-  sprites of other namespaces in the atlas; `world-draw` (the beams and names).
+  sprites of other namespaces in the atlas; `world-draw` (the beams), `world-draw.set-icons`
+  (the diamonds and their texts); `cargo horizon-mod build` packs the crate's `assets/` and
+  `data/`, so a Rust mod has sprites of its own.
 - Missing: a minimap, death points, waypoint colours and icons of the player's choosing.
 
 ### Candidates

@@ -66,8 +66,8 @@ pub use starling::starling::mods::{
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
     world_draw::{
-        Boxes as WorldBoxes, Facing, Label as WorldLabel, Layer as WorldLayer, Lines as WorldLines,
-        Point, Texts as WorldTexts,
+        Boxes as WorldBoxes, Facing, Icon as WorldIcon, Label as WorldLabel, Layer as WorldLayer,
+        Lines as WorldLines, Point, Texts as WorldTexts,
     },
 };
 use starling::{
@@ -116,6 +116,7 @@ const WORLD_LINES: usize = 65536;
 const WORLD_BOXES: usize = 16384;
 const WORLD_TEXTS: usize = 16384;
 const WORLD_LABELS: usize = 256;
+const WORLD_ICONS: usize = 256;
 /// `level.get-spawn-spots`' longest side.
 const SPAWN_SPOTS_SIDE: i32 = 64;
 /// The items one `creative.get-items` may list.
@@ -577,6 +578,8 @@ struct State {
     widgets: Widgets,
     /// Its `world-draw` layers by id, in the order first set.
     world: Vec<(String, WorldLayer)>,
+    /// Its layers' icons (`world-draw.set-icons`) by id, in the order first set.
+    icons: Vec<(String, Vec<WorldIcon>)>,
     /// The mod's payload channels.
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
@@ -895,6 +898,7 @@ impl Mods {
             replaces: Vec::new(),
             widgets: Widgets::default(),
             world: Vec::new(),
+            icons: Vec::new(),
             channels: Vec::new(),
             sent: VecDeque::new(),
             data_dir,
@@ -1003,6 +1007,12 @@ impl Mods {
         self.running()
             .map(|r| r.store.data())
             .map(|s| (s.id.as_str(), s.world.as_slice()))
+    }
+    /// The running mods' `world-draw` icons: mod id, then each layer's.
+    pub fn world_icons(&self) -> impl Iterator<Item = (&str, &[(String, Vec<WorldIcon>)])> {
+        self.running()
+            .map(|r| r.store.data())
+            .map(|s| (s.id.as_str(), s.icons.as_slice()))
     }
     /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
     pub fn uses(&self, c: Capability) -> bool {
@@ -2984,6 +2994,60 @@ impl world_draw::Host for State {
     }
     fn remove_layer(&mut self, id: String) {
         self.world.retain(|(k, _)| *k != id);
+        self.icons.retain(|(k, _)| *k != id);
+    }
+    fn set_icons(&mut self, id: String, icons: Vec<WorldIcon>) -> Result<(), String> {
+        if id.is_empty() || id.chars().count() > 64 {
+            return Err(format!(
+                "{:?} is not a layer's id (1 to 64 characters)",
+                clip(id)
+            ));
+        }
+        let size_ok = |n: f32| n.is_finite() && n > 0.0;
+        if let Some(i) = icons.iter().find(|i| {
+            let at = [i.at.x, i.at.y, i.at.z];
+            !at.iter().all(|n| n.is_finite() && n.abs() <= 3.0e7)
+                || !size_ok(i.size)
+                || !size_ok(i.text_scale)
+        }) {
+            return Err(format!(
+                "icon {:?} needs a place, a size and a text size",
+                clip_to(i.sprite.clone(), 32)
+            ));
+        }
+        let others: usize = self
+            .icons
+            .iter()
+            .filter(|(k, _)| *k != id)
+            .map(|(_, i)| i.len())
+            .sum();
+        if others + icons.len() > WORLD_ICONS {
+            return Err(format!(
+                "a mod draws at most {WORLD_ICONS} icons in the world"
+            ));
+        }
+        let icons: Vec<WorldIcon> = icons
+            .into_iter()
+            .map(|i| WorldIcon {
+                sprite: clip(i.sprite),
+                above: clip(i.above),
+                below: clip(i.below),
+                size: i.size.min(256.0),
+                text_scale: i.text_scale.min(64.0),
+                ..i
+            })
+            .collect();
+        let full = self.icons.len() >= WORLD_LAYERS;
+        match self.icons.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, old)) => *old = icons,
+            None if full => {
+                return Err(format!(
+                    "a mod has at most {WORLD_LAYERS} layers in the world"
+                ));
+            }
+            None => self.icons.push((id, icons)),
+        }
+        Ok(())
     }
 }
 impl widgets::Host for State {

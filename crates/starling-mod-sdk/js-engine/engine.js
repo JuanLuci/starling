@@ -377,6 +377,19 @@ const worldDraw = {
       throughWalls: !!l.throughWalls,
     });
   },
+  setIcons(id, icons) {
+    return worldDrawApi.setIcons(id, (icons || []).map((i) => ({
+      at: i.at || ORIGIN, sprite: i.sprite || "",
+      color: i.color === undefined ? 0xFFFFFFFF : i.color,
+      size: i.size === undefined ? 1 : i.size,
+      above: `${i.above === undefined ? "" : i.above}`,
+      below: `${i.below === undefined ? "" : i.below}`,
+      textScale: i.textScale === undefined ? 1 : i.textScale,
+      background: i.background === undefined ? 0 : i.background,
+      fixedSize: !!i.fixedSize,
+      throughWalls: !!i.throughWalls,
+    })));
+  },
 };
 
 // A grid's colour goes as its bits (js-tooltips): componentize-js passes a u32 of 2^31 or more

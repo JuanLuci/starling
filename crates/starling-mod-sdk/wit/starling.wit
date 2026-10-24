@@ -640,6 +640,34 @@ interface world-draw {
     /// among them.
     set-layer: func(id: string, layer: layer) -> result<_, string>;
     remove-layer: func(id: string);
+
+    /// A GUI sprite standing at a point and facing the camera, with a text over it and one under
+    /// it: a waypoint's mark (JourneyMap's diamond with its name, the distance under it).
+    record icon {
+        /// The sprite's middle.
+        at: point,
+        /// A GUI sprite as `draw.sprite` names it (a mod's own: `<mod id>:<name>`, from its
+        /// `assets/<mod id>/textures/gui/sprites/`); "" for the texts alone.
+        sprite: string,
+        /// ARGB multiplied into the sprite: a white sprite takes the colour.
+        color: u32,
+        /// The sprite's side: GUI pixels with `fixed-size`, else blocks.
+        size: f32,
+        /// A line over the sprite and one under it, "" for none.
+        above: rich-text,
+        below: rich-text,
+        /// The texts' size, as a label's `scale`.
+        text-scale: f32,
+        /// ARGB behind the texts, 0 for none.
+        background: u32,
+        /// The same size on screen however far away, as a label's.
+        fixed-size: bool,
+        /// Seen through what is in front of it.
+        through-walls: bool,
+    }
+    /// Shows `icons` with the mod's layer `id`, in place of the ones before (`remove-layer`
+    /// removes them too). A mod has at most 256 icons, among 16 layers.
+    set-icons: func(id: string, icons: list<icon>) -> result<_, string>;
 }
 
 /// Capability `hud`: more than lines in the item tooltips the mod adds to (`events.tooltip`).

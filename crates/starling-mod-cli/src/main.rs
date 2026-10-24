@@ -902,7 +902,7 @@ fn world_line(mods: &Mods, last: &mut Value) -> Value {
     let Some((_, layers)) = mods.world_layers().next() else {
         return Value::Null;
     };
-    let now =
+    let layers =
         json!(layers
         .iter()
         .map(|(id, l)| {
@@ -958,8 +958,28 @@ fn world_line(mods: &Mods, last: &mut Value) -> Value {
             })
         })
         .collect::<Vec<_>>());
-    if now != *last && !(now.as_array().is_some_and(Vec::is_empty) && last.is_null()) {
-        emit(json!({ "event": "world", "layers": now }));
+    // The icons (`set-icons`), each with its layer's id.
+    let icons: Vec<Value> =
+        mods.world_icons()
+            .next()
+            .map_or(&[][..], |(_, l)| l)
+            .iter()
+            .flat_map(|(id, icons)| {
+                icons.iter().map(move |i| json!({
+                "layer": id, "at": [i.at.x, i.at.y, i.at.z], "sprite": i.sprite,
+                "color": format!("{:08X}", i.color), "size": i.size, "above": i.above,
+                "below": i.below, "fixed_size": i.fixed_size, "through_walls": i.through_walls,
+            }))
+            })
+            .collect();
+    let empty = layers.as_array().is_some_and(Vec::is_empty) && icons.is_empty();
+    let mut event = json!({ "event": "world", "layers": layers });
+    if !icons.is_empty() {
+        event["icons"] = json!(icons);
+    }
+    let now = json!([layers, icons]);
+    if now != *last && !(empty && last.is_null()) {
+        emit(event);
     }
     now
 }

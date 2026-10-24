@@ -530,8 +530,9 @@ fn waypoints_screen_keeps_and_points() {
     assert!(mods.screen_key(&screen, &key("key.keyboard.enter", "")));
     let ops = mods.screen_render(&screen, context());
     assert_eq!(labels(&ops)[0], "> Home (0 m)");
-    // In the world: a beam up from it, its name and distance over it seen through hills, the
-    // distance by the metre as the player walks away.
+    // In the world: a beam up from it, its diamond with its name over it and its distance under
+    // it seen through hills, the distance by the metre as the player walks away; the chosen
+    // place ringed, the ring with the texts.
     let mut away = player();
     away.player.as_mut().unwrap().x += 30.4;
     mods.set_snapshot(away);
@@ -539,7 +540,7 @@ fn waypoints_screen_keeps_and_points() {
     let layers: Vec<(String, horizon_mods::WorldLayer)> =
         mods.world_layers().flat_map(|(_, l)| l.to_vec()).collect();
     let names: Vec<&str> = layers.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(names, ["beams", "names"]);
+    assert_eq!(names, ["beams"]);
     let beam = &layers[0].1.lines[0];
     assert_eq!(
         (beam.origin.x, beam.origin.y, beam.origin.z),
@@ -550,10 +551,24 @@ fn waypoints_screen_keeps_and_points() {
         (beam.colors[0], layers[0].1.through_walls),
         (0xC0FF_5555, false)
     );
-    let label = &layers[1].1.labels[0];
-    assert_eq!(label.text, r##"{"text":"> Home 30 m","color":"#FF5555"}"##);
-    assert!(label.fixed_size && layers[1].1.through_walls);
-    assert_eq!(label.at.y, 66.2);
+    let icons: Vec<(String, Vec<horizon_mods::WorldIcon>)> =
+        mods.world_icons().flat_map(|(_, l)| l.to_vec()).collect();
+    assert_eq!(icons.len(), 1);
+    let (layer, marks) = &icons[0];
+    assert_eq!(layer, "marks");
+    let sprites: Vec<&str> = marks.iter().map(|i| i.sprite.as_str()).collect();
+    assert_eq!(sprites, ["waypoints:diamond_ring", "waypoints:diamond"]);
+    let (ring, diamond) = (&marks[0], &marks[1]);
+    assert_eq!(ring.above, r##"{"text":"Home","color":"#FF5555"}"##);
+    assert_eq!(ring.below, r##"{"text":"30 m","color":"#E0E0E0"}"##);
+    assert!(ring.fixed_size && ring.through_walls);
+    assert_eq!((ring.size, diamond.size), (17.0, 11.0));
+    assert_eq!((ring.color, diamond.color), (0xFFFF_FFFF, 0xFFFF_5555));
+    assert!(diamond.above.is_empty() && diamond.below.is_empty());
+    assert_eq!(
+        (diamond.at.x, diamond.at.y, diamond.at.z),
+        (12.5, 65.2, -3.25)
+    );
     // Kept on disk: a reload has it.
     let entries = Mods::load(&[dir.join("waypoints.hmod")], |_| true, |_| false);
     let mut reloaded = entries;
@@ -1730,7 +1745,7 @@ capabilities = [\"world-draw\", \"world-read\"]
     .unwrap();
     std::fs::write(
         dir.join("mod.js"),
-        r#"import { setLayer, removeLayer } from "starling:mods/world-draw@0.1.0";
+        r#"import { setLayer, removeLayer, setIcons } from "starling:mods/world-draw@0.1.0";
 import { getSpawnSpots } from "starling:mods/level@0.1.0";
 const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
 export const events = {
@@ -1767,6 +1782,9 @@ export const events = {
       tryIt(() => setLayer("", {})),
       tryIt(() => setLayer("c", { lines: [{ origin, ends: new Float32Array(6 * 70000), colors: [1] }] })),
       tryIt(() => setLayer("d", { labels: [{ at: { x: NaN, y: 0, z: 0 }, text: "x" }] })),
+      tryIt(() => setIcons("a", [{ at: origin, sprite: "probe:mark", color: 0xFF00FF00, size: 9,
+        above: "Up", below: "Down", fixedSize: true, throughWalls: true, background: 0x80000000 }])),
+      tryIt(() => setIcons("g", [{ at: origin, size: 0 }])),
     ].join(",");
   },
 };
@@ -1793,7 +1811,7 @@ export const events = {
 lines need a place and six finite numbers a line,lines need one colour for all, or one a line (2 for 1),\
 \"\" is not a layer's id (1 to 64 characters),\
 a mod draws at most 65536 lines, 16384 boxes, 16384 texts and 256 labels in the world,\
-label \"x\" needs a place and a size"
+label \"x\" needs a place and a size,ok,icon \"\" needs a place, a size and a text size"
         ]
     );
     let layers: Vec<_> = mods
@@ -1832,9 +1850,26 @@ label \"x\" needs a place and a size"
         (texts.places.len(), texts.colors[0], texts.scale),
         (6, 0xFFFF_6600, 1.0)
     );
+    let icons: Vec<_> = mods.world_icons().flat_map(|(_, l)| l.to_vec()).collect();
+    assert_eq!(icons.len(), 1);
+    let icon = &icons[0].1[0];
+    assert_eq!(
+        (
+            icons[0].0.as_str(),
+            icon.sprite.as_str(),
+            icon.color,
+            icon.size
+        ),
+        ("a", "probe:mark", 0xFF00_FF00, 9.0)
+    );
+    assert_eq!((icon.above.as_str(), icon.below.as_str()), ("Up", "Down"));
+    assert_eq!((icon.text_scale, icon.background), (1.0, 0x8000_0000));
+    assert!(icon.fixed_size && icon.through_walls);
+    // Removing a layer removes its icons.
     assert!(mods.command("probe remove"));
     said(&mut mods);
     assert_eq!(mods.world_layers().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    assert_eq!(mods.world_icons().map(|(_, l)| l.len()).sum::<usize>(), 0);
     // The spots of a box at most 64 a side, the corners in any order, the lowest first.
     let mut world = player();
     world.level = Some(std::sync::Arc::new(Floor));

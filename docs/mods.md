@@ -111,7 +111,7 @@ loading. Ordered by what the first native ports need ([research](research/java-m
 | `recipes` (Starling: done) | an item's recipes and uses, the recipe book's filling of a grid | EMI, JEI-style viewers |
 | `ui` | widgets: text, item icons, lists, a screen the mod owns, a settings page in Options > Mods | built on `ui_theme` so it matches the menus |
 | `world-read` | blocks and biomes around the player, within the render distance | minimaps, schematics |
-| `world-draw` (Starling: done) | world-space lines, see-through boxes, texts and labels, kept in layers the game draws every frame | Light Overlay, waypoints; Litematica's ghost blocks next |
+| `world-draw` (Starling: done) | world-space lines, see-through boxes, texts, labels and icons (sprites facing the camera), kept in layers the game draws every frame | Light Overlay, waypoints; Litematica's ghost blocks next |
 | `registries` | new blocks, items, entities and recipes, mostly data: JSON models, textures, loot and recipes in the `.hmod`'s `assets/` and `data/` | server side; see [Multiplayer](#multiplayer) |
 | `server` | world events (block break/place, entity spawn/death, player join), game rules, server commands | runs where the world is simulated |
 | `net` | a mod's own client↔server channel (custom payloads) | only between the two halves of the same mod |
@@ -208,6 +208,9 @@ cd my-mod
 cargo horizon-mod run               # build, then start the game with it
 cargo horizon-mod build             # again after an edit: the running game reloads it
 ```
+
+The crate's `assets/` and `data/` folders go into the `.hmod` too (the mod's own sprites:
+`assets/<id>/textures/gui/sprites/<name>.png`, drawn as `<id>:<name>`).
 
 `run` starts `horizon-client` (on `PATH`, or `--game PATH`, or
 `HORIZON_CLIENT`) with `--dev-mod target/horizon-mod/<id>.hmod`. A dev mod is

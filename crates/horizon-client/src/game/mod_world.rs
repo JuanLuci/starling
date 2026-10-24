@@ -1,9 +1,10 @@
 //! The mods' drawing in the world (`world-draw`): their layers' lines among the frame's debug
 //! lines (gizmos), depth tested or over everything; their boxes as unlit see-through quads, and
-//! their texts and labels as name tags are drawn, in the world or seen through it.
+//! their texts and labels as name tags are drawn, in the world or seen through it; their icons as
+//! GUI sprites facing the camera, with their texts as labels'.
 use super::{Game, mods::rich_text, names::TextAxes, view_vector};
 use horizon_client::{block_entity_render::vertex_light, gizmos::Line, mesher::Vertex, text::Text};
-use horizon_mods::{Facing, WorldLabel};
+use horizon_mods::{Facing, WorldIcon};
 
 /// Labels' texts kept at most.
 const LABEL_TEXTS: usize = 1024;
@@ -140,7 +141,7 @@ impl Game<'_> {
                     };
                     let o = o + axes.up.as_dvec3() * f64::from(scale * lift);
                     let background = (b.background >> 24 != 0).then(|| rgba8(b.background));
-                    let lines = [(self.mod_label_text(b), 0.0)];
+                    let lines = [(self.mod_rich_text(&b.text), 0.0)];
                     self.text_quads_along(
                         o,
                         &lines,
@@ -155,18 +156,106 @@ impl Game<'_> {
                 }
             }
         }
+        let mut icons: Vec<(&WorldIcon, f64)> = self
+            .mods
+            .mods
+            .world_icons()
+            .flat_map(|(_, layers)| layers.iter().flat_map(|(_, icons)| icons))
+            .map(|i| {
+                let at = glam::DVec3::new(i.at.x, i.at.y, i.at.z);
+                (i, at.distance_squared(camera))
+            })
+            .collect();
+        // The farthest first: a nearer one is drawn over it (and a layer's in its order).
+        icons.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (icon, _) in icons {
+            let out = if icon.through_walls {
+                &mut *see_through
+            } else {
+                &mut *out
+            };
+            self.mod_icon_quads(icon, camera, forward, pixel, facing_camera, out);
+        }
     }
-    /// A label's text, read once.
-    fn mod_label_text(&self, b: &WorldLabel) -> Text {
+    /// An icon's sprite and texts facing the camera (`axes`), `pixel` the blocks a GUI pixel spans
+    /// one block away along the view `forward`.
+    fn mod_icon_quads(
+        &self,
+        icon: &WorldIcon,
+        camera: glam::DVec3,
+        forward: glam::DVec3,
+        pixel: f64,
+        axes: TextAxes,
+        out: &mut Vec<Vertex>,
+    ) {
+        let o = glam::DVec3::new(icon.at.x, icon.at.y, icon.at.z) - camera;
+        // The sprite's half side and a pixel of the texts' font, in blocks.
+        let (half, text) = if icon.fixed_size {
+            let depth = o.dot(forward);
+            if depth <= 0.05 {
+                return;
+            }
+            let unit = (pixel * depth) as f32;
+            (icon.size * unit / 2.0, icon.text_scale * unit)
+        } else {
+            (icon.size / 2.0, 0.025 * icon.text_scale)
+        };
+        let sprite = (!icon.sprite.is_empty())
+            .then(|| self.mod_sprite(&icon.sprite))
+            .flatten()
+            .and_then(|k| self.gui.atlas.sprites.get(&k).copied());
+        if let Some(r) = sprite {
+            let (c, right, up) = (o.as_vec3(), axes.right * half, axes.up * half);
+            let color = rgba8(icon.color);
+            let corners = [
+                (c - right - up, [r.u0, r.v1]),
+                (c + right - up, [r.u1, r.v1]),
+                (c + right + up, [r.u1, r.v0]),
+                (c - right + up, [r.u0, r.v0]),
+            ];
+            for (pos, uv) in corners {
+                out.push(Vertex {
+                    normal: [0; 4],
+                    pos: pos.to_array(),
+                    uv,
+                    layer: 2,
+                    color,
+                    light: 0,
+                });
+            }
+        }
+        let (layer, light) = if icon.through_walls {
+            (2, 0)
+        } else {
+            (0, vertex_light(0xFF))
+        };
+        let background = (icon.background >> 24 != 0).then(|| rgba8(icon.background));
+        // Two of the font's pixels from the sprite; a text is 8 high, drawn down from its top.
+        let up = axes.up.as_dvec3();
+        let gap = half + 2.0 * text;
+        let texts = [
+            (&icon.above, o + up * f64::from(gap + 8.0 * text)),
+            (&icon.below, o - up * f64::from(gap)),
+        ];
+        for (line, at) in texts {
+            if line.is_empty() {
+                continue;
+            }
+            let lines = [(self.mod_rich_text(line), 0.0)];
+            self.text_quads_along(at, &lines, axes, text, 0xFF, background, layer, light, out);
+        }
+    }
+    /// A label's or an icon's text, read once.
+    fn mod_rich_text(&self, text: &str) -> Text {
         let mut texts = self.mods.label_texts.borrow_mut();
-        if let Some(t) = texts.get(&b.text) {
+        if let Some(t) = texts.get(text) {
             return t.clone();
         }
         if texts.len() >= LABEL_TEXTS {
             texts.clear();
         }
-        let t = rich_text(&b.text);
-        texts.insert(b.text.clone(), t.clone());
+        let t = rich_text(text);
+        texts.insert(text.to_owned(), t.clone());
         t
     }
 }
