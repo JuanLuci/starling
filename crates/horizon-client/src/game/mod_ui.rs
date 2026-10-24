@@ -232,8 +232,8 @@ impl Game<'_> {
                 // Placed on the screen as the game places tooltips (inside it), so not posed.
                 DrawOp::ItemTooltip { x, y, stack } => {
                     if let Some(stack) = self.game_stack(stack) {
-                        let lines = self.stack_tooltip(&stack);
-                        self.draw_tooltip_lines(batch, &lines, tx + x * s, ty + y * s);
+                        let tooltip = self.stack_tooltip(&stack);
+                        self.draw_tooltip(batch, &tooltip, tx + x * s, ty + y * s);
                     }
                     continue;
                 }

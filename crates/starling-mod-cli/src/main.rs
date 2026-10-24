@@ -10,7 +10,7 @@
 //! (`"target"`), the block being broken (`"mining"`) and blocks around (`"blocks"`): see
 //! `world::world`. A step is one of:
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
-//! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
+//! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}` (with `"components"`, SNBT),
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
 //! it; a game screen's name, `pause` say, draws the mod's buttons on it; `container` and
 //! `inventory` a plain window of vanilla's layout, the menu's stacks and the mod's window
@@ -1150,16 +1150,17 @@ fn play(
         let info = data.info(id);
         let stack = ItemStack {
             id: id.into(),
-            count: 1,
+            count: step["count"].as_u64().map_or(1, |c| c as u32),
             damage: 0,
             max_damage: info.as_ref().map_or(0, |i| i.max_damage),
             name: info.map_or_else(
                 || id.rsplit(':').next().unwrap_or(id).replace('_', " "),
                 |i| i.name,
             ),
-            components: String::new(),
+            // As the game gives them: SNBT, e.g. {"minecraft:container":[...]}.
+            components: step["components"].as_str().unwrap_or_default().into(),
         };
-        let lines = mods.tooltip(&stack);
+        let (lines, grids, instead) = mods.tooltip_grids(&stack);
         // The item's tooltip as the game shows it: its name, then the mod's lines.
         let shown = [vec![stack.name.clone()], lines.clone()].concat();
         let ops = vec![DrawOp::Tooltip {
@@ -1167,7 +1168,25 @@ fn play(
             y: 32.0,
             lines: shown,
         }];
-        return (json!({ "lines": lines }), Some(ops));
+        if grids.is_empty() {
+            return (json!({ "lines": lines }), Some(ops));
+        }
+        // Its grids (`tooltips.add-grid`), each stack as [id, count] or null.
+        let grids: Vec<Value> = grids
+            .iter()
+            .map(|g| {
+                let stacks: Vec<Value> = g
+                    .stacks
+                    .iter()
+                    .map(|s| s.as_ref().map_or(Value::Null, |s| json!([s.id, s.count])))
+                    .collect();
+                json!({ "columns": g.columns, "color": format!("#{:08x}", g.color), "stacks": stacks })
+            })
+            .collect();
+        return (
+            json!({ "lines": lines, "grids": grids, "instead": instead }),
+            Some(ops),
+        );
     }
     if let Some(id) = step["key"].as_str() {
         let pressed = step["pressed"].as_bool().unwrap_or(true);

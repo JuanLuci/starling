@@ -128,7 +128,7 @@ impl Capability {
             Capability::Recipes => &["recipes"],
             Capability::Chat => &["chat"],
             Capability::ChatSend => &["chat-send"],
-            Capability::Hud => &["hud", "draw"],
+            Capability::Hud => &["hud", "draw", "tooltips"],
             Capability::WorldDraw => &["world-draw"],
             Capability::Ui => &["screens", "widgets"],
             Capability::Keys => &["keys"],

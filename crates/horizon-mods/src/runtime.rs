@@ -62,6 +62,7 @@ pub use starling::starling::mods::{
     level::{BlockInfo, Entity, EntityInfo, SpawnSpots},
     recipes::{Lookup, Recipe, RecipeKind},
     slots::{ClickKind, Menu},
+    tooltips::ItemGrid,
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
     world_draw::{
@@ -73,7 +74,7 @@ use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
         chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log as mod_log,
-        mobile, net, recipes, screens, slots, sound, storage, types, widgets, world_draw,
+        mobile, net, recipes, screens, slots, sound, storage, tooltips, types, widgets, world_draw,
     },
 };
 
@@ -565,6 +566,9 @@ struct State {
     panel: Option<Panel>,
     /// Some while a render hook runs: what it drew.
     draw: Option<Vec<DrawOp>>,
+    /// Some while the tooltip hook runs: the grids it added, and whether instead of the game's
+    /// lines of a container's contents.
+    grids: Option<Vec<(ItemGrid, bool)>>,
     /// Its settings screen (`screens.set-config`), `<mod id>:<name>`.
     config: Option<String>,
     /// The game's screens its own stand in for (`screens.replace`): the game's name, then
@@ -886,6 +890,7 @@ impl Mods {
             out: Vec::new(),
             panel: None,
             draw: None,
+            grids: None,
             config: None,
             replaces: Vec::new(),
             widgets: Widgets::default(),
@@ -1327,16 +1332,35 @@ impl Mods {
     }
     /// Lines the mods add under `stack`'s tooltip (rich text).
     pub fn tooltip(&mut self, stack: &ItemStack) -> Vec<String> {
-        let mut lines = Vec::new();
+        self.tooltip_grids(stack).0
+    }
+    /// The lines mods add under `stack`'s tooltip, the grids (`tooltips.add-grid`) and whether
+    /// one stands instead of the game's lines of a container's contents.
+    pub fn tooltip_grids(&mut self, stack: &ItemStack) -> (Vec<String>, Vec<ItemGrid>, bool) {
+        let (mut lines, mut grids, mut instead) = (Vec::new(), Vec::new(), false);
         for i in self.indices(|h| h.tooltips) {
+            if let Some(run) = self.entries[i].run.as_mut() {
+                run.store.data_mut().grids = Some(Vec::new());
+            }
             if let Some(more) = self.call(i, FUEL_EVENT, |g, s| match g {
                 Guest::Starling(m) => m.starling_mods_events().call_tooltip(s, stack),
                 Guest::Horizon(_) => Ok(Vec::new()),
             }) {
                 lines.extend(more.into_iter().take(32).map(|l| clip_to(l, TEXT_CHARS)));
             }
+            let added = self.entries[i]
+                .run
+                .as_mut()
+                .and_then(|r| r.store.data_mut().grids.take())
+                .unwrap_or_default();
+            for (grid, over) in added {
+                if grids.len() < TOOLTIP_GRIDS {
+                    instead |= over;
+                    grids.push(grid);
+                }
+            }
         }
-        lines
+        (lines, grids, instead)
     }
     /// Every running mod's keybinds, with the mod's id.
     pub fn keybinds(&self) -> Vec<(String, Keybind)> {
@@ -1840,7 +1864,7 @@ fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
 }
 
 /// A JavaScript mod's linker: the interfaces its manifest declares (and the ones every mod has),
-/// the engine's `js-source` (and `js-draw` with `draw`), and a trap for every other import, which
+/// the engine's `js-source` (and `js-draw` with `draw`, and so on), and a trap for every other import, which
 /// stops the mod.
 fn js_linker(
     engine: &Engine,
@@ -1879,6 +1903,7 @@ fn js_linker(
             "net" => api::net::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "storage" => api::storage::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "world-draw" => api::world_draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "tooltips" => api::tooltips::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             _ => {}
         }
     }
@@ -1951,6 +1976,24 @@ fn js_linker(
             },
         )?;
     }
+    if interfaces.contains(&"tooltips") {
+        use tooltips::Host;
+        type Grid = (u32, Vec<Option<ItemStack>>, i32, bool);
+        linker
+            .instance("starling:mods/js-tooltips@0.1.0")?
+            .func_wrap(
+                "add-grid",
+                |mut store: wasmtime::StoreContextMut<'_, State>,
+                 (columns, stacks, color, instead): Grid| {
+                    let grid = ItemGrid {
+                        columns,
+                        stacks,
+                        color: color as u32,
+                    };
+                    Ok((store.data_mut().add_grid(grid, instead),))
+                },
+            )?;
+    }
     // The other interfaces: each function says which capability the manifest lacks.
     for (name, item) in component.component_type().imports(engine) {
         let interface = name
@@ -1961,10 +2004,11 @@ fn js_linker(
         else {
             continue;
         };
-        // js-draw goes with draw, js-keys with keys.
+        // js-draw goes with draw, js-keys with keys, js-tooltips with tooltips.
         let granting = match interface {
             "js-draw" => "draw",
             "js-keys" => "keys",
+            "js-tooltips" => "tooltips",
             other => other,
         };
         if interface == "js-source" || interfaces.contains(&granting) {
@@ -2544,6 +2588,27 @@ impl screens::Host for State {
     }
     fn get_window(&mut self) -> Option<(f32, f32, f32, f32)> {
         self.snapshot.window.map(|[x, y, w, h]| (x, y, w, h))
+    }
+}
+/// `tooltips.add-grid`'s grids a tooltip, and stacks a grid.
+const TOOLTIP_GRIDS: usize = 4;
+const GRID_STACKS: usize = 64;
+impl tooltips::Host for State {
+    fn add_grid(&mut self, grid: ItemGrid, instead: bool) -> Result<(), String> {
+        let Some(grids) = self.grids.as_mut() else {
+            return Err("grids go in tooltips: add them from events.tooltip".into());
+        };
+        if !(1..=16).contains(&grid.columns) {
+            return Err(format!("a grid has 1 to 16 columns, not {}", grid.columns));
+        }
+        if grid.stacks.len() > GRID_STACKS {
+            return Err(format!("a grid has at most {GRID_STACKS} stacks"));
+        }
+        if grids.len() >= TOOLTIP_GRIDS {
+            return Err(format!("a tooltip has at most {TOOLTIP_GRIDS} grids"));
+        }
+        grids.push((grid, instead));
+        Ok(())
     }
 }
 /// `recipes.get-recipes`' page.

@@ -155,6 +155,22 @@ fn vanilla_command(name: &str) -> bool {
         .any(|&c| d.nodes[c].name() == name)
 }
 
+/// A grid of stacks a mod shows in a tooltip (`tooltips.add-grid`).
+pub(super) struct TooltipGrid {
+    pub(super) columns: usize,
+    pub(super) stacks: Vec<Option<ItemStack>>,
+    /// ARGB under the slots, 0 for none.
+    pub(super) color: u32,
+}
+impl TooltipGrid {
+    pub(super) fn width(&self) -> f32 {
+        (self.columns.min(self.stacks.len().max(1)) * 18) as f32
+    }
+    pub(super) fn height(&self) -> f32 {
+        (self.stacks.len().div_ceil(self.columns) * 18) as f32
+    }
+}
+
 /// The loaded chunks around the player, for `world-read` mods.
 struct LevelView {
     chunks: Vec<((i32, i32), Arc<horizon_client::chunk::Chunk>)>,
@@ -1446,15 +1462,31 @@ impl Game<'_> {
         self.mods.mods.payload(channel, data);
         self.show_mod_output();
     }
-    /// Lines the mods add under `stack`'s tooltip.
-    pub(super) fn mods_tooltip(&mut self, stack: &ItemStack) -> Vec<Text> {
+    /// The lines and the grids of stacks mods add to `stack`'s tooltip, and whether a grid
+    /// stands instead of the game's lines of a container's contents.
+    pub(super) fn mods_tooltip_grids(
+        &mut self,
+        stack: &ItemStack,
+    ) -> (Vec<Text>, Vec<TooltipGrid>, bool) {
         if !self.mods.mods.is_running() || !self.mods.mods.wants(|h| h.tooltips) {
-            return Vec::new();
+            return (Vec::new(), Vec::new(), false);
         }
         let stack = self.mod_stack(stack);
-        let lines = self.mods.mods.tooltip(&stack);
+        let (lines, grids, instead) = self.mods.mods.tooltip_grids(&stack);
         self.show_mod_output();
-        lines.iter().map(|l| rich_text(l)).collect()
+        let grids = grids
+            .into_iter()
+            .map(|g| TooltipGrid {
+                columns: g.columns.clamp(1, 16) as usize,
+                stacks: g
+                    .stacks
+                    .iter()
+                    .map(|s| s.as_ref().and_then(|s| self.game_stack(s)))
+                    .collect(),
+                color: g.color,
+            })
+            .collect();
+        (lines.iter().map(|l| rich_text(l)).collect(), grids, instead)
     }
     /// A key or mouse button for the mods' keybinds (while playing): pressed or released.
     pub(super) fn mods_key(&mut self, name: &str, pressed: bool) {

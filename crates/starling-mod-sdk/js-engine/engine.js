@@ -23,6 +23,7 @@ import * as storage from "starling:mods/storage@0.1.0";
 import * as worldDrawApi from "starling:mods/world-draw@0.1.0";
 import { get as source, snapshot as snapshotNow } from "starling:mods/js-source@0.1.0";
 import { held as heldNow } from "starling:mods/js-keys@0.1.0";
+import { addGrid as addGridBits } from "starling:mods/js-tooltips@0.1.0";
 import {
   fill as fillBits, gradient as gradientBits, batch,
 } from "starling:mods/js-draw@0.1.0";
@@ -378,13 +379,21 @@ const worldDraw = {
   },
 };
 
+// A grid's colour goes as its bits (js-tooltips): componentize-js passes a u32 of 2^31 or more
+// (an alpha of 0x80 or more) wrong.
+const tooltips = {
+  addGrid(grid, instead) {
+    return addGridBits(grid.columns, grid.stacks, grid.color | 0, !!instead);
+  },
+};
+
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
   slots: reading.slots, creative: reading.creative, recipes: reading.recipes,
   chat, "chat-send": chatSend, draw: drawing, hud,
   screens: reading.screens, widgets, keys: controls, input, sound, net, storage,
-  "world-draw": worldDraw,
+  "world-draw": worldDraw, tooltips,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.

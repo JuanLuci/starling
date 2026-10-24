@@ -1299,7 +1299,7 @@ impl Game<'_> {
                                 u32::MAX,
                             ));
                         }
-                        tooltip = Some(lines);
+                        tooltip = Some(lines.lines);
                     }
                 }
                 Call::Stratum => {}

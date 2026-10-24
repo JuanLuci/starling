@@ -23,7 +23,7 @@
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
 //! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `inventory-click` for
-//! [`slots`], `creative`, `recipes`, `chat`, `chat-send`, `hud` for [`hud`] and [`draw`],
+//! [`slots`], `creative`, `recipes`, `chat`, `chat-send`, `hud` for [`hud`], [`draw`] and [`tooltips`],
 //! `world-draw` for [`world_draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`,
 //! `net`, `storage`).
 //!
@@ -54,6 +54,7 @@
 //! | `Screens.getButtons(screen).add(ButtonWidget...)` (in `ScreenEvents.AFTER_INIT`) | [`widgets::add_screen_button`] in [`Mod::init`]; a press is [`Mod::key`] with its id |
 //! | Bedrock's touch buttons (a keybind's button on a phone) | [`widgets::add_touch_button`], [`widgets::style_control`] for the game's own |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
+//! | `TooltipComponentCallback` (ShulkerBoxTooltip's preview) | [`tooltips::add_grid`] from [`Mod::tooltip`] (capability `hud`) |
 //! | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | [`Registration::keybind`], [`Mod::key`], [`keys::is_down`] |
 //! | `options.forwardKey.isPressed()`, `KeyBinding.setPressed` (sprint, sneak) | [`keys::is_control_down`], [`keys::presses`], [`input::hold`] |
 //! | `ClientPlayNetworking.registerGlobalReceiver` / `send` | [`Registration::channel`], [`Mod::payload`], [`net::send`] |
@@ -83,7 +84,7 @@ pub use starling::mods::{
     chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log, mobile, net,
     recipes, screens,
     slots::{self, ClickKind},
-    sound, storage,
+    sound, storage, tooltips,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{self, Anchor, ScreenButton, Shape, TouchButton},
     world_draw,

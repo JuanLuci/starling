@@ -746,11 +746,16 @@ impl Game<'_> {
         const GAP: f32 = 8.0;
         let (room_right, room_left) = (batch.width - right - GAP - 4.0, left - GAP - 4.0);
         let room = room_right.max(room_left);
-        let lines = self.stack_tooltip(&stack);
-        let lines = self.wrap_tooltip(lines, room);
-        let width = lines
+        let tooltip = self.stack_tooltip(&stack);
+        let tooltip = crate::game::stations::StackTooltip {
+            lines: self.wrap_tooltip(tooltip.lines, room),
+            grids: tooltip.grids,
+        };
+        let width = tooltip
+            .lines
             .iter()
             .map(|(t, _)| HudBatch::text_width(&self.gui.atlas, t))
+            .chain(tooltip.grids.iter().map(|g| g.width()))
             .fold(0.0, f32::max);
         let (tx, ty) = if width <= room_right {
             (right + GAP, y + 4.0)
@@ -760,8 +765,8 @@ impl Game<'_> {
             let bottom = (window.top + window.height) as f32;
             ((x + 8.0 - width / 2.0).max(4.0), bottom + GAP)
         };
-        // draw_tooltip_lines puts the box 12 right of and 12 above the point it is given.
-        self.draw_tooltip_lines(batch, &lines, tx - 12.0, ty + 12.0);
+        // draw_tooltip puts the box 12 right of and 12 above the point it is given.
+        self.draw_tooltip(batch, &tooltip, tx - 12.0, ty + 12.0);
     }
 
     /// Tooltip lines wrapped to `width` GUI pixels (left whole when that is too narrow to read).

@@ -145,6 +145,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | `registration.keybinds`, `events.key(id, pressed)`, `keys.is-down(id)`; each keybind also gets a touch button on phones (wide, its name on it; `widgets.add-touch-button` with its id gives it a look) |
 | `KeyBinding.setPressed` for sprint/sneak (ToggleSprint) | `input.hold("key.sprint", true)` (capability `input`; only sprint and sneak) |
 | `ItemTooltipCallback` | `registration.tooltips`, `events.tooltip(stack)` returning extra lines |
+| `TooltipComponentCallback` / `ClientTooltipComponent` (ShulkerBoxTooltip's preview, a bundle's) | `tooltips.add-grid(grid, instead)` from `events.tooltip` (capability `hud`): stacks as slots under the lines, tinted (a shulker box's colour), and with `instead` without the game's list of a container's contents; the stack's `components` (SNBT) hold what it carries |
 | `ClientCommandRegistrationCallback` | `registration.commands`, `events.command(name, args)` |
 | `ClientReceiveMessageEvents` / `ClientSendMessageEvents` | `registration.chat` / `chat-send`, `events.chat-received`, `chat-sending` |
 | `player.sendMessage` (client only) | `chat.show`, `chat.show-overlay` (action bar) |
@@ -191,6 +192,9 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
   campfire's, stonecutting, smithing upgrades, item tags expanded), else two made up; a
   `{"screen": "inventory"}` or `container` step gives `screens.get-window` its window (and the
   inventory a 2 by 2 grid for `recipes.fill`, each fill a `fill` line).
+- Tooltips: `{"tooltip": "minecraft:red_shulker_box", "components": "{\"minecraft:container\":
+  [...]}"}` gives the stack those components (SNBT, as the game does); the step's result lists
+  the mod's lines and its grids (`tooltips.add-grid`), each stack as `[id, count]`.
 - The world (`world-draw`): a `world` line whenever the layers change, each layer's lines and
   boxes counted by colour, its texts by text, the box they span and its labels. The scenario's
   `blocks` are the level (`level.get-spawn-spots` finds air over air on any of them but liquids)
@@ -278,6 +282,10 @@ what is still missing (the next port's API work).
 | Xaero's / JourneyMap waypoints | [waypoints](../crates/starling-mod-sdk/examples/waypoints) | Rust | list screen, HUD pointer, pause and touch buttons |
 | Elytra Swapper | [elytra-swap](../crates/starling-mod-sdk/examples/elytra-swap) | JavaScript | done, with a touch button |
 | Bedrock Edition's creative inventory | [bedrock-inventory](../crates/starling-mod-sdk/examples/bedrock-inventory) | JavaScript | in place of the creative screen, mouse and touch |
+| Quark's chest buttons / Inventory Profiles' sorting | [inventory-buttons](../crates/starling-mod-sdk/examples/inventory-buttons) | JavaScript | sort, take all, put all, on chests and the inventory |
+| EMI | [emi](../crates/starling-mod-sdk/examples/emi) | JavaScript | index, favourites, recipes and uses by station, filling the grid |
+| Light Overlay / Lighty | [light-overlay](../crates/starling-mod-sdk/examples/light-overlay) | JavaScript | cross, number, tile and marker modes |
+| ShulkerBoxTooltip | [shulker-box-tooltip](../crates/starling-mod-sdk/examples/shulker-box-tooltip) | JavaScript | compact and full previews, mouse and touch |
 
 ### AppleSkin → food-info
 
@@ -407,6 +415,21 @@ what is still missing (the next port's API work).
   second F8 was lost).
 - Missing: Lighty's farmland overlay, Light Overlay's colour settings; nothing is drawn on a
   block's face other than the ground's.
+
+### ShulkerBoxTooltip → shulker-box-tooltip
+
+- Does: a shulker box's tooltip shows what it holds as slots in the box's colour, in place of the
+  game's list of its first five stacks; so does any stack carrying a container's items (a chest
+  or barrel picked with its contents). Each kind of item once with how many there are
+  (ShulkerBoxTooltip's compact preview); Shift shows each slot where it is (its full one). On a
+  phone the long press's tooltip shows the compact one.
+- API added: `tooltips.add-grid` (with the `hud` capability). The game's tooltips (inventory,
+  creative, stations, the recipe book, a finger's long press) draw a mod's grids under the
+  lines, the box placed as vanilla places it. A grid's colour crosses from JavaScript as its
+  bits (the engine's `js-tooltips`): componentize-js passes a u32 of 2^31 or more wrong when it
+  is a function's argument rather than inside a list.
+- Missing: ShulkerBoxTooltip's ender chest preview (the server keeps that inventory), its lock
+  key and settings screen, the preview of a box placed in the world.
 
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 

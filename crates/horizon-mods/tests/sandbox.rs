@@ -2933,3 +2933,72 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
     assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: false, .. } if recipe == "minecraft:stick")), "{out:?}");
     assert!(out.iter().any(|o| matches!(o, Output::CloseScreen { .. })));
 }
+
+/// ShulkerBoxTooltip: a box's contents, from its components' SNBT, as a grid on its colour in
+/// place of the game's lines; each kind once, or with Shift each slot where it is; `add-grid`
+/// only from the tooltip hook.
+#[test]
+fn shulker_box_tooltip_shows_the_contents_as_slots() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("shulker-box-tooltip", "grid");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    // As the game writes a box holding stone twice, a sharp sword and dirt.
+    let components = "{minecraft:container:[{item:{count:64,id:\"minecraft:stone\"},slot:0},\
+{item:{components:{minecraft:enchantments:{\"minecraft:sharpness\":5}},count:1,id:\"minecraft:diamond_sword\"},slot:4},\
+{item:{count:10,id:\"minecraft:stone\"},slot:9},{item:{count:3,id:\"minecraft:dirt\"},slot:26}]}";
+    let boxed = ItemStack {
+        components: components.into(),
+        ..stack("minecraft:red_shulker_box", 1)
+    };
+    let (lines, grids, instead) = mods.tooltip_grids(&boxed);
+    assert_eq!(lines, ["§8Shift: each slot"]);
+    assert!(instead);
+    let grid = &grids[0];
+    assert_eq!((grid.columns, grid.color), (3, 0xFFB0_2E26));
+    let kinds: Vec<(String, u32, String)> = grid
+        .stacks
+        .iter()
+        .flatten()
+        .map(|s| (s.id.clone(), s.count, s.components.clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("minecraft:stone".into(), 74, String::new()),
+            (
+                "minecraft:diamond_sword".into(),
+                1,
+                "{minecraft:enchantments:{\"minecraft:sharpness\":5}}".into()
+            ),
+            ("minecraft:dirt".into(), 3, String::new()),
+        ]
+    );
+    // Shift: the box's 27 slots, 9 a row, each stack in its own.
+    let key = |pressed| horizon_mods::KeyEvent {
+        key: "key.keyboard.left.shift".into(),
+        pressed,
+        text: String::new(),
+        shift: pressed,
+        control: false,
+        alt: false,
+    };
+    mods.screen_key("inventory", &key(true));
+    let (lines, grids, _) = mods.tooltip_grids(&boxed);
+    assert!(lines.is_empty());
+    let grid = &grids[0];
+    assert_eq!((grid.columns, grid.stacks.len()), (9, 27));
+    let at = |i: usize| grid.stacks[i].as_ref().map(|s| (s.id.as_str(), s.count));
+    assert_eq!(at(0), Some(("minecraft:stone", 64)));
+    assert_eq!(at(1), None);
+    assert_eq!(at(9), Some(("minecraft:stone", 10)));
+    assert_eq!(at(26), Some(("minecraft:dirt", 3)));
+    // An empty box, and a stick: the game's own tooltip.
+    let (lines, grids, instead) = mods.tooltip_grids(&stack("minecraft:shulker_box", 1));
+    assert!(lines.is_empty() && grids.is_empty() && !instead);
+}

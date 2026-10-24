@@ -50,6 +50,8 @@ pitfalls and the port log. Then:
    send many things as numbers (`lines`, `boxes`, `texts`), read `get-spawn-spots`' arrays.
    A render hook has a fifth of an event's fuel: fetch what is heavy (a page of recipes, whose
    slots list every log) in the click's or key's hook and keep it for the frames.
+   `{"tooltip": "<item>", "components": "<SNBT>"}` hovers a stack carrying those components (a
+   shulker box's `minecraft:container`); its result lists the mod's grids (`tooltips.add-grid`).
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

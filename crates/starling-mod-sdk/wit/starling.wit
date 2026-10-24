@@ -642,6 +642,27 @@ interface world-draw {
     remove-layer: func(id: string);
 }
 
+/// Capability `hud`: more than lines in the item tooltips the mod adds to (`events.tooltip`).
+interface tooltips {
+    use types.{item-stack};
+
+    /// Stacks in rows, as a container's slots (ShulkerBoxTooltip's preview, a bundle's).
+    record item-grid {
+        /// Slots a row, 1 to 16.
+        columns: u32,
+        /// In order, at most 64; none for an empty slot.
+        stacks: list<option<item-stack>>,
+        /// The slots' tint (a shulker box's colour), ARGB: the alpha how far from plain slots,
+        /// 0xFF the colour's full shade over their texture (as ShulkerBoxTooltip draws them), 0
+        /// plain ones.
+        color: u32,
+    }
+    /// From `events.tooltip`: `grid` under the tooltip's lines, and with `instead` none of the
+    /// lines the game lists a container's contents with (ItemContainerContents'). At most 4 a
+    /// tooltip.
+    add-grid: func(grid: item-grid, instead: bool) -> result<_, string>;
+}
+
 /// Capability `hud`: the mod's retained text panel (API 0.1), drawn every frame until changed.
 interface hud {
     enum corner {
@@ -1055,6 +1076,7 @@ world starling-mod {
     import chat-send;
     import draw;
     import world-draw;
+    import tooltips;
     import hud;
     import screens;
     import widgets;
@@ -1091,6 +1113,14 @@ interface js-draw {
     batch: func(ops: list<u8>, count: u32, texts: list<u8>);
 }
 
+/// The JavaScript engine's own import too, linked with `tooltips`: `tooltips.add-grid` with the
+/// grid's ARGB colour as s32 (the same bits), for js-draw's reason.
+interface js-tooltips {
+    use types.{item-stack};
+
+    add-grid: func(columns: u32, stacks: list<option<item-stack>>, color: s32, instead: bool) -> result<_, string>;
+}
+
 /// The JavaScript engine's own import too, linked with `keys`: the game's controls held now, one
 /// bit each in `keys.is-control-down`'s order (`key.forward` the lowest), which the engine reads
 /// once a hook instead of a call a control.
@@ -1106,4 +1136,5 @@ world starling-js {
     import js-source;
     import js-draw;
     import js-keys;
+    import js-tooltips;
 }
