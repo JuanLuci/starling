@@ -27,7 +27,7 @@ impl Game<'_> {
                 for l in &layer.lines {
                     let o = [l.origin.x, l.origin.y, l.origin.z];
                     let at = |e: &[f32]| std::array::from_fn(|i| o[i] + f64::from(e[i]));
-                    for (i, e) in l.ends.chunks_exact(6).enumerate() {
+                    for (i, e) in l.ends.as_chunks::<6>().0.iter().enumerate() {
                         out.push(Line {
                             start: at(&e[..3]),
                             end: at(&e[3..]),
@@ -80,7 +80,7 @@ impl Game<'_> {
                 };
                 for b in &layer.boxes {
                     let o = glam::DVec3::new(b.origin.x, b.origin.y, b.origin.z) - camera;
-                    for (i, c) in b.corners.chunks_exact(6).enumerate() {
+                    for (i, c) in b.corners.as_chunks::<6>().0.iter().enumerate() {
                         let color = b.colors.get(i).or(b.colors.first()).copied().unwrap_or(0);
                         box_quads(o, c, rgba8(color), uv, out);
                     }
@@ -99,7 +99,7 @@ impl Game<'_> {
                     let scale = 0.025 * t.scale;
                     let lift = axes.up.as_dvec3() * f64::from(scale * lift);
                     let background = (t.background >> 24 != 0).then(|| rgba8(t.background));
-                    let places = t.places.chunks_exact(3);
+                    let places = t.places.as_chunks::<3>().0.iter();
                     for (i, (p, line)) in places.zip(t.lines.split('\n')).enumerate() {
                         let color = t.colors.get(i).or(t.colors.first()).copied().unwrap_or(0);
                         let mut text = Text::legacy(line);
