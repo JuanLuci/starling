@@ -713,7 +713,10 @@ impl Mods {
         let mut digests = Vec::new();
         // Of the copies of one mod (a download's `name (2).hmod` beside `name.hmod`), the newest
         // file runs, whatever the names' order; the older ones stay off and say so.
-        let packages: Vec<_> = paths.iter().map(|p| (modified(p), Package::read(p))).collect();
+        let packages: Vec<_> = paths
+            .iter()
+            .map(|p| (modified(p), Package::read(p)))
+            .collect();
         let mut newest: HashMap<&str, usize> = HashMap::new();
         for (i, (modified, package)) in packages.iter().enumerate() {
             if let Ok(package) = package {
