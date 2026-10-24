@@ -728,6 +728,45 @@ fn undeclared_capabilities_are_refused() {
 }
 
 #[test]
+fn of_two_copies_the_newest_runs() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_guest.hmod"))
+        .unwrap()
+        .wasm
+        .expect("the guest has code");
+    let copy = |name: &str, age: u64| {
+        let dir = mods_dir().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("horizon-mod.toml"), GUEST_MANIFEST).unwrap();
+        std::fs::write(dir.join("mod.wasm"), &wasm).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("mod.wasm"))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        dir
+    };
+    // Whichever name comes first.
+    for (older, newer) in [("copy_a", "copy_b"), ("copy_d", "copy_c")] {
+        let (older, newer) = (copy(older, 600), copy(newer, 60));
+        let mut paths = [older.clone(), newer.clone()];
+        paths.sort();
+        let mods = Mods::load(&paths, |_| true, |_| false);
+        let status = |dir: &PathBuf| {
+            let entry = mods.entries().iter().find(|e| &e.path == dir).unwrap();
+            entry.status.clone()
+        };
+        assert_eq!(status(&newer), Status::Running);
+        let name = newer.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            status(&older),
+            Status::Failed(format!("an older copy: {name} runs"))
+        );
+    }
+}
+
+#[test]
 fn vanilla_commands_win() {
     let mods = Mods::load(
         &[mods_dir().join("coords_hud.hmod")],

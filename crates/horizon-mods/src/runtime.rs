@@ -5,7 +5,7 @@
 use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -711,8 +711,24 @@ impl Mods {
         };
         // The digests of every installed mod's code, on or off, kept in the cache.
         let mut digests = Vec::new();
-        for path in paths {
-            let modified = modified(path);
+        // Of the copies of one mod (a download's `name (2).hmod` beside `name.hmod`), the newest
+        // file runs, whatever the names' order; the older ones stay off and say so.
+        let packages: Vec<_> = paths.iter().map(|p| (modified(p), Package::read(p))).collect();
+        let mut newest: HashMap<&str, usize> = HashMap::new();
+        for (i, (modified, package)) in packages.iter().enumerate() {
+            if let Ok(package) = package {
+                newest
+                    .entry(package.manifest.id.as_str())
+                    .and_modify(|best| {
+                        if *modified > packages[*best].0 {
+                            *best = i;
+                        }
+                    })
+                    .or_insert(i);
+            }
+        }
+        for (i, (path, (modified, package))) in paths.iter().zip(&packages).enumerate() {
+            let modified = *modified;
             let mut entry = Entry {
                 path: path.clone(),
                 manifest: None,
@@ -722,10 +738,11 @@ impl Mods {
                 modified,
                 retry_full: false,
             };
-            match Package::read(path) {
-                Err(e) => entry.status = Status::Failed(e),
+            match package {
+                Err(e) => entry.status = Status::Failed(e.clone()),
                 Ok(package) => {
-                    let on = enabled(&package.manifest.id);
+                    let runs = newest[package.manifest.id.as_str()];
+                    let on = enabled(&package.manifest.id) && runs == i;
                     entry.manifest = Some(package.manifest.clone());
                     if let (Some(_), Some(wasm)) = (cache, &package.wasm) {
                         digests.push(digest(wasm));
@@ -747,6 +764,12 @@ impl Mods {
                                 }
                                 Err(e) => Status::Failed(e),
                             };
+                    }
+                    if runs != i {
+                        let newer = paths[runs]
+                            .file_name()
+                            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        entry.status = Status::Failed(format!("an older copy: {newer} runs"));
                     }
                 }
             }
