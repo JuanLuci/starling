@@ -2,6 +2,7 @@ import datetime as dt
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 from tools import release_train as train
 
@@ -67,6 +68,9 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertFalse(decide([pr(1)], paused=True))
         self.assertTrue(decide([], paused=True, force=True))
 
+    # Thanks go to everyone but the repository's owner (GITHUB_REPOSITORY in CI, a fork's own
+    # there); these pull requests are upstream's, ludovic111's.
+    @unittest.mock.patch.object(train, "REPO", "ludovic111/horizon")
     def test_notes(self):
         prs = [pr(5, "Nether portals: vanilla timing and linking (fixes #94)", issues=[94]),
                pr(6, "Controllers: gilrs input layer and gameplay", labels=["feature"], author="cosmic"),
