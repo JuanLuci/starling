@@ -235,8 +235,10 @@ let size = { width: 0, height: 0 };
 export const events = {
   init() {
     setConfig("settings");
+    // At the left, under Waypoints' compass and over the stick: the top right is the HUD's
+    // (Keystrokes' panel, the effects).
     addTouchButton({
-      id: "toggle", label: "Light", icon: "item/torch", shape: "round", x: 0.9, y: 0.3, size: 0.35,
+      id: "toggle", label: "Light", icon: "item/torch", shape: "round", x: 0.045, y: 0.5, size: 0.42,
     });
     return {
       commands: [], tick: true, frame: false, chat: false, chatSend: false, hud: false,
