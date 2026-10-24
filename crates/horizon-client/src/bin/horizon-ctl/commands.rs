@@ -260,7 +260,7 @@ pub const COMMANDS: &[Cmd] = &[
         &[opt("all", Ty::Bool, "drop the whole stack")], mcp: true, local: false),
     cmd!("hold", Act, "hold KEY SECONDS", "press a key, wait, release it", "Keys as for key.", ["horizon-ctl hold w 2"],
         &[p("key", Ty::Str, "key name"), p("seconds", Ty::Num, "how long")], mcp: false, local: true),
-    cmd!("key", Act, "key KEY down|up|tap|repeat", "press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...)",
+    cmd!("key", Act, "key KEY down|up|tap|repeat", "press, release or auto-repeat a key (w a s d space shift ctrl e q esc f1-f12 1-9 arrows ...)",
         "down holds the key until key ... up, release or stop; wait does not release it. move, goto, jump, break and the other actions release the movement keys when they end.",
         ["horizon-ctl key space tap"], &[p("key", Ty::Str, "key name"), p("action", Ty::Enum(&["down", "up", "tap", "repeat"]), "what to do")], mcp: true, local: false),
     cmd!("mouse", Act, "mouse left|right|middle down|up|click", "press or release a mouse button in the world", "",

@@ -11,7 +11,7 @@ use winit::{event::MouseButton, event_loop::ActiveEventLoop, keyboard::KeyCode};
 
 const HELP: &[&str] = &[
     "status                         game, player, streaming and renderer state",
-    "key KEY down|up|tap|repeat     press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...)",
+    "key KEY down|up|tap|repeat     press, release or auto-repeat a key (w a s d space shift ctrl e q esc f1-f12 1-9 arrows ...)",
     "release                        release every key and mouse button",
     "mouse left|right|middle down|up|click",
     "look YAW PITCH                 set the view direction in degrees",
@@ -976,7 +976,13 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "f3" => KeyCode::F3,
         "f4" => KeyCode::F4,
         "f5" => KeyCode::F5,
+        "f6" => KeyCode::F6,
+        "f7" => KeyCode::F7,
+        "f8" => KeyCode::F8,
+        "f9" => KeyCode::F9,
+        "f10" => KeyCode::F10,
         "f11" => KeyCode::F11,
+        "f12" => KeyCode::F12,
         "slash" | "/" => KeyCode::Slash,
         "backspace" => KeyCode::Backspace,
         "pageup" => KeyCode::PageUp,
