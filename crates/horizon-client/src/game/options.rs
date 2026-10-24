@@ -67,6 +67,7 @@ impl Game<'_> {
                 std::mem::swap(&mut settings.horizon, &mut self.settings.horizon);
                 std::mem::swap(&mut settings.controller, &mut self.settings.controller);
                 std::mem::swap(&mut settings.extras, &mut self.settings.extras);
+                std::mem::swap(&mut settings.mods, &mut self.settings.mods);
                 self.settings = settings;
                 // As the options screen applies a change.
                 self.handle_option_events(vec![Event::Changed])?;
