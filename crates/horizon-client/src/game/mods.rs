@@ -611,7 +611,7 @@ impl Game<'_> {
     }
     /// What mods read, taken now (between ticks), once the world's resources have loaded: mods
     /// cached from an earlier start run before they do, on the loading menus.
-    fn refresh_mod_snapshot(&mut self) {
+    pub(super) fn refresh_mod_snapshot(&mut self) {
         if self.mods.mods.is_running() && self.res.rest_ready() {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);

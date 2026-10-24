@@ -1590,3 +1590,67 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         .collect();
     assert_eq!(clicked, [(9, 0)]);
 }
+
+/// What a frame of Bedrock Inventory costs: the creative window full (a tab of 475 items), the
+/// inventory full; `cargo test --release -p horizon-mods --test sandbox bedrock_inventory_frame
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bedrock_inventory_frame_cost() {
+    struct Big;
+    impl horizon_mods::CreativeCatalog for Big {
+        fn tabs(&self) -> Vec<horizon_mods::Tab> {
+            Tabs.tabs()
+        }
+        fn items(&self, _: &str, _: &str, start: usize, count: usize) -> horizon_mods::ItemPage {
+            let all: Vec<ItemStack> = (0..475)
+                .map(|i| stack(&format!("minecraft:block_number_{i}"), 1))
+                .collect();
+            horizon_mods::ItemPage {
+                total: 475,
+                items: all.into_iter().skip(start).take(count).collect(),
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // BENCH_MOD: another folder (a variant of the mod) to measure.
+    let example = std::env::var_os("BENCH_MOD").map_or_else(
+        || root.join("crates/starling-mod-sdk/examples/bedrock-inventory"),
+        PathBuf::from,
+    );
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    let mut world = creative_world(GameMode::Creative);
+    world.creative = Some(std::sync::Arc::new(Big));
+    if let Some(menu) = &mut world.menu {
+        for (i, slot) in menu.slots.iter_mut().enumerate().skip(1) {
+            *slot = Some(stack("minecraft:oak_planks", i as u32));
+        }
+    }
+    let screen = "bedrock_inventory:inventory";
+    mods.screen_opened(screen);
+    let phone = RenderContext {
+        width: 533,
+        height: 240,
+        mouse_x: 100.0,
+        mouse_y: 76.0,
+        delta: 0.016,
+    };
+    for snapshot_each_frame in [false, true] {
+        mods.set_snapshot(world.clone());
+        let first = Instant::now();
+        mods.screen_render(screen, phone);
+        println!("the first frame: {} us", first.elapsed().as_micros());
+        let started = Instant::now();
+        for _ in 0..200 {
+            if snapshot_each_frame {
+                mods.set_snapshot(world.clone());
+            }
+            mods.screen_render(screen, phone);
+        }
+        let us = started.elapsed().as_secs_f64() * 1e6 / 200.0;
+        println!("a frame, new snapshot each: {snapshot_each_frame}: {us:.0} us");
+        assert_eq!(mods.drain(), []);
+    }
+    assert_eq!(mods.entries()[0].status, Status::Running);
+}

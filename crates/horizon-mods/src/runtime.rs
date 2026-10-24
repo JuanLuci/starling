@@ -60,6 +60,10 @@ const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_RENDER: u64 = 20_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// A JavaScript mod's first call of a render hook compiles the functions it runs (the engine
+/// compiles a function the first time it is called: a screen's first frame can cost eight of
+/// its next), so each render hook's first call gets an event's fuel.
+const FUEL_FIRST_RENDER: u64 = FUEL_EVENT;
 /// Chat lines a mod may show per call, HUD lines and their length.
 const CHAT_PER_CALL: usize = 8;
 const HUD_LINES: usize = 16;
@@ -446,6 +450,8 @@ struct Running {
     guest: Guest,
     hooks: Hooks,
     capabilities: Vec<Capability>,
+    /// The render hooks called already (`hud`, `element`, `screen`).
+    rendered: Vec<&'static str>,
 }
 
 struct State {
@@ -838,6 +844,7 @@ impl Mods {
             guest,
             hooks,
             capabilities: m.capabilities.clone(),
+            rendered: Vec::new(),
         }))
     }
 
@@ -993,16 +1000,22 @@ impl Mods {
         }
     }
 
-    /// A render hook's call into mod `i`: what it drew.
+    /// A call of render hook `hook` into mod `i`: what it drew.
     fn render(
         &mut self,
         i: usize,
+        hook: &'static str,
         f: impl FnOnce(&starling::StarlingMod, &mut Store<State>) -> wasmtime::Result<()>,
     ) -> Vec<DrawOp> {
+        let mut fuel = FUEL_RENDER;
         if let Some(run) = self.entries[i].run.as_mut() {
             run.store.data_mut().draw = Some(Vec::new());
+            if !run.rendered.contains(&hook) {
+                run.rendered.push(hook);
+                fuel = FUEL_FIRST_RENDER;
+            }
         }
-        self.call(i, FUEL_RENDER, |g, s| match g {
+        self.call(i, fuel, |g, s| match g {
             Guest::Starling(m) => f(m, s),
             Guest::Horizon(_) => Ok(()),
         });
@@ -1101,7 +1114,7 @@ impl Mods {
     pub fn hud_render(&mut self, context: RenderContext) -> Vec<DrawOp> {
         let mut ops = Vec::new();
         for i in self.indices(|h| h.hud) {
-            ops.extend(self.render(i, |m, s| {
+            ops.extend(self.render(i, "hud", |m, s| {
                 m.starling_mods_events().call_hud_render(s, context)
             }));
         }
@@ -1137,7 +1150,7 @@ impl Mods {
                 })
                 .unwrap_or_default();
             for id in ids {
-                ops.extend(self.render(i, |m, s| {
+                ops.extend(self.render(i, "element", |m, s| {
                     m.starling_mods_events()
                         .call_render_hud_element(s, &id, context)
                 }));
@@ -1173,7 +1186,7 @@ impl Mods {
     pub fn screen_render(&mut self, screen: &str, context: RenderContext) -> Vec<DrawOp> {
         let mut ops = Vec::new();
         for i in self.screen_mods(screen) {
-            ops.extend(self.render(i, |m, s| {
+            ops.extend(self.render(i, "screen", |m, s| {
                 m.starling_mods_events()
                     .call_screen_render(s, screen, context)
             }));
@@ -1993,11 +2006,11 @@ pub fn finish_background_compiles() -> bool {
 fn modified(path: &Path) -> Option<SystemTime> {
     let meta = std::fs::metadata(path).ok()?;
     if meta.is_dir() {
-        // A folder mod changes when its component does.
-        return std::fs::metadata(path.join(crate::manifest::WASM))
-            .ok()?
-            .modified()
-            .ok();
+        // A folder mod changes when its component does, or its JavaScript.
+        return [crate::manifest::WASM, crate::manifest::JS]
+            .iter()
+            .filter_map(|file| std::fs::metadata(path.join(file)).ok()?.modified().ok())
+            .max();
     }
     meta.modified().ok()
 }

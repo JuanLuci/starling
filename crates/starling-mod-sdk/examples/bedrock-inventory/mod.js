@@ -13,8 +13,7 @@
 // second quick tap sends it across (a tab's item: into the hotbar), a stack dragged goes where it
 // is let go, a tap outside throws it. Java UI goes back to the game's screen; there, Bedrock UI
 // comes back here. Every click is the game's: the creative screen's semantics, a server told
-// as vanilla tells it. The windows are the game's own textures (a resource pack's too), drawn over
-// the same look in plain shapes for resources without them.
+// as vanilla tells it. The windows are the game's own textures (a resource pack's too).
 import { getTabs, getItems, click as take, setSlot, setCarried } from "starling:mods/creative@0.1.0";
 import { getMenu, click } from "starling:mods/slots@0.1.0";
 import {
@@ -84,6 +83,9 @@ const MARGIN = 4, GAP = 4;
 const DOUBLE_TAP = 0.35, DOUBLE_CLICK = 0.25;
 // Degrees the player turns for each GUI pixel a finger drags across it.
 const TURN = 2.5;
+// How far (GUI pixels) a finger moves before it drags: a finger held still is let go with a move
+// where it was.
+const DRAG = 3;
 
 // The screen's state.
 let now = 0;
@@ -109,6 +111,26 @@ const inside = (r, x, y) => x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const at2 = (o, r) => [o.x + r[0], o.y + r[1], r[2], r[3]];
 
+// The creative tabs and their items do not change while the screen is open: kept from its opening
+// (the game's answers last a tick otherwise, and reading a page of items again costs as much as
+// drawing the screen), the last few pages.
+let tabsKept = null;
+const pages = new Map();
+function tabs() {
+  if (!tabsKept) tabsKept = getTabs();
+  return tabsKept;
+}
+function items(tab, term, start, count) {
+  const key = `${tab}\u0000${term}\u0000${start}\u0000${count}`;
+  let page = pages.get(key);
+  if (!page) {
+    page = getItems(tab, term, start, count);
+    if (pages.size >= 16) pages.delete(pages.keys().next().value);
+    pages.set(key, page);
+  }
+  return page;
+}
+
 // The tab whose items show (the Survival Inventory shows none).
 function current(list) {
   const items = list.filter((t) => t.kind !== "inventory");
@@ -121,7 +143,7 @@ const searchOf = (tab) => (tab && tab.kind === "search" ? search : "");
 // the GUI pixels of that scale. `frame` is the window the tabs sit on: the creative screen's, or
 // with only the inventory, a window as wide around it.
 function layout(width, height) {
-  const list = getTabs();
+  const list = tabs();
   const only = settings.only || list.length === 0;
   const needW = only ? W + GAP + 48 : W + GAP + INV_W;
   const needH = 28 + H + 28;
@@ -154,11 +176,11 @@ function isSelected(L, t, tab) {
 function page(L) {
   const tab = current(L.list);
   if (!tab || !L.creative) return { tab, first: 0, total: 0, hidden: 0, items: [] };
-  const total = getItems(tab.id, searchOf(tab), 0, 0).total;
+  const total = items(tab.id, searchOf(tab), 0, 0).total;
   const hidden = Math.max(0, Math.ceil(total / COLS) - ROWS);
   scroll = clamp(scroll, 0, hidden);
   const first = Math.round(scroll);
-  const shown = getItems(tab.id, searchOf(tab), first * COLS, ROWS * COLS);
+  const shown = items(tab.id, searchOf(tab), first * COLS, ROWS * COLS);
   return { tab, first, total: shown.total, hidden, items: shown.items };
 }
 
@@ -201,13 +223,7 @@ function at(L, x, y) {
   return null;
 }
 
-// The vanilla window and slot look, under the game's textures (for resources without them).
-function panel(x, y, w, h) {
-  fill(x, y, w, h, 0xFF000000);
-  fill(x + 1, y + 1, w - 2, h - 2, 0xFFFFFFFF);
-  fill(x + 3, y + 3, w - 4, h - 4, 0xFF555555);
-  fill(x + 3, y + 3, w - 6, h - 6, 0xFFC6C6C6);
-}
+// A slot as the game's windows draw them (for the crafting grid, which the window lacks).
 function slotBox(x, y) {
   fill(x - 1, y - 1, 18, 18, 0xFF373737);
   fill(x, y, 17, 17, 0xFFFFFFFF);
@@ -242,7 +258,7 @@ function selectTab(tab) {
 }
 function focus(on) {
   if (on && !focused) {
-    const tab = getTabs().find((t) => t.kind === "search");
+    const tab = tabs().find((t) => t.kind === "search");
     if (tab) {
       if (tab.id !== selected) scroll = 0;
       selected = tab.id;
@@ -493,6 +509,7 @@ function touchMouse(L, e, x, y) {
   if (!finger) return;
   if (e.action === "drag") {
     const t = finger.t;
+    if (!finger.moved && Math.abs(x - finger.x) < DRAG && Math.abs(y - finger.y) < DRAG) return;
     if (t && t.kind === "doll") {
       turn += (x - finger.x) * TURN;
     } else if (t && t.kind === "scrollbar") {
@@ -531,7 +548,10 @@ function settle() {
 function drawSlot(x, y, slot, stack, touch, hovered) {
   if (stack) item(x, y, stack);
   else if (EMPTY_SPRITES[slot]) sprite(x, y, 16, 16, EMPTY_SPRITES[slot]);
-  if (!touch && hovered && hovered.kind === "slot" && hovered.slot === slot) fill(x, y, 16, 16, 0x80FFFFFF);
+  // The slot under the mouse (the hotbar shows twice: only the one it is over).
+  if (!touch && hovered && hovered.kind === "slot" && hovered.x === x && hovered.y === y) {
+    fill(x, y, 16, 16, 0x80FFFFFF);
+  }
   if (pick && pick.slot === slot) {
     frame(x, y, 0xFFFFFFFF);
     if (pick.half) fill(x + 2, y + 14, 6, 2, 0xFFFFFFFF);
@@ -545,7 +565,6 @@ function drawTabs(L, tab, behind) {
     if (on === behind) continue;
     const [x, y, w, h] = tabRect(L, t);
     const name = `container/creative_inventory/tab_${t.top ? "top" : "bottom"}_${on ? "selected" : "unselected"}_${t.column + 1}`;
-    fill(x, t.top ? y : y + 4, w, h - 4, on ? 0xFFC6C6C6 : 0xFF8B8B8B);
     sprite(x, y, w, h, name);
   }
 }
@@ -557,12 +576,7 @@ function drawTabIcons(L) {
 }
 function drawCreative(L, p, m, touch, hovered) {
   const c = L.creative;
-  panel(c.x, c.y, W, H);
-  for (let i = 0; i < ROWS * COLS; i++) slotBox(c.x + 9 + (i % COLS) * CELL, c.y + 18 + Math.floor(i / COLS) * CELL);
-  for (let i = 0; i < COLS; i++) slotBox(c.x + 9 + i * CELL, c.y + 112);
-  fill(c.x + SCROLLER[0], c.y + SCROLLER[1], 12, SCROLLER[3], 0xFF8B8B8B);
   const searching = p.tab && p.tab.kind === "search";
-  if (searching) fill(c.x + 80, c.y + 4, 89, 12, 0xFF000000);
   sprite(c.x, c.y, 256, 256, searching ? SEARCH_TEXTURE : ITEMS_TEXTURE);
   if (p.tab) text(c.x + 8, c.y + 6, p.tab.title, 0x404040, false);
   if (searching) {
@@ -584,23 +598,11 @@ function drawCreative(L, p, m, touch, hovered) {
   for (let i = 0; i < COLS; i++) drawSlot(c.x + 9 + i * CELL, c.y + 112, 36 + i, m && m.slots[36 + i], touch, hovered);
   const offset = p.hidden > 0 ? Math.floor((SCROLLER[3] - 17) * scroll / p.hidden) : 0;
   const bar = [c.x + SCROLLER[0], c.y + SCROLLER[1] + offset];
-  fill(bar[0], bar[1], 12, 15, p.hidden > 0 ? 0xFFC6C6C6 : 0xFFA0A0A0);
   sprite(bar[0], bar[1], 12, 15, `container/creative_inventory/scroller${p.hidden > 0 ? "" : "_disabled"}`);
 }
 function drawInventory(L, m, touch, hovered) {
   const { x: ox, y: oy } = L.inv;
-  // The game's window, over the same look for resources without it (its Destroy Item slot too).
-  panel(ox, oy, INV_W, INV_H);
-  fill(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 0xFF000000);
-  for (const [slot, sx, sy] of SLOTS) {
-    if (slot > 4) slotBox(ox + sx, oy + sy);
-  }
-  const [tx, ty] = [ox + TRASH[0], oy + TRASH[1]];
-  slotBox(tx, ty);
-  for (let i = 0; i < 10; i++) {
-    fill(tx + 3 + i, ty + 3 + i, 2, 2, 0xFFC03030);
-    fill(tx + 11 - i, ty + 3 + i, 2, 2, 0xFFC03030);
-  }
+  // The game's window, its Destroy Item slot in it.
   sprite(ox, oy, 256, 256, INVENTORY_TEXTURE);
   // The crafting grid, an arrow, its result: not in the game's window, drawn on it.
   for (const [, sx, sy] of CRAFTING) slotBox(ox + sx, oy + sy);
@@ -608,7 +610,7 @@ function drawInventory(L, m, touch, hovered) {
   for (let i = 0; i < 3; i++) fill(ox + 168 + i, oy + 21 + i, 1, 6 - 2 * i, 0xFF8B8B8B);
   player(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 20, turn);
   for (const [slot, sx, sy] of SLOTS) drawSlot(ox + sx, oy + sy, slot, m && m.slots[slot], touch, hovered);
-  if (!touch && hovered && hovered.kind === "trash") fill(tx, ty, 16, 16, 0x80FFFFFF);
+  if (!touch && hovered && hovered.kind === "trash") fill(ox + TRASH[0], oy + TRASH[1], 16, 16, 0x80FFFFFF);
 }
 
 export const events = {
@@ -627,9 +629,11 @@ export const events = {
   screenOpened(screen) {
     if (screen !== OWN) return;
     pick = null; finger = null; pending = null; down = null; last = null; holding = null;
+    tabsKept = null;
+    pages.clear();
     search = "";
     scroll = 0;
-    const tab = current(getTabs());
+    const tab = current(tabs());
     focused = !settings.only && !!tab && tab.kind === "search" && !hasTouch();
   },
   screenClosed(screen) {

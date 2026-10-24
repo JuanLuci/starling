@@ -186,7 +186,11 @@ impl Game<'_> {
         let WindowEvent::Touch(t) = event else {
             return false;
         };
-        self.touch.seen = true;
+        if !self.touch.seen {
+            self.touch.seen = true;
+            // Mods read the touch screen from this first finger on (`mobile.has-touch`).
+            self.refresh_mod_snapshot();
+        }
         self.last_input = Instant::now();
         // The offer of the Starling folder, over the title, takes the touches while it shows.
         #[cfg(target_os = "android")]

@@ -9816,6 +9816,9 @@ impl Game<'_> {
             return Ok(());
         }
         match key {
+            // The creative screen's stand-in closes as the creative screen does, for the keys that
+            // do not come through its window events (a controller's, the control socket's).
+            KeyCode::Escape | KeyCode::KeyE if self.mods.standing_in() => self.close_mod_screen(),
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
