@@ -760,7 +760,7 @@ impl Mods {
                         // content is refused stays off, with the reason.
                         let content = crate::Content::read(path, &package.manifest);
                         entry.status =
-                            match content.and_then(|_| mods.start(path, &package, &reserved)) {
+                            match content.and_then(|_| mods.start(path, package, &reserved)) {
                                 Ok(run) => {
                                     entry.run = run;
                                     Status::Running
