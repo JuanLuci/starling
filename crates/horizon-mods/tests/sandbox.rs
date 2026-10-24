@@ -1516,8 +1516,8 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
     mods.set_snapshot(world);
     let screen = "bedrock_inventory:inventory";
     mods.screen_opened(screen);
-    // A phone's GUI: the creative window (the building blocks' two items, the hotbar row) and the
-    // inventory beside it.
+    // A phone's GUI: the creative window (the building blocks' two items, the hotbar row) and its
+    // inventory tab's window beside it.
     let phone = RenderContext {
         width: 533,
         height: 240,
@@ -1534,10 +1534,10 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         })
         .collect();
     for shown in [
-        ("minecraft:stone", 88.0, 70.0),
-        ("minecraft:dirt", 106.0, 70.0),
-        ("minecraft:bow", 88.0, 164.0),
-        ("minecraft:bow", 286.0, 179.0),
+        ("minecraft:stone", 78.0, 70.0),
+        ("minecraft:dirt", 96.0, 70.0),
+        ("minecraft:bow", 78.0, 164.0),
+        ("minecraft:bow", 277.0, 164.0),
     ] {
         assert!(
             items.contains(&(shown.0.into(), shown.1, shown.2)),
@@ -1553,8 +1553,8 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         button: 0,
         scroll: 0.0,
     };
-    mods.screen_mouse(screen, press(112.0, 76.0, MouseAction::Press));
-    mods.screen_mouse(screen, press(112.0, 76.0, MouseAction::Release));
+    mods.screen_mouse(screen, press(100.0, 76.0, MouseAction::Press));
+    mods.screen_mouse(screen, press(100.0, 76.0, MouseAction::Release));
     assert_eq!(
         mods.drain(),
         [Output::CreativeClick {
@@ -1572,9 +1572,9 @@ fn bedrock_inventory_takes_from_the_creative_tabs() {
         menu.carried = Some(stack("minecraft:dirt", 1));
     }
     mods.set_snapshot(world);
-    mods.screen_mouse(screen, press(294.0, 128.0, MouseAction::Press));
+    mods.screen_mouse(screen, press(283.0, 112.0, MouseAction::Press));
     assert_eq!(mods.drain(), []);
-    mods.screen_mouse(screen, press(294.0, 128.0, MouseAction::Release));
+    mods.screen_mouse(screen, press(283.0, 112.0, MouseAction::Release));
     let clicked: Vec<(i32, u8)> = mods
         .drain()
         .into_iter()

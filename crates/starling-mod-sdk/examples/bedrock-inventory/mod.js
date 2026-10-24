@@ -1,9 +1,10 @@
 // Bedrock Inventory: Bedrock's creative inventory in place of the game's creative screen
 // (screens.replace): the creative screen as the game draws it (its tabs above and below, the
-// tab's items, the search, the scrollbar, the hotbar row) with the survival inventory beside it as
-// Bedrock puts it (the player, the armour, the off hand, the 2x2 crafting grid, the inventory, the
-// hotbar, and a Destroy Item slot), both at once. The Survival Inventory tab shows only the
-// inventory, with the tabs around it.
+// tab's items, the search, the scrollbar, the hotbar row) with its Survival Inventory tab beside
+// it, as Bedrock puts the inventory beside the items: the player with the armour around it, the
+// off hand, the inventory, the hotbar, the Destroy Item slot, and a 2x2 crafting grid in the room
+// at the player's right. Both work at once. The Survival Inventory tab shows only that window,
+// the tabs around it, as the game's screen does.
 //
 // The mouse clicks as on the game's own screens: left and right, Shift for a full stack or the
 // other side, a double click gathers, the middle button clones, 1 to 9, F and Q over a slot,
@@ -59,22 +60,25 @@ const SCROLLER = [175, 18, 14, 112];
 const SEARCH = [82, 6, 80, 9];
 const ITEMS_TEXTURE = "gui/container/creative_inventory/tab_items";
 const SEARCH_TEXTURE = "gui/container/creative_inventory/tab_item_search";
-// The survival inventory's window (InventoryScreen) and its slots by the inventory menu's ids
-// (slots.get-menu's).
-const INV_W = 176, INV_H = 166;
-const INVENTORY_TEXTURE = "gui/container/inventory";
-const SLOTS = [[0, 154, 28]];
-for (let i = 0; i < 4; i++) SLOTS.push([1 + i, 98 + (i % 2) * CELL, 18 + Math.floor(i / 2) * CELL]);
-for (let i = 0; i < 4; i++) SLOTS.push([5 + i, 8, 8 + i * CELL]);
-for (let i = 0; i < 27; i++) SLOTS.push([9 + i, 8 + (i % 9) * CELL, 84 + Math.floor(i / 9) * CELL]);
-for (let i = 0; i < 9; i++) SLOTS.push([36 + i, 8 + i * CELL, 142]);
-SLOTS.push([45, 77, 62]);
+// The creative screen's Survival Inventory tab (its window is the creative screen's size) and its
+// slots by the inventory menu's ids (slots.get-menu's), where selectTab puts them: the armour
+// either side of the player (head and chest at its left, legs and feet at its right), the off
+// hand, the inventory, the hotbar. The crafting grid (1 to 4) and its result (0) are this mod's,
+// in the room at the player's right, the result over the Destroy Item slot.
+const INV_W = W, INV_H = H;
+const INVENTORY_TEXTURE = "gui/container/creative_inventory/tab_inventory";
+const SLOTS = [];
+for (let i = 0; i < 9; i++) SLOTS.push([36 + i, 9 + i * CELL, 112]);
+for (let i = 0; i < 27; i++) SLOTS.push([9 + i, 9 + (i % 9) * CELL, 54 + Math.floor(i / 9) * CELL]);
+SLOTS.push([5, 54, 6], [6, 54, 33], [7, 108, 6], [8, 108, 33], [45, 35, 20]);
+const CRAFTING = [[1, 129, 7], [2, 147, 7], [3, 129, 25], [4, 147, 25], [0, 173, 16]];
+SLOTS.push(...CRAFTING);
 const EMPTY_SPRITES = {
   5: "container/slot/helmet", 6: "container/slot/chestplate", 7: "container/slot/leggings",
   8: "container/slot/boots", 45: "container/slot/shield",
 };
-const TRASH = [152, 60];
-const DOLL = [26, 8, 49, 70];
+const TRASH = [173, 112];
+const DOLL = [73, 6, 32, 43];
 const MARGIN = 4, GAP = 4;
 // How soon a second tap is a double tap, and a second click a double click (seconds).
 const DOUBLE_TAP = 0.35, DOUBLE_CLICK = 0.25;
@@ -120,20 +124,19 @@ function layout(width, height) {
   const list = getTabs();
   const only = settings.only || list.length === 0;
   const needW = only ? W + GAP + 48 : W + GAP + INV_W;
-  const needH = only ? 28 + INV_H + 28 : Math.max(28 + H + 28, INV_H + 20);
+  const needH = 28 + H + 28;
   const scale = Math.min(1, (width - 2 * MARGIN) / needW, (height - 2 * MARGIN) / needH);
   const vw = width / scale, vh = height / scale;
   const x0 = Math.floor((vw - needW) / 2);
   if (only) {
-    const frame = { x: x0, y: Math.floor((vh - INV_H) / 2), w: W, h: INV_H };
+    const frame = { x: x0, y: Math.floor((vh - H) / 2), w: W, h: H };
     return {
-      scale, list, only, frame, creative: null,
-      inv: { x: frame.x + Math.floor((W - INV_W) / 2), y: frame.y, texture: false },
+      scale, list, only, frame, creative: null, inv: { x: frame.x, y: frame.y },
       java: [frame.x + W + GAP, frame.y, 48, 16],
     };
   }
   const frame = { x: x0, y: Math.floor((vh - H) / 2), w: W, h: H };
-  const inv = { x: x0 + W + GAP, y: Math.floor((vh - INV_H) / 2), texture: true };
+  const inv = { x: x0 + W + GAP, y: frame.y };
   return { scale, list, only, frame, creative: frame, inv, java: [inv.x + INV_W - 48, inv.y - 18, 48, 16] };
 }
 // A tab's button (CreativeModeInventoryScreen.getTabX/Y): the top row above the window, the
@@ -185,8 +188,7 @@ function at(L, x, y) {
     return { kind: "panel" };
   }
   const inv = L.inv;
-  const box = L.only ? [L.frame.x, L.frame.y, W, INV_H] : [inv.x, inv.y, INV_W, INV_H];
-  if (inside(box, x, y)) {
+  if (inside([inv.x, inv.y, INV_W, INV_H], x, y)) {
     for (const [slot, sx, sy] of SLOTS) {
       if (inside([inv.x + sx - 1, inv.y + sy - 1, CELL, CELL], x, y)) {
         return { kind: "slot", slot, x: inv.x + sx, y: inv.y + sy };
@@ -587,23 +589,25 @@ function drawCreative(L, p, m, touch, hovered) {
 }
 function drawInventory(L, m, touch, hovered) {
   const { x: ox, y: oy } = L.inv;
-  if (L.only) panel(L.frame.x, L.frame.y, W, INV_H);
-  else panel(ox, oy, INV_W, INV_H);
+  // The game's window, over the same look for resources without it (its Destroy Item slot too).
+  panel(ox, oy, INV_W, INV_H);
   fill(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 0xFF000000);
-  fill(ox + 135, oy + 34, 10, 4, 0xFF8B8B8B);
-  for (let i = 0; i < 5; i++) fill(ox + 145 + i, oy + 31 + i, 1, 10 - 2 * i, 0xFF8B8B8B);
-  for (const [, sx, sy] of SLOTS) slotBox(ox + sx, oy + sy);
-  if (L.inv.texture) sprite(ox, oy, 256, 256, INVENTORY_TEXTURE);
-  text(ox + 97, oy + 6, "Crafting", 0x404040, false);
-  player(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 30, turn);
-  for (const [slot, sx, sy] of SLOTS) drawSlot(ox + sx, oy + sy, slot, m && m.slots[slot], touch, hovered);
-  // Destroy Item: a slot with a red cross.
+  for (const [slot, sx, sy] of SLOTS) {
+    if (slot > 4) slotBox(ox + sx, oy + sy);
+  }
   const [tx, ty] = [ox + TRASH[0], oy + TRASH[1]];
   slotBox(tx, ty);
   for (let i = 0; i < 10; i++) {
     fill(tx + 3 + i, ty + 3 + i, 2, 2, 0xFFC03030);
     fill(tx + 11 - i, ty + 3 + i, 2, 2, 0xFFC03030);
   }
+  sprite(ox, oy, 256, 256, INVENTORY_TEXTURE);
+  // The crafting grid, an arrow, its result: not in the game's window, drawn on it.
+  for (const [, sx, sy] of CRAFTING) slotBox(ox + sx, oy + sy);
+  fill(ox + 165, oy + 23, 3, 2, 0xFF8B8B8B);
+  for (let i = 0; i < 3; i++) fill(ox + 168 + i, oy + 21 + i, 1, 6 - 2 * i, 0xFF8B8B8B);
+  player(ox + DOLL[0], oy + DOLL[1], DOLL[2], DOLL[3], 20, turn);
+  for (const [slot, sx, sy] of SLOTS) drawSlot(ox + sx, oy + sy, slot, m && m.slots[slot], touch, hovered);
   if (!touch && hovered && hovered.kind === "trash") fill(tx, ty, 16, 16, 0x80FFFFFF);
 }
 

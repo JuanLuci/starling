@@ -311,13 +311,14 @@ what is still missing (the next port's API work).
 
 - Does: in creative mode, in place of the creative screen: the creative screen as the game draws
   it (its tabs above and below, the tab's items, the search, the scrollbar, the hotbar row) with
-  the survival inventory beside it as Bedrock puts it (the player, armour, off hand, 2x2
-  crafting, inventory, hotbar, Destroy Item), both at once; the Survival Inventory tab shows only
-  the inventory, the tabs around it. The windows are the game's textures (a resource pack's too).
-  The mouse as on the game's screens (Shift, double click, middle click, 1-9/F/Q, a click outside
-  throws); fingers as the game's touch inventory (tap to pick and to put, hold for half, double
-  tap across, drag and drop, tap outside to throw). Java UI goes back to the game's screen, Bedrock
-  UI (a button there) comes back; the choice and the inventory-only view are kept.
+  its Survival Inventory tab's window beside it, as Bedrock puts the inventory beside the items
+  (the armour around the player, the off hand, inventory, hotbar, Destroy Item, and a 2x2
+  crafting grid in the room at the player's right), both at once; the Survival Inventory tab
+  shows only that window, the tabs around it. The windows are the game's textures (a resource
+  pack's too). The mouse as on the game's screens (Shift, double click, middle click, 1-9/F/Q, a
+  click outside throws); fingers as the game's touch inventory (tap to pick and to put, hold for
+  half, double tap across, drag and drop, tap outside to throw). Java UI goes back to the game's
+  screen, Bedrock UI (a button there) comes back; the choice and the inventory-only view are kept.
 - API added: the `creative` interface and capability (`get-tabs`, `get-items`, `click`,
   `set-slot`, `set-carried`), `screens.replace`, `draw.player`, `draw.item-tooltip`; `slots.click`
   on the stand-in clicks as the creative screen (each changed slot sent as `SetCreativeModeSlot`,
