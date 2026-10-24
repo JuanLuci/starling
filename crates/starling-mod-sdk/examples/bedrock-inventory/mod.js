@@ -986,10 +986,11 @@ export const events = {
     if (carried && !settling && (!touch || (finger && finger.grabbed))) {
       item(mx - 8, my - 8, carried);
     } else if (touch && pick && !(finger && finger.spread)) {
+      // The pick's tooltip clear of the slots: under the inventory's window, or beside it when it
+      // is alone (the tabs under it). The tooltip's box starts 12 right of and 12 above its point.
       const stack = pickStack(pick, m);
-      const xy = pickXY(L, pick);
-      if (stack && xy && pick.index === undefined) itemTooltip(xy[0] + 8, xy[1] + 8, stack);
-      else if (stack && L.creative) itemTooltip(L.creative.x + 8, L.creative.y + 24, stack);
+      const [bx, by] = L.only ? [L.frame.x + W + GAP, L.frame.y + 20] : [L.inv.x, L.inv.y + INV_H + 4];
+      if (stack) itemTooltip(bx - 12, by + 12, stack);
     } else if (!touch && !carried && hovered) {
       if (hovered.kind === "slot" && m && m.slots[hovered.slot]) itemTooltip(mx, my, m.slots[hovered.slot]);
       else if (hovered.kind === "item" && p.items[hovered.cell]) itemTooltip(mx, my, p.items[hovered.cell]);
