@@ -394,7 +394,14 @@ what is still missing (the next port's API work).
   and experience; Recipes and Uses switch, Backspace goes back. + puts a crafting or furnace
   recipe's ingredients in the open grid (Shift: as many as can be) and goes back to it. Every key
   has a button for a phone: ++ for Shift +, Back for Backspace, a star (the favourite, framed in
-  gold) for A.
+  gold) for A. The recipes screen is drawn as EMI's: vanilla's light panel 176 wide, the stations'
+  tabs over it, a bar for the station and one for the page with their arrows, the station in a
+  strip at its left, recipes in EMI's layouts (crafting's large result, a cooking arrow filling
+  over its time), + and ++ right of each, the index and favourites beside it. On a touch screen
+  (no hover) a tap picks a stack, framed, with its tooltip, and the buttons under the recipes act
+  on it; a second tap shows its recipes. The index starts under the game's close button there.
+- Game fix found with it: a mod's screen over the inventory now takes the fingers; the touch
+  inventory under it took them (a tap on EMI's recipes picked the hidden inventory's stacks).
 - API added: the `recipes` interface and capability (`count-recipes`, `get-recipes`, `fill`),
   `screens.get-window`. Item stacks' `name` is the name the player sees, as the interface says
   (it was the chat's bracketed one: `[Oak Planks]`). A page of recipes can be hundreds of stacks:

@@ -2912,25 +2912,29 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
             _ => None,
         })
         .collect();
-    // Its name, cut to the room before the buttons; one crafting recipe.
-    assert_eq!(texts, ["minecraft:…", "1", "1/1"]);
-    // The shapeless recipe in the 3 by 3 grid: planks in the first two cells, 4 sticks out.
+    // As EMI's: the station's bar and the page's, + and ++ right of the recipe; the index
+    // beside it, searched under it.
+    assert_eq!(texts, ["Crafting", "1/1", "+", "++", "1/1", "§7Search"]);
+    // In the panel (176 wide from 126): the shapeless recipe in the 3 by 3 grid, planks in the
+    // first two cells, 4 sticks out; the stick looked up in the row of buttons. The crafting
+    // table in the strip left of it.
     let shown: Vec<&str> = ops
         .iter()
         .filter_map(|o| match o {
-            DrawOp::Item { stack, .. } => Some(stack.id.as_str()),
+            DrawOp::Item { x, stack, .. } if (126.0..302.0).contains(x) => Some(stack.id.as_str()),
             _ => None,
         })
         .collect();
     assert_eq!(
         shown,
         [
+            "minecraft:oak_planks",
+            "minecraft:oak_planks",
             "minecraft:stick",
-            "minecraft:oak_planks",
-            "minecraft:oak_planks",
             "minecraft:stick"
         ]
     );
+    assert_eq!(item_at(&ops, "minecraft:crafting_table"), (109.0, 37.0));
     // Right click on the planks in the recipe: their uses; Backspace: the stick's recipes again.
     let (px, py) = item_at(&ops, "minecraft:oak_planks");
     mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
@@ -2962,7 +2966,10 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
     };
     // Every key has a button, for a phone: Back for Backspace (shown with somewhere to go back
     // to), the star for A.
-    assert_eq!(button_at(&ops, "Back"), None);
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Back"))
+    );
     mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
     let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
     let (bx, by) = button_at(&ops, "Back").unwrap();
@@ -2973,14 +2980,25 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
             |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
         )
     );
-    let (tx, ty) = button_at(&ops, "").unwrap();
+    let star = |ops: &[DrawOp]| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::ItemId { x, y, id } if id == "minecraft:nether_star" => Some((*x, *y)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (tx, ty) = star(&ops);
     mods.screen_mouse("emi:recipes", press(tx + 2.0, ty + 2.0, 0));
     let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
     // Framed in gold now: the stick is a favourite, left of the window.
-    assert!(
-        ops.iter()
-            .any(|o| matches!(o, DrawOp::Fill { color: 0xFFFF_D700, .. }))
-    );
+    assert!(ops.iter().any(|o| matches!(
+        o,
+        DrawOp::Fill {
+            color: 0xFFFF_D700,
+            ..
+        }
+    )));
     let beside = mods.screen_render("inventory", ctx(0.0, 0.0));
     let left: Vec<&str> = beside
         .iter()
@@ -2998,8 +3016,18 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
             .any(|o| matches!(o, DrawOp::Item { x, .. } if *x < 72.0))
     );
     let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
-    // ++ fills as many as can be, as Shift and +.
-    let (ax, ay) = button_at(&ops, "++").unwrap();
+    // EMI's buttons right of the recipe, + under ++: ++ fills as many as can be, as Shift and +.
+    let small: Vec<(f32, f32)> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Button { x, y, w: 16.0, .. } => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(small.len(), 2);
+    assert_eq!(small[0].0, small[1].0);
+    assert_eq!(small[0].1 - small[1].1, 14.0);
+    let (ax, ay) = small[1];
     mods.drain();
     mods.screen_mouse("emi:recipes", press(ax + 2.0, ay + 2.0, 0));
     let out = mods.drain();
@@ -3011,7 +3039,7 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
     let plus = ops
         .iter()
         .find_map(|o| match o {
-            DrawOp::Button { x, y, label, .. } if label == "+" => Some((*x, *y)),
+            DrawOp::Button { x, y, w: 16.0, .. } => Some((*x, *y)),
             _ => None,
         })
         .unwrap();
@@ -3020,6 +3048,72 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
     let out = mods.drain();
     assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: false, .. } if recipe == "minecraft:stick")), "{out:?}");
     assert!(out.iter().any(|o| matches!(o, Output::CloseScreen { .. })));
+    // On a touch screen (no hover): a tap picks a stack and shows its tooltip, a second tap on it
+    // its recipes; picked in a recipe, it is what the buttons under the recipes act on.
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.creative = Some(std::sync::Arc::new(Shelf));
+    world.window = Some([72.0, 37.0, 176.0, 166.0]);
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    world.touch = true;
+    mods.set_snapshot(world);
+    mods.screen_opened("inventory");
+    mods.drain();
+    let tooltip_of = |ops: &[DrawOp]| {
+        ops.iter().find_map(|o| match o {
+            DrawOp::ItemTooltip { stack, .. } => Some(stack.id.clone()),
+            _ => None,
+        })
+    };
+    // The index under the game's close button there (from 40, not 16), its arrows under it.
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let (sx, sy) = item_at(&ops, "minecraft:stick");
+    assert_eq!(sy, 41.0);
+    assert!(ops.iter().any(|o| matches!(o, DrawOp::Sprite { y, sprite, .. }
+        if sprite.starts_with("recipe_book/page_forward") && *y == 220.0)));
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(mods.drain().is_empty());
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops).as_deref(), Some("minecraft:stick"));
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "emi:recipes"))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops), None);
+    let (px, py) = item_at(&ops, "minecraft:oak_planks");
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops).as_deref(), Some("minecraft:oak_planks"));
+    // The planks in the row of buttons, Recipes and Uses both theirs to show.
+    let subject = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { y, stack, .. } if *y > 180.0 && (126.0..302.0).contains(&stack_x(o)) => {
+                Some(stack.id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(subject, ["minecraft:oak_planks"]);
+    let (ux, uy) = button_at(&ops, "Uses").unwrap();
+    mods.screen_mouse("emi:recipes", press(ux + 2.0, uy + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Uses"))
+    );
+    assert_eq!(tooltip_of(&ops), None);
+}
+
+/// Where an item op is drawn across.
+fn stack_x(o: &DrawOp) -> f32 {
+    match o {
+        DrawOp::Item { x, .. } => *x,
+        _ => f32::NAN,
+    }
 }
 
 /// ShulkerBoxTooltip: a box's contents, from its components' SNBT, as a grid on its colour in
@@ -3121,7 +3215,10 @@ fn shulker_box_tooltip_shows_the_contents_as_slots() {
         scroll: 0.0,
     };
     assert!(mods.screen_mouse(settings, tap));
-    assert_eq!(preview(&mods.screen_render(settings, ctx)).2, "Preview: Each slot");
+    assert_eq!(
+        preview(&mods.screen_render(settings, ctx)).2,
+        "Preview: Each slot"
+    );
     let (lines, grids, _) = mods.tooltip_grids(&boxed);
     assert_eq!(lines, ["§8Shift: together"]);
     assert_eq!(grids[0].stacks.len(), 27);

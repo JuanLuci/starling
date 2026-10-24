@@ -104,12 +104,15 @@ function toggleFavourite(s) {
 // ---- the layout beside a window ----
 
 // The index's and the favourites' grids, the search box and the page arrows for a GUI and the
-// window on it (the creative screen's tabs 28 pixels under it).
+// window on it (the creative screen's tabs 28 pixels under it). On a touch screen the game's
+// close button takes the top right corner: the grids start under it, the arrows go under them.
 let below = 0;
 function layout(width, height, win) {
   const [wx, wy, ww, wh0] = win || [width / 2 - 88, height / 2 - 83, 176, 166];
   const wh = wh0 + below;
-  const top = 16, bottom = height - 24;
+  const touch = hasTouch();
+  const top = touch ? 40 : 16, bottom = height - 24;
+  const arrows = touch ? height - 20 : 2;
   const rows = Math.max(0, Math.floor((bottom - top) / SLOT));
   const right = width - 2, left = wx + ww + 4;
   const cols = Math.max(0, Math.floor((right - left) / SLOT));
@@ -119,8 +122,8 @@ function layout(width, height, win) {
     index: { x: right - cols * SLOT, y: top, cols, rows },
     favourites: { x: 2, y: top, cols: favCols, rows },
     box: [Math.round(width / 2 - boxWidth / 2), Math.min(height - 20, wy + wh + 4), boxWidth, 16],
-    back: [right - cols * SLOT, 2, 12, 12],
-    next: [right - 12, 2, 12, 12],
+    back: [right - cols * SLOT, arrows, 12, 12],
+    next: [right - 12, arrows, 12, 12],
   };
 }
 // The slot of a grid at a point: its number, or -1.
@@ -138,7 +141,14 @@ function drawGrid(g, stacks, mx, my) {
   let hovered = null;
   for (let i = 0; i < stacks.length; i++) {
     const x = g.x + (i % g.cols) * SLOT, y = g.y + Math.floor(i / g.cols) * SLOT;
-    if (inside([x, y, SLOT, SLOT], mx, my)) {
+    if (isSelected(stacks[i], [x, y, SLOT, SLOT])) {
+      // The touch inventory's pick: a white frame and a veil.
+      fill(x, y, SLOT, 1, 0xFFFFFFFF);
+      fill(x, y + SLOT - 1, SLOT, 1, 0xFFFFFFFF);
+      fill(x, y + 1, 1, SLOT - 2, 0xFFFFFFFF);
+      fill(x + SLOT - 1, y + 1, 1, SLOT - 2, 0xFFFFFFFF);
+      fill(x + 1, y + 1, SLOT - 2, SLOT - 2, 0x3CFFFFFF);
+    } else if (!hasTouch() && inside([x, y, SLOT, SLOT], mx, my)) {
       fill(x, y, SLOT, SLOT, 0x80FFFFFF);
       hovered = stacks[i];
     }
@@ -147,8 +157,9 @@ function drawGrid(g, stacks, mx, my) {
   return hovered;
 }
 
-// The index and the favourites beside a game screen's window, and their hovered stack's tooltip.
-function drawBeside(context, win) {
+// The index and the favourites beside a game screen's window (or the recipes screen), and their
+// hovered or picked stack's tooltip (the recipes screen draws its own).
+function drawBeside(context, win, tooltips = true) {
   const L = layout(context.width, context.height, win);
   const per = L.index.cols * L.index.rows;
   mouse = [context.mouseX, context.mouseY];
@@ -163,7 +174,7 @@ function drawBeside(context, win) {
     sprite(...L.next, inside(L.next, ...mouse) ? "recipe_book/page_forward_highlighted" : "recipe_book/page_forward");
     const label = `${page + 1}/${pagesTotal}`;
     const mid = L.index.x + (L.index.cols * SLOT) / 2;
-    text(Math.round(mid - textWidth(label) / 2), 4, label, 0xFFFFFF, true);
+    text(Math.round(mid - textWidth(label) / 2), L.back[1] + 2, label, 0xFFFFFF, true);
   }
   if (L.favourites.cols > 0) {
     shown.favourites = favourites.slice(0, L.favourites.cols * L.favourites.rows);
@@ -175,7 +186,13 @@ function drawBeside(context, win) {
   fill(bx + 1, by + 1, bw - 2, bh - 2, 0xFF000000);
   const shownText = search === "" && !searching ? "§7Search" : `${search}${searching ? "_" : ""}`;
   text(bx + 4, by + 4, shownText, 0xE0E0E0, true);
-  if (hovered) itemTooltip(...mouse, hovered);
+  if (!tooltips) return;
+  if (hovered) {
+    itemTooltip(...mouse, hovered);
+  } else if (selected) {
+    const r = selected.rect;
+    itemTooltip(r[0] + r[2] - 4, r[1] + 4, selected.stack);
+  }
 }
 
 // What a press on a game screen does beside its window: true when it was the mod's.
@@ -195,14 +212,15 @@ function pressBeside(context, win, x, y, buttonId) {
     page++;
     return true;
   }
+  const at = (g, n) => [g.x + (n % g.cols) * SLOT, g.y + Math.floor(n / g.cols) * SLOT, SLOT, SLOT];
   const i = cell(L.index, x, y);
   if (i >= 0 && shown.index[i]) {
-    show(shown.index[i], buttonId === 1 ? "uses" : "recipes");
+    pressStack(shown.index[i], at(L.index, i), buttonId);
     return true;
   }
   const f = cell(L.favourites, x, y);
   if (f >= 0 && shown.favourites[f]) {
-    show(shown.favourites[f], buttonId === 1 ? "uses" : "recipes");
+    pressStack(shown.favourites[f], at(L.favourites, f), buttonId);
     return true;
   }
   return false;
@@ -221,7 +239,7 @@ function hoveredBeside(context, win) {
   return act(() => getHovered(), null);
 }
 
-// ---- the recipes screen ----
+// ---- what the recipes screen shows ----
 
 // What it shows: the stack, recipes or uses, the tabs (kind, how many), the tab and page and its
 // recipes, and where it came from. The recipes are fetched when the view changes, in the hook of
@@ -248,6 +266,7 @@ function load(v) {
 }
 // Opens the recipes (or uses) of a stack, the view before it kept to go back to.
 function show(held, lookup) {
+  selected = null;
   // The stack itself, not how many of it.
   const stack = { ...held, count: 1 };
   const next = lookUp(stack, lookup);
@@ -262,202 +281,353 @@ function show(held, lookup) {
   open("recipes");
 }
 
-// A recipe's height and its slots (x, y from its corner, the stacks, an output) as its station
-// lays them out.
-function recipeSlots(r) {
+// ---- drawing as the game's windows do ----
+
+const BLACK = 0xFF000000, WHITE = 0xFFFFFFFF, FACE = 0xFFC6C6C6, SHADE = 0xFF555555;
+const SLOT_DARK = 0xFF373737, SLOT_FACE = 0xFF8B8B8B;
+
+// A window's panel as vanilla's container textures draw it: light grey, white over its top and
+// left, dark grey under its bottom and right, a black edge with rounded corners.
+function windowPanel(x, y, w, h, face) {
+  fill(x + 1, y + 2, w - 2, h - 4, face);
+  fill(x + 2, y + 1, w - 5, 1, WHITE);
+  fill(x + 1, y + 2, w - 4, 1, WHITE);
+  fill(x + 1, y + 3, 2, h - 6, WHITE);
+  fill(x + 3, y + 3, 1, 1, WHITE);
+  fill(x + w - 3, y + 3, 2, h - 6, SHADE);
+  fill(x + 3, y + h - 3, w - 4, 1, SHADE);
+  fill(x + 3, y + h - 2, w - 5, 1, SHADE);
+  fill(x + w - 4, y + h - 4, 1, 1, SHADE);
+  fill(x + 2, y, w - 5, 1, BLACK);
+  fill(x + 3, y + h - 1, w - 5, 1, BLACK);
+  fill(x, y + 2, 1, h - 5, BLACK);
+  fill(x + w - 1, y + 3, 1, h - 5, BLACK);
+  for (const [px, py] of [[1, 1], [w - 3, 1], [w - 2, 2], [1, h - 3], [2, h - 2], [w - 2, h - 2]]) {
+    fill(x + px, y + py, 1, 1, BLACK);
+  }
+}
+// A sunken box, as a slot's frame: dark over its top and left, white under its bottom and right.
+function sunken(x, y, w, h) {
+  fill(x, y, w, h, SLOT_DARK);
+  fill(x + 1, y + 1, w - 1, h - 1, WHITE);
+  fill(x + 1, y + 1, w - 2, h - 2, SLOT_FACE);
+}
+// The crafting table's arrow (22 by 15), and in white the part of it `done` (0 to 1) of the way.
+function arrow(x, y, done) {
+  const shape = (color, width) => {
+    fill(x, y + 6, Math.min(14, width), 3, color);
+    for (let i = 0; i < 8 && 14 + i < width; i++) fill(x + 14 + i, y + i, 1, 15 - 2 * i, color);
+  };
+  shape(SLOT_FACE, 22);
+  if (done > 0) shape(WHITE, Math.round(22 * done));
+}
+// A small vanilla button with its label centred to the pixel ("+", "++"), or an arrow drawn in
+// pixels ("<", ">"), shadowed as the font is.
+function iconButton(r, icon, hovered) {
+  button(r[0], r[1], r[2], r[3], "", hovered, true);
+  if (icon !== "<" && icon !== ">") {
+    // The font's widths count a pixel of space after each character.
+    text(r[0] + Math.round((r[2] - textWidth(icon) + 1) / 2), r[1] + Math.round((r[3] - 8) / 2) + 1,
+      icon, 0xFFFFFF, true);
+    return;
+  }
+  const cx = r[0] + Math.floor(r[2] / 2), cy = r[1] + Math.floor(r[3] / 2);
+  const rows = [];
+  for (let i = 0; i < 7; i++) {
+    const off = Math.abs(3 - i);
+    rows.push([icon === "<" ? cx - 3 + off : cx - 1 - off, cy - 4 + i]);
+  }
+  for (const [x, y] of rows) fill(x + 1, y + 1, 2, 1, 0xFF3F3F3F);
+  for (const [x, y] of rows) fill(x, y, 2, 1, WHITE);
+}
+// A station's tab over the panel, the one shown joined to it.
+function tab(x, y, h, shown) {
+  windowPanel(x, y, 24, h + 4, shown ? FACE : 0xFFA8A8A8);
+  if (shown) {
+    // Open into the panel: its face over the panel's edge, its sides running on.
+    fill(x + 3, y + h, 18, 4, FACE);
+    fill(x + 1, y + h, 2, 4, WHITE);
+    fill(x + 21, y + h, 2, 4, SHADE);
+  }
+}
+
+// ---- the recipes screen ----
+
+// A recipe as EMI lays it out: its size, its slots (x, y from its corner, the stacks, large),
+// its arrow and flame.
+function recipeDisplay(r) {
   const slots = [];
   const inputs = r.inputs;
   switch (r.kind) {
     case "crafting": {
-      // The whole 3 by 3 grid, as EMI draws it; a shape in its corner, a shapeless recipe's
-      // ingredients in turn in rows of 3 (of 2 for up to 4).
+      // The whole 3 by 3 grid; a shape in its corner, a shapeless recipe's ingredients in turn
+      // in rows of 3 (of 2 for up to 4); the result in a large slot.
       const ww = r.width || (inputs.length > 4 ? 3 : inputs.length > 1 ? 2 : 1);
       const cells = new Array(9).fill(null);
       for (let i = 0; i < inputs.length; i++) cells[Math.floor(i / ww) * 3 + (i % ww)] = inputs[i];
       for (let i = 0; i < 9; i++) slots.push([(i % 3) * SLOT, Math.floor(i / 3) * SLOT, cells[i] || [], false]);
-      slots.push([84, 18, r.outputs, true]);
-      return { height: 3 * SLOT, slots, arrow: [58, 19], shapeless: r.width === 0 };
+      slots.push([92, 14, r.outputs, true]);
+      return { width: 118, height: 54, slots, arrow: [62, 19], shapeless: r.width === 0 };
     }
     case "smithing":
-    case "brewing":
+    case "brewing": {
       for (let i = 0; i < inputs.length; i++) slots.push([i * SLOT, 0, inputs[i], false]);
-      slots.push([inputs.length * SLOT + 30, 0, r.outputs, true]);
-      return { height: SLOT, slots, arrow: [inputs.length * SLOT + 4, 1] };
-    default:
-      // Cooking and stonecutting: one input, the arrow, the output.
+      const ax = inputs.length * SLOT + 8;
+      slots.push([ax + 32, 0, r.outputs, false]);
+      return { width: ax + 50, height: SLOT, slots, arrow: [ax, 1] };
+    }
+    case "stonecutting":
       slots.push([0, 0, inputs[0] || [], false]);
-      slots.push([54, 0, r.outputs, true]);
-      return { height: SLOT, slots, arrow: [24, 1], flame: r.kind !== "stonecutting" };
+      slots.push([58, 0, r.outputs, false]);
+      return { width: 76, height: SLOT, slots, arrow: [27, 1] };
+    default:
+      // Cooking: the input over the flame, the arrow filling over the cooking time, a large
+      // result, the experience under the arrow.
+      slots.push([0, 4, inputs[0] || [], false]);
+      slots.push([56, 0, r.outputs, true]);
+      return { width: 82, height: 38, slots, arrow: [24, 5], flame: [2, 24], cooking: true };
   }
 }
-function recipeHeight(kind) {
-  return kind === "crafting" ? 3 * SLOT + 8 : SLOT + 16;
-}
+const RECIPE_HEIGHTS = { crafting: 54, smithing: SLOT, brewing: SLOT, stonecutting: SLOT };
+const recipeHeight = (kind) => RECIPE_HEIGHTS[kind] || 38;
+const RECIPE_PADDING = 10;
 
-// The recipes screen's panel and parts on a GUI.
+// The recipes screen's parts on a GUI, as EMI places them: the panel 176 wide, the stations'
+// tabs over it, a bar for the station and one for the page, the recipes, the stations' strip on
+// its left; and a row of buttons for what a phone has no keys for.
 function screenLayout(width, height) {
-  const w = Math.min(width - 8, 190), h = Math.min(height - 8, 236);
-  const x = Math.round((width - w) / 2), y = Math.round((height - h) / 2);
-  const tabs = [x + 6, y + 26];
-  const area = [x + 8, y + 52, w - 16, h - 76];
+  const w = 176, h = Math.min(256, Math.max(120, height - 52));
+  const x = Math.round((width - w) / 2), y = Math.round((height - h) / 2) + 1;
+  const foot = y + h - 23;
   return {
     panel: [x, y, w, h],
-    tabs,
-    area,
-    recipesButton: [x + w - 92, y + 6, 48, 14],
-    usesButton: [x + w - 42, y + 6, 36, 14],
-    back: [x + 8, y + h - 22, 12, 17],
-    next: [x + w - 20, y + h - 22, 12, 17],
-    pageLabel: [x + w / 2, y + h - 17],
-    // Back to the view before (Backspace), and the star adding the stack to the favourites (A).
-    history: [x + 24, y + h - 23, 34, 18],
-    star: [x + w - 46, y + h - 23, 20, 18],
+    strip: [x - 23, y + 4, 28, 28],
+    station: [x - 18, y + 9, SLOT, SLOT],
+    tabs: [x + 16, y - 24],
+    tabsShown: 6,
+    tabBack: [x + 2, y - 18, 12, 12],
+    tabNext: [x + w - 14, y - 18, 12, 12],
+    kindBack: [x + 5, y + 5, 12, 12],
+    kindBar: [x + 19, y + 5, w - 38, 12],
+    kindNext: [x + w - 17, y + 5, 12, 12],
+    pageBack: [x + 5, y + 19, 12, 12],
+    pageBar: [x + 19, y + 19, w - 38, 12],
+    pageNext: [x + w - 17, y + 19, 12, 12],
+    area: [x + 8, y + 37, w - 16, foot - 4 - (y + 37)],
+    back: [x + 8, foot + 1, 32, 16],
+    subject: [x + 43, foot, SLOT, SLOT],
+    recipesButton: [x + 63, foot + 1, 44, 16],
+    usesButton: [x + 109, foot + 1, 36, 16],
+    star: [x + 148, foot + 1, 20, 16],
+    // The window the index and the favourites go beside.
+    window: [x - 23, y, w + 23, h],
   };
 }
 function perPage(v, area) {
   const tab = v.tabs[v.tab];
-  return tab ? Math.max(1, Math.min(16, Math.floor(area[3] / recipeHeight(tab[0])))) : 1;
+  if (!tab) return 1;
+  const rh = recipeHeight(tab[0]) + RECIPE_PADDING;
+  return Math.max(1, Math.min(16, Math.floor((area[3] + RECIPE_PADDING) / rh)));
 }
 
 let seconds = 0;
 // What the recipes screen drew last: stacks by box, the + and ++ buttons by recipe (and whether
-// as many as can be).
+// as many as can be), the tabs.
 let hits = { stacks: [], fills: [], tabs: [] };
+// On a touch screen a tap picks a stack, showing its tooltip and making it what the buttons
+// under the recipes act on; a second tap on it shows its recipes. { stack, rect } or null.
+let selected = null;
+const isSelected = (s, r) => selected && key(selected.stack) === key(s) && selected.rect.join() === r.join();
+// The stack the buttons under the recipes act on: the one picked, else the one looked up.
+const subject = () => (selected ? selected.stack : view && view.stack);
+
+// A slot with its stack (the choice of this second), hovered or picked as the game shows it.
+function drawSlot(at, s, large, mx, my) {
+  if (large) sunken(at[0], at[1], 26, 26);
+  else sprite(at[0], at[1], SLOT, SLOT, "container/slot");
+  if (!s) return null;
+  const ix = at[0] + (large ? 5 : 1), iy = at[1] + (large ? 5 : 1);
+  item(ix, iy, s);
+  hits.stacks.push([at, s]);
+  if (selected && isSelected(s, at)) {
+    // The touch inventory's pick: a white frame and a veil.
+    fill(ix - 1, iy - 1, 18, 1, WHITE);
+    fill(ix - 1, iy + 16, 18, 1, WHITE);
+    fill(ix - 1, iy, 1, 16, WHITE);
+    fill(ix + 16, iy, 1, 16, WHITE);
+    fill(ix, iy, 16, 16, 0x3CFFFFFF);
+  } else if (!hasTouch() && inside(at, mx, my)) {
+    fill(ix, iy, 16, 16, 0x80FFFFFF);
+    return s;
+  }
+  return null;
+}
 
 function drawRecipes(context) {
   hits = { stacks: [], fills: [], tabs: [] };
   if (!view) return;
-  let tabHint = null;
   const L = screenLayout(context.width, context.height);
   const [px, py, pw, ph] = L.panel;
-  const mx = context.mouseX, my = context.mouseY;
-  panel(px, py, pw, ph);
-  // The stack looked up and which way.
-  item(px + 6, py + 6, view.stack);
-  // Its name, cut to the room before the buttons.
-  const room = L.recipesButton[0] - (px + 26) - 4;
-  let name = view.stack.name;
-  while (name.length > 1 && textWidth(name) > room) name = name.slice(0, -1);
-  if (name !== view.stack.name) name = `${name.slice(0, -1)}…`;
-  text(px + 26, py + 10, name, 0xFFFFFF, true);
-  hits.stacks.push([[px + 5, py + 5, SLOT, SLOT], view.stack]);
-  button(...L.recipesButton, "Recipes", inside(L.recipesButton, mx, my), view.lookup !== "recipes");
-  button(...L.usesButton, "Uses", inside(L.usesButton, mx, my), view.lookup !== "uses");
-  // The tabs: a station each, with how many.
-  let tx = L.tabs[0];
-  view.tabs.forEach(([kind, n], i) => {
-    const label = `${n}`;
-    const w = 20 + textWidth(label) + 2;
-    const r = [tx, L.tabs[1], w, 20];
-    if (tx + w > px + pw - 6) return;
-    fill(...r, i === view.tab ? 0xFFFFFFFF : inside(r, mx, my) ? 0xFFA0A0A0 : 0xFF6F6F6F);
-    fill(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, i === view.tab ? 0xFF5A5A5A : 0xFF2B2B2B);
-    itemId(tx + 2, L.tabs[1] + 2, KINDS[kind][0]);
-    text(tx + 19, L.tabs[1] + 6, label, i === view.tab ? 0xFFFFFF : 0xA0A0A0, true);
+  const mx = hasTouch() ? -1 : context.mouseX, my = hasTouch() ? -1 : context.mouseY;
+  let hovered = null, hint = null;
+  const tabs = view.tabs;
+  const tabPage = Math.floor(view.tab / L.tabsShown);
+  // The tabs not shown behind the panel, the shown one joined to it over it.
+  const tabAt = (i) => [L.tabs[0] + (i - tabPage * L.tabsShown) * 24, L.tabs[1], 24, 24];
+  const first = tabPage * L.tabsShown, last = Math.min(tabs.length, first + L.tabsShown);
+  for (let i = first; i < last; i++) {
+    const r = tabAt(i);
+    if (i !== view.tab) tab(r[0], r[1], 27, false);
     hits.tabs.push([r, i]);
-    if (inside(r, mx, my)) tabHint = [KINDS[kind][1], `§7${n} ${n === 1 ? "recipe" : "recipes"}`];
-    tx += w + 2;
-  });
-  const tab = view.tabs[view.tab];
-  if (!tab) return;
-  const [kind, total] = tab;
+    if (inside(r, mx, my)) {
+      const [kind, n] = tabs[i];
+      hint = [KINDS[kind][1], `§7${n} ${n === 1 ? "recipe" : "recipes"}`];
+    }
+  }
+  // The stations' strip, then the panel over its edge.
+  windowPanel(...L.strip, FACE);
+  windowPanel(px, py, pw, ph, FACE);
+  const shownTab = tabAt(view.tab);
+  if (view.tab >= first && view.tab < last) tab(shownTab[0], shownTab[1] - 2, 29, true);
+  for (let i = first; i < last; i++) {
+    const r = tabAt(i);
+    itemId(r[0] + 4, r[1] + 4 - (i === view.tab ? 2 : 0), KINDS[tabs[i][0]][0]);
+  }
+  if (tabs.length > L.tabsShown) {
+    iconButton(L.tabBack, "<", inside(L.tabBack, mx, my));
+    iconButton(L.tabNext, ">", inside(L.tabNext, mx, my));
+  }
+  const tabNow = tabs[view.tab];
+  if (!tabNow) return;
+  const [kind, total] = tabNow;
   const per = perPage(view, L.area);
   const pagesTotal = Math.max(1, Math.ceil(total / per));
-  const list = view.list;
-  let y = L.area[1];
-  let hovered = null, hint = null;
+  // The station's bar and the page's, their arrows beside them.
+  const bar = (r, label) => {
+    sunken(...r);
+    text(Math.round(r[0] + r[2] / 2 - textWidth(label) / 2), r[1] + 2, label, 0xFFFFFF, true);
+  };
+  bar(L.kindBar, KINDS[kind][1]);
+  bar(L.pageBar, `${view.page + 1}/${pagesTotal}`);
+  if (tabs.length > 1) {
+    iconButton(L.kindBack, "<", inside(L.kindBack, mx, my));
+    iconButton(L.kindNext, ">", inside(L.kindNext, mx, my));
+  }
+  if (pagesTotal > 1) {
+    iconButton(L.pageBack, "<", inside(L.pageBack, mx, my));
+    iconButton(L.pageNext, ">", inside(L.pageNext, mx, my));
+  }
+  // The station in the strip.
+  hovered = drawSlot(L.station, { id: KINDS[kind][0], count: 1, damage: 0, maxDamage: 0,
+    name: KINDS[kind][1], components: "" }, false, mx, my) || hovered;
+  // The recipes, each centred with its buttons right of it.
   const turn = Math.floor(seconds);
-  for (const r of list) {
-    const lay = recipeSlots(r);
-    const x = L.area[0] + 4;
-    for (const [sx, sy, stacks, output] of lay.slots) {
-      const at = [x + sx, y + sy, SLOT, SLOT];
-      sprite(...at, "container/slot");
+  let y = L.area[1];
+  for (const r of view.list) {
+    const d = recipeDisplay(r);
+    const fills = FILLED.includes(r.kind);
+    const right = fills ? 21 : 0;
+    const x = Math.round(L.area[0] + Math.min((L.area[2] - d.width) / 2, L.area[2] - d.width - right));
+    for (const [sx, sy, stacks, large] of d.slots) {
       const s = stacks.length ? stacks[turn % stacks.length] : null;
-      if (s) {
-        item(at[0] + 1, at[1] + 1, s);
-        hits.stacks.push([at, s]);
-        if (inside(at, mx, my)) {
-          fill(at[0] + 1, at[1] + 1, 16, 16, 0x80FFFFFF);
-          hovered = s;
-        }
-      }
+      hovered = drawSlot([x + sx, y + sy, large ? 26 : SLOT, large ? 26 : SLOT], s, large, mx, my) || hovered;
     }
-    const arrow = [x + lay.arrow[0], y + lay.arrow[1], 24, 16];
-    sprite(...arrow, "container/furnace/burn_progress");
-    if (inside(arrow, mx, my)) {
-      hint = lay.shapeless ? ["Shapeless", "§7The ingredients go anywhere"] : [KINDS[r.kind][1]];
+    const a = [x + d.arrow[0], y + d.arrow[1], 22, 15];
+    // A cooking recipe's arrow fills over its cooking time, as the furnace's does.
+    arrow(a[0], a[1], d.cooking && r.time > 0 ? (seconds * 20 % r.time) / r.time : 0);
+    if (inside(a, mx, my)) {
+      hint = d.shapeless ? ["Shapeless", "§7The ingredients go anywhere"] : [KINDS[r.kind][1]];
+      if (r.time > 0) hint = [...hint, `§7${(r.time / 20).toFixed(r.time % 20 ? 1 : 0)} seconds`];
     }
-    if (lay.flame) sprite(x + 2, y + SLOT + 1, 14, 14, "container/furnace/lit_progress");
-    if (r.time > 0) {
-      const t = `${(r.time / 20).toFixed(r.time % 20 ? 1 : 0)}s · ${r.experience} xp`;
-      text(x + 20, y + SLOT + 4, t, 0xA0A0A0, false);
+    if (d.flame) sprite(x + d.flame[0], y + d.flame[1], 14, 14, "container/furnace/lit_progress");
+    if (d.cooking) {
+      const t = `${(r.time / 20).toFixed(r.time % 20 ? 1 : 0)}s, ${r.experience} XP`;
+      text(x + 24, y + 28, t, 0x404040, false);
     }
-    if (FILLED.includes(r.kind)) {
-      const once = [L.area[0] + L.area[2] - 20, y + 2, 18, 12];
-      const all = [once[0], y + 16, 18, 12];
-      button(...once, "+", inside(once, mx, my), true);
-      button(...all, "++", inside(all, mx, my), true);
+    if (fills) {
+      // EMI's buttons: from the bottom right of the recipe up.
+      const bx = x + d.width + 5, by = y + d.height - 12 - (d.height >= 30 ? 4 : 0);
+      const once = [bx, by, 16, 12], all = [bx, by - 14, 16, 12];
+      iconButton(once, "+", inside(once, mx, my));
+      iconButton(all, "++", inside(all, mx, my));
       hits.fills.push([once, r, false], [all, r, true]);
       if (inside(once, mx, my)) hint = ["Fill the grid", "§7Shift: as many as can be"];
       if (inside(all, mx, my)) hint = ["Fill the grid", "§7As many as can be"];
     }
-    y += recipeHeight(kind);
+    y += d.height + RECIPE_PADDING;
   }
-  if (pagesTotal > 1) {
-    sprite(...L.back, inside(L.back, mx, my) ? "recipe_book/page_backward_highlighted" : "recipe_book/page_backward");
-    sprite(...L.next, inside(L.next, mx, my) ? "recipe_book/page_forward_highlighted" : "recipe_book/page_forward");
-  }
-  const label = `${view.page + 1}/${pagesTotal}`;
-  text(Math.round(L.pageLabel[0] - textWidth(label) / 2), L.pageLabel[1], label, 0xFFFFFF, true);
-  if (history.length > 0) button(...L.history, "Back", inside(L.history, mx, my), true);
-  // The star, framed in gold while the stack is a favourite.
-  const starred = favourites.some((f) => key(f) === key(view.stack));
+  // The buttons a phone has instead of keys, for the stack picked or looked up.
+  const s = subject();
+  button(...L.back, "Back", inside(L.back, mx, my), history.length > 0);
+  hovered = drawSlot(L.subject, s, false, mx, my) || hovered;
+  const same = !selected;
+  button(...L.recipesButton, "Recipes", inside(L.recipesButton, mx, my), !(same && view.lookup === "recipes"));
+  button(...L.usesButton, "Uses", inside(L.usesButton, mx, my), !(same && view.lookup === "uses"));
+  const starred = favourites.some((f) => key(f) === key(s));
   const [sx, sy, sw, sh] = L.star;
   if (starred) fill(sx - 1, sy - 1, sw + 2, sh + 2, 0xFFFFD700);
   button(sx, sy, sw, sh, "", inside(L.star, mx, my), true);
-  itemId(sx + 2, sy + 1, "minecraft:nether_star");
+  itemId(sx + 2, sy, "minecraft:nether_star");
   if (inside(L.star, mx, my)) {
     hint = starred ? ["Favourite", "§7Click: take it away"] : ["Add to the favourites"];
   }
+  // The index and the favourites beside, as EMI keeps them.
+  below = 0;
+  drawBeside(context, L.window, false);
   if (hovered) {
     itemTooltip(mx, my, hovered);
-  } else if (hint || tabHint) {
-    tooltip(mx, my, hint || tabHint);
+  } else if (hint) {
+    tooltip(mx, my, hint);
+  } else if (selected) {
+    const r = selected.rect;
+    itemTooltip(r[0] + r[2] - 4, r[1] + 4, selected.stack);
   }
+}
+
+// A tap or click on a stack: on a touch screen the first picks it, the second shows its
+// recipes; a mouse shows them at once (its uses for the right button).
+function pressStack(s, r, buttonId) {
+  if (hasTouch() && !isSelected(s, r)) {
+    selected = { stack: s, rect: r };
+    return;
+  }
+  selected = null;
+  show(s, buttonId === 1 ? "uses" : "recipes");
 }
 
 function pressRecipes(event) {
   if (!view) return;
   const L = screenLayout(lastContext.width, lastContext.height);
   const { x, y } = event;
-  if (inside(L.recipesButton, x, y) && view.lookup !== "recipes") return show(view.stack, "recipes");
-  if (inside(L.usesButton, x, y) && view.lookup !== "uses") return show(view.stack, "uses");
-  const tab = hits.tabs.find(([r]) => inside(r, x, y));
-  if (tab) {
-    view.tab = tab[1];
+  const tabs = view.tabs;
+  const turnTab = (to) => {
+    view.tab = ((to % tabs.length) + tabs.length) % tabs.length;
     view.page = 0;
     load(view);
-    return;
-  }
-  if (inside(L.back, x, y)) {
-    view.page--;
+  };
+  const turnPage = (by) => {
+    view.page += by;
     load(view);
-    return;
+  };
+  if (tabs.length > L.tabsShown && inside(L.tabBack, x, y)) return turnTab(view.tab - L.tabsShown);
+  if (tabs.length > L.tabsShown && inside(L.tabNext, x, y)) return turnTab(view.tab + L.tabsShown);
+  const t = hits.tabs.find(([r]) => inside(r, x, y));
+  if (t) return turnTab(t[1]);
+  if (tabs.length > 1 && inside(L.kindBack, x, y)) return turnTab(view.tab - 1);
+  if (tabs.length > 1 && inside(L.kindNext, x, y)) return turnTab(view.tab + 1);
+  if (inside(L.pageBack, x, y)) return turnPage(-1);
+  if (inside(L.pageNext, x, y)) return turnPage(1);
+  if (history.length > 0 && inside(L.back, x, y)) return back();
+  const s = subject();
+  if (inside(L.recipesButton, x, y) && !(!selected && view.lookup === "recipes")) {
+    selected = null;
+    return show(s, "recipes");
   }
-  if (inside(L.next, x, y)) {
-    view.page++;
-    load(view);
-    return;
+  if (inside(L.usesButton, x, y) && !(!selected && view.lookup === "uses")) {
+    selected = null;
+    return show(s, "uses");
   }
-  if (history.length > 0 && inside(L.history, x, y)) {
-    back();
-    return;
-  }
-  if (inside(L.star, x, y)) {
-    toggleFavourite(view.stack);
-    return;
-  }
+  if (inside(L.star, x, y)) return toggleFavourite(s);
   const f = hits.fills.find(([r]) => inside(r, x, y));
   if (f) {
     if (act(() => fillRecipe(f[1].id, f[2] || shiftHeld), false)) {
@@ -467,9 +637,13 @@ function pressRecipes(event) {
     }
     return;
   }
-  const s = hits.stacks.find(([r]) => inside(r, x, y));
-  if (s) show(s[1], event.button === 1 ? "uses" : "recipes");
+  const hit = hits.stacks.find(([r]) => inside(r, x, y));
+  if (hit) return pressStack(hit[1], hit[0], event.button);
+  if (pressBeside(lastContext, L.window, x, y, event.button)) return;
+  // A tap on nothing lets the pick go.
+  selected = null;
 }
+
 function back() {
   if (history.length === 0) {
     close();
@@ -485,6 +659,37 @@ let shiftHeld = false;
 let lastContext = { width: 0, height: 0 };
 const mouseIn = { x: 0, y: 0 };
 
+// A key typed into the search box: true when it took it.
+function typeSearch(event) {
+  switch (event.key) {
+    case "key.keyboard.escape":
+    case "key.keyboard.enter":
+    case "key.keyboard.keypad.enter":
+      stopSearching();
+      return true;
+    case "key.keyboard.backspace":
+      search = search.slice(0, -1);
+      page = 0;
+      return true;
+    default:
+      if (event.text) {
+        search = (search + event.text).slice(0, 50);
+        page = 0;
+      }
+      return true;
+  }
+}
+// R, U and A over a stack: its recipes, its uses, the favourites.
+function lookUpKey(k, s) {
+  if (!s || (k !== "key.keyboard.r" && k !== "key.keyboard.u" && k !== "key.keyboard.a")) return false;
+  if (k === "key.keyboard.a") {
+    toggleFavourite(s);
+  } else {
+    show(s, k === "key.keyboard.u" ? "uses" : "recipes");
+  }
+  return true;
+}
+
 export const events = {
   init() {
     return {
@@ -498,10 +703,12 @@ export const events = {
   },
   screenOpened(screen) {
     if (WINDOWED.includes(screen)) history.length = 0;
+    selected = null;
   },
   screenClosed(screen) {
     if (screen === RECIPES) view = null;
-    if (WINDOWED.includes(screen) && searching) stopSearching();
+    selected = null;
+    if ((screen === RECIPES || WINDOWED.includes(screen)) && searching) stopSearching();
   },
   screenRender(screen, context) {
     if (screen === RECIPES) {
@@ -521,8 +728,13 @@ export const events = {
     if (screen === RECIPES) {
       if (event.action === "press") pressRecipes(event);
       if (event.action === "scroll" && view && event.scroll !== 0) {
-        view.page -= Math.sign(event.scroll);
-        load(view);
+        const L = screenLayout(lastContext.width, lastContext.height);
+        if (cell(layout(lastContext.width, lastContext.height, L.window).index, event.x, event.y) >= 0) {
+          page = Math.max(0, page - Math.sign(event.scroll));
+        } else {
+          view.page -= Math.sign(event.scroll);
+          load(view);
+        }
       }
       return true;
     }
@@ -530,7 +742,9 @@ export const events = {
     const win = act(() => getWindow(), null);
     if (!win) return false;
     if (event.action === "press") {
-      return pressBeside(lastContext, win, event.x, event.y, event.button);
+      if (pressBeside(lastContext, win, event.x, event.y, event.button)) return true;
+      selected = null;
+      return false;
     }
     if (event.action === "scroll") {
       const L = layout(lastContext.width, lastContext.height, win);
@@ -549,49 +763,26 @@ export const events = {
     if (!event.pressed) return false;
     shiftHeld = event.shift;
     if (screen === RECIPES) {
-      if (event.key === "key.keyboard.backspace") {
-        back();
-        return true;
+      if (searching) return typeSearch(event);
+      if (!view) return false;
+      switch (event.key) {
+        case "key.keyboard.backspace":
+          back();
+          return true;
+        case "key.keyboard.left":
+        case "key.keyboard.right":
+          view.page += event.key === "key.keyboard.left" ? -1 : 1;
+          load(view);
+          return true;
       }
+      const L = screenLayout(lastContext.width, lastContext.height);
       const hovered = hits.stacks.find(([r]) => inside(r, mouseIn.x, mouseIn.y));
-      if (hovered && (event.key === "key.keyboard.r" || event.key === "key.keyboard.u")) {
-        show(hovered[1], event.key === "key.keyboard.u" ? "uses" : "recipes");
-        return true;
-      }
-      return false;
+      return lookUpKey(event.key, hovered ? hovered[1] : hoveredBeside(lastContext, L.window));
     }
     if (!WINDOWED.includes(screen)) return false;
     const win = act(() => getWindow(), null);
     if (!win) return false;
-    if (searching) {
-      switch (event.key) {
-        case "key.keyboard.escape":
-        case "key.keyboard.enter":
-        case "key.keyboard.keypad.enter":
-          stopSearching();
-          return true;
-        case "key.keyboard.backspace":
-          search = search.slice(0, -1);
-          page = 0;
-          return true;
-        default:
-          if (event.text) {
-            search = (search + event.text).slice(0, 50);
-            page = 0;
-          }
-          return true;
-      }
-    }
-    const k = event.key;
-    if (k !== "key.keyboard.r" && k !== "key.keyboard.u" && k !== "key.keyboard.a") return false;
-    const s = hoveredBeside(lastContext, win);
-    if (!s) return false;
-    if (k === "key.keyboard.a") {
-      toggleFavourite(s);
-    } else {
-      show(s, k === "key.keyboard.u" ? "uses" : "recipes");
-    }
-    return true;
+    if (searching) return typeSearch(event);
+    return lookUpKey(event.key, hoveredBeside(lastContext, win));
   },
 };
-

@@ -84,11 +84,13 @@ struct Picked {
 }
 
 impl Game<'_> {
-    /// The screens whose slots the fingers work as Bedrock's.
+    /// The screens whose slots the fingers work as Bedrock's: not under a mod's screen, which
+    /// takes the fingers (EMI's recipes over the inventory).
     fn slot_touch_screen(&self) -> bool {
         matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.title.is_none()
             && self.carried.is_none()
+            && self.mods.screen.is_none()
             && self.has_touch()
     }
 
