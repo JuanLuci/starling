@@ -254,6 +254,8 @@ impl Tween {
         self.from + (self.to - self.from) * ease_out_quint(t)
     }
 }
+/// The largest corner mask kept, in pixels (see `Cache::corner`).
+const CORNER_MAX: u16 = 128;
 struct Cache {
     fonts: Fonts,
     entries: HashMap<Key, Cached>,
@@ -300,9 +302,13 @@ impl Cache {
     fn region(atlas: &HudAtlas) -> Option<Rect> {
         atlas.sprites.get("horizon/ui-text").copied()
     }
-    /// Reserve `w x h` pixels; on overflow forget everything and start over.
+    /// Reserve `w x h` pixels; on overflow forget everything and start over. What could never
+    /// fit is refused without forgetting: starting over would not make room for it.
     fn place(&mut self, atlas: &HudAtlas, w: u32, h: u32) -> Option<(u32, u32, Rect)> {
         let region = Self::region(atlas)?;
+        if w > region.w || h > region.h {
+            return None;
+        }
         let (mut x, mut y, mut row) = self.shelf;
         if x + w + 1 > region.w {
             x = 0;
@@ -383,7 +389,11 @@ impl Cache {
         }
         made
     }
+    /// A corner's mask, at most [`CORNER_MAX`] pixels a side: a larger one (a mod's big touch
+    /// button) is that one stretched, so a few large radii cannot fill the region (and empty
+    /// the whole cache) frame after frame, each recomputed at 16 samples a pixel.
     fn corner(&mut self, atlas: &HudAtlas, r: u16, ring: bool) -> Option<Rect> {
+        let r = r.min(CORNER_MAX);
         let key = Key::Corner(r, ring);
         if let Some(c) = self.entries.get(&key) {
             return c.rect;
