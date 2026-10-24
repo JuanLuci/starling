@@ -3069,8 +3069,11 @@ fn emi_shows_recipes_and_uses_beside_the_inventory() {
     let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
     let (sx, sy) = item_at(&ops, "minecraft:stick");
     assert_eq!(sy, 41.0);
-    assert!(ops.iter().any(|o| matches!(o, DrawOp::Sprite { y, sprite, .. }
-        if sprite.starts_with("recipe_book/page_forward") && *y == 220.0)));
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Sprite { y, sprite, .. }
+        if sprite.starts_with("recipe_book/page_forward") && *y == 220.0))
+    );
     assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
     assert!(mods.drain().is_empty());
     let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
