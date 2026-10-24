@@ -50,7 +50,7 @@ fn cases(count: usize, seed: u64, walking_only: bool) -> Vec<Case> {
             let speed = if walking_only { 0.1 } else { 0.6 };
             let movement = Vec3::new(
                 r.range(-speed, speed),
-                if walking_only || r.next() % 2 == 0 {
+                if walking_only || r.next().is_multiple_of(2) {
                     -0.0784000015258789
                 } else {
                     r.range(-1.0, 0.5)
@@ -64,7 +64,7 @@ fn cases(count: usize, seed: u64, walking_only: bool) -> Vec<Case> {
                     Vec3::new(x + half, y + height, z + half),
                 ),
                 movement,
-                on_ground: walking_only || r.next() % 2 == 0,
+                on_ground: walking_only || r.next().is_multiple_of(2),
             }
         })
         .collect()
