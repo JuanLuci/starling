@@ -41,7 +41,7 @@ pub use starling::starling::mods::{
     level::{BlockInfo, Entity, EntityInfo},
     slots::{ClickKind, Menu},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
-    widgets::{Anchor, ScreenButton, Shape, TouchButton},
+    widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
 };
 use starling::{
     exports::starling::mods::events::Registration,
@@ -90,6 +90,7 @@ pub const REPLACEABLE_SCREENS: [&str; 1] = ["creative"];
 /// Buttons one mod may put on the game's screens, and on the touch controls.
 const SCREEN_BUTTONS: usize = 32;
 const TOUCH_BUTTONS: usize = 16;
+const WINDOW_BUTTONS: usize = 16;
 /// The game's own touch buttons a mod may restyle (`widgets.style-control`).
 pub const TOUCH_CONTROLS: [&str; 11] = [
     "jump",
@@ -141,6 +142,9 @@ pub trait CreativeCatalog: Send + Sync {
     fn tabs(&self) -> Vec<Tab>;
     /// Up to `count` of tab `tab`'s items from `start` (the search tab's that match `search`).
     fn items(&self, tab: &str, search: &str, start: usize, count: usize) -> ItemPage;
+    /// `inventory.get-item-order`: the stack's place in the search tab with nothing searched
+    /// (its components' own place, else its item's first); None for one the tab lacks.
+    fn order(&self, stack: &ItemStack) -> Option<u32>;
 }
 /// A text's width in GUI pixels.
 pub type Measure = Arc<dyn Fn(&str) -> f32 + Send + Sync>;
@@ -388,6 +392,7 @@ pub struct Widgets {
     pub screen: Vec<ScreenButton>,
     pub touch: Vec<TouchButton>,
     pub styles: Vec<ControlStyle>,
+    pub window: Vec<WindowButton>,
 }
 
 /// `widgets.style-control`: one of [`TOUCH_CONTROLS`] with the mod's label, icon and shape ("" for
@@ -2200,6 +2205,9 @@ impl inventory::Host for State {
     fn get_item_info(&mut self, id: String) -> Option<ItemInfo> {
         self.snapshot.items.as_ref()?.info(&id)
     }
+    fn get_item_order(&mut self, stack: ItemStack) -> Option<u32> {
+        self.snapshot.creative.as_ref()?.order(&stack)
+    }
 }
 impl chat::Host for State {
     fn show(&mut self, text: String) {
@@ -2613,9 +2621,41 @@ impl widgets::Host for State {
         });
         Ok(())
     }
+    fn add_window_button(&mut self, b: WindowButton) -> Result<(), String> {
+        button_id_ok(&b.id)?;
+        let finite = [b.x, b.y, b.width, b.height].iter().all(|n| n.is_finite());
+        if !finite || b.width < 1.0 || b.height < 1.0 {
+            return Err(format!("button {} has no size", b.id));
+        }
+        if let Some(menu) = b
+            .menus
+            .iter()
+            .find(|m| !screen_name_ok(&m.replace(':', "/")))
+        {
+            return Err(format!("{:?} is not a menu's name", clip(menu.clone())));
+        }
+        let all = &mut self.widgets.window;
+        all.retain(|o| o.id != b.id);
+        if all.len() >= WINDOW_BUTTONS {
+            return Err(format!("a mod has at most {WINDOW_BUTTONS} window buttons"));
+        }
+        all.push(WindowButton {
+            x: b.x.clamp(-512.0, 512.0),
+            y: b.y.clamp(-512.0, 512.0),
+            width: b.width.min(64.0),
+            height: b.height.min(64.0),
+            label: clip_to(b.label, 24),
+            icon: clip(b.icon),
+            tooltip: b.tooltip.into_iter().take(8).map(clip).collect(),
+            menus: b.menus.into_iter().take(32).collect(),
+            ..b
+        });
+        Ok(())
+    }
     fn remove(&mut self, id: String) {
         self.widgets.screen.retain(|b| b.id != id);
         self.widgets.touch.retain(|b| b.id != id);
+        self.widgets.window.retain(|b| b.id != id);
     }
     fn style_control(
         &mut self,

@@ -1268,7 +1268,25 @@ impl horizon_mods::CreativeCatalog for Tabs {
             items: all.into_iter().skip(start).take(count).collect(),
         }
     }
+    /// The search tab's order, past its two items too (for sorting).
+    fn order(&self, stack: &ItemStack) -> Option<u32> {
+        ORDER
+            .iter()
+            .position(|id| stack.id == format!("minecraft:{id}"))
+            .map(|p| p as u32)
+    }
 }
+/// The order the test tabs give items (`inventory.get-item-order`).
+const ORDER: [&str; 8] = [
+    "stone",
+    "dirt",
+    "cobblestone",
+    "oak_log",
+    "oak_planks",
+    "bow",
+    "arrow",
+    "bread",
+];
 /// Items stacking to 64, for the `creative` checks.
 struct Items;
 impl horizon_mods::ItemCatalog for Items {
@@ -1495,7 +1513,9 @@ export const events = {
 
 /// `slots.drag`: the mouse's drag across slots (QUICK_CRAFT), its clicks (its start, a slot each,
 /// its end) counted with a call's other clicks; a button past 2 or a slot no menu has refused.
-/// `mobile.drag-areas`: the last call's boxes, the bad ones left out.
+/// `mobile.drag-areas`: the last call's boxes, the bad ones left out. `widgets.add-window-button`
+/// refuses a button without a size or with a bad menu name; `inventory.get-item-order` is the
+/// creative search tab's place.
 #[test]
 fn slots_drag_is_the_mouses_drag() {
     if !horizon_mods::has_js_engine() {
@@ -1510,7 +1530,7 @@ fn slots_drag_is_the_mouses_drag() {
 name = \"Probe\"
 version = \"1\"
 api = \"starling-0.1\"
-capabilities = [\"inventory-click\"]
+capabilities = [\"inventory-click\", \"inventory-read\", \"ui\"]
 ",
     )
     .unwrap();
@@ -1518,6 +1538,8 @@ capabilities = [\"inventory-click\"]
         dir.join("mod.js"),
         r#"import { click, drag } from "starling:mods/slots@0.1.0";
 import { dragAreas } from "starling:mods/mobile@0.1.0";
+import { getItemOrder } from "starling:mods/inventory@0.1.0";
+import { addWindowButton } from "starling:mods/widgets@0.1.0";
 const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
 export const events = {
   init() {
@@ -1532,6 +1554,16 @@ export const events = {
       dragAreas([[0, 0, 10, 10], [1, 2, -3, 4]]);
       dragAreas([[5, 6, 7, 8], [1, 2, 0, 4]]);
       return "ok";
+    }
+    if (args === "window") {
+      const one = (id) => ({ id, label: "", tooltip: [], icon: "", menus: [] });
+      const order = (id) => `${getItemOrder({ id, count: 1, damage: 0, maxDamage: 0, name: "", components: "" })}`;
+      return [
+        tryIt(() => addWindowButton({ ...one("a"), part: "container", anchor: "top-right", x: -1, y: -13, width: 12, height: 12 })),
+        tryIt(() => addWindowButton({ ...one("b"), part: "inventory", anchor: "top-right", x: -1, y: -13, width: 0, height: 12 })),
+        tryIt(() => addWindowButton({ ...one("c"), part: "inventory", anchor: "top-right", x: 0, y: 0, width: 4, height: 4, menus: ["Not A Menu"] })),
+        order("minecraft:dirt"), order("minecraft:bread"), order("minecraft:barrier"),
+      ].join(",");
     }
     const many = Array.from({ length: 60 }, (_, i) => i + 1);
     return [
@@ -1582,6 +1614,27 @@ export const events = {
                 kind: horizon_mods::ClickKind::Pickup,
             },
         ]
+    );
+    let world = creative_world(GameMode::Survival);
+    mods.set_snapshot(world);
+    assert!(mods.command("probe window"));
+    let said: Vec<String> = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Feedback { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        said,
+        ["ok,button b has no size,\"Not A Menu\" is not a menu's name,1,7,undefined"]
+    );
+    assert_eq!(
+        mods.widgets()
+            .flat_map(|(_, w)| w.window.iter().map(|b| b.id.clone()))
+            .collect::<Vec<_>>(),
+        ["a"]
     );
     assert!(mods.command("probe areas"));
     let areas: Vec<Output> = mods
@@ -1828,6 +1881,157 @@ fn bedrock_inventory_fingers_choose_spread_and_take_away() {
     );
 }
 
+/// A left click (PICKUP, button 0) on a slot as the game does it: take, put, merge (64 a stack),
+/// swap.
+fn left_click(menu: &mut horizon_mods::Menu, slot: usize) {
+    let (here, hand) = (menu.slots[slot].take(), menu.carried.take());
+    let same = |a: &ItemStack, b: &ItemStack| a.id == b.id && a.components == b.components;
+    (menu.slots[slot], menu.carried) = match (here, hand) {
+        (here, None) => (None, here),
+        (None, hand) => (hand, None),
+        (Some(mut h), Some(mut c)) if same(&h, &c) => {
+            let put = (64 - h.count).min(c.count);
+            h.count += put;
+            c.count -= put;
+            (Some(h), (c.count > 0).then_some(c))
+        }
+        (here, hand) => (hand, here),
+    };
+}
+
+/// Inventory Buttons on a chest: its four buttons on the window's two parts; Sort merges and
+/// orders the chest by the creative order (over as many ticks as its clicks need, each tick's
+/// clicks leaving the hand empty), the inventory left alone; Sort inventory leaves the hotbar;
+/// Take all and Deposit all Shift-click each stack of their part.
+#[test]
+fn inventory_buttons_sort_take_and_deposit() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples/inventory-buttons");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let buttons: Vec<(String, horizon_mods::WindowPart, i32)> = mods
+        .widgets()
+        .flat_map(|(_, w)| w.window.iter())
+        .map(|b| (b.id.clone(), b.part, b.x as i32))
+        .collect();
+    use horizon_mods::WindowPart::{Container, Inventory};
+    assert_eq!(
+        buttons,
+        [
+            ("sort_container".to_owned(), Container, -1),
+            ("take_all".to_owned(), Container, -15),
+            ("sort_inventory".to_owned(), Inventory, -1),
+            ("deposit_all".to_owned(), Inventory, -15),
+        ]
+    );
+    let mut world = creative_world(GameMode::Survival);
+    let chest = |slots: &[(usize, &str, u32)]| {
+        let mut all = vec![None; 63];
+        for &(i, id, n) in slots {
+            all[i] = Some(stack(&format!("minecraft:{id}"), n));
+        }
+        horizon_mods::Menu {
+            kind: "minecraft:generic_9x3".into(),
+            slots: all,
+            carried: None,
+        }
+    };
+    world.menu = Some(chest(&[
+        (0, "bread", 3),
+        (2, "dirt", 40),
+        (5, "stone", 10),
+        (7, "dirt", 40),
+        (11, "bow", 1),
+        (13, "dirt", 5),
+        (20, "stone", 64),
+        (26, "oak_log", 7),
+        // The inventory's.
+        (30, "dirt", 9),
+        (60, "arrow", 16),
+    ]));
+    let press = |mods: &mut Mods, id: &str| {
+        mods.key("inventory_buttons", id, true);
+        mods.key("inventory_buttons", id, false);
+    };
+    // The game does each tick's clicks and shows the mod the menu they left.
+    let run = |mods: &mut Mods, world: &mut Snapshot| {
+        for tick in 0..10 {
+            let menu = world.menu.as_mut().unwrap();
+            for o in mods.drain() {
+                if let Output::Click {
+                    slot,
+                    button: 0,
+                    kind: horizon_mods::ClickKind::Pickup,
+                    ..
+                } = o
+                {
+                    left_click(menu, slot as usize);
+                }
+            }
+            assert!(
+                menu.carried.is_none(),
+                "the hand holds a stack after tick {tick}"
+            );
+            mods.set_snapshot(world.clone());
+            mods.tick(tick);
+        }
+    };
+    mods.set_snapshot(world.clone());
+    press(&mut mods, "sort_container");
+    run(&mut mods, &mut world);
+    let shown = |world: &Snapshot, range: std::ops::Range<usize>| -> Vec<String> {
+        let menu = world.menu.as_ref().unwrap();
+        range
+            .filter_map(|i| {
+                menu.slots[i]
+                    .as_ref()
+                    .map(|s| format!("{i}:{}x{}", &s.id[10..], s.count))
+            })
+            .collect()
+    };
+    assert_eq!(
+        shown(&world, 0..27),
+        [
+            "0:stonex64",
+            "1:stonex10",
+            "2:dirtx64",
+            "3:dirtx21",
+            "4:oak_logx7",
+            "5:bowx1",
+            "6:breadx3"
+        ]
+    );
+    assert_eq!(shown(&world, 27..63), ["30:dirtx9", "60:arrowx16"]);
+    // The inventory sorted, the hotbar (54 to 62 here) left.
+    press(&mut mods, "sort_inventory");
+    run(&mut mods, &mut world);
+    assert_eq!(shown(&world, 27..63), ["27:dirtx9", "60:arrowx16"]);
+    // Take all: a Shift-click on each of the chest's stacks; Deposit all: on the inventory's.
+    let quick = |mods: &mut Mods| -> Vec<i32> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Click {
+                    slot,
+                    kind: horizon_mods::ClickKind::QuickMove,
+                    ..
+                } => Some(slot),
+                _ => None,
+            })
+            .collect()
+    };
+    mods.set_snapshot(world.clone());
+    press(&mut mods, "take_all");
+    assert_eq!(quick(&mut mods), [0, 1, 2, 3, 4, 5, 6]);
+    press(&mut mods, "deposit_all");
+    assert_eq!(quick(&mut mods), [27]);
+}
+
 /// What a frame of Bedrock Inventory costs: the creative window full (a tab of 475 items), the
 /// inventory full; `cargo test --release -p horizon-mods --test sandbox bedrock_inventory_frame
 /// -- --ignored --nocapture`.
@@ -1847,6 +2051,9 @@ fn bedrock_inventory_frame_cost() {
                 total: 475,
                 items: all.into_iter().skip(start).take(count).collect(),
             }
+        }
+        fn order(&self, stack: &ItemStack) -> Option<u32> {
+            Tabs.order(stack)
         }
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

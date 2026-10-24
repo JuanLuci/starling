@@ -45,6 +45,16 @@ impl CreativeCatalog for Pretend {
                 .collect(),
         }
     }
+    fn order(&self, stack: &ItemStack) -> Option<u32> {
+        let i = self.tabs.iter().position(|t| t.kind == TabKind::Search)?;
+        let listed = &self.items[i];
+        let place = |exact: bool| {
+            listed.iter().position(|s| {
+                s.stack.id == stack.id && (!exact || s.stack.components == stack.components)
+            })
+        };
+        place(true).or_else(|| place(false)).map(|p| p as u32)
+    }
 }
 
 fn matches(s: &Stack, term: &str) -> bool {

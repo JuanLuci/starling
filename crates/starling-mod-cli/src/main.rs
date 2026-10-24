@@ -12,7 +12,9 @@
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
 //! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
-//! it; a game screen's name, `pause` or `inventory`, draws the mod's buttons on it),
+//! it; a game screen's name, `pause` say, draws the mod's buttons on it; `container` and
+//! `inventory` a plain window of vanilla's layout, the menu's stacks and the mod's window
+//! buttons on it: window.rs),
 //! `{"click": [x, y], "button": 0}` (a mod's button on a game screen first), `{"type": "text"}`,
 //! `{"press": "key.keyboard.enter"}`, `{"close": true}`, `{"join": "server"}`, `{"leave": true}`,
 //! `{"hurt": 2.0}`, `{"touch": "<button id>", "pressed": true}` (a touch button, pressed and
@@ -22,9 +24,10 @@
 //! `world::world`) is the open menu `slots.get-menu` reads; each `slots.click` is a `click` line.
 //! The creative tabs (`creative`) are the resources' `creative-inventory.json`, else a few made
 //! up; `"player": {"game_mode": "creative"}` lets a mod take from them, each a `creative` line.
-//! Pickup clicks (buttons 0 and 1, and -999 outside), `creative`'s clicks and sets change the
-//! pretend menu and cursor as the game's simplest clicks do, before the step draws; the other
-//! clicks are lines only. `{"click": [x, y], "press": false}` is a press without its release (a
+//! Pickup clicks (buttons 0 and 1, and -999 outside), Shift-clicks on a chest's or the
+//! inventory's menu, drags (`slots.drag`), `creative`'s clicks and sets change the pretend menu
+//! and cursor as the game's simplest clicks do, before the step draws; the other clicks are lines
+//! only. `{"click": [x, y], "press": false}` is a press without its release (a
 //! finger held), `{"release": [x, y]}` its release, `{"drag": [x, y]}` the mouse moved with the
 //! button held, `{"scroll": [x, y], "lines": -1}` the wheel; `{"key-press": "key.keyboard.left.shift",
 //! "pressed": true}` a key going down (false: up) without its text.
@@ -40,6 +43,7 @@
 //! step's line), with that folder's font and sprites, or plain shapes without one.
 mod creative;
 mod render;
+mod window;
 mod world;
 
 use horizon_mods::{
@@ -281,7 +285,7 @@ fn run_once(options: &Options) -> Result<(), String> {
     };
     let data = options.resources.as_deref().and_then(world::Data::read);
     let data = Arc::new(data.unwrap_or_default());
-    let mut resources = render::Resources::new(options.resources.clone());
+    let mut resources = render::Resources::new(options.resources.clone()).with_mod(path);
     let creative: Arc<dyn CreativeCatalog> =
         Arc::new(creative::Pretend::read(options.resources.as_deref(), &data));
     let mut world = world::world(&scenario, data.clone());
@@ -475,7 +479,7 @@ fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
 
 /// A pickup click (button 0 or 1) on the pretend menu's slot `slot` (-999 outside: a throw), as
 /// vanilla's simplest clicks: take all or half, put all or one, merge, swap. False for one it
-/// does not pretend.
+/// does not pretend (the inventory menu's crafting result).
 fn pretend_pickup(world: &mut Snapshot, slot: i32, button: u8) -> bool {
     let Some(menu) = world.menu.as_mut() else {
         return false;
@@ -495,7 +499,7 @@ fn pretend_pickup(world: &mut Snapshot, slot: i32, button: u8) -> bool {
     }
     let Some(index) = usize::try_from(slot)
         .ok()
-        .filter(|&i| i < menu.slots.len() && i != 0)
+        .filter(|&i| i < menu.slots.len() && !(i == 0 && menu.kind == "minecraft:inventory"))
     else {
         return false;
     };
@@ -542,9 +546,72 @@ fn pretend_pickup(world: &mut Snapshot, slot: i32, button: u8) -> bool {
     true
 }
 
+/// A quick-move (Shift-click) on the pretend menu's slot `slot`, as vanilla's chest menus and
+/// the inventory menu move a stack (`moveItemStackTo`): from a chest's slots into the inventory,
+/// the hotbar's end first; from the inventory into the chest; in the inventory menu between the
+/// inventory and the hotbar. False for a menu or slot it does not pretend.
+fn pretend_quick_move(world: &mut Snapshot, slot: i32) -> bool {
+    let Some(menu) = world.menu.as_ref() else {
+        return false;
+    };
+    let n = menu.slots.len();
+    let Some(i) = usize::try_from(slot).ok().filter(|&i| i < n) else {
+        return false;
+    };
+    let (to, reverse) = if menu.kind.starts_with("minecraft:generic_9x") && n > 36 {
+        let own = n - 36;
+        if i < own {
+            (own..n, true)
+        } else {
+            (0..own, false)
+        }
+    } else if menu.kind == "minecraft:inventory" && n >= 45 {
+        match i {
+            9..=35 => (36..45, false),
+            36..=44 => (9..36, false),
+            _ => return false,
+        }
+    } else {
+        return false;
+    };
+    let Some(mut moving) = menu.slots[i].clone() else {
+        return true;
+    };
+    let full = max_stack(world, &moving.id);
+    let menu = world.menu.as_mut().expect("there is a menu");
+    let order: Vec<usize> = if reverse {
+        to.rev().collect()
+    } else {
+        to.collect()
+    };
+    // Onto the same item first, then into the first empty slot.
+    for &j in &order {
+        if let Some(there) = menu.slots[j].as_mut()
+            && same_item(there, &moving)
+            && there.count < full
+        {
+            let put = (full - there.count).min(moving.count);
+            there.count += put;
+            moving.count -= put;
+            if moving.count == 0 {
+                break;
+            }
+        }
+    }
+    if moving.count > 0
+        && let Some(&j) = order.iter().find(|&&j| menu.slots[j].is_none())
+    {
+        menu.slots[j] = Some(moving.clone());
+        moving.count = 0;
+    }
+    menu.slots[i] = (moving.count > 0).then_some(moving);
+    true
+}
+
 /// `slots.drag` on the pretend menu, as vanilla's QUICK_CRAFT ends: the cursor's stack shared
 /// out evenly (button 0), one each (1) or a full stack each (2) among the slots that take it
-/// (empty, or the same item with room; not the crafting result), the rest left on the cursor.
+/// (empty, or the same item with room; not the inventory menu's crafting result), the rest left
+/// on the cursor.
 /// Armour and other slots that take only some items are not pretended: any item goes.
 fn pretend_drag(world: &mut Snapshot, slots: &[i32], button: u8) {
     let Some(carried) = world.menu.as_ref().and_then(|m| m.carried.clone()) else {
@@ -556,7 +623,7 @@ fn pretend_drag(world: &mut Snapshot, slots: &[i32], button: u8) {
     for &s in slots {
         let Some(i) = usize::try_from(s)
             .ok()
-            .filter(|&i| i != 0 && i < menu.slots.len())
+            .filter(|&i| i < menu.slots.len() && !(i == 0 && menu.kind == "minecraft:inventory"))
         else {
             continue;
         };
@@ -714,7 +781,11 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
                     ClickKind::Throw => "throw",
                     ClickKind::PickupAll => "pickup-all",
                 };
-                let pretended = kind == "pickup" && pretend_pickup(world, slot, button);
+                let pretended = match kind {
+                    "pickup" => pretend_pickup(world, slot, button),
+                    "quick-move" => pretend_quick_move(world, slot),
+                    _ => false,
+                };
                 json!({ "event": "click", "slot": slot, "button": button, "kind": kind, "pretended": pretended })
             }
             Output::Drag { slots, button, .. } => {
@@ -1041,9 +1112,16 @@ fn play(
             mods.screen_opened(name);
             *sim.screen = Some(name.to_owned());
         }
-        // A game screen: the mod's buttons on it, then what the mod draws over it.
+        // A game screen: the mod's buttons on it, then what the mod draws over it. A screen with
+        // slots (`container`, `inventory`) is drawn as a plain window with the menu's stacks and
+        // the mod's window buttons.
         let mut ops = Vec::new();
-        if !name.contains(':') {
+        if let Some(w) = window::Window::of(name, sim.world.menu.as_ref(), gui) {
+            let mouse = context(step);
+            ops = w.ops(sim.world.menu.as_ref());
+            ops.extend(window::button_ops(mods, &w, (mouse.mouse_x, mouse.mouse_y)));
+            ops.extend(screen_button_ops(mods, name, gui).into_iter().skip(1));
+        } else if !name.contains(':') {
             ops = screen_button_ops(mods, name, gui);
         }
         ops.extend(mods.screen_render(name, context(step)));
@@ -1108,8 +1186,24 @@ fn play(
             button,
             scroll: 0.0,
         };
-        // The mod's buttons on a game screen take a left click first, as in the game.
+        // The mod's buttons on a game screen take a left click first, as in the game: its window
+        // buttons on a screen with slots, then its screen buttons.
         let at = (event(MouseAction::Press).x, event(MouseAction::Press).y);
+        let window = window::Window::of(&open, sim.world.menu.as_ref(), gui);
+        let pressed = window.as_ref().and_then(|w| {
+            window::buttons(mods, w)
+                .into_iter()
+                .rev()
+                .find(|(_, _, r)| {
+                    at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3]
+                })
+        });
+        if let (Some((owner, b, _)), 0) = (pressed, button) {
+            mods.key(&owner, &b.id, true);
+            mods.key(&owner, &b.id, false);
+            sim.settle(mods);
+            return (json!({ "button": b.id }), None);
+        }
         let hit = screen_buttons(mods, &open, gui)
             .into_iter()
             .rev()

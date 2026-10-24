@@ -238,12 +238,10 @@ pub(super) fn content_root(
         };
         let m = &package.manifest;
         let on = enabled.contains(&m.id) || dev.contains(path);
-        if !on
-            || !m.capabilities.contains(&Capability::Registries)
-            || mods.iter().any(|c| c.id == m.id)
-        {
+        if !on || mods.iter().any(|c| c.id == m.id) {
             continue;
         }
+        // A mod without registries brings its own GUI sprites at most (its buttons' icons).
         let content = Content::read(path, m).and_then(|content| {
             // The first of two mods owning one namespace stays on.
             let own = (m.id.as_str(), content.namespaces.as_slice());
@@ -256,6 +254,7 @@ pub(super) fn content_root(
             }
         });
         match content {
+            Ok(content) if content.is_empty() => {}
             Ok(content) => mods.push(ContentMod {
                 id: m.id.clone(),
                 content,
@@ -785,7 +784,8 @@ impl Game<'_> {
         if inventory_read || creative {
             snapshot.items = Some(self.mod_items());
         }
-        if creative && self.res.rest_ready() {
+        // The tabs answer `creative` and `inventory.get-item-order`.
+        if (creative || inventory_read) && self.res.rest_ready() {
             snapshot.creative = Some(self.mod_creative_tabs());
         }
         if self.mods.mods.uses(Capability::InventoryClick) {

@@ -47,6 +47,15 @@ pub fn check_path(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One of mod `id`'s own GUI sprites, `assets/<id>/textures/gui/sprites/<path>.png`: the files a
+/// mod without capability registries may ship, the icons of its buttons.
+pub fn gui_sprite(name: &str, id: &str) -> bool {
+    name.strip_prefix("assets/")
+        .and_then(|n| n.strip_prefix(id))
+        .and_then(|n| n.strip_prefix("/textures/gui/sprites/"))
+        .is_some_and(|n| n.ends_with(".png") && !n.is_empty())
+}
+
 /// A vanilla identifier, `minecraft:path`.
 fn vanilla_id(id: &str) -> bool {
     id.strip_prefix("minecraft:").is_some_and(|path| {
@@ -250,9 +259,13 @@ impl Content {
     /// Where content may go, and the declarations.
     fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
         let id = manifest.id.as_str();
-        if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
+        // Its own GUI sprites (its buttons' icons) any mod may have; the rest is content.
+        if let Some(name) = self.files.iter().find(|f| !gui_sprite(f, id))
+            && !manifest.capabilities.contains(&Capability::Registries)
+        {
             return Err(format!(
-                "has assets/ or data/ but not capability registries in {MANIFEST}"
+                "{name}: a mod without capability registries in {MANIFEST} has its own GUI \
+                 sprites only (assets/{id}/textures/gui/sprites/*.png)"
             ));
         }
         let mut blocks = Vec::new();
@@ -577,7 +590,7 @@ capabilities = ["registries"]
     }
 
     #[test]
-    fn content_needs_the_registries_capability() {
+    fn content_needs_the_registries_capability_but_gui_sprites() {
         let code_only = MANIFEST_TEXT
             .replace("api = \"0.2\"", "api = \"0.1\"")
             .replace("capabilities = [\"registries\"]", "capabilities = []");
@@ -598,7 +611,32 @@ capabilities = ["registries"]
         .unwrap();
         let package = Package::read(&path).unwrap();
         let e = Content::read(&path, &package.manifest).err().unwrap();
-        assert!(e.contains("not capability registries"), "{e}");
+        assert!(e.contains("without capability registries"), "{e}");
+        // Its own GUI sprites (its buttons' icons) a mod has without it; another namespace's not.
+        let sprites: &[(&str, &[u8])] = &[("assets/ruby/textures/gui/sprites/sort.png", b"png")];
+        std::fs::write(
+            &path,
+            Package::write_files(&code_only, Some(b"\0asm"), sprites).unwrap(),
+        )
+        .unwrap();
+        let content = Content::read(&path, &package.manifest).unwrap();
+        assert_eq!(content.files, ["assets/ruby/textures/gui/sprites/sort.png"]);
+        let theirs: &[(&str, &[u8])] = &[("assets/opal/textures/gui/sprites/sort.png", b"png")];
+        std::fs::write(
+            &path,
+            Package::write_files(&code_only, Some(b"\0asm"), theirs).unwrap(),
+        )
+        .unwrap();
+        assert!(Content::read(&path, &package.manifest).is_err());
+        assert!(gui_sprite(
+            "assets/ruby/textures/gui/sprites/a/b.png",
+            "ruby"
+        ));
+        assert!(!gui_sprite(
+            "assets/ruby/textures/gui/sprites/a.json",
+            "ruby"
+        ));
+        assert!(!gui_sprite("assets/ruby/textures/block/a.png", "ruby"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,16 +1,17 @@
 //! The mods' buttons (`widgets`): on the game's screens, drawn as the screen's own buttons are
-//! and pressed before the screen sees the click; on the touch controls, where they are placed in
-//! the player's layout as the game's own buttons (game/touch.rs); and the looks mods and resource
-//! packs give the game's own touch buttons. A press is the mod's keybind of that id
-//! ([`Game::mod_bind`]).
-use super::{Game, mods::rich_text};
+//! and pressed before the screen sees the click; on the windows of the screens with slots,
+//! placed from the slots of the container or of the player's inventory as the screen open lays
+//! them out; on the touch controls, where they are placed in the player's layout as the game's
+//! own buttons (game/touch.rs); and the looks mods and resource packs give the game's own touch
+//! buttons. A press is the mod's keybind of that id ([`Game::mod_bind`]).
+use super::{Game, Screen, mods::rich_text};
 use horizon_client::{
     hud::{HudBatch, rgba},
     screen_draw::{self, Draw, Measure},
     touch::{Button, Place, Shape},
     ui_theme::{self, Kind, Ui},
 };
-use horizon_mods::{Anchor, ScreenButton, Shape as ModShape};
+use horizon_mods::{Anchor, ScreenButton, Shape as ModShape, WindowButton, WindowPart};
 
 /// A mod's button on the touch controls, as it is drawn.
 #[derive(Clone, Debug)]
@@ -36,9 +37,13 @@ pub(super) struct ControlFace {
 /// A keybind's button: 16 GUI pixels tall, as wide as its label, as vanilla's buttons.
 const WIDE_HEIGHT: f32 = 16.0;
 
-/// A button's box on a screen `sw` by `sh` GUI pixels.
-fn anchored(b: &ScreenButton, sw: f32, sh: f32) -> [f32; 4] {
-    let (fx, fy) = match b.anchor {
+/// How far past its box a finger still means a window button (they are small; a slot's cell is
+/// 18 pixels): the nearest one within it.
+const WINDOW_REACH: f32 = 3.0;
+
+/// An anchor as the share of the width and height it is at.
+fn anchor_point(anchor: Anchor) -> (f32, f32) {
+    match anchor {
         Anchor::TopLeft => (0.0, 0.0),
         Anchor::TopMiddle => (0.5, 0.0),
         Anchor::TopRight => (1.0, 0.0),
@@ -48,14 +53,24 @@ fn anchored(b: &ScreenButton, sw: f32, sh: f32) -> [f32; 4] {
         Anchor::BottomLeft => (0.0, 1.0),
         Anchor::BottomMiddle => (0.5, 1.0),
         Anchor::BottomRight => (1.0, 1.0),
-    };
-    let (w, h) = (b.width.floor(), b.height.floor());
+    }
+}
+
+/// A box `w` by `h` placed in `area` (x, y, width, height) from `anchor`, offset by `x`, `y`.
+fn anchored_in(anchor: Anchor, area: [f32; 4], x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+    let (fx, fy) = anchor_point(anchor);
+    let (w, h) = (w.floor(), h.floor());
     [
-        ((sw - w) * fx + b.x).floor(),
-        ((sh - h) * fy + b.y).floor(),
+        (area[0] + (area[2] - w) * fx + x).floor(),
+        (area[1] + (area[3] - h) * fy + y).floor(),
         w,
         h,
     ]
+}
+
+/// A button's box on a screen `sw` by `sh` GUI pixels.
+fn anchored(b: &ScreenButton, sw: f32, sh: f32) -> [f32; 4] {
+    anchored_in(b.anchor, [0.0, 0.0, sw, sh], b.x, b.y, b.width, b.height)
 }
 
 fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
@@ -220,17 +235,201 @@ impl Game<'_> {
             .mod_screen_buttons()
             .into_iter()
             .rev()
-            .find(|(_, _, r)| inside(*r, cursor));
-        let Some((id, b, _)) = hit else {
+            .find(|(_, _, r)| inside(*r, cursor))
+            .map(|(id, b, _)| (id, b.id, b.active))
+            .or_else(|| {
+                self.mod_window_button_at(cursor)
+                    .map(|(id, b)| (id, b.id, true))
+            });
+        let Some((id, button, active)) = hit else {
             return false;
         };
-        if b.active {
+        if active {
             self.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
-            self.mod_bind(&id, &b.id, true);
-            self.mods.pressed_button = Some((id, b.id));
+            self.mod_bind(&id, &button, true);
+            self.mods.pressed_button = Some((id, button));
         }
         true
+    }
+
+    /// The open menu's kind as `slots.get-menu` names it (`minecraft:generic_9x3`).
+    fn open_menu_kind(&mut self) -> Option<String> {
+        if self.screen == Screen::Inventory
+            && let Some((_, name)) = self.remote.as_ref().and_then(|r| r.menu.as_ref())
+        {
+            return Some(name.clone());
+        }
+        let mut kind = None;
+        // Read, nothing kept.
+        self.menu_session(|m, _, _| {
+            kind = Some(m.kind().registry_name());
+            Some(false)
+        });
+        kind
+    }
+
+    /// The boxes window buttons are placed from on the screen open (x, y, width, height in GUI
+    /// pixels): the cells of the container's slots, and of the player's inventory and hotbar
+    /// while its 27 main slots show.
+    fn window_parts(&self) -> (Option<[f32; 4]>, Option<[f32; 4]>) {
+        let batch = HudBatch::new(self.touch_size());
+        let (ox, oy) = self.inventory_origin(&batch);
+        let grow = |part: &mut Option<[f32; 4]>, (sx, sy): (f32, f32)| {
+            let cell = [ox + sx - 1.0, oy + sy - 1.0, ox + sx + 17.0, oy + sy + 17.0];
+            *part = Some(part.map_or(cell, |p| {
+                [
+                    p[0].min(cell[0]),
+                    p[1].min(cell[1]),
+                    p[2].max(cell[2]),
+                    p[3].max(cell[3]),
+                ]
+            }));
+        };
+        let (mut container, mut inventory, mut main) = (None, None, false);
+        for i in self.slots() {
+            match i {
+                0..36 => {
+                    main |= i >= 9;
+                    grow(&mut inventory, self.slot_position(i));
+                }
+                300..500 => grow(&mut container, self.slot_position(i)),
+                _ => {}
+            }
+        }
+        let rect = |p: [f32; 4]| [p[0], p[1], p[2] - p[0], p[3] - p[1]];
+        (container.map(rect), inventory.filter(|_| main).map(rect))
+    }
+
+    /// The mods' window buttons on the screen open: mod id, button and its box in GUI pixels.
+    fn mod_window_buttons(&mut self) -> Vec<(String, WindowButton, [f32; 4])> {
+        if !self.mods.mods.is_running()
+            || self.mods.screen.is_some()
+            || self.title.is_some()
+            || !matches!(self.screen, Screen::Inventory | Screen::Creative)
+        {
+            return Vec::new();
+        }
+        let buttons: Vec<(String, WindowButton)> = self
+            .mods
+            .mods
+            .widgets()
+            .flat_map(|(id, w)| w.window.iter().map(move |b| (id.to_owned(), b.clone())))
+            .collect();
+        if buttons.is_empty() {
+            return Vec::new();
+        }
+        let (container, inventory) = self.window_parts();
+        let kind = self.open_menu_kind().unwrap_or_default();
+        buttons
+            .into_iter()
+            .filter(|(_, b)| b.menus.is_empty() || b.menus.contains(&kind))
+            .filter_map(|(id, b)| {
+                let area = match b.part {
+                    WindowPart::Container => container?,
+                    WindowPart::Inventory => inventory?,
+                };
+                let r = anchored_in(b.anchor, area, b.x, b.y, b.width, b.height);
+                Some((id, b, r))
+            })
+            .collect()
+    }
+
+    /// The window button at `at`: the one under it, else on a touch screen the nearest whose
+    /// box a little larger holds it.
+    fn mod_window_button_at(&mut self, at: (f32, f32)) -> Option<(String, WindowButton)> {
+        let buttons = self.mod_window_buttons();
+        if let Some(i) = buttons.iter().rposition(|(_, _, r)| inside(*r, at)) {
+            let (id, b, _) = buttons.into_iter().nth(i)?;
+            return Some((id, b));
+        }
+        if !self.has_touch() {
+            return None;
+        }
+        let distance = |r: &[f32; 4]| {
+            let (dx, dy) = (at.0 - (r[0] + r[2] / 2.0), at.1 - (r[1] + r[3] / 2.0));
+            dx * dx + dy * dy
+        };
+        buttons
+            .into_iter()
+            .filter(|(_, _, r)| {
+                let reach = [
+                    r[0] - WINDOW_REACH,
+                    r[1] - WINDOW_REACH,
+                    r[2] + 2.0 * WINDOW_REACH,
+                    r[3] + 2.0 * WINDOW_REACH,
+                ];
+                inside(reach, at)
+            })
+            .min_by(|a, b| distance(&a.2).total_cmp(&distance(&b.2)))
+            .map(|(id, b, _)| (id, b))
+    }
+
+    /// The mods' window buttons over the window: each its icon, the highlighted one under the
+    /// mouse or while pressed (or a plain button with its label while the icon is not in the
+    /// atlas), the hovered one's tooltip last.
+    pub(super) fn draw_mod_window_buttons(&mut self, batch: &mut HudBatch) {
+        let buttons = self.mod_window_buttons();
+        if buttons.is_empty() {
+            return;
+        }
+        let cursor = self.cursor;
+        let touch = self.has_touch();
+        let pressed = self.mods.pressed_button.clone();
+        let mut tooltip = None;
+        for (id, b, r) in &buttons {
+            let hovered = !touch && inside(*r, cursor);
+            let lit = hovered || pressed.as_ref() == Some(&(id.clone(), b.id.clone()));
+            let icon = (!b.icon.is_empty())
+                .then(|| self.mod_sprite(&b.icon))
+                .flatten();
+            let atlas = &self.gui.atlas;
+            if let Some(icon) = icon {
+                let lit_icon = lit
+                    .then(|| self.mod_sprite(&format!("{}_highlighted", b.icon)))
+                    .flatten();
+                let sprite = lit_icon.as_ref().unwrap_or(&icon);
+                horizon_client::ui::sprite_sized(
+                    batch,
+                    atlas,
+                    sprite,
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    u32::MAX,
+                );
+                if lit && lit_icon.is_none() {
+                    batch.fill(atlas, r[0], r[1], r[2], r[3], rgba(255, 255, 255, 80));
+                }
+            } else {
+                let m = Measure(&atlas.font);
+                let mut draws = Vec::new();
+                screen_draw::button(
+                    &mut draws,
+                    &m,
+                    &rich_text(&b.label),
+                    r[0] as i32,
+                    r[1] as i32,
+                    r[2] as i32,
+                    r[3] as i32,
+                    true,
+                    lit,
+                );
+                screen_draw::paint(batch, atlas, &draws);
+            }
+            if hovered && !b.tooltip.is_empty() {
+                tooltip = Some(b.tooltip.clone());
+            }
+        }
+        if let Some(lines) = tooltip {
+            let draws = [Draw::Tooltip {
+                lines: lines.iter().map(|l| rich_text(l)).collect(),
+                x: cursor.0 as i32,
+                y: cursor.1 as i32,
+            }];
+            screen_draw::paint(batch, &self.gui.atlas, &draws);
+        }
     }
 
     /// The mods' buttons on the touch controls: each keybind's (wide, its name on it, in a row

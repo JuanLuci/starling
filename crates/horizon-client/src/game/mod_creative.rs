@@ -9,7 +9,10 @@ use horizon_client::{
     items::ItemStack,
 };
 use horizon_mods::{CreativeCatalog, CreativeClick, ItemPage, Tab, TabKind};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 /// The game screen a mod's screen can stand in for.
 pub(super) const CREATIVE: &str = "creative";
@@ -24,7 +27,13 @@ pub(super) struct CreativeTabs {
     names: Arc<Names>,
     /// The last search and its matches, by their index in the search tab's stacks.
     found: Mutex<Option<(String, Arc<Vec<usize>>)>>,
+    /// Each stack's first place in the search tab, by its item and components and by its item
+    /// alone (`inventory.get-item-order`), made when first asked.
+    places: OnceLock<Places>,
 }
+
+/// The search tab's places: by (id, components), and by id.
+type Places = (HashMap<(String, String), u32>, HashMap<String, u32>);
 
 impl CreativeCatalog for CreativeTabs {
     fn tabs(&self) -> Vec<Tab> {
@@ -65,6 +74,26 @@ impl CreativeCatalog for CreativeTabs {
                 .filter_map(|&j| all.get(j).cloned())
                 .collect(),
         }
+    }
+    fn order(&self, stack: &horizon_mods::ItemStack) -> Option<u32> {
+        let (exact, item) = self.places.get_or_init(|| {
+            let mut places: Places = Default::default();
+            if let Some(i) = self.tabs.iter().position(|t| t.kind == TabKind::Search) {
+                for (place, s) in self.items[i].iter().enumerate() {
+                    let place = place as u32;
+                    places
+                        .0
+                        .entry((s.id.clone(), s.components.clone()))
+                        .or_insert(place);
+                    places.1.entry(s.id.clone()).or_insert(place);
+                }
+            }
+            places
+        });
+        exact
+            .get(&(stack.id.clone(), stack.components.clone()))
+            .or_else(|| item.get(&stack.id))
+            .copied()
     }
 }
 
@@ -113,6 +142,7 @@ impl Game<'_> {
             creative,
             names: self.pack.names.clone(),
             found: Mutex::new(None),
+            places: OnceLock::new(),
         });
         self.mods.creative = Some((language, tabs.clone()));
         tabs

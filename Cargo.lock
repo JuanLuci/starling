@@ -3681,6 +3681,7 @@ dependencies = [
  "log",
  "png",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

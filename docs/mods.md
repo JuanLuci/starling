@@ -280,6 +280,11 @@ blocks and items by declaring them in `data/<id>/horizon/block/*.json` and
   "item": true }
 ```
 
+Any mod, without `registries`, may carry its own GUI sprites:
+`assets/<id>/textures/gui/sprites/*.png`, the icons of its buttons
+(`widgets.add-window-button`'s, a touch button's), named `<id>:<name>`. They
+load into the GUI atlas as the game starts, as content does.
+
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`) and to the convention tags NeoForge and Fabric mods

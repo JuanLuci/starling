@@ -288,6 +288,11 @@ interface inventory {
     get-container: func() -> option<container>;
     /// What an item is by default; None for an unknown id.
     get-item-info: func(id: string) -> option<item-info>;
+    /// Where a stack comes in the game's own order of items: its place in the creative
+    /// inventory's search tab (the tabs' order, building blocks first; a stack whose components
+    /// the tab lists, such as an enchanted book's, at its own place, else at its item's first),
+    /// the order Inventory Profiles sorts by; none for an item the tabs do not list.
+    get-item-order: func(stack: item-stack) -> option<u32>;
 }
 
 /// Capability `inventory-click`: the open menu's slots, and clicks in them as the player's mouse
@@ -586,9 +591,46 @@ interface widgets {
         y: f32,
         size: f32,
     }
+    /// The part of a slotted screen's window a `window-button` is placed from.
+    enum window-part {
+        /// The slots of what was opened: a chest's, a barrel's, a furnace's...
+        container,
+        /// The player's inventory and hotbar: on the inventory, under a container's slots, on
+        /// the creative screen's inventory tab.
+        inventory,
+    }
+    /// Quark's and Inventory Profiles' chest buttons: a small button on the window of a screen
+    /// with slots, placed from the box around one part's slots (each slot's 18-pixel cell) as the
+    /// game lays that part out on the screen open, so it sits right on a chest of any size, a
+    /// barrel, a hopper, the inventory and the creative screen's inventory tab alike. Shown while
+    /// the screen shows the part (the creative screen's item tabs show no inventory) and the menu
+    /// is one of `menus`; pressed as a screen button is.
+    record window-button {
+        id: string,
+        part: window-part,
+        /// The point of the part's box, and the same point of the button, its offset is from:
+        /// `top-right` with x -1 and y -12 puts a 10-pixel button right-aligned in the title row
+        /// above the slots.
+        anchor: anchor,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        /// A GUI sprite drawn as the whole button, its frame too, and the one with
+        /// `_highlighted` after its name under the mouse or a finger when the atlas has it. A
+        /// mod's own sprites (`assets/<id>/textures/gui/sprites/`) load as the game starts.
+        icon: string,
+        /// Drawn on a plain button instead while the icon is not in the atlas: a letter or two.
+        label: rich-text,
+        tooltip: list<rich-text>,
+        /// The open menus it shows on, by `slots.get-menu`'s kind (`minecraft:generic_9x3`,
+        /// `minecraft:inventory`...); empty: every menu with the part.
+        menus: list<string>,
+    }
     add-screen-button: func(button: screen-button) -> result<_, string>;
     add-touch-button: func(button: touch-button) -> result<_, string>;
-    /// Takes away the mod's button with this id, of either kind.
+    add-window-button: func(button: window-button) -> result<_, string>;
+    /// Takes away the mod's button with this id, of any kind.
     remove: func(id: string);
     /// Restyles one of the game's own touch buttons, as Bedrock's resource packs retexture
     /// theirs: `jump`, `sneak`, `attack`, `use`, `inventory`, `chat`, `command`, `pause`,

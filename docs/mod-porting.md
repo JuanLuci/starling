@@ -91,6 +91,9 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | the open container's slots | `inventory.get-container` |
 | `ScreenHandler.slots` by id, the cursor stack | `slots.get-menu` (capability `inventory-click`): the open menu by vanilla's slot ids, the player's inventory menu with no screen open |
 | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
+| Buttons on a container's window placed from its slots (Quark's chest buttons, Inventory Profiles' sort buttons: `leftPos`/`topPos` and a slot's `x`/`y`) | `widgets.add-window-button` (capability `ui`): a small button placed from the box around the container's slots or the player's inventory, as the game lays them out on the screen open (any chest size, a shulker box, the inventory, the creative inventory tab), shown on the menus it names; its icon the whole button (`<icon>_highlighted` under the mouse). JavaScript: `widgets.addWindowButton({...}, onPress)` |
+| An item's place in the creative inventory (Inventory Profiles' default sort, `CreativeModeTabs` search tab order) | `inventory.get-item-order(stack)` |
+| A mod's own button icons | `assets/<id>/textures/gui/sprites/*.png` in the `.hmod`, as `<id>:<name>`; no capability needed (they load as the game starts) |
 | `SlotActionType.QUICK_CRAFT` (the mouse dragging a stack across slots) | `slots.drag(slots, button)`: 0 shares the cursor's stack out evenly, 1 one each, 2 a full stack each (creative); the start, slot and end clicks in one call |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
 | `ItemGroups` and `ItemGroup.getDisplayStacks()`, the creative search (`SearchManager`) | `creative.get-tabs`, `creative.get-items(tab, search, start, count)` (capability `creative`): the tabs and items the game's creative screen shows, searched as its box searches |
@@ -332,6 +335,24 @@ what is still missing (the next port's API work).
   `get-menu` shows clicks from the next hook.
 - Missing: saved hotbars (C and X); the survival inventory in its place (`replace` takes only
   `creative`).
+
+### Quark's chest buttons and sorting → inventory-buttons
+
+- Does: on chests, double chests, barrels, ender chests and shulker boxes (the containers of 27
+  slots or more, as Quark's), Take all and Sort in the container's title row, Deposit all and
+  Sort in the inventory's; on the inventory and the creative screen's inventory tab, Sort. Take
+  all and Deposit all Shift-click every stack of their part (the hotbar stays, as Quark's Insert
+  keeps it); Sort merges stacks and orders them as the creative inventory lists items (Inventory
+  Profiles Next's default), the hotbar kept, in clicks a tick (a long sort goes on over the next
+  ticks, planned again from the menu as it then is), so a vanilla server takes it, as Inventory
+  Profiles does (Quark sorts on its server). Its own 12-pixel icons, drawn as the game's buttons
+  are (black outline, light and dark bevel, white outline when highlighted).
+- API added: `widgets.add-window-button`, placed by the game from a part's slots (so no screen
+  of the mod's own layout: a modded container screen whose slots the game knows gets them too);
+  `inventory.get-item-order`; a mod's own GUI sprites without `registries`.
+- Missing: Quark's Shift variants (only the items already on the other side), sorting locked
+  slots, Inventory Profiles' column and row sorts. A mod's own screen (Bedrock Inventory's) shows
+  no window buttons: the game does not know where its slots are.
 
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 

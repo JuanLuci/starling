@@ -259,6 +259,7 @@ const reading = {
     getHovered: keep("hovered", inventory.getHovered),
     getContainer: keep("container", inventory.getContainer),
     getItemInfo: keep("itemInfo", inventory.getItemInfo, one),
+    getItemOrder: keep("itemOrder", inventory.getItemOrder, (s) => `${s.id}\u0000${s.components}`),
   },
   slots: { ...slots, getMenu: keep("menu", slots.getMenu) },
   creative: {
@@ -312,6 +313,10 @@ const widgets = {
   }),
   addTouchButton: withPress(widgetsApi.addTouchButton, {
     label: "", icon: "", shape: "round", x: 0.5, y: 0.5, size: 0.5,
+  }),
+  addWindowButton: withPress(widgetsApi.addWindowButton, {
+    part: "container", anchor: "top-right", x: -1, y: -12, width: 10, height: 10, icon: "",
+    label: "", tooltip: [], menus: [],
   }),
   remove: (id) => {
     presses.delete(id);

@@ -43,6 +43,8 @@
 //! | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | [`slots::click`] (capability `inventory-click`), the menu by vanilla's ids from [`slots::get_menu`] |
 //! | `SlotActionType.QUICK_CRAFT`, a stack dragged across slots | [`slots::drag`] |
 //! | A scrollbar a finger drags on a phone | [`mobile::drag_areas`] |
+//! | Quark's chest buttons, placed from a container's slots | [`widgets::add_window_button`] (capability `ui`) |
+//! | The creative inventory's order of items (Inventory Profiles' default sort) | [`inventory::get_item_order`] |
 //! | `ItemGroups` / `ItemGroup.getDisplayStacks()`, the creative search | [`creative::get_tabs`], [`creative::get_items`] (capability `creative`) |
 //! | `CreativeInventoryScreen.onMouseClick`, `ClientPlayerInteractionManager.clickCreativeStack` | [`creative::click`], [`creative::set_slot`], [`creative::set_carried`] |
 //! | `MinecraftClient.setScreen` swapped for `CreativeInventoryScreen` | [`screens::replace`] |

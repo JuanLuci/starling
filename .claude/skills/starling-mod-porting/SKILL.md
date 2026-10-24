@@ -37,7 +37,12 @@ pitfalls and the port log. Then:
    the scenario's `menu` and `"player": {"game_mode": "creative", "touch": true}`; pickup,
    `slots.drag` and `creative` clicks change the pretend menu before the step draws (`release`,
    `drag`, `scroll`, `key-press` steps too). On a phone a finger moving up or down scrolls, so a
-   screen with a scrollbar or slots to drag across names them with `mobile.drag-areas`. A mod screen standing in for a game screen: `screens.replace`.
+   screen with a scrollbar or slots to drag across names them with `mobile.drag-areas`.
+   `{"screen": "container"}` (a menu `{"kind": "minecraft:generic_9x3", "size": 63}`) and
+   `{"screen": "inventory"}` draw a plain window of vanilla's layout with the menu's stacks and
+   the mod's window buttons (`widgets.add-window-button`), which `click` presses; Shift-clicks
+   (`quick-move`) between the parts change the pretend menu too. A mod's own icons are
+   `assets/<id>/textures/gui/sprites/*.png`, read from the mod for the PNGs. A mod screen standing in for a game screen: `screens.replace`.
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,
