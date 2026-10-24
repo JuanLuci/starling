@@ -249,6 +249,25 @@ interface level {
     get-light: func(pos: block-pos) -> option<tuple<u8, u8>>;
     /// Entities within `radius` blocks of the player (at most 128, nearest first).
     get-entities: func(radius: f32) -> list<entity>;
+
+    /// The places a monster that spawns on the ground (a zombie) has room to spawn, a place an
+    /// entry in each list (as numbers, which JavaScript gets as typed arrays at once).
+    record spawn-spots {
+        /// The block it would stand in: x, y and z, three numbers a place.
+        positions: list<s32>,
+        block-light: list<u8>,
+        sky-light: list<u8>,
+        /// How high the outline of the block there reaches (a snow layer's 0.125), 0 for air:
+        /// the ground a mark on the place goes on.
+        tops: list<f32>,
+    }
+    /// The places from `from` to `to` (both included, at most 64 blocks a side, where
+    /// `get-block` reads) where a monster that spawns on the ground (a zombie) has room to:
+    /// `SpawnPlacements.isSpawnPositionOk` (a block it may spawn on below, two it may spawn in)
+    /// and nothing in its box (`noCollision`), the lowest first. The light is the mod's to
+    /// judge: in the overworld monsters spawn where the block light is 0, at any time with a sky
+    /// light of 7 or less, only at night with more (`Monster.isDarkEnoughToSpawn`).
+    get-spawn-spots: func(%from: block-pos, to: block-pos) -> spawn-spots;
 }
 
 /// Capability `inventory-read`: the player's items and the open container.
@@ -480,6 +499,89 @@ interface draw {
     /// A stack's tooltip as the game shows it over a slot (`Screen.getTooltipFromItem`: its
     /// name, lore, enchantments, attributes, the mods' lines), placed from the point as `tooltip`.
     item-tooltip: func(x: f32, y: f32, stack: item-stack);
+}
+
+/// Capability `world-draw`: lines and labels in the world, in layers the game draws every
+/// frame until the mod changes or removes them (a mod sets a layer when what it shows changes,
+/// not every frame).
+interface world-draw {
+    use types.{rich-text};
+
+    /// A place in the world, in blocks (a block's corner at whole numbers).
+    record point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// Straight lines, counted from `origin`.
+    record lines {
+        origin: point,
+        /// Six numbers a line: x, y and z of one end, then of the other.
+        ends: list<f32>,
+        /// ARGB colours: one a line, or one for them all.
+        colors: list<u32>,
+        /// In pixels, as the game's debug lines (the chunk borders' 1, the hitboxes' 2.5).
+        width: f32,
+    }
+    /// Boxes filled with a colour, see-through as much as it is (a tile on the ground, a block's
+    /// ghost), unlit.
+    record boxes {
+        origin: point,
+        /// Six numbers a box: x, y and z of its least corner, then of its greatest.
+        corners: list<f32>,
+        /// ARGB colours: one a box, or one for them all.
+        colors: list<u32>,
+    }
+    /// The way a label's text faces.
+    enum facing {
+        /// The camera, as a name tag.
+        camera,
+        /// Up, lying on the ground, read from the camera: its top away from it, along the
+        /// nearest of north, south, east and west to where it looks.
+        up,
+    }
+    /// A line of text in the world.
+    record label {
+        /// Where the bottom of the text is centred (facing up: its middle).
+        at: point,
+        text: rich-text,
+        /// 1: a name tag's size (a pixel of its font 1/40 of a block).
+        scale: f32,
+        /// The same size on screen however far away (a waypoint's), where a name tag gets
+        /// smaller: `scale` 1 is then the HUD's text size.
+        fixed-size: bool,
+        /// ARGB behind the text (a name tag's is 0x3F000000), 0 for none.
+        background: u32,
+        facing: facing,
+    }
+    /// Many short texts in one go (numbers on the ground): their places and colours as numbers,
+    /// the texts the lines of one string, far cheaper to send than as many labels.
+    record texts {
+        origin: point,
+        /// Three numbers a text: x, y and z of its place from `origin` (as a label's `at`).
+        places: list<f32>,
+        /// The texts, a line each (legacy `§` codes work).
+        lines: string,
+        /// ARGB: one a text, or one for them all (a `§` colour code goes over it).
+        colors: list<u32>,
+        /// As a label's.
+        scale: f32,
+        background: u32,
+        facing: facing,
+    }
+    record layer {
+        lines: list<lines>,
+        boxes: list<boxes>,
+        texts: list<texts>,
+        labels: list<label>,
+        /// Seen through what is in front of it (a waypoint behind a hill), not hidden.
+        through-walls: bool,
+    }
+    /// Shows `layer` as the mod's layer `id` (1 to 64 characters), in place of the one before.
+    /// A mod has at most 16 layers, with 65536 lines, 16384 boxes, 16384 texts and 256 labels
+    /// among them.
+    set-layer: func(id: string, layer: layer) -> result<_, string>;
+    remove-layer: func(id: string);
 }
 
 /// Capability `hud`: the mod's retained text panel (API 0.1), drawn every frame until changed.
@@ -888,6 +990,7 @@ world starling-mod {
     import chat;
     import chat-send;
     import draw;
+    import world-draw;
     import hud;
     import screens;
     import widgets;

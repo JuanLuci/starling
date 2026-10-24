@@ -231,11 +231,20 @@ fn short(id: &str) -> String {
     id.rsplit(':').next().unwrap_or(id).replace('_', " ")
 }
 
-/// The blocks the scenario places (what the crosshair is on among them), air elsewhere.
+/// The blocks the scenario places (what the crosshair is on among them), air elsewhere, all in
+/// the scenario's `light` (`[block, sky]`, `[0, 15]` by default).
 struct Level {
     blocks: HashMap<[i32; 3], String>,
     data: Arc<Data>,
     held: Option<String>,
+    light: (u8, u8),
+}
+impl Level {
+    fn air(&self, pos: [i32; 3]) -> bool {
+        self.blocks
+            .get(&pos)
+            .is_none_or(|b| b.starts_with("minecraft:air"))
+    }
 }
 
 impl LevelView for Level {
@@ -251,7 +260,29 @@ impl LevelView for Level {
         Some("minecraft:plains".into())
     }
     fn light(&self, _pos: [i32; 3]) -> Option<(u8, u8)> {
-        Some((0, 15))
+        Some(self.light)
+    }
+    /// Air with air above, on a block that is neither air nor a liquid: the pretend world
+    /// knows no shapes.
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        let mut spots = horizon_mods::SpawnSpots::default();
+        let mut places: Vec<[i32; 3]> = self
+            .blocks
+            .iter()
+            .filter(|(_, b)| {
+                !b.starts_with("minecraft:air")
+                    && !b.starts_with("minecraft:water")
+                    && !b.starts_with("minecraft:lava")
+            })
+            .map(|(p, _)| [p[0], p[1] + 1, p[2]])
+            .filter(|p| (0..3).all(|i| (from[i]..=to[i]).contains(&p[i])))
+            .filter(|p| self.air(*p) && self.air([p[0], p[1] + 1, p[2]]))
+            .collect();
+        places.sort_by_key(|p| (p[1], p[2], p[0]));
+        for p in places {
+            spots.push(p, self.light.0, self.light.1, 0.0);
+        }
+        spots
     }
     fn block_info(&self, pos: [i32; 3]) -> Option<BlockInfo> {
         Some(
@@ -264,8 +295,8 @@ impl LevelView for Level {
 /// The world for `scenario`: its `player` (`held` an item id in the first hotbar slot), its
 /// `target` (`{"block": <state>, "pos": [x, y, z], "face": "north"}` or `{"entity": <kind>,
 /// "health": 14, "max_health": 20, "armor": 2, "name": "Bob", "baby": false}`, in front of the
-/// player by default), `mining` (the target block's breaking progress, 0 to 1) and `blocks`
-/// (`[{"pos": [x, y, z], "block": <state>}]`).
+/// player by default), `mining` (the target block's breaking progress, 0 to 1), `blocks`
+/// (`[{"pos": [x, y, z], "block": <state>}]`) and the `light` everywhere (`[block, sky]`).
 pub fn world(scenario: &Value, data: Arc<Data>) -> Snapshot {
     let over = &scenario["player"];
     let mut world = player(over);
@@ -411,10 +442,12 @@ pub fn world(scenario: &Value, data: Arc<Data>) -> Snapshot {
             z,
         }));
     }
+    let light = |i: usize, or: u64| scenario["light"][i].as_u64().unwrap_or(or).min(15) as u8;
     world.level = Some(Arc::new(Level {
         blocks,
         data: data.clone(),
         held,
+        light: (light(0, 0), light(1, 15)),
     }));
     world.items = Some(data);
     world

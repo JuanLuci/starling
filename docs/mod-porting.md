@@ -85,6 +85,7 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `world.getBlockState(pos)` | `level.get-block` (`minecraft:oak_log[axis=y]`) |
 | block name, pick item, hardness, `isToolRequired`, mineable tags, `canHarvest` | `level.get-block-info` |
 | `world.getBiome`, light levels | `level.get-biome`, `level.get-light` |
+| Light Overlay's / Lighty's spawn checks over an area (`isValidSpawn`, `isCollisionShapeFullBlock`, `SpawnPlacements.isSpawnPositionOk`) | `level.get-spawn-spots(from, to)`: the places a zombie has room to spawn (vanilla's own check, `noCollision` included), with their block and sky light and ground height, as typed arrays (thousands cost a millisecond); the light is the mod's to judge |
 | `world.getEntities()` near the player | `level.get-entities` |
 | an entity's display name, max health, armor, `isBaby` | `level.get-entity-info` |
 | `player.getInventory()`, main/off hand, cursor stack, hovered slot | `inventory.get-slot`, `get-held`, `get-cursor`, `get-hovered` |
@@ -121,6 +122,9 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `MatrixStack.push/translate/scale/pop` | `draw.push(x, y, scale)`, `draw.pop` |
 | `InventoryScreen.drawEntity` (the player in the inventory) | `draw.player(x, y, width, height, size, turn)`: the head follows the mouse (ahead on a phone), `turn` degrees more |
 | `Screen.getTooltipFromItem` + `drawTooltip` (an item's full tooltip) | `draw.item-tooltip(x, y, stack)`: name, lore, enchantments, attributes, the mods' lines |
+| `WorldRenderEvents.AFTER_TRANSLUCENT` / a `DebugRenderer` with `RenderType.lines()` (Light Overlay's crosses, chunk borders, waypoint beams) | `world-draw.set-layer(id, {lines: [...]})` (capability `world-draw`): coloured lines with a width in pixels, from an origin, depth tested or `through-walls`; the game keeps drawing the layer until the mod sets it again or `remove-layer`s it, so no frame hook |
+| a translucent quad layer (Lighty's carpet, a marker, a schematic's ghost) | the layer's `boxes`: see-through filled boxes, unlit |
+| `Font.drawInBatch` in the world (name tags, Lighty's numbers, a waypoint's name) | the layer's `texts` (many at once: places and colours as numbers, the texts the lines of one string, `facing` `up` to lie on the ground) and `labels` (a few, rich text, `fixed-size` for a waypoint's) |
 
 ### Screens and input
 
@@ -180,6 +184,10 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
 - Buttons (`widgets`): a `widgets` line lists them whenever they change; `{"screen": "pause"}`
   draws the mod's buttons on that game screen and `click` presses them; `{"hud": {"touch":
   true}}` draws its touch buttons where they start.
+- The world (`world-draw`): a `world` line whenever the layers change, each layer's lines and
+  boxes counted by colour, its texts by text, the box they span and its labels. The scenario's
+  `blocks` are the level (`level.get-spawn-spots` finds air over air on any of them but liquids)
+  and `"light": [block, sky]` its light everywhere.
 
 A phone's GUI is about 533 by 240 GUI pixels: try `"gui": {"width": 533, "height": 240}` before
 calling a layout done.
@@ -357,6 +365,24 @@ what is still missing (the next port's API work).
   says where it draws its slots (`screens.set-slots`), as Bedrock Inventory does: neither mod
   knows the other.
 
+### Light Overlay and Lighty → light-overlay
+
+- Does: where monsters can spawn within 8, 12 or 16 blocks, by the game's own check (a block to
+  spawn on, room for a zombie's box): green where block light keeps them off (hidden on
+  request), orange where they spawn at night (sky light over 7), red where they spawn at any
+  time, as Lighty colours them; not in mushroom fields. Four modes: Cross (Light Overlay's lines
+  corner to corner), Number (Lighty's block light beyond the sky light, lying on the ground and
+  turned to be read from where the player looks), Tile (Lighty's see-through carpet) and Marker
+  (a see-through block). F7 or its touch button turns it on and off, F8 or Config picks the mode,
+  the green places and the reach, kept. It looks again when the player gets to another block,
+  each second, and two ticks after a block placed or broken.
+- API added: the `world-draw` interface and capability (layers of lines, boxes, texts and
+  labels, depth tested or through walls), `level.get-spawn-spots`. A keybind's release now
+  reaches the mod wherever it lands (F8 opened its screen, whose key took the release, and the
+  second F8 was lost).
+- Missing: Lighty's farmland overlay, Light Overlay's colour settings; nothing is drawn on a
+  block's face other than the ground's.
+
 ### Waypoints (Xaero's / JourneyMap's waypoints)
 
 - Does: a screen of saved places (add here, pick, forget, rename with the phone's keyboard), the
@@ -374,5 +400,5 @@ what is still missing (the next port's API work).
 | Xaero's / JourneyMap world map | world-read over a wider area, map storage, a full-screen map screen |
 | Inventory Profiles (auto refill) | `slots` (done) and a tick hook: refill the held stack when it runs out |
 | Mouse Tweaks / sorting | built into Horizon's extras already (tweaks.rs) |
-| Litematica | world-read, drawing in the world (3D), storage |
+| Litematica | world-read over the schematic, ghost blocks (`world-draw` boxes are a start: textured block models are not), storage |
 | Simple Voice Chat | server side, audio |

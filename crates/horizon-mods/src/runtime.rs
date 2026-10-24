@@ -29,6 +29,27 @@ mod v1 {
         world: "horizon-mod",
     });
 }
+// bindgen's type: no derive.
+#[allow(clippy::derivable_impls)]
+impl Default for SpawnSpots {
+    fn default() -> Self {
+        SpawnSpots {
+            positions: Vec::new(),
+            block_light: Vec::new(),
+            sky_light: Vec::new(),
+            tops: Vec::new(),
+        }
+    }
+}
+impl SpawnSpots {
+    /// Adds a place.
+    pub fn push(&mut self, pos: [i32; 3], block_light: u8, sky_light: u8, top: f32) {
+        self.positions.extend(pos);
+        self.block_light.push(block_light);
+        self.sky_light.push(sky_light);
+        self.tops.push(top);
+    }
+}
 pub use starling::exports::starling::mods::events::{
     ChatAction, HudElement, HudPart, KeyEvent, Keybind, MouseAction, MouseEvent, Placement,
     RenderContext, SendAction,
@@ -38,16 +59,20 @@ pub use starling::starling::mods::{
     game::{BlockHit, Clock, Effect, EntityHit, Gui, Mining, Player, Target, WorldInfo},
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
-    level::{BlockInfo, Entity, EntityInfo},
+    level::{BlockInfo, Entity, EntityInfo, SpawnSpots},
     slots::{ClickKind, Menu},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
+    world_draw::{
+        Boxes as WorldBoxes, Facing, Label as WorldLabel, Layer as WorldLayer, Lines as WorldLines,
+        Point, Texts as WorldTexts,
+    },
 };
 use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
         chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log as mod_log,
-        mobile, net, screens, slots, sound, storage, types, widgets,
+        mobile, net, screens, slots, sound, storage, types, widgets, world_draw,
     },
 };
 
@@ -83,6 +108,14 @@ const ENTITIES: usize = 128;
 const CLICKS_PER_CALL: usize = 64;
 /// `mobile.drag-areas` kept.
 const DRAG_AREAS: usize = 64;
+/// `world-draw`'s caps: a mod's layers, and the lines and labels among them.
+const WORLD_LAYERS: usize = 16;
+const WORLD_LINES: usize = 65536;
+const WORLD_BOXES: usize = 16384;
+const WORLD_TEXTS: usize = 16384;
+const WORLD_LABELS: usize = 256;
+/// `level.get-spawn-spots`' longest side.
+const SPAWN_SPOTS_SIDE: i32 = 64;
 /// The items one `creative.get-items` may list.
 const CREATIVE_PAGE: u32 = 256;
 /// The game's screens a mod's may stand in for (`screens.replace`).
@@ -131,6 +164,10 @@ pub trait LevelView: Send + Sync {
     /// What the game shows of the block at `pos` (`level.get-block-info`).
     fn block_info(&self, _pos: [i32; 3]) -> Option<BlockInfo> {
         None
+    }
+    /// `level.get-spawn-spots` from `from` to `to` (the least corner, then the greatest).
+    fn spawn_spots(&self, _from: [i32; 3], _to: [i32; 3]) -> SpawnSpots {
+        SpawnSpots::default()
     }
 }
 /// The game's items by id, for `inventory.get-item-info`.
@@ -496,6 +533,8 @@ struct State {
     /// `<mod id>:<name>`.
     replaces: Vec<(String, String)>,
     widgets: Widgets,
+    /// Its `world-draw` layers by id, in the order first set.
+    world: Vec<(String, WorldLayer)>,
     /// The mod's payload channels.
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
@@ -812,6 +851,7 @@ impl Mods {
             config: None,
             replaces: Vec::new(),
             widgets: Widgets::default(),
+            world: Vec::new(),
             channels: Vec::new(),
             sent: VecDeque::new(),
             data_dir,
@@ -914,6 +954,12 @@ impl Mods {
         self.running()
             .map(|r| r.store.data())
             .map(|s| (s.id.as_str(), &s.widgets))
+    }
+    /// Every running mod's world layers (`world-draw`), with its id.
+    pub fn world_layers(&self) -> impl Iterator<Item = (&str, &[(String, WorldLayer)])> {
+        self.running()
+            .map(|r| r.store.data())
+            .map(|s| (s.id.as_str(), s.world.as_slice()))
     }
     /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
     pub fn uses(&self, c: Capability) -> bool {
@@ -1793,6 +1839,7 @@ fn js_linker(
             "sound" => api::sound::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "net" => api::net::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "storage" => api::storage::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "world-draw" => api::world_draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             _ => {}
         }
     }
@@ -2169,6 +2216,19 @@ impl level::Host for State {
     }
     fn get_light(&mut self, pos: BlockPos) -> Option<(u8, u8)> {
         self.snapshot.level.as_ref()?.light([pos.x, pos.y, pos.z])
+    }
+    fn get_spawn_spots(&mut self, from: BlockPos, to: BlockPos) -> SpawnSpots {
+        let Some(level) = self.snapshot.level.as_ref() else {
+            return SpawnSpots::default();
+        };
+        let (from, to) = ([from.x, from.y, from.z], [to.x, to.y, to.z]);
+        let lo: [i32; 3] = std::array::from_fn(|i| from[i].min(to[i]));
+        let hi: [i32; 3] = std::array::from_fn(|i| {
+            from[i]
+                .max(to[i])
+                .min(lo[i].saturating_add(SPAWN_SPOTS_SIDE - 1))
+        });
+        level.spawn_spots(lo, hi)
     }
     fn get_entities(&mut self, radius: f32) -> Vec<Entity> {
         let Some(p) = &self.snapshot.player else {
@@ -2595,6 +2655,170 @@ impl creative::Host for State {
     }
 }
 
+/// Lines in a `world-draw` layer.
+fn layer_lines(layer: &WorldLayer) -> usize {
+    layer.lines.iter().map(|l| l.ends.len() / 6).sum()
+}
+/// Boxes in a `world-draw` layer.
+fn layer_boxes(layer: &WorldLayer) -> usize {
+    layer.boxes.iter().map(|b| b.corners.len() / 6).sum()
+}
+/// Texts in a `world-draw` layer.
+fn layer_texts(layer: &WorldLayer) -> usize {
+    layer.texts.iter().map(|t| t.places.len() / 3).sum()
+}
+impl world_draw::Host for State {
+    fn set_layer(&mut self, id: String, layer: WorldLayer) -> Result<(), String> {
+        if id.is_empty() || id.chars().count() > 64 {
+            return Err(format!(
+                "{:?} is not a layer's id (1 to 64 characters)",
+                clip(id)
+            ));
+        }
+        // Within the world border and then some.
+        let point_ok = |p: &Point| {
+            [p.x, p.y, p.z]
+                .iter()
+                .all(|n| n.is_finite() && n.abs() <= 3.0e7)
+        };
+        for l in &layer.lines {
+            if !point_ok(&l.origin)
+                || l.ends.len() % 6 != 0
+                || l.ends.iter().any(|n| !n.is_finite())
+            {
+                return Err("lines need a place and six finite numbers a line".into());
+            }
+            let count = l.ends.len() / 6;
+            if l.colors.len() != 1 && l.colors.len() != count {
+                return Err(format!(
+                    "lines need one colour for all, or one a line ({} for {count})",
+                    l.colors.len()
+                ));
+            }
+            if !(l.width.is_finite() && l.width > 0.0) {
+                return Err("lines need a width".into());
+            }
+        }
+        for b in &layer.boxes {
+            if !point_ok(&b.origin)
+                || b.corners.len() % 6 != 0
+                || b.corners.iter().any(|n| !n.is_finite())
+            {
+                return Err("boxes need a place and six finite numbers a box".into());
+            }
+            let count = b.corners.len() / 6;
+            if b.colors.len() != 1 && b.colors.len() != count {
+                return Err(format!(
+                    "boxes need one colour for all, or one a box ({} for {count})",
+                    b.colors.len()
+                ));
+            }
+        }
+        for t in &layer.texts {
+            if !point_ok(&t.origin)
+                || t.places.len() % 3 != 0
+                || t.places.iter().any(|n| !n.is_finite())
+                || !(t.scale.is_finite() && t.scale > 0.0)
+            {
+                return Err("texts need a place, a size and three finite numbers a text".into());
+            }
+            let count = t.places.len() / 3;
+            let lines = if t.lines.is_empty() {
+                0
+            } else {
+                t.lines.split('\n').count()
+            };
+            if lines != count {
+                return Err(format!("{count} places for texts, {lines} lines"));
+            }
+            if t.colors.len() != 1 && t.colors.len() != count {
+                return Err(format!(
+                    "texts need one colour for all, or one a text ({} for {count})",
+                    t.colors.len()
+                ));
+            }
+        }
+        if let Some(b) = layer
+            .labels
+            .iter()
+            .find(|b| !point_ok(&b.at) || !(b.scale.is_finite() && b.scale > 0.0))
+        {
+            return Err(format!(
+                "label {:?} needs a place and a size",
+                clip_to(b.text.clone(), 32)
+            ));
+        }
+        let others = self.world.iter().filter(|(k, _)| *k != id);
+        let count = |l: &WorldLayer| {
+            [
+                layer_lines(l),
+                layer_boxes(l),
+                layer_texts(l),
+                l.labels.len(),
+            ]
+        };
+        let totals = others.fold(count(&layer), |t, (_, l)| {
+            let c = count(l);
+            std::array::from_fn(|i| t[i] + c[i])
+        });
+        let caps = [WORLD_LINES, WORLD_BOXES, WORLD_TEXTS, WORLD_LABELS];
+        if totals.iter().zip(caps).any(|(n, cap)| *n > cap) {
+            return Err(format!(
+                "a mod draws at most {WORLD_LINES} lines, {WORLD_BOXES} boxes, {WORLD_TEXTS} \
+                 texts and {WORLD_LABELS} labels in the world"
+            ));
+        }
+        let layer = WorldLayer {
+            lines: layer
+                .lines
+                .into_iter()
+                .filter(|l| !l.ends.is_empty())
+                .map(|l| WorldLines {
+                    width: l.width.min(32.0),
+                    ..l
+                })
+                .collect(),
+            boxes: layer
+                .boxes
+                .into_iter()
+                .filter(|b| !b.corners.is_empty())
+                .collect(),
+            texts: layer
+                .texts
+                .into_iter()
+                .filter(|t| !t.places.is_empty())
+                .map(|t| WorldTexts {
+                    scale: t.scale.min(64.0),
+                    ..t
+                })
+                .collect(),
+            labels: layer
+                .labels
+                .into_iter()
+                .map(|b| WorldLabel {
+                    text: clip(b.text),
+                    scale: b.scale.min(64.0),
+                    ..b
+                })
+                .collect(),
+            ..layer
+        };
+        let full = self.world.len() >= WORLD_LAYERS;
+        match self.world.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, old)) => *old = layer,
+            None if full => {
+                return Err(format!(
+                    "a mod has at most {WORLD_LAYERS} layers in the world"
+                ));
+            }
+            None => self.world.push((id, layer)),
+        }
+        Ok(())
+    }
+    fn remove_layer(&mut self, id: String) {
+        self.world.retain(|(k, _)| *k != id);
+    }
+}
 impl widgets::Host for State {
     fn add_screen_button(&mut self, b: ScreenButton) -> Result<(), String> {
         button_id_ok(&b.id)?;

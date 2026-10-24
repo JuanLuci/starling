@@ -111,7 +111,7 @@ loading. Ordered by what the first native ports need ([research](research/java-m
 | `recipes` | the recipe registry and lookups | JEI/EMI-style viewers |
 | `ui` | widgets: text, item icons, lists, a screen the mod owns, a settings page in Options > Mods | built on `ui_theme` so it matches the menus |
 | `world-read` | blocks and biomes around the player, within the render distance | minimaps, schematics |
-| `render` | world-space lines, boxes and ghost blocks in a per-frame budget | Litematica-style placement, waypoints |
+| `world-draw` (Starling: done) | world-space lines, see-through boxes, texts and labels, kept in layers the game draws every frame | Light Overlay, waypoints; Litematica's ghost blocks next |
 | `registries` | new blocks, items, entities and recipes, mostly data: JSON models, textures, loot and recipes in the `.hmod`'s `assets/` and `data/` | server side; see [Multiplayer](#multiplayer) |
 | `server` | world events (block break/place, entity spawn/death, player join), game rules, server commands | runs where the world is simulated |
 | `net` | a mod's own client↔server channel (custom payloads) | only between the two halves of the same mod |

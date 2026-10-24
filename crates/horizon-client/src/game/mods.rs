@@ -80,6 +80,11 @@ pub(super) struct ModsState {
     /// The blocks needing a tool that the held item (its id here) harvests.
     harvest: Option<(String, Arc<HashSet<Arc<str>>>)>,
     biomes: Option<Arc<Vec<String>>>,
+    /// `level.get-spawn-spots`' table for a zombie (`spawn_rules::spot_table`) and every
+    /// state's outline top, made once.
+    spots: Option<Arc<Spots>>,
+    /// The `world-draw` labels' texts as read, by what the mods wrote.
+    pub(super) label_texts: std::cell::RefCell<std::collections::HashMap<String, Text>>,
     items: Option<Arc<dyn ItemCatalog>>,
     /// The creative tabs for `creative`, made once for the language their names are in.
     pub(super) creative: Option<(String, Arc<dyn CreativeCatalog>)>,
@@ -155,6 +160,13 @@ struct LevelView {
     biomes: Arc<Vec<String>>,
     facts: Arc<Vec<BlockFact>>,
     harvest: Arc<HashSet<Arc<str>>>,
+    spots: Arc<Spots>,
+}
+/// What `level.get-spawn-spots` reads of each block state: its `spawn_rules::SPOT_*` bits for a
+/// zombie, and how high its outline reaches.
+struct Spots {
+    bits: Vec<u8>,
+    tops: Vec<f32>,
 }
 /// A block state as `level.get-block-info` tells it, but for the held item.
 struct BlockFact {
@@ -187,6 +199,49 @@ impl horizon_mods::LevelView for LevelView {
     fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
         let light = self.chunk(pos)?.light(pos[0] & 15, pos[1], pos[2] & 15);
         Some((light & 15, light >> 4))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        use horizon_client::mobs::spawn_rules::{
+            SPOT_BELOW, SPOT_FEET, SPOT_FLOOR, SPOT_HEAD, SPOT_ROOM,
+        };
+        let (min, max) = (
+            horizon_client::chunk::MIN_Y,
+            horizon_client::chunk::MIN_Y + horizon_client::chunk::HEIGHT,
+        );
+        let mut out = Vec::new();
+        for z in from[2]..=to[2] {
+            for x in from[0]..=to[0] {
+                let Some(c) = self.chunk([x, 0, z]) else {
+                    continue;
+                };
+                let (cx, cz) = (x & 15, z & 15);
+                let bits = |y: i32| {
+                    if (min..max).contains(&y) {
+                        let state = c.block(cx, y, cz).0 as usize;
+                        (self.spots.bits.get(state).copied().unwrap_or(0), state)
+                    } else {
+                        (0, 0)
+                    }
+                };
+                for y in from[1]..=to[1] {
+                    let (below, here, above) = (bits(y - 1).0, bits(y), bits(y + 1).0);
+                    let ok = below & (SPOT_FLOOR | SPOT_BELOW) == SPOT_FLOOR
+                        && here.0 & (SPOT_ROOM | SPOT_FEET) == SPOT_ROOM
+                        && above & (SPOT_ROOM | SPOT_HEAD) == SPOT_ROOM;
+                    if ok {
+                        let top = self.spots.tops.get(here.1).copied().unwrap_or(0.0);
+                        out.push(([x, y, z], c.light(cx, y, cz), top));
+                    }
+                }
+            }
+        }
+        // The lowest first.
+        out.sort_by_key(|(pos, _, _)| pos[1]);
+        let mut spots = horizon_mods::SpawnSpots::default();
+        for (pos, light, top) in out {
+            spots.push(pos, light & 15, light >> 4, top);
+        }
+        spots
     }
     fn block_info(&self, pos: [i32; 3]) -> Option<BlockInfo> {
         let state = self.chunk(pos)?.block(pos[0] & 15, pos[1], pos[2] & 15).0 as usize;
@@ -1078,7 +1133,38 @@ impl Game<'_> {
             biomes,
             facts: self.mod_block_facts(),
             harvest: self.mod_harvest(),
+            spots: self.mod_spots(),
         })
+    }
+    /// `level.get-spawn-spots`' table, made the first time a `world-read` mod runs.
+    fn mod_spots(&mut self) -> Arc<Spots> {
+        if let Some(spots) = &self.mods.spots {
+            return spots.clone();
+        }
+        let facts = self.res.facts();
+        let (width, height) = self
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .map_or((0.6, 1.95), |t| (t.width as f32, t.height as f32));
+        let bits = horizon_client::mobs::spawn_rules::spot_table(
+            horizon_client::mobs::Species::Zombie,
+            width,
+            height,
+            facts,
+            self.res.mob_data(),
+            self.collision,
+            &self.res.items().block_tags,
+        );
+        let tops = (0..bits.len())
+            .map(|i| {
+                let f = facts.get(horizon_world::registry::BlockStateId(i as u32));
+                f.outline.iter().map(|b| b[4] as f32).fold(0.0, f32::max)
+            })
+            .collect();
+        let spots = Arc::new(Spots { bits, tops });
+        self.mods.spots = Some(spots.clone());
+        spots
     }
     /// Every block state's name, item, hardness and tool, in the player's language.
     fn mod_block_facts(&mut self) -> Arc<Vec<BlockFact>> {

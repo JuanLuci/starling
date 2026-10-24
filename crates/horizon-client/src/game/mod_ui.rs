@@ -449,6 +449,12 @@ impl Game<'_> {
                 let key = horizon_client::keybinds::key_name(code)
                     .map(str::to_owned)
                     .unwrap_or_default();
+                // A keybind's release comes wherever it lands, before any screen takes the key:
+                // its press may have opened one (whose opening lets go every keybind in vanilla,
+                // KeyMapping.releaseAll), and a keybind held stays held.
+                if !pressed && !key.is_empty() {
+                    self.mods_key(&key, false);
+                }
                 if own && pressed && code == KeyCode::Escape {
                     self.close_mod_screen();
                     return true;
@@ -479,8 +485,8 @@ impl Game<'_> {
                         return true;
                     }
                 }
-                if playing && !k.repeat && !key.is_empty() {
-                    self.mods_key(&key, pressed);
+                if playing && pressed && !k.repeat && !key.is_empty() {
+                    self.mods_key(&key, true);
                 }
                 false
             }
@@ -492,6 +498,10 @@ impl Game<'_> {
                     _ => return own,
                 };
                 let pressed = *state == ElementState::Pressed;
+                // A keybind's release, as a key's.
+                if !pressed {
+                    self.mods_key(name, false);
+                }
                 // The mods' buttons on the game's screen (and their window buttons on a mod's
                 // screen that says where its slots are), before the screen and the mods' hooks;
                 // a button's release is its own wherever it lands (its press may have opened a
@@ -520,8 +530,8 @@ impl Game<'_> {
                         return true;
                     }
                 }
-                if playing {
-                    self.mods_key(name, pressed);
+                if playing && pressed {
+                    self.mods_key(name, true);
                 }
                 false
             }

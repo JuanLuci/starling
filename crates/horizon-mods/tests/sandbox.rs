@@ -1651,6 +1651,410 @@ export const events = {
     );
 }
 
+/// A level of stone floor at y 63 under air, lit as the mod is told.
+struct Floor;
+impl horizon_mods::LevelView for Floor {
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        Some(
+            if pos[1] == 63 {
+                "minecraft:stone"
+            } else {
+                "minecraft:air"
+            }
+            .into(),
+        )
+    }
+    fn biome(&self, _: [i32; 3]) -> Option<String> {
+        Some("minecraft:plains".into())
+    }
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
+        Some((0, if pos[0] < 0 { 0 } else { 15 }))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        let mut out = horizon_mods::SpawnSpots::default();
+        for y in from[1]..=to[1] {
+            for z in from[2]..=to[2] {
+                for x in from[0]..=to[0] {
+                    if y == 64 {
+                        let (block_light, sky_light) = self.light([x, y, z]).unwrap();
+                        out.push([x, y, z], block_light, sky_light, 0.0);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+#[test]
+fn world_layers_keep_their_lines_and_labels() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-world-draw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"
+name = \"Probe\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"world-draw\", \"world-read\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { setLayer, removeLayer } from "starling:mods/world-draw@0.1.0";
+import { getSpawnSpots } from "starling:mods/level@0.1.0";
+const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
+export const events = {
+  init() {
+    return {
+      commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) {
+    if (args === "spots") {
+      const s = getSpawnSpots({ x: 1, y: 70, z: 2 }, { x: -1, y: 60, z: 1000 });
+      const n = s.skyLight.length, p = s.positions;
+      return `${n},${p.length},${p[0]},${p[2]},${s.skyLight[0]},${p[p.length - 1]},${p.constructor.name},${s.tops.constructor.name}`;
+    }
+    if (args === "remove") {
+      removeLayer("a");
+      return "ok";
+    }
+    const origin = { x: 10, y: 64, z: -5 };
+    return [
+      tryIt(() => setLayer("a", {
+        lines: [{ origin, ends: [0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1], colors: [0xFFFF0000, 0x80FFFF00] }],
+        boxes: [{ origin, corners: [0, 0, 0, 1, 0.0625, 1], colors: [0x7F00FF00] }],
+        texts: [{ origin, places: [0.5, 0, 0.5, 1.5, 0, 0.5], lines: ["7", "15"], colors: [0xFFFF6600], facing: "up" }],
+        labels: [{ at: origin, text: "§aHome", fixedSize: true, background: 0xC0000000 }],
+        throughWalls: true,
+      })),
+      tryIt(() => setLayer("e", { texts: [{ origin, places: [0, 0, 0, 1, 0, 0], lines: ["a"], colors: [1] }] })),
+      tryIt(() => setLayer("f", { boxes: [{ origin, corners: [0, 0, 0, 1, 1, 1], colors: [1, 2] }] })),
+      tryIt(() => setLayer("b", { lines: [{ origin, ends: [0, 0, 0, 1, 0], colors: [1] }] })),
+      tryIt(() => setLayer("b", { lines: [{ origin, ends: [0, 0, 0, 1, 0, 1], colors: [1, 2] }] })),
+      tryIt(() => setLayer("", {})),
+      tryIt(() => setLayer("c", { lines: [{ origin, ends: new Float32Array(6 * 70000), colors: [1] }] })),
+      tryIt(() => setLayer("d", { labels: [{ at: { x: NaN, y: 0, z: 0 }, text: "x" }] })),
+    ].join(",");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let said = |mods: &mut Mods| -> Vec<String> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(mods.command("probe draw"));
+    assert_eq!(
+        said(&mut mods),
+        [
+            "ok,2 places for texts, 1 lines,boxes need one colour for all, or one a box (2 for 1),\
+lines need a place and six finite numbers a line,lines need one colour for all, or one a line (2 for 1),\
+\"\" is not a layer's id (1 to 64 characters),\
+a mod draws at most 65536 lines, 16384 boxes, 16384 texts and 256 labels in the world,\
+label \"x\" needs a place and a size"
+        ]
+    );
+    let layers: Vec<_> = mods
+        .world_layers()
+        .flat_map(|(id, l)| {
+            l.iter()
+                .map(move |(k, v)| (id.to_owned(), k.clone(), v.clone()))
+        })
+        .collect();
+    assert_eq!(layers.len(), 1);
+    let (id, name, layer) = &layers[0];
+    assert_eq!((id.as_str(), name.as_str()), ("probe", "a"));
+    assert!(layer.through_walls);
+    assert_eq!(
+        layer.lines[0].ends,
+        [0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    );
+    assert_eq!(layer.lines[0].colors, [0xFFFF_0000, 0x80FF_FF00]);
+    assert_eq!(layer.lines[0].width, 1.0);
+    let label = &layer.labels[0];
+    assert_eq!(
+        (label.text.as_str(), label.scale, label.fixed_size),
+        ("§aHome", 1.0, true)
+    );
+    assert_eq!(label.background, 0xC000_0000);
+    assert_eq!((label.at.x, label.at.y, label.at.z), (10.0, 64.0, -5.0));
+    assert_eq!(label.facing, horizon_mods::Facing::Camera);
+    assert_eq!(layer.boxes[0].corners, [0.0, 0.0, 0.0, 1.0, 0.0625, 1.0]);
+    assert_eq!(layer.boxes[0].colors, [0x7F00_FF00]);
+    let texts = &layer.texts[0];
+    assert_eq!(
+        (texts.lines.as_str(), texts.facing),
+        ("7\n15", horizon_mods::Facing::Up)
+    );
+    assert_eq!(
+        (texts.places.len(), texts.colors[0], texts.scale),
+        (6, 0xFFFF_6600, 1.0)
+    );
+    assert!(mods.command("probe remove"));
+    said(&mut mods);
+    assert_eq!(mods.world_layers().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    // The spots of a box at most 64 a side, the corners in any order, the lowest first.
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floor));
+    mods.set_snapshot(world);
+    assert!(mods.command("probe spots"));
+    assert_eq!(
+        said(&mut mods),
+        ["192,576,-1,2,0,65,Int32Array,Float32Array"]
+    );
+}
+
+/// Floors of stone at `floors` under air, dark west of x 12 (sky light 0) and lit by a torch's
+/// 3 north of z -3, the rest in the sky's light; mushroom fields from x 20.
+struct Floors {
+    floors: Vec<i32>,
+}
+impl horizon_mods::LevelView for Floors {
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        Some(
+            if self.floors.contains(&(pos[1] - 1)) {
+                "minecraft:air"
+            } else {
+                "minecraft:stone"
+            }
+            .into(),
+        )
+    }
+    fn biome(&self, pos: [i32; 3]) -> Option<String> {
+        // From a biome cell's edge, as the game's are.
+        Some(
+            if pos[0] >= 20 {
+                "minecraft:mushroom_fields"
+            } else {
+                "minecraft:plains"
+            }
+            .into(),
+        )
+    }
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
+        Some((
+            if pos[2] < -3 { 3 } else { 0 },
+            if pos[0] < 12 { 0 } else { 15 },
+        ))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        let mut out = horizon_mods::SpawnSpots::default();
+        for y in from[1]..=to[1] {
+            for z in from[2]..=to[2] {
+                for x in from[0]..=to[0] {
+                    if self.floors.contains(&(y - 1)) {
+                        let (block_light, sky_light) = self.light([x, y, z]).unwrap();
+                        let top = if x == 12 && z == -3 { 0.125 } else { 0.0 };
+                        out.push([x, y, z], block_light, sky_light, top);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A copy of an example in a folder of its own, its storage empty.
+fn example(name: &str, test: &str) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples")
+        .join(name);
+    // Its storage beside it fresh too.
+    let home = mods_dir().join(format!("{name}-{test}"));
+    let _ = std::fs::remove_dir_all(&home);
+    let dir = home.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in std::fs::read_dir(&from).unwrap() {
+        let file = file.unwrap();
+        if file.file_type().unwrap().is_file() {
+            std::fs::copy(file.path(), dir.join(file.file_name())).unwrap();
+        }
+    }
+    dir
+}
+
+/// Light Overlay marks the places monsters spawn in Lighty's colours, within its reach, in each
+/// of its modes, and keeps within a tick's time on open ground.
+#[test]
+fn light_overlay_marks_where_monsters_spawn() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("light-overlay", "marks");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(
+        std::slice::from_ref(&dir),
+        |_| true,
+        |_| false,
+        Some(&cache),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floors { floors: vec![63] }));
+    mods.set_snapshot(world.clone());
+    mods.key("light_overlay", "toggle", true);
+    let layer = |mods: &Mods| -> horizon_mods::WorldLayer {
+        let layers: Vec<_> = mods.world_layers().flat_map(|(_, l)| l.to_vec()).collect();
+        assert_eq!(layers.len(), 1, "{:?}", mods.entries()[0].status);
+        layers[0].1.clone()
+    };
+    let crosses = layer(&mods);
+    let lines = &crosses.lines[0];
+    // From the player's block (12, 64, -4): the floor's places closer than 12 blocks, but for
+    // the mushroom fields from x 20.
+    assert_eq!(
+        (lines.origin.x, lines.origin.y, lines.origin.z),
+        (12.0, 64.0, -4.0)
+    );
+    let places = (-11..=11)
+        .flat_map(|dx: i32| (-11..=11).map(move |dz: i32| (dx, dz)))
+        .filter(|(dx, dz)| dx * dx + dz * dz < 144 && 12 + dx < 20)
+        .count();
+    assert_eq!(lines.ends.len() / 12, places);
+    assert_eq!(lines.width, 2.0);
+    // A cross: corner to corner, a hair above the ground (a snow layer's top at (12, 64, -3)).
+    let at = |dx: f32, dz: f32| {
+        (0..places)
+            .find(|&i| lines.ends[i * 12] == dx + 0.01 && lines.ends[i * 12 + 2] == dz + 0.01)
+    };
+    let i = at(0.0, 1.0).unwrap();
+    assert_eq!(
+        &lines.ends[i * 12..i * 12 + 12],
+        &[
+            0.01, 0.13, 1.01, 0.99, 0.13, 1.99, 0.99, 0.13, 1.01, 0.01, 0.13, 1.99
+        ]
+    );
+    // Red in the dark, green by the torch, orange under the sky.
+    let color = |dx: f32, dz: f32| lines.colors[at(dx, dz).unwrap() * 2];
+    assert_eq!(color(-1.0, 2.0), 0xFFFF_0000);
+    assert_eq!(color(-1.0, -2.0), 0xFF00_FF00);
+    assert_eq!(color(1.0, 2.0), 0xFFFF_6600);
+    // The settings: the mode button (centred on a 320 by 240 GUI) goes to the next mode.
+    mods.key("light_overlay", "settings", true);
+    let opened = mods
+        .drain()
+        .into_iter()
+        .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "light_overlay:settings"));
+    assert!(opened);
+    let screen = "light_overlay:settings";
+    mods.screen_render(screen, context());
+    let press = |mods: &mut Mods, x: f32, y: f32| {
+        let event = |action| MouseEvent {
+            action,
+            x,
+            y,
+            button: 0,
+            scroll: 0.0,
+        };
+        mods.screen_mouse(screen, event(MouseAction::Press));
+        mods.screen_mouse(screen, event(MouseAction::Release));
+    };
+    // Numbers: the block light over the sky light, lying face up.
+    press(&mut mods, 100.0, 90.0);
+    let numbers = layer(&mods);
+    assert!(numbers.lines.is_empty() && numbers.boxes.is_empty());
+    let texts = &numbers.texts[0];
+    assert_eq!(texts.places.len() / 3, places * 2);
+    assert_eq!(
+        (texts.facing, texts.scale),
+        (horizon_mods::Facing::Up, 1.25)
+    );
+    let lines: Vec<&str> = texts.lines.split('\n').collect();
+    // The player looks north (yaw 180): the block light beyond, the sky light before.
+    let k = (0..places * 2)
+        .find(|&k| texts.places[k * 3] == -0.5 && texts.places[k * 3 + 2] == -1.5 - 0.1875)
+        .unwrap();
+    assert_eq!(
+        (lines[k], lines[k + 1], texts.colors[k]),
+        ("3", "0", 0xFF00_FF00)
+    );
+    assert_eq!(texts.places[(k + 1) * 3 + 2], -1.5 + 0.1875);
+    // Tiles: a see-through pixel a hair above the ground, its top's edges solid.
+    press(&mut mods, 100.0, 90.0);
+    let tiles = layer(&mods);
+    let boxes = &tiles.boxes[0];
+    assert_eq!(boxes.corners.len() / 6, places);
+    let b = (0..places)
+        .find(|&b| boxes.corners[b * 6] == -1.0 && boxes.corners[b * 6 + 2] == 2.0)
+        .unwrap();
+    assert_eq!(
+        &boxes.corners[b * 6..b * 6 + 6],
+        &[-1.0, 0.002, 2.0, 0.0, 0.0645, 3.0]
+    );
+    assert_eq!(boxes.colors[b], 0x4BFF_0000);
+    assert_eq!(tiles.lines[0].ends.len() / 6, places * 4);
+    // Markers: a see-through block.
+    press(&mut mods, 100.0, 90.0);
+    let markers = layer(&mods);
+    let boxes = &markers.boxes[0];
+    assert_eq!(
+        &boxes.corners[b * 6..b * 6 + 6],
+        &[-1.0, 0.002, 2.0, 0.0, 1.002, 3.0]
+    );
+    assert_eq!(boxes.colors[b], 0x36FF_0000);
+    // Green hidden: the torch's places go.
+    press(&mut mods, 100.0, 114.0);
+    let lit = (-11..=11)
+        .flat_map(|dx: i32| (-11..=11).map(move |dz: i32| (dx, dz)))
+        .filter(|(dx, dz)| dx * dx + dz * dz < 144 && 12 + dx < 20 && -4 + dz < -3)
+        .count();
+    assert_eq!(layer(&mods).boxes[0].corners.len() / 6, places - lit);
+    // Kept for the next start; toggled off, the marks go.
+    press(&mut mods, 100.0, 114.0);
+    press(&mut mods, 100.0, 90.0);
+    mods.key("light_overlay", "toggle", true);
+    assert_eq!(mods.world_layers().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    drop(mods);
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    // Three floors in reach, back in the cross mode: a look each tick the player gets to another
+    // block, each within a tick's fuel.
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floors {
+        floors: vec![55, 63, 70],
+    }));
+    mods.set_snapshot(world.clone());
+    mods.key("light_overlay", "toggle", true);
+    assert_eq!(layer(&mods).lines[0].width, 2.0);
+    let start = Instant::now();
+    for t in 0..10 {
+        world.player.as_mut().unwrap().x -= 1.0;
+        mods.set_snapshot(world.clone());
+        mods.tick(t);
+    }
+    eprintln!("light overlay: {:?} a look", start.elapsed() / 10);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(layer(&mods).lines[0].origin.x, 2.0);
+    world.player.as_mut().unwrap().x = 12.5;
+    mods.set_snapshot(world.clone());
+    mods.tick(10);
+    let crosses = layer(&mods).lines[0].ends.len() / 12;
+    let expected = [-8i32, 0, 7]
+        .into_iter()
+        .flat_map(|dy| (-11..=11).flat_map(move |dx| (-11..=11).map(move |dz| (dx, dy, dz))))
+        .filter(|(dx, dy, dz)| dx * dx + dy * dy + dz * dz < 144 && 12 + dx < 20)
+        .count();
+    assert_eq!(crosses, expected);
+}
+
 /// A copy of the Bedrock Inventory example in a folder of its own, its storage (kept beside the
 /// mod: the settings a game with it as a dev mod saved) fresh.
 fn bedrock_inventory(test: &str) -> PathBuf {

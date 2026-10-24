@@ -92,6 +92,7 @@ mod mob_gear;
 mod mod_creative;
 mod mod_ui;
 mod mod_widgets;
+mod mod_world;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -9422,6 +9423,10 @@ impl Game<'_> {
             lines.extend(g.lines);
             on_top = g.on_top;
         }
+        // The mods' (`world-draw`).
+        if self.title.is_none() {
+            self.mod_world_lines(&mut lines, &mut on_top);
+        }
         let view = horizon_client::camera::view_matrix(view_yaw, view_pitch);
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
@@ -9517,6 +9522,9 @@ impl Game<'_> {
             entities = horizon_client::spans::time("entity_geometry", || {
                 self.entity_geometry(camera, alpha, entities)
             });
+            let mut see_through = std::mem::take(&mut self.see_through_vertices);
+            self.mod_world_geometry(camera, fov_degrees, size, &mut entities, &mut see_through);
+            self.see_through_vertices = see_through;
         }
         let mut additive = Vec::new();
         if !title {

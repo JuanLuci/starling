@@ -43,6 +43,11 @@ pitfalls and the port log. Then:
    the mod's window buttons (`widgets.add-window-button`), which `click` presses; Shift-clicks
    (`quick-move`) between the parts change the pretend menu too. A mod's own icons are
    `assets/<id>/textures/gui/sprites/*.png`, read from the mod for the PNGs. A mod screen standing in for a game screen: `screens.replace`.
+   Drawing in the world (`world-draw`): a `world` line counts each layer's lines, boxes and texts;
+   `"light": [block, sky]` lights the scenario's `blocks` for `level.get-spawn-spots`. In
+   JavaScript a list of records crossing into or out of the game costs tens of microseconds a
+   record (500 labels: 16 ms; a tick's fuel runs out near 2000), a typed array almost nothing:
+   send many things as numbers (`lines`, `boxes`, `texts`), read `get-spawn-spots`' arrays.
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

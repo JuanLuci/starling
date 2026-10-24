@@ -19,6 +19,7 @@ import * as input from "starling:mods/input@0.1.0";
 import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
+import * as worldDrawApi from "starling:mods/world-draw@0.1.0";
 import { get as source, snapshot as snapshotNow } from "starling:mods/js-source@0.1.0";
 import { held as heldNow } from "starling:mods/js-keys@0.1.0";
 import {
@@ -250,6 +251,7 @@ const reading = {
     getBiome: keep("biome", level.getBiome, pos),
     getLight: keep("light", level.getLight, pos),
     getEntities: keep("entities", level.getEntities, one),
+    getSpawnSpots: keep("spawnSpots", level.getSpawnSpots, (a, b) => `${pos(a)},${pos(b)}`),
   },
   inventory: {
     ...inventory,
@@ -324,12 +326,57 @@ const widgets = {
   },
 };
 
+// World layers as a mod writes them: lines', boxes' and texts' numbers plain arrays or typed
+// ones (texts' lines an array or one string), the fields left out their usual values. The game
+// takes the numbers as typed arrays, which componentize-js copies whole (and a colour of alpha
+// 0x80 or more as its bits).
+const ORIGIN = { x: 0, y: 0, z: 0 };
+// A mod's own typed array (of its realm, which instanceof does not see) as it is, else a copy.
+const tag = Object.prototype.toString;
+const typed = (v, Type, name) =>
+  ArrayBuffer.isView(v) && tag.call(v) === `[object ${name}]` ? v : Type.from(v || []);
+const worldDraw = {
+  ...worldDrawApi,
+  setLayer(id, layer) {
+    const l = layer || {};
+    return worldDrawApi.setLayer(id, {
+      lines: (l.lines || []).map((s) => ({
+        origin: s.origin || ORIGIN,
+        ends: typed(s.ends, Float32Array, "Float32Array"),
+        colors: typed(s.colors, Uint32Array, "Uint32Array"),
+        width: s.width === undefined ? 1 : s.width,
+      })),
+      boxes: (l.boxes || []).map((s) => ({
+        origin: s.origin || ORIGIN,
+        corners: typed(s.corners, Float32Array, "Float32Array"),
+        colors: typed(s.colors, Uint32Array, "Uint32Array"),
+      })),
+      texts: (l.texts || []).map((t) => ({
+        origin: t.origin || ORIGIN,
+        places: typed(t.places, Float32Array, "Float32Array"),
+        lines: Array.isArray(t.lines) ? t.lines.join("\n") : `${t.lines === undefined ? "" : t.lines}`,
+        colors: typed(t.colors, Uint32Array, "Uint32Array"),
+        scale: t.scale === undefined ? 1 : t.scale,
+        background: t.background === undefined ? 0 : t.background,
+        facing: t.facing || "camera",
+      })),
+      labels: (l.labels || []).map((b) => ({
+        at: b.at || ORIGIN, text: `${b.text === undefined ? "" : b.text}`,
+        scale: b.scale === undefined ? 1 : b.scale, fixedSize: !!b.fixedSize,
+        background: b.background === undefined ? 0 : b.background,
+        facing: b.facing || "camera",
+      })),
+      throughWalls: !!l.throughWalls,
+    });
+  },
+};
+
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
   slots: reading.slots, creative: reading.creative,
   chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, widgets, keys: controls, input, sound, net, storage,
+  screens, widgets, keys: controls, input, sound, net, storage, "world-draw": worldDraw,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.

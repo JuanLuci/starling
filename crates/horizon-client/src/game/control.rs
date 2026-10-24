@@ -257,9 +257,10 @@ impl Game<'_> {
                 if action == "tap" {
                     self.extras_key(physical, false, false);
                 }
-                // The mods' keybinds see the key too, as from the keyboard (mods_window_event).
-                if self.screen == Screen::Playing
-                    && self.title.is_none()
+                // The mods' keybinds see the key too, as from the keyboard (mods_window_event):
+                // its release anywhere.
+                let playing = self.screen == Screen::Playing && self.title.is_none();
+                if (playing || action == "up")
                     && let Some(name) = horizon_client::keybinds::key_name(physical)
                 {
                     let name = name.to_owned();

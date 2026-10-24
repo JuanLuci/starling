@@ -81,6 +81,8 @@ pub enum Capability {
     Chat,
     ChatSend,
     Hud,
+    /// Lines and labels drawn in the world (Starling's `world-draw`).
+    WorldDraw,
     Ui,
     Keys,
     /// Holding sprint and sneak for the player (Starling's `input`).
@@ -93,7 +95,7 @@ pub enum Capability {
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 15] = [
+    pub const ALL: [Capability; 16] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
@@ -102,6 +104,7 @@ impl Capability {
         Capability::Chat,
         Capability::ChatSend,
         Capability::Hud,
+        Capability::WorldDraw,
         Capability::Ui,
         Capability::Keys,
         Capability::Input,
@@ -121,6 +124,7 @@ impl Capability {
             Capability::Chat => &["chat"],
             Capability::ChatSend => &["chat-send"],
             Capability::Hud => &["hud", "draw"],
+            Capability::WorldDraw => &["world-draw"],
             Capability::Ui => &["screens", "widgets"],
             Capability::Keys => &["keys"],
             Capability::Input => &["input"],
@@ -141,6 +145,7 @@ impl Capability {
             Capability::Chat => "show you chat messages",
             Capability::ChatSend => "send chat messages and commands as you",
             Capability::Hud => "draw on your screen",
+            Capability::WorldDraw => "draw lines and labels in the world",
             Capability::Ui => "open its own screens and add buttons to the game's",
             Capability::Keys => "use keys you press",
             Capability::Input => "hold sprint or sneak for you",
@@ -194,6 +199,7 @@ impl fmt::Display for Capability {
             Capability::Chat => "chat",
             Capability::ChatSend => "chat-send",
             Capability::Hud => "hud",
+            Capability::WorldDraw => "world-draw",
             Capability::Ui => "ui",
             Capability::Keys => "keys",
             Capability::Input => "input",

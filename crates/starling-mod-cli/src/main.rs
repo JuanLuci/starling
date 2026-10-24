@@ -32,7 +32,7 @@
 //! button held, `{"scroll": [x, y], "lines": -1}` the wheel; `{"key-press": "key.keyboard.left.shift",
 //! "pressed": true}` a key going down (false: up) without its text.
 //! Without steps it ticks once and draws the HUD. The mod's buttons (`widgets`) are a `widgets`
-//! line whenever they change.
+//! line whenever they change, its drawing in the world (`world-draw`) a `world` line.
 //!
 //! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
 //! `--watch` runs it again whenever the mod (a `.hmod`, or a folder's files) or the scenario
@@ -47,9 +47,9 @@ mod window;
 mod world;
 
 use horizon_mods::{
-    Anchor, CONTROLS, Controls, Corner, CreativeCatalog, CreativeClick, DrawOp, Gui, ItemCatalog,
-    ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output, RenderContext, ScreenButton, Shape,
-    Snapshot, Status,
+    Anchor, CONTROLS, Controls, Corner, CreativeCatalog, CreativeClick, DrawOp, Facing, Gui,
+    ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output, RenderContext,
+    ScreenButton, Shape, Snapshot, Status,
 };
 use serde_json::{Value, json};
 use std::{
@@ -278,6 +278,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         return Ok(());
     }
     let mut buttons = widgets_line(&mods, &mut Value::Null);
+    let mut layers = world_line(&mods, &mut Value::Null);
     let gui = Gui {
         width: scenario["gui"]["width"].as_u64().unwrap_or(427) as u32,
         height: scenario["gui"]["height"].as_u64().unwrap_or(240) as u32,
@@ -335,6 +336,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         emit(json!({ "event": "step", "step": step, "result": result, "png": file }));
         outputs(&mut mods, &mut screen, &mut hands, &mut world);
         buttons = widgets_line(&mods, &mut buttons);
+        layers = world_line(&mods, &mut layers);
         hands.apply(&mut mods, &world);
         if !mods.is_running() {
             break;
@@ -881,6 +883,75 @@ fn widgets_line(mods: &Mods, last: &mut Value) -> Value {
         let mut line = now.clone();
         line["event"] = json!("widgets");
         emit(line);
+    }
+    now
+}
+
+/// The mod's layers in the world (`world-draw`) as JSON, a `world` line when they are not
+/// `last`: each layer's lines and boxes counted by colour (ARGB in hex) and its texts by text,
+/// with the box they span, and its labels.
+fn world_line(mods: &Mods, last: &mut Value) -> Value {
+    let Some((_, layers)) = mods.world_layers().next() else {
+        return Value::Null;
+    };
+    let now =
+        json!(layers
+        .iter()
+        .map(|(id, l)| {
+            let mut colors = std::collections::BTreeMap::new();
+            let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for lines in &l.lines {
+                let o = [lines.origin.x, lines.origin.y, lines.origin.z];
+                for (i, e) in lines.ends.chunks_exact(6).enumerate() {
+                    let c = lines.colors.get(i).or(lines.colors.first()).copied().unwrap_or(0);
+                    *colors.entry(format!("{c:08X}")).or_insert(0) += 1;
+                    for (k, v) in e.iter().enumerate() {
+                        let v = o[k % 3] + f64::from(*v);
+                        min[k % 3] = min[k % 3].min(v);
+                        max[k % 3] = max[k % 3].max(v);
+                    }
+                }
+            }
+            let mut boxes = std::collections::BTreeMap::new();
+            for b in &l.boxes {
+                let o = [b.origin.x, b.origin.y, b.origin.z];
+                for (i, c) in b.corners.chunks_exact(6).enumerate() {
+                    let argb = b.colors.get(i).or(b.colors.first()).copied().unwrap_or(0);
+                    *boxes.entry(format!("{argb:08X}")).or_insert(0) += 1;
+                    for (k, v) in c.iter().enumerate() {
+                        let v = o[k % 3] + f64::from(*v);
+                        min[k % 3] = min[k % 3].min(v);
+                        max[k % 3] = max[k % 3].max(v);
+                    }
+                }
+            }
+            let mut texts = std::collections::BTreeMap::new();
+            for t in &l.texts {
+                for line in t.lines.split('\n') {
+                    *texts.entry(line.to_owned()).or_insert(0) += 1;
+                }
+                let o = [t.origin.x, t.origin.y, t.origin.z];
+                for (k, v) in t.places.iter().enumerate() {
+                    let v = o[k % 3] + f64::from(*v);
+                    min[k % 3] = min[k % 3].min(v);
+                    max[k % 3] = max[k % 3].max(v);
+                }
+            }
+            json!({
+                "id": id, "through_walls": l.through_walls,
+                "lines": colors, "boxes": boxes, "texts": texts,
+                "from": min.iter().all(|v| v.is_finite()).then_some(min),
+                "to": max.iter().all(|v| v.is_finite()).then_some(max),
+                "labels": l.labels.iter().map(|b| json!({
+                    "at": [b.at.x, b.at.y, b.at.z], "text": b.text, "scale": b.scale,
+                    "fixed_size": b.fixed_size, "background": format!("{:08X}", b.background),
+                    "facing": match b.facing { Facing::Camera => "camera", Facing::Up => "up" },
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>());
+    if now != *last && !(now.as_array().is_some_and(Vec::is_empty) && last.is_null()) {
+        emit(json!({ "event": "world", "layers": now }));
     }
     now
 }
