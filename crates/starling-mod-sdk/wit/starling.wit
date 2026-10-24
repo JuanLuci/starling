@@ -501,6 +501,64 @@ interface draw {
     item-tooltip: func(x: f32, y: f32, stack: item-stack);
 }
 
+/// Capability `recipes`: the game's recipes as a recipe viewer shows them (JEI, EMI): the recipes
+/// of the world's data packs in single player, the game's own and the content mods' on a server.
+interface recipes {
+    use types.{item-stack};
+
+    /// Where a recipe is made, in a viewer's order.
+    enum recipe-kind {
+        crafting,
+        smelting,
+        blasting,
+        smoking,
+        campfire-cooking,
+        stonecutting,
+        smithing,
+        brewing,
+    }
+    /// Which way a lookup goes from an item: the recipes making it, or those taking it in.
+    enum lookup {
+        recipes,
+        uses,
+    }
+    record recipe {
+        /// `minecraft:oak_planks` (its data pack file).
+        id: string,
+        kind: recipe-kind,
+        /// Crafting: the shape's width and height; 0 for a shapeless recipe, whose inputs fill a
+        /// grid in order.
+        width: u32,
+        height: u32,
+        /// Each input: the stacks it takes, a viewer showing one at a time; none for a cell left
+        /// empty. Crafting: the shape's cells row by row, or a shapeless recipe's ingredients;
+        /// cooking and stonecutting: the one; smithing: the template, the base, the addition;
+        /// brewing: the bottle, the ingredient.
+        inputs: list<list<item-stack>>,
+        /// What it makes: the stacks it may, shown one at a time as an input's.
+        outputs: list<item-stack>,
+        /// The block it is made at: `minecraft:crafting_table`, `minecraft:furnace`,
+        /// `minecraft:brewing_stand`...
+        station: string,
+        /// Cooking: the time it takes in ticks and the experience it gives.
+        time: u32,
+        experience: f32,
+    }
+    /// How many recipes `lookup` finds for `stack` of each kind there are any of (a viewer's
+    /// tabs), the kinds in order. A stack is found by its item, and by its components too when it
+    /// has any (a Potion of Healing's recipes, not every potion's); its count does not matter.
+    count-recipes: func(stack: item-stack, lookup: lookup) -> list<tuple<recipe-kind, u32>>;
+    /// The recipes of `kind` `lookup` finds for `stack`, at most `count` (16 at most) from
+    /// `start`.
+    get-recipes: func(stack: item-stack, lookup: lookup, kind: recipe-kind, start: u32, count: u32)
+        -> list<recipe>;
+    /// Puts the recipe's ingredients from the inventory into the open crafting grid or furnace,
+    /// as the recipe book's button for it does (`all`: as many times as they make up to a stack,
+    /// as Shift with the button), on a server as vanilla's client asks. False when the open
+    /// screen takes no such recipe or the player has not unlocked it.
+    fill: func(id: string, all: bool) -> bool;
+}
+
 /// Capability `world-draw`: lines and labels in the world, in layers the game draws every
 /// frame until the mod changes or removes them (a mod sets a layer when what it shows changes,
 /// not every frame).
@@ -632,6 +690,11 @@ interface screens {
     /// are then placed from them and pressed on the mod's screen as on the game's own. The last
     /// call's, until the screen closes; at most 128.
     set-slots: func(slots: list<screen-slot>);
+    /// The window of the game screen open, as a container screen has it (`leftPos`, `topPos`,
+    /// `imageWidth`, `imageHeight`): x, y, width and height in GUI pixels, the open recipe book
+    /// moving it; None on a screen without one (the pause menu) or none. A recipe viewer's
+    /// panels go beside it (EMI, JEI).
+    get-window: func() -> option<tuple<f32, f32, f32, f32>>;
 }
 
 /// Capability `ui`: buttons the mod puts on the game's own screens and on the touch controls. A
@@ -987,6 +1050,7 @@ world starling-mod {
     import inventory;
     import slots;
     import creative;
+    import recipes;
     import chat;
     import chat-send;
     import draw;

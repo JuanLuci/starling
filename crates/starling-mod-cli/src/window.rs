@@ -43,6 +43,11 @@ impl Window {
         })
     }
 
+    /// Its x, y, width and height (`screens.get-window`).
+    pub fn rect(&self) -> [f32; 4] {
+        [self.x, self.y, self.w, self.h]
+    }
+
     /// Where menu slot `i` is drawn (its top left, in GUI pixels), as vanilla's menus put it.
     fn slot(&self, i: usize) -> Option<(f32, f32)> {
         let grid = |c: usize, r: usize, x: f32, y: f32| (x + c as f32 * 18.0, y + r as f32 * 18.0);

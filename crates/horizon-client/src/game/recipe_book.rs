@@ -109,7 +109,7 @@ fn sprite(name: &str) -> String {
 
 impl Game<'_> {
     /// The book the open screen has, if any.
-    fn active_book(&self) -> Option<BookType> {
+    pub(super) fn active_book(&self) -> Option<BookType> {
         if self.screen != Screen::Inventory || self.station.is_some() {
             return None;
         }
@@ -256,7 +256,7 @@ impl Game<'_> {
     // ---- recipes and what can be crafted ----
 
     /// The grid size of the open crafting menu.
-    fn book_grid(&self) -> (usize, usize) {
+    pub(super) fn book_grid(&self) -> (usize, usize) {
         (self.craft_size, self.craft_size)
     }
     /// The items the book counts (`RecipeBookComponent.updateStackedContents`):
@@ -821,6 +821,33 @@ impl Game<'_> {
         self.recipe_ui.last_placed = Some(id);
         self.recipe_ui.ghost.clear();
         self.place_recipe(book_type, entry_index, use_max);
+    }
+    /// `recipes.fill`: the recipe book's button for recipe `id` pressed (Shift: `all`), when the
+    /// open screen's book shows it: one of its kind the grid fits, which the player knows
+    /// (`handlePlaceRecipe` places only those).
+    pub(super) fn fill_recipe(&mut self, id: &str, all: bool) {
+        let Some(book_type) = self.active_book() else {
+            return;
+        };
+        self.ensure_book();
+        self.sync_client_book();
+        let (gw, gh) = self.book_grid();
+        let Some(book) = self.recipe_ui.book.as_ref() else {
+            return;
+        };
+        let known: std::collections::HashSet<i32> =
+            self.recipe_ui.client.displays().into_iter().collect();
+        let entry = book.entries.iter().position(|e| {
+            e.id == id
+                && known.contains(&e.display_id)
+                && book.book_of(&e.id) == Some(book_type)
+                && (book_type != BookType::Crafting || e.fits(gw, gh))
+        });
+        if let Some(entry) = entry {
+            self.recipe_ui.ghost.clear();
+            self.recipe_ui.last_placed = Some(id.to_owned());
+            self.place_recipe(book_type, entry, all);
+        }
     }
     /// `ServerboundPlaceRecipePacket`: the server places the recipe
     /// (`ServerPlaceRecipe` on the menu engine) and answers with a ghost

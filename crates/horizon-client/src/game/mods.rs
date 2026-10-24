@@ -88,6 +88,8 @@ pub(super) struct ModsState {
     items: Option<Arc<dyn ItemCatalog>>,
     /// The creative tabs for `creative`, made once for the language their names are in.
     pub(super) creative: Option<(String, Arc<dyn CreativeCatalog>)>,
+    /// The recipes for mods (`recipes`), for the language their names are in.
+    pub(super) recipes: Option<(String, Arc<dyn horizon_mods::RecipeCatalog>)>,
     measure: Option<Measure>,
     /// Mods loading on their own thread ([`Game::start_mods`]), and since when.
     loading: Option<(Receiver<Mods>, Instant)>,
@@ -642,7 +644,7 @@ impl Game<'_> {
                 .items
                 .get(&*s.item)
                 .map_or(0, |i| i.max_damage),
-            name: self.stack_name(s).plain(),
+            name: self.stack_hover_name(s).plain(),
             components,
         }
     }
@@ -848,6 +850,13 @@ impl Game<'_> {
         }
         if self.mods.mods.uses(Capability::InventoryClick) {
             snapshot.menu = self.mod_menu();
+        }
+        if self.mods.mods.uses(Capability::Recipes) && self.res.rest_ready() {
+            snapshot.recipes = Some(self.mod_recipes());
+            snapshot.crafting = self.mod_crafting();
+        }
+        if self.mods.mods.uses(Capability::Ui) {
+            snapshot.window = self.mod_window();
         }
         if world_read && in_world {
             snapshot.level = Some(self.mod_level());
@@ -1640,6 +1649,10 @@ impl Game<'_> {
                         }) {
                             self.mods.drag_areas = areas;
                         }
+                        continue;
+                    }
+                    Output::FillRecipe { recipe, all, .. } => {
+                        self.fill_recipe(&recipe, all);
                         continue;
                     }
                     Output::ScreenSlots { id, slots } => {

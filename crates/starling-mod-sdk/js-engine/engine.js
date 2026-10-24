@@ -8,6 +8,7 @@ import * as level from "starling:mods/level@0.1.0";
 import * as inventory from "starling:mods/inventory@0.1.0";
 import * as slots from "starling:mods/slots@0.1.0";
 import * as creative from "starling:mods/creative@0.1.0";
+import * as recipes from "starling:mods/recipes@0.1.0";
 import * as chat from "starling:mods/chat@0.1.0";
 import * as chatSend from "starling:mods/chat-send@0.1.0";
 import * as draw from "starling:mods/draw@0.1.0";
@@ -269,6 +270,12 @@ const reading = {
     getTabs: keep("tabs", creative.getTabs),
     getItems: keep("items", creative.getItems, (tab, search, start, n) => `${tab}\u0000${search}\u0000${start},${n}`),
   },
+  recipes: {
+    ...recipes,
+    countRecipes: keep("recipeCount", recipes.countRecipes, (s, lookup) => `${s.id}\u0000${s.components}\u0000${lookup}`),
+    getRecipes: keep("recipes", recipes.getRecipes, (s, lookup, kind, start, n) => `${s.id}\u0000${s.components}\u0000${lookup}\u0000${kind}\u0000${start},${n}`),
+  },
+  screens: { ...screens, getWindow: keep("window", screens.getWindow) },
 };
 
 // The controls held, read once a hook (they change between frames, not during a hook) instead of
@@ -374,9 +381,10 @@ const worldDraw = {
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
-  slots: reading.slots, creative: reading.creative,
+  slots: reading.slots, creative: reading.creative, recipes: reading.recipes,
   chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, widgets, keys: controls, input, sound, net, storage, "world-draw": worldDraw,
+  screens: reading.screens, widgets, keys: controls, input, sound, net, storage,
+  "world-draw": worldDraw,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.

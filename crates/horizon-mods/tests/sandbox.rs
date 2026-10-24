@@ -2540,3 +2540,396 @@ fn bedrock_inventory_frame_cost() {
     }
     assert_eq!(mods.entries()[0].status, Status::Running);
 }
+
+/// A cookbook of three: sticks from planks (shapeless), a torch (1 by 2), and a Potion of
+/// Healing brewed.
+struct Cookbook;
+impl Cookbook {
+    fn all() -> Vec<horizon_mods::Recipe> {
+        use horizon_mods::{Recipe, RecipeKind};
+        let healing = ItemStack {
+            components: "{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}".into(),
+            ..stack("minecraft:potion", 1)
+        };
+        let planks = vec![
+            stack("minecraft:oak_planks", 1),
+            stack("minecraft:spruce_planks", 1),
+        ];
+        let recipe = |id: &str, kind, width, height, inputs, outputs, station: &str| Recipe {
+            id: id.into(),
+            kind,
+            width,
+            height,
+            inputs,
+            outputs,
+            station: station.into(),
+            time: 0,
+            experience: 0.0,
+        };
+        vec![
+            recipe(
+                "minecraft:stick",
+                RecipeKind::Crafting,
+                0,
+                0,
+                vec![planks.clone(), planks],
+                vec![stack("minecraft:stick", 4)],
+                "minecraft:crafting_table",
+            ),
+            recipe(
+                "minecraft:torch",
+                RecipeKind::Crafting,
+                1,
+                2,
+                vec![
+                    vec![stack("minecraft:coal", 1)],
+                    vec![stack("minecraft:stick", 1)],
+                ],
+                vec![stack("minecraft:torch", 4)],
+                "minecraft:crafting_table",
+            ),
+            recipe(
+                "minecraft:brewing/healing",
+                RecipeKind::Brewing,
+                0,
+                0,
+                vec![
+                    vec![stack("minecraft:potion", 1)],
+                    vec![stack("minecraft:glistering_melon_slice", 1)],
+                ],
+                vec![healing],
+                "minecraft:brewing_stand",
+            ),
+        ]
+    }
+    fn found(stack: &ItemStack, lookup: horizon_mods::Lookup) -> Vec<horizon_mods::Recipe> {
+        let same = |s: &ItemStack| {
+            s.id == stack.id && (stack.components.is_empty() || s.components == stack.components)
+        };
+        Self::all()
+            .into_iter()
+            .filter(|r| match lookup {
+                horizon_mods::Lookup::Recipes => r.outputs.iter().any(same),
+                horizon_mods::Lookup::Uses => r.inputs.iter().flatten().any(same),
+            })
+            .collect()
+    }
+}
+impl horizon_mods::RecipeCatalog for Cookbook {
+    fn count(
+        &self,
+        stack: &ItemStack,
+        lookup: horizon_mods::Lookup,
+    ) -> Vec<(horizon_mods::RecipeKind, u32)> {
+        let mut out: Vec<(horizon_mods::RecipeKind, u32)> = Vec::new();
+        for r in Self::found(stack, lookup) {
+            match out.iter_mut().find(|(k, _)| *k == r.kind) {
+                Some((_, n)) => *n += 1,
+                None => out.push((r.kind, 1)),
+            }
+        }
+        out
+    }
+    fn recipes(
+        &self,
+        stack: &ItemStack,
+        lookup: horizon_mods::Lookup,
+        kind: horizon_mods::RecipeKind,
+        start: usize,
+        count: usize,
+    ) -> Vec<horizon_mods::Recipe> {
+        Self::found(stack, lookup)
+            .into_iter()
+            .filter(|r| r.kind == kind)
+            .skip(start)
+            .take(count)
+            .collect()
+    }
+    fn shape(&self, id: &str) -> Option<(horizon_mods::RecipeKind, u32, u32)> {
+        let r = Self::all().into_iter().find(|r| r.id == id)?;
+        Some(match r.height {
+            0 => (r.kind, r.inputs.len() as u32, 0),
+            h => (r.kind, r.width, h),
+        })
+    }
+}
+
+/// `recipes`: found by what they make and take (a stack with components only its own), paged;
+/// `fill` asks the game only for a recipe the open grid takes; `screens.get-window`.
+#[test]
+fn recipes_are_found_and_filled() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-recipes");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"\nname = \"Probe\"\nversion = \"1\"\napi = \"starling-0.1\"\ncapabilities = [\"recipes\", \"ui\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { countRecipes, getRecipes, fill } from "starling:mods/recipes@0.1.0";
+import { getWindow } from "starling:mods/screens@0.1.0";
+const s = (id, components = "") => ({ id, count: 1, damage: 0, maxDamage: 0, name: id, components });
+export const events = {
+  init() {
+    return { commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false };
+  },
+  command(name, args) {
+    if (args === "fill") return [fill("minecraft:stick", true), fill("minecraft:torch", false), fill("minecraft:nothing", false)].join(",");
+    const sticks = getRecipes(s("minecraft:stick"), "recipes", "crafting", 0, 8);
+    const r = sticks[0];
+    const potion = s("minecraft:potion", "{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}");
+    return [
+      JSON.stringify(countRecipes(s("minecraft:stick"), "recipes")),
+      JSON.stringify(countRecipes(s("minecraft:stick"), "uses")),
+      `${r.id} ${r.kind} ${r.width}x${r.height} ${r.inputs.length} ${r.inputs[0].map((x) => x.id).join("+")} ${r.outputs[0].count} ${r.station}`,
+      getRecipes(s("minecraft:oak_planks"), "uses", "crafting", 1, 8).length,
+      JSON.stringify(countRecipes(s("minecraft:potion"), "recipes")),
+      JSON.stringify(countRecipes(potion, "recipes")),
+      JSON.stringify(countRecipes(s("minecraft:potion", "{other}"), "recipes")),
+      JSON.stringify(getWindow()),
+    ].join(" | ");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let mut mods = Mods::load_cached(
+        &[dir],
+        |_| true,
+        |_| false,
+        Some(&mods_dir().join("js-cache")),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let said = |mods: &mut Mods| -> Vec<Output> { mods.drain() };
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.window = Some([125.0, 37.0, 176.0, 166.0]);
+    mods.set_snapshot(world.clone());
+    assert!(mods.command("probe find"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "[[\"crafting\",1]] | [[\"crafting\",1]] | \
+minecraft:stick crafting 0x0 2 minecraft:oak_planks+minecraft:spruce_planks 4 minecraft:crafting_table | 0 | \
+[[\"brewing\",1]] | [[\"brewing\",1]] | [] | [125,37,176,166]"
+                .into(),
+            error: false,
+        }]
+    );
+    // No grid open: nothing filled.
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "false,false,false".into(),
+            error: false
+        }]
+    );
+    // The inventory's 2 by 2 takes sticks (2 shapeless) and a torch (1 by 2): one fill a call,
+    // the last asked.
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    mods.set_snapshot(world.clone());
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [
+            Output::FillRecipe {
+                id: "probe".into(),
+                recipe: "minecraft:torch".into(),
+                all: false,
+            },
+            Output::Feedback {
+                text: "true,true,false".into(),
+                error: false
+            },
+        ]
+    );
+    // A furnace takes none of them.
+    world.crafting = Some(horizon_mods::Crafting::Furnace(
+        horizon_mods::RecipeKind::Smelting,
+    ));
+    mods.set_snapshot(world);
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "false,false,false".into(),
+            error: false
+        }]
+    );
+}
+
+/// The creative search lists planks, a stick and a torch.
+struct Shelf;
+impl horizon_mods::CreativeCatalog for Shelf {
+    fn tabs(&self) -> Vec<horizon_mods::Tab> {
+        vec![horizon_mods::Tab {
+            id: "minecraft:search".into(),
+            title: "Search".into(),
+            icon: "minecraft:compass".into(),
+            kind: horizon_mods::TabKind::Search,
+            top: true,
+            column: 6,
+            size: 3,
+        }]
+    }
+    fn items(
+        &self,
+        _tab: &str,
+        search: &str,
+        start: usize,
+        count: usize,
+    ) -> horizon_mods::ItemPage {
+        let all: Vec<ItemStack> = ["minecraft:oak_planks", "minecraft:stick", "minecraft:torch"]
+            .iter()
+            .filter(|id| id.contains(search))
+            .map(|id| stack(id, 1))
+            .collect();
+        horizon_mods::ItemPage {
+            total: all.len() as u32,
+            items: all.into_iter().skip(start).take(count).collect(),
+        }
+    }
+    fn order(&self, _: &ItemStack) -> Option<u32> {
+        None
+    }
+}
+
+/// EMI: the index beside the inventory's window, searched; a click opens an item's recipes, a
+/// right click its uses, on its recipes screen; + fills the grid and closes it; Backspace goes
+/// back.
+#[test]
+fn emi_shows_recipes_and_uses_beside_the_inventory() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("emi", "index");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(
+        std::slice::from_ref(&dir),
+        |_| true,
+        |_| false,
+        Some(&cache),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.creative = Some(std::sync::Arc::new(Shelf));
+    world.window = Some([72.0, 37.0, 176.0, 166.0]);
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    mods.set_snapshot(world);
+    let ctx = |x: f32, y: f32| RenderContext {
+        width: 427,
+        height: 240,
+        mouse_x: x,
+        mouse_y: y,
+        delta: 0.05,
+    };
+    // Right of the window (from 252): 9 columns from 263, rows from 16.
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let items: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { stack, .. } => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items,
+        ["minecraft:oak_planks", "minecraft:stick", "minecraft:torch"]
+    );
+    let item_at = |ops: &[DrawOp], id: &str| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::Item { x, y, stack } if stack.id == id => Some((*x, *y)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (sx, sy) = item_at(&ops, "minecraft:stick");
+    let press = |x: f32, y: f32, button: u8| MouseEvent {
+        action: MouseAction::Press,
+        x,
+        y,
+        button,
+        scroll: 0.0,
+    };
+    // A click on the stick: its recipes.
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "emi:recipes"))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    let texts: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    // Its name, cut to the room before the buttons; one crafting recipe.
+    assert_eq!(texts, ["minecraft:…", "1", "1/1"]);
+    // The shapeless recipe in the 3 by 3 grid: planks in the first two cells, 4 sticks out.
+    let shown: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { stack, .. } => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "minecraft:stick",
+            "minecraft:oak_planks",
+            "minecraft:oak_planks",
+            "minecraft:stick"
+        ]
+    );
+    // Right click on the planks in the recipe: their uses; Backspace: the stick's recipes again.
+    let (px, py) = item_at(&ops, "minecraft:oak_planks");
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Uses"))
+    );
+    let key = |k: &str| horizon_mods::KeyEvent {
+        key: k.into(),
+        pressed: true,
+        text: String::new(),
+        shift: false,
+        control: false,
+        alt: false,
+    };
+    assert!(mods.screen_key("emi:recipes", &key("key.keyboard.backspace")));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter().any(
+            |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
+        )
+    );
+    // + fills the grid with the recipe and closes the screen.
+    let plus = ops
+        .iter()
+        .find_map(|o| match o {
+            DrawOp::Button { x, y, label, .. } if label == "+" => Some((*x, *y)),
+            _ => None,
+        })
+        .unwrap();
+    mods.drain();
+    mods.screen_mouse("emi:recipes", press(plus.0 + 2.0, plus.1 + 2.0, 0));
+    let out = mods.drain();
+    assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: false, .. } if recipe == "minecraft:stick")), "{out:?}");
+    assert!(out.iter().any(|o| matches!(o, Output::CloseScreen { .. })));
+}

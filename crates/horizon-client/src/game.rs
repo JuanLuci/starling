@@ -90,6 +90,7 @@ mod minecarts;
 mod mob_blocks;
 mod mob_gear;
 mod mod_creative;
+mod mod_recipes;
 mod mod_ui;
 mod mod_widgets;
 mod mod_world;

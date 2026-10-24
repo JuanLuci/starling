@@ -206,7 +206,7 @@ impl Data {
 }
 
 /// `tag`'s blocks into `blocks`, through the tags it names (`seen` against loops).
-fn expand(
+pub(crate) fn expand(
     tag: &str,
     raw: &HashMap<String, Vec<String>>,
     blocks: &mut HashSet<String>,

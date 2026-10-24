@@ -42,6 +42,7 @@
 //! `--png <dir>` also draws each step that drew something to `<dir>/step<N>.png` (its path in the
 //! step's line), with that folder's font and sprites, or plain shapes without one.
 mod creative;
+mod recipes;
 mod render;
 mod window;
 mod world;
@@ -293,6 +294,10 @@ fn run_once(options: &Options) -> Result<(), String> {
     world.gui = Some(gui);
     world.measure = resources.measure();
     world.creative = Some(creative);
+    world.recipes = Some(Arc::new(recipes::Pretend::read(
+        options.resources.as_deref(),
+        &data,
+    )));
     hands.apply(&mut mods, &world);
     let mut screen: Option<String> = None;
     let mut ticks = 0;
@@ -800,6 +805,9 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
             Output::ScreenSlots { slots, .. } => {
                 json!({ "event": "screen-slots", "slots": slots })
             }
+            Output::FillRecipe { recipe, all, .. } => {
+                json!({ "event": "fill", "recipe": recipe, "all": all })
+            }
             Output::CreativeClick {
                 tab,
                 search,
@@ -1190,7 +1198,12 @@ fn play(
         // slots (`container`, `inventory`) is drawn as a plain window with the menu's stacks and
         // the mod's window buttons.
         let mut ops = Vec::new();
-        if let Some(w) = window::Window::of(name, sim.world.menu.as_ref(), gui) {
+        // Its window (`screens.get-window`), and the inventory's 2 by 2 grid for `recipes.fill`.
+        let window = window::Window::of(name, sim.world.menu.as_ref(), gui);
+        sim.world.window = window.as_ref().map(window::Window::rect);
+        sim.world.crafting = (name == "inventory").then_some(horizon_mods::Crafting::Grid(2));
+        mods.set_snapshot(sim.world.clone());
+        if let Some(w) = window {
             let mouse = context(step);
             ops = w.ops(sim.world.menu.as_ref());
             ops.extend(window::button_ops(mods, &w, (mouse.mouse_x, mouse.mouse_y)));
@@ -1331,6 +1344,8 @@ fn play(
     if step.get("close").is_some() {
         mods.screen_closed(&open);
         *sim.screen = None;
+        sim.world.window = None;
+        sim.world.crafting = None;
         return (Value::Null, None);
     }
     (json!({ "error": format!("unknown step: {step}") }), None)

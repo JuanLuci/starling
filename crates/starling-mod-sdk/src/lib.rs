@@ -23,9 +23,9 @@
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
 //! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `inventory-click` for
-//! [`slots`], `creative`, `chat`, `chat-send`, `hud` for [`hud`] and [`draw`], `world-draw` for
-//! [`world_draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`, `net`,
-//! `storage`).
+//! [`slots`], `creative`, `recipes`, `chat`, `chat-send`, `hud` for [`hud`] and [`draw`],
+//! `world-draw` for [`world_draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`,
+//! `net`, `storage`).
 //!
 //! # Coming from Fabric
 //!
@@ -64,6 +64,8 @@
 //! | `DrawContext.fill/drawText/drawItem/drawGuiTexture/drawTooltip` | [`draw::fill`], [`draw::text`], [`draw::item`], [`draw::sprite`], [`draw::tooltip`] |
 //! | `WorldRenderEvents`, a `DebugRenderer`: lines, boxes and text in the world | [`world_draw::set_layer`] (capability `world-draw`), kept until set again |
 //! | Light Overlay's spawn checks over an area | [`level::get_spawn_spots`] |
+//! | JEI's / EMI's recipe lookups, the recipe book's placing | [`recipes::get_recipes`], [`recipes::fill`] (capability `recipes`) |
+//! | `AbstractContainerScreen.leftPos/topPos/imageWidth/imageHeight` | [`screens::get_window`] |
 
 wit_bindgen::generate!({
     path: "wit",
@@ -79,7 +81,7 @@ pub use exports::starling::mods::events::{
 };
 pub use starling::mods::{
     chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log, mobile, net,
-    screens,
+    recipes, screens,
     slots::{self, ClickKind},
     sound, storage,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},

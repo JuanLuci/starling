@@ -48,6 +48,8 @@ pitfalls and the port log. Then:
    JavaScript a list of records crossing into or out of the game costs tens of microseconds a
    record (500 labels: 16 ms; a tick's fuel runs out near 2000), a typed array almost nothing:
    send many things as numbers (`lines`, `boxes`, `texts`), read `get-spawn-spots`' arrays.
+   A render hook has a fifth of an event's fuel: fetch what is heavy (a page of recipes, whose
+   slots list every log) in the click's or key's hook and keep it for the frames.
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

@@ -383,12 +383,27 @@ impl Game<'_> {
             other => Some(other.replace('-', "_")),
         }
     }
+    /// The open game screen's window, for `screens.get-window`: x, y, width, height.
+    pub(super) fn mod_window(&self) -> Option<[f32; 4]> {
+        if self.title.is_some() || !matches!(self.screen, Screen::Inventory | Screen::Creative) {
+            return None;
+        }
+        let image = self.window_image(&HudBatch::new(self.touch_size()));
+        Some([
+            image.left as f32,
+            image.top as f32,
+            image.width as f32,
+            image.height as f32,
+        ])
+    }
     /// Once a frame: `screen-closed` and `screen-opened` when the screen changed.
     pub(super) fn mods_screen_events(&mut self) {
         let now = self.mod_screen_name();
         if now == self.mods.shown {
             return;
         }
+        // What the new screen shows (its window, its menu) from its first frame.
+        self.refresh_mod_snapshot();
         if let Some(old) = self.mods.shown.take() {
             self.mods.mods.screen_closed(&old);
         }

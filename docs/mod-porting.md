@@ -94,10 +94,13 @@ Hooks are fields of `events` (exports); calls are `interface.function` (imports)
 | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | `slots.click(slot, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw`, `pickup-all`; done in order after the hook, predicted and sent as vanilla's on a server, with no screen open too |
 | Buttons on a container's window placed from its slots (Quark's chest buttons, Inventory Profiles' sort buttons: `leftPos`/`topPos` and a slot's `x`/`y`) | `widgets.add-window-button` (capability `ui`): a small button placed from the box around the container's slots or the player's inventory, as the game lays them out on the screen open (any chest size, a shulker box, the inventory, the creative inventory tab), shown on the menus it names; its icon the whole button (`<icon>_highlighted` under the mouse). JavaScript: `widgets.addWindowButton({...}, onPress)` |
 | An item's place in the creative inventory (Inventory Profiles' default sort, `CreativeModeTabs` search tab order) | `inventory.get-item-order(stack)` |
+| `AbstractContainerScreen.leftPos`, `topPos`, `imageWidth`, `imageHeight` (EMI's and JEI's panels beside the window) | `screens.get-window()`: the game screen's window in GUI pixels, the open recipe book moving it |
 | A modded container screen's `Slot`s (what Quark and Inventory Profiles read to place their buttons on it) | `screens.set-slots([{slot, x, y}, ...])` from the mod's own screen: other mods' window buttons are placed and pressed on it as on the game's screens |
 | A mod's own button icons | `assets/<id>/textures/gui/sprites/*.png` in the `.hmod`, as `<id>:<name>`; no capability needed (they load as the game starts) |
 | `SlotActionType.QUICK_CRAFT` (the mouse dragging a stack across slots) | `slots.drag(slots, button)`: 0 shares the cursor's stack out evenly, 1 one each, 2 a full stack each (creative); the start, slot and end clicks in one call |
 | `Item` facts (name, max stack, durability, `FoodComponent`) | `inventory.get-item-info` |
+| JEI's / EMI's recipe lookups (an item's recipes and uses, by station) | `recipes.count-recipes(stack, lookup)` and `get-recipes(stack, lookup, kind, start, count)` (capability `recipes`): the crafting, furnace, campfire, stonecutting, smithing and brewing recipes the game knows, each input's choices and the outputs as stacks; a stack with components finds only its own (a Potion of Healing) |
+| EMI's +, JEI's recipe transfer (the recipe book's `ServerboundPlaceRecipePacket`) | `recipes.fill(id, all)`: the recipe book's button for the recipe in the open crafting grid or furnace, as vanilla's client asks a server; false when the open screen takes no such recipe |
 | `ItemGroups` and `ItemGroup.getDisplayStacks()`, the creative search (`SearchManager`) | `creative.get-tabs`, `creative.get-items(tab, search, start, count)` (capability `creative`): the tabs and items the game's creative screen shows, searched as its box searches |
 | `CreativeInventoryScreen.onMouseClick` on a tab's slot | `creative.click(tab, search, index, button, kind)`: `pickup`, `quick-move`, `swap`, `clone`, `throw` with the creative screen's semantics (creative mode only) |
 | `ClientPlayerInteractionManager.clickCreativeStack` / `dropCreativeStack`, the creative cursor | `creative.set-slot(slot, stack)` (the player's inventory menu's ids, 1 to 45), `creative.set-carried(stack)` (none: Destroy Item); a server gets vanilla's `SetCreativeModeSlot` |
@@ -184,6 +187,10 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
 - Buttons (`widgets`): a `widgets` line lists them whenever they change; `{"screen": "pause"}`
   draws the mod's buttons on that game screen and `click` presses them; `{"hud": {"touch":
   true}}` draws its touch buttons where they start.
+- Recipes (`recipes`): the resources' data pack recipes (shaped, shapeless, the furnaces', the
+  campfire's, stonecutting, smithing upgrades, item tags expanded), else two made up; a
+  `{"screen": "inventory"}` or `container` step gives `screens.get-window` its window (and the
+  inventory a 2 by 2 grid for `recipes.fill`, each fill a `fill` line).
 - The world (`world-draw`): a `world` line whenever the layers change, each layer's lines and
   boxes counted by colour, its texts by text, the box they span and its labels. The scenario's
   `blocks` are the level (`level.get-spawn-spots` finds air over air on any of them but liquids)
@@ -365,6 +372,24 @@ what is still missing (the next port's API work).
   says where it draws its slots (`screens.set-slots`), as Bedrock Inventory does: neither mod
   knows the other.
 
+### EMI → emi
+
+- Does: every item beside the inventory, chests, crafting tables, furnaces and the creative
+  screen, in the creative inventory's order, a page at a time, searched as the creative search
+  searches by a box under the window (the phone's keyboard comes up); favourites (A) left of the
+  window, kept. R or a click shows an item's recipes, U or a right click its uses, from the index,
+  a recipe or the game's slots; the recipes screen has a tab per station with how many (crafting
+  table, furnace, blast furnace, smoker, campfire, stonecutter, smithing table, brewing stand),
+  recipes laid out as their station's window, a slot's choices in turn each second, cooking time
+  and experience; Recipes and Uses switch, Backspace goes back. + puts a crafting or furnace
+  recipe's ingredients in the open grid (Shift: as many as can be) and goes back to it.
+- API added: the `recipes` interface and capability (`count-recipes`, `get-recipes`, `fill`),
+  `screens.get-window`. Item stacks' `name` is the name the player sees, as the interface says
+  (it was the chat's bracketed one: `[Oak Planks]`). A page of recipes can be hundreds of stacks:
+  fetched in the click's or key's hook (an event's time), not each frame.
+- Missing: EMI's world interactions (stripping, waxing), tags shown as tags, the recipe tree,
+  cheat mode, its own search syntax (`@mod`, `#tag`), a crafting grid's "craftable" filter.
+
 ### Light Overlay and Lighty → light-overlay
 
 - Does: where monsters can spawn within 8, 12 or 16 blocks, by the game's own check (a block to
@@ -399,7 +424,7 @@ what is still missing (the next port's API work).
 
 | Original | What it needs |
 |---|---|
-| JEI / EMI / REI | recipes read (`recipes` interface), an overlay beside inventories; the item list is `creative.get-items` |
+| JEI / REI | as emi: `recipes`, `screens.get-window`, `creative.get-items` |
 | Xaero's / JourneyMap world map | world-read over a wider area, map storage, a full-screen map screen |
 | Inventory Profiles (auto refill) | `slots` (done) and a tick hook: refill the held stack when it runs out |
 | Mouse Tweaks / sorting | built into Horizon's extras already (tweaks.rs) |

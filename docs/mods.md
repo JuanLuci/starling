@@ -108,7 +108,7 @@ loading. Ordered by what the first native ports need ([research](research/java-m
 | `keys` | keybinds | registered binds appear in Controls; press/release events |
 | `target` | the crosshair's block or entity, with its state and NBT summary | Jade/WTHIT-style tooltips |
 | `inventory-read` | the player's inventory, held item, open container | AppleSkin, recipe viewers |
-| `recipes` | the recipe registry and lookups | JEI/EMI-style viewers |
+| `recipes` (Starling: done) | an item's recipes and uses, the recipe book's filling of a grid | EMI, JEI-style viewers |
 | `ui` | widgets: text, item icons, lists, a screen the mod owns, a settings page in Options > Mods | built on `ui_theme` so it matches the menus |
 | `world-read` | blocks and biomes around the player, within the render distance | minimaps, schematics |
 | `world-draw` (Starling: done) | world-space lines, see-through boxes, texts and labels, kept in layers the game draws every frame | Light Overlay, waypoints; Litematica's ghost blocks next |

@@ -60,6 +60,7 @@ pub use starling::starling::mods::{
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
     level::{BlockInfo, Entity, EntityInfo, SpawnSpots},
+    recipes::{Lookup, Recipe, RecipeKind},
     slots::{ClickKind, Menu},
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
@@ -72,7 +73,7 @@ use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
         chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log as mod_log,
-        mobile, net, screens, slots, sound, storage, types, widgets, world_draw,
+        mobile, net, recipes, screens, slots, sound, storage, types, widgets, world_draw,
     },
 };
 
@@ -183,6 +184,32 @@ pub trait CreativeCatalog: Send + Sync {
     /// (its components' own place, else its item's first); None for one the tab lacks.
     fn order(&self, stack: &ItemStack) -> Option<u32>;
 }
+/// The game's recipes, for `recipes`.
+pub trait RecipeCatalog: Send + Sync {
+    /// How many recipes `lookup` finds for `stack` (by its item, and its components when it has
+    /// any) of each kind there are any of, in order.
+    fn count(&self, stack: &ItemStack, lookup: Lookup) -> Vec<(RecipeKind, u32)>;
+    /// Up to `count` of the recipes of `kind` `lookup` finds for `stack`, from `start`.
+    fn recipes(
+        &self,
+        stack: &ItemStack,
+        lookup: Lookup,
+        kind: RecipeKind,
+        start: usize,
+        count: usize,
+    ) -> Vec<Recipe>;
+    /// A recipe's kind and the grid it needs: its width and height, a shapeless one's inputs
+    /// and 0.
+    fn shape(&self, id: &str) -> Option<(RecipeKind, u32, u32)>;
+}
+/// What the open screen's recipe book places (`recipes.fill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Crafting {
+    /// A crafting grid this many cells a side (the inventory's 2, a crafting table's 3).
+    Grid(u32),
+    /// A furnace of this kind: smelting, blasting or smoking.
+    Furnace(RecipeKind),
+}
 /// A text's width in GUI pixels.
 pub type Measure = Arc<dyn Fn(&str) -> f32 + Send + Sync>;
 
@@ -215,6 +242,11 @@ pub struct Snapshot {
     pub items: Option<Arc<dyn ItemCatalog>>,
     /// The creative tabs (`creative`).
     pub creative: Option<Arc<dyn CreativeCatalog>>,
+    /// The recipes (`recipes`), and what the open screen's recipe book places.
+    pub recipes: Option<Arc<dyn RecipeCatalog>>,
+    pub crafting: Option<Crafting>,
+    /// The open game screen's window (`screens.get-window`): x, y, width, height.
+    pub window: Option<[f32; 4]>,
     pub measure: Option<Measure>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub keys_down: Vec<String>,
@@ -284,6 +316,12 @@ pub enum Output {
     ScreenSlots {
         id: String,
         slots: Vec<(u32, f32, f32)>,
+    },
+    /// `recipes.fill`: the recipe book's placing of recipe `recipe` in the open screen.
+    FillRecipe {
+        id: String,
+        recipe: String,
+        all: bool,
     },
     /// `creative.click`: a click on item `index` of tab `tab`'s list for `search`.
     CreativeClick {
@@ -1828,6 +1866,7 @@ fn js_linker(
             "inventory" => api::inventory::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "slots" => api::slots::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "creative" => api::creative::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "recipes" => api::recipes::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat" => api::chat::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat-send" => api::chat_send::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -2502,6 +2541,69 @@ impl screens::Host for State {
         self.out
             .retain(|o| !matches!(o, Output::ScreenSlots { id: owner, .. } if *owner == id));
         self.out.push(Output::ScreenSlots { id, slots });
+    }
+    fn get_window(&mut self) -> Option<(f32, f32, f32, f32)> {
+        self.snapshot.window.map(|[x, y, w, h]| (x, y, w, h))
+    }
+}
+/// `recipes.get-recipes`' page.
+const RECIPE_PAGE: u32 = 16;
+impl recipes::Host for State {
+    fn count_recipes(&mut self, stack: ItemStack, lookup: Lookup) -> Vec<(RecipeKind, u32)> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map(|r| r.count(&stack, lookup))
+            .unwrap_or_default()
+    }
+    fn get_recipes(
+        &mut self,
+        stack: ItemStack,
+        lookup: Lookup,
+        kind: RecipeKind,
+        start: u32,
+        count: u32,
+    ) -> Vec<Recipe> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map(|r| {
+                r.recipes(
+                    &stack,
+                    lookup,
+                    kind,
+                    start as usize,
+                    count.min(RECIPE_PAGE) as usize,
+                )
+            })
+            .unwrap_or_default()
+    }
+    fn fill(&mut self, id: String, all: bool) -> bool {
+        let Some((kind, width, height)) = self.snapshot.recipes.as_ref().and_then(|r| r.shape(&id))
+        else {
+            return false;
+        };
+        let fits = match self.snapshot.crafting {
+            // A shapeless recipe's inputs fill the grid in turn.
+            Some(Crafting::Grid(n)) if height == 0 => {
+                kind == RecipeKind::Crafting && width <= n * n
+            }
+            Some(Crafting::Grid(n)) => kind == RecipeKind::Crafting && width <= n && height <= n,
+            Some(Crafting::Furnace(furnace)) => kind == furnace,
+            None => false,
+        };
+        if fits {
+            let owner = self.id.clone();
+            // One fill a call: the last one asked.
+            self.out
+                .retain(|o| !matches!(o, Output::FillRecipe { id, .. } if *id == owner));
+            self.out.push(Output::FillRecipe {
+                id: owner,
+                recipe: id,
+                all,
+            });
+        }
+        fits
     }
 }
 impl slots::Host for State {

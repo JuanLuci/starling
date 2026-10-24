@@ -78,6 +78,9 @@ pub enum Capability {
     InventoryClick,
     /// The creative tabs' items, taken in creative mode (Starling's `creative`).
     Creative,
+    /// The game's recipes, and the recipe book's filling of a crafting grid (Starling's
+    /// `recipes`).
+    Recipes,
     Chat,
     ChatSend,
     Hud,
@@ -95,12 +98,13 @@ pub enum Capability {
     Registries,
 }
 impl Capability {
-    pub const ALL: [Capability; 16] = [
+    pub const ALL: [Capability; 17] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
         Capability::InventoryClick,
         Capability::Creative,
+        Capability::Recipes,
         Capability::Chat,
         Capability::ChatSend,
         Capability::Hud,
@@ -121,6 +125,7 @@ impl Capability {
             Capability::InventoryRead => &["inventory"],
             Capability::InventoryClick => &["slots"],
             Capability::Creative => &["creative"],
+            Capability::Recipes => &["recipes"],
             Capability::Chat => &["chat"],
             Capability::ChatSend => &["chat-send"],
             Capability::Hud => &["hud", "draw"],
@@ -142,6 +147,9 @@ impl Capability {
             Capability::InventoryRead => "see your items",
             Capability::InventoryClick => "move your items, in your inventory and what you open",
             Capability::Creative => "take items from the creative tabs, in creative mode",
+            Capability::Recipes => {
+                "see the recipes and fill a crafting grid with one's ingredients"
+            }
             Capability::Chat => "show you chat messages",
             Capability::ChatSend => "send chat messages and commands as you",
             Capability::Hud => "draw on your screen",
@@ -196,6 +204,7 @@ impl fmt::Display for Capability {
             Capability::InventoryRead => "inventory-read",
             Capability::InventoryClick => "inventory-click",
             Capability::Creative => "creative",
+            Capability::Recipes => "recipes",
             Capability::Chat => "chat",
             Capability::ChatSend => "chat-send",
             Capability::Hud => "hud",
