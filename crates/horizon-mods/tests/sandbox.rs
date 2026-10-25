@@ -530,6 +530,45 @@ fn waypoints_screen_keeps_and_points() {
     assert!(mods.screen_key(&screen, &key("key.keyboard.enter", "")));
     let ops = mods.screen_render(&screen, context());
     assert_eq!(labels(&ops)[0], "> Home (0 m)");
+    // In the world: a beam up from it, its diamond with its name over it and its distance under
+    // it seen through hills, the distance by the metre as the player walks away; the chosen
+    // place ringed, the ring with the texts.
+    let mut away = player();
+    away.player.as_mut().unwrap().x += 30.4;
+    mods.set_snapshot(away);
+    mods.tick(1);
+    let layers: Vec<(String, horizon_mods::WorldLayer)> =
+        mods.world_layers().flat_map(|(_, l)| l.to_vec()).collect();
+    let names: Vec<&str> = layers.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(names, ["beams"]);
+    let beam = &layers[0].1.lines[0];
+    assert_eq!(
+        (beam.origin.x, beam.origin.y, beam.origin.z),
+        (12.5, 64.0, -3.25)
+    );
+    assert_eq!(beam.ends, [0.0, 0.0, 0.0, 0.0, 256.0, 0.0]);
+    assert_eq!(
+        (beam.colors[0], layers[0].1.through_walls),
+        (0xC0FF_5555, false)
+    );
+    let icons: Vec<(String, Vec<horizon_mods::WorldIcon>)> =
+        mods.world_icons().flat_map(|(_, l)| l.to_vec()).collect();
+    assert_eq!(icons.len(), 1);
+    let (layer, marks) = &icons[0];
+    assert_eq!(layer, "marks");
+    let sprites: Vec<&str> = marks.iter().map(|i| i.sprite.as_str()).collect();
+    assert_eq!(sprites, ["waypoints:diamond_ring", "waypoints:diamond"]);
+    let (ring, diamond) = (&marks[0], &marks[1]);
+    assert_eq!(ring.above, r##"{"text":"Home","color":"#FF5555"}"##);
+    assert_eq!(ring.below, r##"{"text":"30 m","color":"#E0E0E0"}"##);
+    assert!(ring.fixed_size && ring.through_walls);
+    assert_eq!((ring.size, diamond.size), (17.0, 11.0));
+    assert_eq!((ring.color, diamond.color), (0xFFFF_FFFF, 0xFFFF_5555));
+    assert!(diamond.above.is_empty() && diamond.below.is_empty());
+    assert_eq!(
+        (diamond.at.x, diamond.at.y, diamond.at.z),
+        (12.5, 65.2, -3.25)
+    );
     // Kept on disk: a reload has it.
     let entries = Mods::load(&[dir.join("waypoints.hmod")], |_| true, |_| false);
     let mut reloaded = entries;
@@ -686,6 +725,45 @@ fn undeclared_capabilities_are_refused() {
     let mods = Mods::load(&[dir], |_| true, |_| false);
     let refused = Status::Failed("uses capability chat, missing from horizon-mod.toml".into());
     assert_eq!(mods.entries()[0].status, refused);
+}
+
+#[test]
+fn of_two_copies_the_newest_runs() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_guest.hmod"))
+        .unwrap()
+        .wasm
+        .expect("the guest has code");
+    let copy = |name: &str, age: u64| {
+        let dir = mods_dir().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("horizon-mod.toml"), GUEST_MANIFEST).unwrap();
+        std::fs::write(dir.join("mod.wasm"), &wasm).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("mod.wasm"))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        dir
+    };
+    // Whichever name comes first.
+    for (older, newer) in [("copy_a", "copy_b"), ("copy_d", "copy_c")] {
+        let (older, newer) = (copy(older, 600), copy(newer, 60));
+        let mut paths = [older.clone(), newer.clone()];
+        paths.sort();
+        let mods = Mods::load(&paths, |_| true, |_| false);
+        let status = |dir: &PathBuf| {
+            let entry = mods.entries().iter().find(|e| &e.path == dir).unwrap();
+            entry.status.clone()
+        };
+        assert_eq!(status(&newer), Status::Running);
+        let name = newer.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            status(&older),
+            Status::Failed(format!("an older copy: {name} runs"))
+        );
+    }
 }
 
 #[test]
@@ -992,12 +1070,21 @@ fn duplicate_mod_ids_are_refused() {
     let second = dir.join("second.hmod");
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &first).unwrap();
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &second).unwrap();
+    // The second an hour older: of copies the newest runs, and two copied in a row may differ
+    // by nanoseconds either way.
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&second)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
     // Both declare id "test_guest" (the guest's own manifest): sharing a
     // `data_dir` would let the second read, overwrite or delete the
-    // first's storage, so only the first-loaded one may start.
+    // first's storage, so only one of them may start.
     let mods = Mods::load(&[first, second], |_| true, |_| false);
     assert_eq!(mods.entries()[0].status, Status::Running);
-    let refused = Status::Failed("another running mod already uses id test_guest".into());
+    let refused = Status::Failed("an older copy: first.hmod runs".into());
     assert_eq!(mods.entries()[1].status, refused);
 }
 
@@ -1232,4 +1319,1964 @@ export const events = {
     }
     assert_eq!(mods.drain(), []);
     assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+/// The creative tabs a test mod reads: two of building blocks, and the search over them.
+struct Tabs;
+impl horizon_mods::CreativeCatalog for Tabs {
+    fn tabs(&self) -> Vec<horizon_mods::Tab> {
+        let tab = |id: &str, kind, column| horizon_mods::Tab {
+            id: id.into(),
+            title: id.into(),
+            icon: "minecraft:stone".into(),
+            kind,
+            top: true,
+            column,
+            size: 2,
+        };
+        vec![
+            tab(
+                "minecraft:building_blocks",
+                horizon_mods::TabKind::Category,
+                0,
+            ),
+            tab("minecraft:search", horizon_mods::TabKind::Search, 6),
+            tab("minecraft:inventory", horizon_mods::TabKind::Inventory, 6),
+        ]
+    }
+    fn items(&self, tab: &str, search: &str, start: usize, count: usize) -> horizon_mods::ItemPage {
+        let all: Vec<ItemStack> = ["stone", "dirt"]
+            .iter()
+            .filter(|id| tab == "minecraft:building_blocks" || id.contains(search))
+            .map(|id| stack(&format!("minecraft:{id}"), 1))
+            .collect();
+        horizon_mods::ItemPage {
+            total: all.len() as u32,
+            items: all.into_iter().skip(start).take(count).collect(),
+        }
+    }
+    /// The search tab's order, past its two items too (for sorting).
+    fn order(&self, stack: &ItemStack) -> Option<u32> {
+        ORDER
+            .iter()
+            .position(|id| stack.id == format!("minecraft:{id}"))
+            .map(|p| p as u32)
+    }
+}
+/// The order the test tabs give items (`inventory.get-item-order`).
+const ORDER: [&str; 8] = [
+    "stone",
+    "dirt",
+    "cobblestone",
+    "oak_log",
+    "oak_planks",
+    "bow",
+    "arrow",
+    "bread",
+];
+/// Items stacking to 64, for the `creative` checks.
+struct Items;
+impl horizon_mods::ItemCatalog for Items {
+    fn info(&self, id: &str) -> Option<horizon_mods::ItemInfo> {
+        Some(horizon_mods::ItemInfo {
+            id: id.into(),
+            name: id.into(),
+            max_stack_size: 64,
+            max_damage: 0,
+            food: None,
+        })
+    }
+}
+fn stack(id: &str, count: u32) -> ItemStack {
+    ItemStack {
+        id: id.into(),
+        count,
+        damage: 0,
+        max_damage: 0,
+        name: id.into(),
+        components: String::new(),
+    }
+}
+/// A player in `mode` with the test tabs, the items and an empty inventory menu.
+fn creative_world(mode: GameMode) -> Snapshot {
+    let mut world = player();
+    if let Some(p) = &mut world.player {
+        p.game_mode = mode;
+    }
+    world.creative = Some(std::sync::Arc::new(Tabs));
+    world.items = Some(std::sync::Arc::new(Items));
+    world.menu = Some(horizon_mods::Menu {
+        kind: "minecraft:inventory".into(),
+        slots: vec![None; 46],
+        carried: None,
+    });
+    world
+}
+
+/// `creative`: the tabs and the search read, items taken only in creative mode and only as the
+/// creative screen may (slots 1 to 45, no more than a stack); `screens.replace` takes only the
+/// creative screen; `draw.player` and `draw.item-tooltip` drawn.
+#[test]
+fn creative_takes_items_as_the_creative_screen_does() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-creative");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"
+name = \"Probe\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"creative\", \"hud\", \"ui\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { getTabs, getItems, click, setSlot, setCarried } from "starling:mods/creative@0.1.0";
+import { replace } from "starling:mods/screens@0.1.0";
+import { fill, item, itemId, player, itemTooltip } from "starling:mods/draw@0.1.0";
+const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
+export const events = {
+  init() {
+    return {
+      commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: true,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) {
+    const stone = { id: "minecraft:stone", count: 64, damage: 0, maxDamage: 0, name: "Stone", components: "" };
+    switch (args) {
+      case "read": {
+        const tabs = getTabs().map((t) => `${t.id}:${t.kind}`).join(",");
+        const page = getItems("minecraft:search", "dir", 0, 10);
+        const all = getItems("minecraft:building_blocks", "ignored", 1, 10);
+        return `${tabs}|${page.total} ${page.items.map((s) => s.id)}|${all.total} ${all.items.map((s) => s.id)}`;
+      }
+      case "take":
+        return [
+          tryIt(() => click("minecraft:building_blocks", "", 1, 0, "quick-move")),
+          tryIt(() => setSlot(36, stone)),
+          tryIt(() => setSlot(0, stone)),
+          tryIt(() => setSlot(46, stone)),
+          tryIt(() => setSlot(9, { ...stone, count: 65 })),
+          tryIt(() => setCarried(undefined)),
+        ].join(",");
+      case "replace":
+        return [replace("pause", "x"), replace("creative", "Bad Name"), replace("creative", "inv")].join(",");
+      case "give back":
+        return `${replace("creative", "")}`;
+    }
+  },
+  hudRender(context) {
+    const stone = { id: "minecraft:stone", count: 3, damage: 0, maxDamage: 0, name: "Stone", components: "{\"minecraft:rarity\":\"epic\"}" };
+    fill(0, 0, 1, 1, 0xFF000000);
+    item(1, 2, stone);
+    itemId(3, 4, "minecraft:dirt");
+    fill(5, 6, 1, 1, 0xFF000000);
+    player(10, 20, 30, 40, 25, 15);
+    itemTooltip(7, 8, stone);
+  },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let feedback = |mods: &mut Mods, args: &str| -> (String, Vec<Output>) {
+        assert!(mods.command(&format!("probe {args}")));
+        let mut said = None;
+        let rest = mods
+            .drain()
+            .into_iter()
+            .filter(|o| match o {
+                Output::Feedback { text, .. } => {
+                    said = Some(text.clone());
+                    false
+                }
+                _ => true,
+            })
+            .collect();
+        (said.unwrap_or_default(), rest)
+    };
+
+    mods.set_snapshot(creative_world(GameMode::Survival));
+    let (read, _) = feedback(&mut mods, "read");
+    assert_eq!(
+        read,
+        "minecraft:building_blocks:category,minecraft:search:search,minecraft:inventory:inventory\
+         |1 minecraft:dirt|2 minecraft:dirt"
+    );
+    let (took, outputs) = feedback(&mut mods, "take");
+    let survival = "only in creative mode";
+    assert_eq!(took, [survival; 6].join(","));
+    assert_eq!(outputs, []);
+
+    mods.set_snapshot(creative_world(GameMode::Creative));
+    let (took, outputs) = feedback(&mut mods, "take");
+    assert!(
+        took.starts_with("ok,ok,the inventory menu's slot 0"),
+        "{took}"
+    );
+    assert!(took.contains(",the inventory menu's slot 46"), "{took}");
+    assert!(
+        took.ends_with(",65 of minecraft:stone (it stacks to 64),ok"),
+        "{took}"
+    );
+    assert_eq!(
+        outputs,
+        [
+            Output::CreativeClick {
+                id: "probe".into(),
+                tab: "minecraft:building_blocks".into(),
+                search: String::new(),
+                index: 1,
+                button: 0,
+                kind: horizon_mods::CreativeClick::QuickMove,
+            },
+            Output::CreativeSlot {
+                id: "probe".into(),
+                slot: 36,
+                stack: Some(ItemStack {
+                    name: "Stone".into(),
+                    ..stack("minecraft:stone", 64)
+                }),
+            },
+            Output::CreativeCarried {
+                id: "probe".into(),
+                stack: None,
+            },
+        ]
+    );
+
+    let (replaced, _) = feedback(&mut mods, "replace");
+    assert_eq!(replaced, "false,false,true");
+    assert_eq!(mods.replacement("creative").as_deref(), Some("probe:inv"));
+    assert_eq!(mods.replacement("pause"), None);
+    let (given, _) = feedback(&mut mods, "give back");
+    assert_eq!(given, "true");
+    assert_eq!(mods.replacement("creative"), None);
+
+    // Items go in the render hook's queue, in order with the fills, as their calls drew them.
+    let ops = mods.hud_render(context());
+    let summary: Vec<String> = ops
+        .iter()
+        .map(|op| match op {
+            DrawOp::Fill { x, .. } => format!("fill {x}"),
+            DrawOp::Item { x, y, stack } => format!(
+                "item {x} {y} {} {} {}",
+                stack.id, stack.count, stack.components
+            ),
+            DrawOp::ItemId { x, y, id } => format!("item-id {x} {y} {id}"),
+            DrawOp::Player {
+                x,
+                y,
+                w,
+                h,
+                size,
+                turn,
+            } => format!("player {x} {y} {w} {h} {size} {turn}"),
+            DrawOp::ItemTooltip { x, y, stack } => format!("tooltip {x} {y} {}", stack.id),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            "fill 0",
+            "item 1 2 minecraft:stone 3 {\"minecraft:rarity\":\"epic\"}",
+            "item-id 3 4 minecraft:dirt",
+            "fill 5",
+            "player 10 20 30 40 25 15",
+            "tooltip 7 8 minecraft:stone",
+        ]
+    );
+}
+
+/// `slots.drag`: the mouse's drag across slots (QUICK_CRAFT), its clicks (its start, a slot each,
+/// its end) counted with a call's other clicks; a button past 2 or a slot no menu has refused.
+/// `mobile.drag-areas`: the last call's boxes, the bad ones left out. `widgets.add-window-button`
+/// refuses a button without a size or with a bad menu name; `inventory.get-item-order` is the
+/// creative search tab's place.
+#[test]
+fn slots_drag_is_the_mouses_drag() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-drag");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"
+name = \"Probe\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"inventory-click\", \"inventory-read\", \"ui\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { click, drag } from "starling:mods/slots@0.1.0";
+import { dragAreas } from "starling:mods/mobile@0.1.0";
+import { getItemOrder } from "starling:mods/inventory@0.1.0";
+import { addWindowButton } from "starling:mods/widgets@0.1.0";
+const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
+export const events = {
+  init() {
+    return {
+      commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) {
+    if (args === "areas") {
+      dragAreas([[0, 0, 10, 10], [1, 2, -3, 4]]);
+      dragAreas([[5, 6, 7, 8], [1, 2, 0, 4]]);
+      return "ok";
+    }
+    if (args === "window") {
+      const one = (id) => ({ id, label: "", tooltip: [], icon: "", menus: [] });
+      const order = (id) => `${getItemOrder({ id, count: 1, damage: 0, maxDamage: 0, name: "", components: "" })}`;
+      return [
+        tryIt(() => addWindowButton({ ...one("a"), part: "container", anchor: "top-right", x: -1, y: -13, width: 12, height: 12 })),
+        tryIt(() => addWindowButton({ ...one("b"), part: "inventory", anchor: "top-right", x: -1, y: -13, width: 0, height: 12 })),
+        tryIt(() => addWindowButton({ ...one("c"), part: "inventory", anchor: "top-right", x: 0, y: 0, width: 4, height: 4, menus: ["Not A Menu"] })),
+        order("minecraft:dirt"), order("minecraft:bread"), order("minecraft:barrier"),
+      ].join(",");
+    }
+    const many = Array.from({ length: 60 }, (_, i) => i + 1);
+    return [
+      tryIt(() => drag([1, 2, 3], 3)),
+      tryIt(() => drag([1, 200], 0)),
+      tryIt(() => drag([1, 2, 3], 1)),
+      tryIt(() => click(5, 0, "pickup")),
+      tryIt(() => drag(many, 0)),
+    ].join(",");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("probe drag"));
+    let mut said = None;
+    let rest: Vec<Output> = mods
+        .drain()
+        .into_iter()
+        .filter(|o| match o {
+            Output::Feedback { text, .. } => {
+                said = Some(text.clone());
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    // 5 clicks queued (3 slots and the drag's start and end) and 1: 60 more and 2 are too many.
+    assert_eq!(
+        said.as_deref(),
+        Some("no drag with button 3: 0 to 2,no menu has slot 200,ok,ok,at most 64 clicks a call")
+    );
+    assert_eq!(
+        rest,
+        [
+            Output::Drag {
+                id: "probe".into(),
+                slots: vec![1, 2, 3],
+                button: 1,
+            },
+            Output::Click {
+                id: "probe".into(),
+                slot: 5,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+        ]
+    );
+    let world = creative_world(GameMode::Survival);
+    mods.set_snapshot(world);
+    assert!(mods.command("probe window"));
+    let said: Vec<String> = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Feedback { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        said,
+        ["ok,button b has no size,\"Not A Menu\" is not a menu's name,1,7,undefined"]
+    );
+    assert_eq!(
+        mods.widgets()
+            .flat_map(|(_, w)| w.window.iter().map(|b| b.id.clone()))
+            .collect::<Vec<_>>(),
+        ["a"]
+    );
+    assert!(mods.command("probe areas"));
+    let areas: Vec<Output> = mods
+        .drain()
+        .into_iter()
+        .filter(|o| matches!(o, Output::DragAreas { .. }))
+        .collect();
+    assert_eq!(
+        areas,
+        [Output::DragAreas {
+            id: "probe".into(),
+            areas: vec![[5.0, 6.0, 7.0, 8.0]],
+        }]
+    );
+}
+
+/// A level of stone floor at y 63 under air, lit as the mod is told.
+struct Floor;
+impl horizon_mods::LevelView for Floor {
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        Some(
+            if pos[1] == 63 {
+                "minecraft:stone"
+            } else {
+                "minecraft:air"
+            }
+            .into(),
+        )
+    }
+    fn biome(&self, _: [i32; 3]) -> Option<String> {
+        Some("minecraft:plains".into())
+    }
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
+        Some((0, if pos[0] < 0 { 0 } else { 15 }))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        let mut out = horizon_mods::SpawnSpots::default();
+        for y in from[1]..=to[1] {
+            for z in from[2]..=to[2] {
+                for x in from[0]..=to[0] {
+                    if y == 64 {
+                        let (block_light, sky_light) = self.light([x, y, z]).unwrap();
+                        out.push([x, y, z], block_light, sky_light, 0.0);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+#[test]
+fn world_layers_keep_their_lines_and_labels() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-world-draw");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"
+name = \"Probe\"
+version = \"1\"
+api = \"starling-0.1\"
+capabilities = [\"world-draw\", \"world-read\"]
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { setLayer, removeLayer, setIcons } from "starling:mods/world-draw@0.1.0";
+import { getSpawnSpots } from "starling:mods/level@0.1.0";
+const tryIt = (f) => { try { f(); return "ok"; } catch (e) { return `${e.payload === undefined ? e : e.payload}`; } };
+export const events = {
+  init() {
+    return {
+      commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false,
+    };
+  },
+  command(name, args) {
+    if (args === "spots") {
+      const s = getSpawnSpots({ x: 1, y: 70, z: 2 }, { x: -1, y: 60, z: 1000 });
+      const n = s.skyLight.length, p = s.positions;
+      return `${n},${p.length},${p[0]},${p[2]},${s.skyLight[0]},${p[p.length - 1]},${p.constructor.name},${s.tops.constructor.name}`;
+    }
+    if (args === "remove") {
+      removeLayer("a");
+      return "ok";
+    }
+    const origin = { x: 10, y: 64, z: -5 };
+    return [
+      tryIt(() => setLayer("a", {
+        lines: [{ origin, ends: [0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1], colors: [0xFFFF0000, 0x80FFFF00] }],
+        boxes: [{ origin, corners: [0, 0, 0, 1, 0.0625, 1], colors: [0x7F00FF00] }],
+        texts: [{ origin, places: [0.5, 0, 0.5, 1.5, 0, 0.5], lines: ["7", "15"], colors: [0xFFFF6600], facing: "up" }],
+        labels: [{ at: origin, text: "§aHome", fixedSize: true, background: 0xC0000000 }],
+        throughWalls: true,
+      })),
+      tryIt(() => setLayer("e", { texts: [{ origin, places: [0, 0, 0, 1, 0, 0], lines: ["a"], colors: [1] }] })),
+      tryIt(() => setLayer("f", { boxes: [{ origin, corners: [0, 0, 0, 1, 1, 1], colors: [1, 2] }] })),
+      tryIt(() => setLayer("b", { lines: [{ origin, ends: [0, 0, 0, 1, 0], colors: [1] }] })),
+      tryIt(() => setLayer("b", { lines: [{ origin, ends: [0, 0, 0, 1, 0, 1], colors: [1, 2] }] })),
+      tryIt(() => setLayer("", {})),
+      tryIt(() => setLayer("c", { lines: [{ origin, ends: new Float32Array(6 * 70000), colors: [1] }] })),
+      tryIt(() => setLayer("d", { labels: [{ at: { x: NaN, y: 0, z: 0 }, text: "x" }] })),
+      tryIt(() => setIcons("a", [{ at: origin, sprite: "probe:mark", color: 0xFF00FF00, size: 9,
+        above: "Up", below: "Down", fixedSize: true, throughWalls: true, background: 0x80000000 }])),
+      tryIt(() => setIcons("g", [{ at: origin, size: 0 }])),
+    ].join(",");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let said = |mods: &mut Mods| -> Vec<String> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(mods.command("probe draw"));
+    assert_eq!(
+        said(&mut mods),
+        [
+            "ok,2 places for texts, 1 lines,boxes need one colour for all, or one a box (2 for 1),\
+lines need a place and six finite numbers a line,lines need one colour for all, or one a line (2 for 1),\
+\"\" is not a layer's id (1 to 64 characters),\
+a mod draws at most 65536 lines, 16384 boxes, 16384 texts and 256 labels in the world,\
+label \"x\" needs a place and a size,ok,icon \"\" needs a place, a size and a text size"
+        ]
+    );
+    let layers: Vec<_> = mods
+        .world_layers()
+        .flat_map(|(id, l)| {
+            l.iter()
+                .map(move |(k, v)| (id.to_owned(), k.clone(), v.clone()))
+        })
+        .collect();
+    assert_eq!(layers.len(), 1);
+    let (id, name, layer) = &layers[0];
+    assert_eq!((id.as_str(), name.as_str()), ("probe", "a"));
+    assert!(layer.through_walls);
+    assert_eq!(
+        layer.lines[0].ends,
+        [0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    );
+    assert_eq!(layer.lines[0].colors, [0xFFFF_0000, 0x80FF_FF00]);
+    assert_eq!(layer.lines[0].width, 1.0);
+    let label = &layer.labels[0];
+    assert_eq!(
+        (label.text.as_str(), label.scale, label.fixed_size),
+        ("§aHome", 1.0, true)
+    );
+    assert_eq!(label.background, 0xC000_0000);
+    assert_eq!((label.at.x, label.at.y, label.at.z), (10.0, 64.0, -5.0));
+    assert_eq!(label.facing, horizon_mods::Facing::Camera);
+    assert_eq!(layer.boxes[0].corners, [0.0, 0.0, 0.0, 1.0, 0.0625, 1.0]);
+    assert_eq!(layer.boxes[0].colors, [0x7F00_FF00]);
+    let texts = &layer.texts[0];
+    assert_eq!(
+        (texts.lines.as_str(), texts.facing),
+        ("7\n15", horizon_mods::Facing::Up)
+    );
+    assert_eq!(
+        (texts.places.len(), texts.colors[0], texts.scale),
+        (6, 0xFFFF_6600, 1.0)
+    );
+    let icons: Vec<_> = mods.world_icons().flat_map(|(_, l)| l.to_vec()).collect();
+    assert_eq!(icons.len(), 1);
+    let icon = &icons[0].1[0];
+    assert_eq!(
+        (
+            icons[0].0.as_str(),
+            icon.sprite.as_str(),
+            icon.color,
+            icon.size
+        ),
+        ("a", "probe:mark", 0xFF00_FF00, 9.0)
+    );
+    assert_eq!((icon.above.as_str(), icon.below.as_str()), ("Up", "Down"));
+    assert_eq!((icon.text_scale, icon.background), (1.0, 0x8000_0000));
+    assert!(icon.fixed_size && icon.through_walls);
+    // Removing a layer removes its icons.
+    assert!(mods.command("probe remove"));
+    said(&mut mods);
+    assert_eq!(mods.world_layers().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    assert_eq!(mods.world_icons().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    // The spots of a box at most 64 a side, the corners in any order, the lowest first.
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floor));
+    mods.set_snapshot(world);
+    assert!(mods.command("probe spots"));
+    assert_eq!(
+        said(&mut mods),
+        ["192,576,-1,2,0,65,Int32Array,Float32Array"]
+    );
+}
+
+/// Floors of stone at `floors` under air, dark west of x 12 (sky light 0) and lit by a torch's
+/// 3 north of z -3, the rest in the sky's light; mushroom fields from x 20.
+struct Floors {
+    floors: Vec<i32>,
+}
+impl horizon_mods::LevelView for Floors {
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        Some(
+            if self.floors.contains(&(pos[1] - 1)) {
+                "minecraft:air"
+            } else {
+                "minecraft:stone"
+            }
+            .into(),
+        )
+    }
+    fn biome(&self, pos: [i32; 3]) -> Option<String> {
+        // From a biome cell's edge, as the game's are.
+        Some(
+            if pos[0] >= 20 {
+                "minecraft:mushroom_fields"
+            } else {
+                "minecraft:plains"
+            }
+            .into(),
+        )
+    }
+    fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
+        Some((
+            if pos[2] < -3 { 3 } else { 0 },
+            if pos[0] < 12 { 0 } else { 15 },
+        ))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        let mut out = horizon_mods::SpawnSpots::default();
+        for y in from[1]..=to[1] {
+            for z in from[2]..=to[2] {
+                for x in from[0]..=to[0] {
+                    if self.floors.contains(&(y - 1)) {
+                        let (block_light, sky_light) = self.light([x, y, z]).unwrap();
+                        let top = if x == 12 && z == -3 { 0.125 } else { 0.0 };
+                        out.push([x, y, z], block_light, sky_light, top);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A copy of an example in a folder of its own, its storage empty.
+fn example(name: &str, test: &str) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples")
+        .join(name);
+    // Its storage beside it fresh too.
+    let home = mods_dir().join(format!("{name}-{test}"));
+    let _ = std::fs::remove_dir_all(&home);
+    let dir = home.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in std::fs::read_dir(&from).unwrap() {
+        let file = file.unwrap();
+        if file.file_type().unwrap().is_file() {
+            std::fs::copy(file.path(), dir.join(file.file_name())).unwrap();
+        }
+    }
+    dir
+}
+
+/// Light Overlay marks the places monsters spawn in Lighty's colours, within its reach, in each
+/// of its modes, and keeps within a tick's time on open ground.
+#[test]
+fn light_overlay_marks_where_monsters_spawn() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("light-overlay", "marks");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(
+        std::slice::from_ref(&dir),
+        |_| true,
+        |_| false,
+        Some(&cache),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floors { floors: vec![63] }));
+    mods.set_snapshot(world.clone());
+    mods.key("light_overlay", "toggle", true);
+    let layer = |mods: &Mods| -> horizon_mods::WorldLayer {
+        let layers: Vec<_> = mods.world_layers().flat_map(|(_, l)| l.to_vec()).collect();
+        assert_eq!(layers.len(), 1, "{:?}", mods.entries()[0].status);
+        layers[0].1.clone()
+    };
+    let crosses = layer(&mods);
+    let lines = &crosses.lines[0];
+    // From the player's block (12, 64, -4): the floor's places closer than 12 blocks, but for
+    // the mushroom fields from x 20.
+    assert_eq!(
+        (lines.origin.x, lines.origin.y, lines.origin.z),
+        (12.0, 64.0, -4.0)
+    );
+    let places = (-11..=11)
+        .flat_map(|dx: i32| (-11..=11).map(move |dz: i32| (dx, dz)))
+        .filter(|(dx, dz)| dx * dx + dz * dz < 144 && 12 + dx < 20)
+        .count();
+    assert_eq!(lines.ends.len() / 12, places);
+    assert_eq!(lines.width, 2.0);
+    // A cross: corner to corner, a hair above the ground (a snow layer's top at (12, 64, -3)).
+    let at = |dx: f32, dz: f32| {
+        (0..places)
+            .find(|&i| lines.ends[i * 12] == dx + 0.01 && lines.ends[i * 12 + 2] == dz + 0.01)
+    };
+    let i = at(0.0, 1.0).unwrap();
+    assert_eq!(
+        &lines.ends[i * 12..i * 12 + 12],
+        &[
+            0.01, 0.13, 1.01, 0.99, 0.13, 1.99, 0.99, 0.13, 1.01, 0.01, 0.13, 1.99
+        ]
+    );
+    // Red in the dark, green by the torch, orange under the sky.
+    let color = |dx: f32, dz: f32| lines.colors[at(dx, dz).unwrap() * 2];
+    assert_eq!(color(-1.0, 2.0), 0xFFFF_0000);
+    assert_eq!(color(-1.0, -2.0), 0xFF00_FF00);
+    assert_eq!(color(1.0, 2.0), 0xFFFF_6600);
+    // The settings: the mode button (centred on a 320 by 240 GUI) goes to the next mode.
+    mods.key("light_overlay", "settings", true);
+    let opened = mods
+        .drain()
+        .into_iter()
+        .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "light_overlay:settings"));
+    assert!(opened);
+    let screen = "light_overlay:settings";
+    mods.screen_render(screen, context());
+    let press = |mods: &mut Mods, x: f32, y: f32| {
+        let event = |action| MouseEvent {
+            action,
+            x,
+            y,
+            button: 0,
+            scroll: 0.0,
+        };
+        mods.screen_mouse(screen, event(MouseAction::Press));
+        mods.screen_mouse(screen, event(MouseAction::Release));
+    };
+    // Numbers: the block light over the sky light, lying face up.
+    press(&mut mods, 100.0, 90.0);
+    let numbers = layer(&mods);
+    assert!(numbers.lines.is_empty() && numbers.boxes.is_empty());
+    let texts = &numbers.texts[0];
+    assert_eq!(texts.places.len() / 3, places * 2);
+    assert_eq!(
+        (texts.facing, texts.scale),
+        (horizon_mods::Facing::Up, 1.25)
+    );
+    let lines: Vec<&str> = texts.lines.split('\n').collect();
+    // The player looks north (yaw 180): the block light beyond, the sky light before.
+    let k = (0..places * 2)
+        .find(|&k| texts.places[k * 3] == -0.5 && texts.places[k * 3 + 2] == -1.5 - 0.1875)
+        .unwrap();
+    assert_eq!(
+        (lines[k], lines[k + 1], texts.colors[k]),
+        ("3", "0", 0xFF00_FF00)
+    );
+    assert_eq!(texts.places[(k + 1) * 3 + 2], -1.5 + 0.1875);
+    // Tiles: a see-through pixel a hair above the ground, its top's edges solid.
+    press(&mut mods, 100.0, 90.0);
+    let tiles = layer(&mods);
+    let boxes = &tiles.boxes[0];
+    assert_eq!(boxes.corners.len() / 6, places);
+    let b = (0..places)
+        .find(|&b| boxes.corners[b * 6] == -1.0 && boxes.corners[b * 6 + 2] == 2.0)
+        .unwrap();
+    assert_eq!(
+        &boxes.corners[b * 6..b * 6 + 6],
+        &[-1.0, 0.002, 2.0, 0.0, 0.0645, 3.0]
+    );
+    assert_eq!(boxes.colors[b], 0x4BFF_0000);
+    assert_eq!(tiles.lines[0].ends.len() / 6, places * 4);
+    // Markers: a see-through block.
+    press(&mut mods, 100.0, 90.0);
+    let markers = layer(&mods);
+    let boxes = &markers.boxes[0];
+    assert_eq!(
+        &boxes.corners[b * 6..b * 6 + 6],
+        &[-1.0, 0.002, 2.0, 0.0, 1.002, 3.0]
+    );
+    assert_eq!(boxes.colors[b], 0x36FF_0000);
+    // Green hidden: the torch's places go.
+    press(&mut mods, 100.0, 114.0);
+    let lit = (-11..=11)
+        .flat_map(|dx: i32| (-11..=11).map(move |dz: i32| (dx, dz)))
+        .filter(|(dx, dz)| dx * dx + dz * dz < 144 && 12 + dx < 20 && -4 + dz < -3)
+        .count();
+    assert_eq!(layer(&mods).boxes[0].corners.len() / 6, places - lit);
+    // Kept for the next start; toggled off, the marks go.
+    press(&mut mods, 100.0, 114.0);
+    press(&mut mods, 100.0, 90.0);
+    mods.key("light_overlay", "toggle", true);
+    assert_eq!(mods.world_layers().map(|(_, l)| l.len()).sum::<usize>(), 0);
+    drop(mods);
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    // Three floors in reach, back in the cross mode: a look each tick the player gets to another
+    // block, each within a tick's fuel.
+    let mut world = player();
+    world.level = Some(std::sync::Arc::new(Floors {
+        floors: vec![55, 63, 70],
+    }));
+    mods.set_snapshot(world.clone());
+    mods.key("light_overlay", "toggle", true);
+    assert_eq!(layer(&mods).lines[0].width, 2.0);
+    let start = Instant::now();
+    for t in 0..10 {
+        world.player.as_mut().unwrap().x -= 1.0;
+        mods.set_snapshot(world.clone());
+        mods.tick(t);
+    }
+    eprintln!("light overlay: {:?} a look", start.elapsed() / 10);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(layer(&mods).lines[0].origin.x, 2.0);
+    world.player.as_mut().unwrap().x = 12.5;
+    mods.set_snapshot(world.clone());
+    mods.tick(10);
+    let crosses = layer(&mods).lines[0].ends.len() / 12;
+    let expected = [-8i32, 0, 7]
+        .into_iter()
+        .flat_map(|dy| (-11..=11).flat_map(move |dx| (-11..=11).map(move |dz| (dx, dy, dz))))
+        .filter(|(dx, dy, dz)| dx * dx + dy * dy + dz * dz < 144 && 12 + dx < 20)
+        .count();
+    assert_eq!(crosses, expected);
+}
+
+/// A copy of the Bedrock Inventory example in a folder of its own, its storage (kept beside the
+/// mod: the settings a game with it as a dev mod saved) fresh.
+fn bedrock_inventory(test: &str) -> PathBuf {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples/bedrock-inventory");
+    let home = mods_dir().join(format!("bedrock-{test}"));
+    let _ = std::fs::remove_dir_all(&home);
+    let dir = home.join("bedrock-inventory");
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in ["horizon-mod.toml", "mod.js"] {
+        std::fs::copy(example.join(file), dir.join(file)).unwrap();
+    }
+    dir
+}
+
+/// Bedrock Inventory stands in for the creative screen and takes from the tabs with the mouse.
+#[test]
+fn bedrock_inventory_takes_from_the_creative_tabs() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let example = bedrock_inventory("takes");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(
+        mods.replacement("creative").as_deref(),
+        Some("bedrock_inventory:inventory")
+    );
+    let mut world = creative_world(GameMode::Creative);
+    if let Some(menu) = &mut world.menu {
+        menu.slots[36] = Some(stack("minecraft:bow", 1));
+    }
+    mods.set_snapshot(world);
+    let screen = "bedrock_inventory:inventory";
+    mods.screen_opened(screen);
+    // A phone's GUI: the creative window (the building blocks' two items, no hotbar row: the
+    // hotbar is the inventory's) and its inventory tab's window beside it.
+    let phone = RenderContext {
+        width: 533,
+        height: 240,
+        mouse_x: 0.0,
+        mouse_y: 0.0,
+        delta: 0.016,
+    };
+    let ops = mods.screen_render(screen, phone);
+    // The screen says where it draws the slots (screens.set-slots): the inventory's first at
+    // (277, 106), for other mods' window buttons.
+    let declared = mods.drain();
+    assert!(
+        declared.iter().any(
+            |o| matches!(o, Output::ScreenSlots { slots, .. } if slots.contains(&(9, 277.0, 106.0)))
+        ),
+        "{declared:?}"
+    );
+    let items: Vec<(String, f32, f32)> = ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Item { x, y, stack } => Some((stack.id.clone(), *x, *y)),
+            _ => None,
+        })
+        .collect();
+    for shown in [
+        ("minecraft:stone", 78.0, 70.0),
+        ("minecraft:dirt", 96.0, 70.0),
+        ("minecraft:bow", 277.0, 164.0),
+    ] {
+        assert!(
+            items.contains(&(shown.0.into(), shown.1, shown.2)),
+            "{shown:?} in {items:?}"
+        );
+    }
+    assert_eq!(
+        items.iter().filter(|i| i.0 == "minecraft:bow").count(),
+        1,
+        "{items:?}"
+    );
+    assert!(ops.iter().any(|op| matches!(op, DrawOp::Player { .. })));
+    // A click on the dirt takes it onto the cursor, as the creative screen's grid does.
+    let press = |x, y, action| MouseEvent {
+        action,
+        x,
+        y,
+        button: 0,
+        scroll: 0.0,
+    };
+    mods.screen_mouse(screen, press(100.0, 76.0, MouseAction::Press));
+    mods.screen_mouse(screen, press(100.0, 76.0, MouseAction::Release));
+    assert_eq!(
+        mods.drain(),
+        [Output::CreativeClick {
+            id: "bedrock_inventory".into(),
+            tab: "minecraft:building_blocks".into(),
+            search: String::new(),
+            index: 1,
+            button: 0,
+            kind: horizon_mods::CreativeClick::Pickup,
+        }]
+    );
+    // Carried, it goes into the slot the button is let go over.
+    let mut world = creative_world(GameMode::Creative);
+    if let Some(menu) = &mut world.menu {
+        menu.carried = Some(stack("minecraft:dirt", 1));
+    }
+    mods.set_snapshot(world);
+    mods.screen_mouse(screen, press(283.0, 112.0, MouseAction::Press));
+    assert_eq!(mods.drain(), []);
+    mods.screen_mouse(screen, press(283.0, 112.0, MouseAction::Release));
+    let clicked: Vec<(i32, u8)> = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Click {
+                slot,
+                button,
+                kind: horizon_mods::ClickKind::Pickup,
+                ..
+            } => Some((slot, button)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(clicked, [(9, 0)]);
+}
+
+/// Bedrock Inventory on a touch screen: a finger held on a stack chooses how much of it, a picked
+/// stack drawn across slots is shared out among them (`slots.drag`), and the tabs' items take
+/// away a stack put on them.
+#[test]
+fn bedrock_inventory_fingers_choose_spread_and_take_away() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let example = bedrock_inventory("fingers");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    let mut world = creative_world(GameMode::Creative);
+    world.touch = true;
+    if let Some(menu) = &mut world.menu {
+        menu.slots[36] = Some(stack("minecraft:oak_log", 16));
+        menu.slots[37] = Some(stack("minecraft:oak_planks", 64));
+        menu.slots[9] = Some(stack("minecraft:bow", 1));
+    }
+    mods.set_snapshot(world);
+    let screen = "bedrock_inventory:inventory";
+    mods.screen_opened(screen);
+    let phone = RenderContext {
+        width: 533,
+        height: 240,
+        mouse_x: 0.0,
+        mouse_y: 0.0,
+        delta: 0.05,
+    };
+    let finger = |action, x, y| MouseEvent {
+        action,
+        x,
+        y,
+        button: 0,
+        scroll: 0.0,
+    };
+    let tap = |mods: &mut Mods, x, y| {
+        mods.screen_mouse(screen, finger(MouseAction::Press, x, y));
+        mods.screen_mouse(screen, finger(MouseAction::Release, x, y));
+    };
+    mods.screen_render(screen, phone);
+    // Fingers drag (not scroll) on the inventory's window and on the scrollbar.
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::DragAreas { areas, .. } if areas.len() == 2))
+    );
+    let id = || "bedrock_inventory".to_owned();
+    // A tap picks the logs; a finger drawn across the crafting grid shares them out.
+    tap(&mut mods, 277.0, 164.0);
+    mods.screen_render(screen, phone);
+    mods.screen_mouse(screen, finger(MouseAction::Press, 397.0, 59.0));
+    for (x, y) in [(415.0, 59.0), (397.0, 77.0), (415.0, 77.0)] {
+        mods.screen_mouse(screen, finger(MouseAction::Drag, x, y));
+    }
+    mods.screen_mouse(screen, finger(MouseAction::Release, 415.0, 77.0));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::Click {
+                id: id(),
+                slot: 36,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+            Output::Drag {
+                id: id(),
+                slots: vec![1, 2, 3, 4],
+                button: 0,
+            },
+        ]
+    );
+    // A finger resting on the planks for a second chooses 9 of them (one, then faster), and a
+    // tap puts those 9 in another slot.
+    mods.screen_mouse(screen, finger(MouseAction::Press, 295.0, 164.0));
+    for _ in 0..14 {
+        mods.screen_render(screen, phone);
+    }
+    mods.screen_mouse(screen, finger(MouseAction::Release, 295.0, 164.0));
+    mods.screen_render(screen, phone);
+    tap(&mut mods, 313.0, 106.0);
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::CreativeSlot {
+                id: id(),
+                slot: 37,
+                stack: Some(stack("minecraft:oak_planks", 55)),
+            },
+            Output::CreativeCarried {
+                id: id(),
+                stack: Some(stack("minecraft:oak_planks", 9)),
+            },
+            Output::Click {
+                id: id(),
+                slot: 11,
+                button: 0,
+                kind: horizon_mods::ClickKind::Pickup,
+            },
+        ]
+    );
+    // The bow tapped onto a tab's item goes away.
+    tap(&mut mods, 277.0, 106.0);
+    tap(&mut mods, 114.0, 88.0);
+    assert_eq!(
+        mods.drain(),
+        [Output::CreativeSlot {
+            id: id(),
+            slot: 9,
+            stack: None,
+        }]
+    );
+}
+
+/// A left click (PICKUP, button 0) on a slot as the game does it: take, put, merge (64 a stack),
+/// swap.
+fn left_click(menu: &mut horizon_mods::Menu, slot: usize) {
+    let (here, hand) = (menu.slots[slot].take(), menu.carried.take());
+    let same = |a: &ItemStack, b: &ItemStack| a.id == b.id && a.components == b.components;
+    (menu.slots[slot], menu.carried) = match (here, hand) {
+        (here, None) => (None, here),
+        (None, hand) => (hand, None),
+        (Some(mut h), Some(mut c)) if same(&h, &c) => {
+            let put = (64 - h.count).min(c.count);
+            h.count += put;
+            c.count -= put;
+            (Some(h), (c.count > 0).then_some(c))
+        }
+        (here, hand) => (hand, here),
+    };
+}
+
+/// Inventory Buttons on a chest: its four buttons on the window's two parts; Sort merges and
+/// orders the chest by the creative order (over as many ticks as its clicks need, each tick's
+/// clicks leaving the hand empty), the inventory left alone; Sort inventory leaves the hotbar;
+/// Take all and Deposit all Shift-click each stack of their part.
+#[test]
+fn inventory_buttons_sort_take_and_deposit() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/starling-mod-sdk/examples/inventory-buttons");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let buttons: Vec<(String, horizon_mods::WindowPart, i32)> = mods
+        .widgets()
+        .flat_map(|(_, w)| w.window.iter())
+        .map(|b| (b.id.clone(), b.part, b.x as i32))
+        .collect();
+    use horizon_mods::WindowPart::{Container, Inventory};
+    assert_eq!(
+        buttons,
+        [
+            ("sort_container".to_owned(), Container, -1),
+            ("take_all".to_owned(), Container, -15),
+            ("sort_inventory".to_owned(), Inventory, -1),
+            ("deposit_all".to_owned(), Inventory, -15),
+        ]
+    );
+    let mut world = creative_world(GameMode::Survival);
+    let chest = |slots: &[(usize, &str, u32)]| {
+        let mut all = vec![None; 63];
+        for &(i, id, n) in slots {
+            all[i] = Some(stack(&format!("minecraft:{id}"), n));
+        }
+        horizon_mods::Menu {
+            kind: "minecraft:generic_9x3".into(),
+            slots: all,
+            carried: None,
+        }
+    };
+    world.menu = Some(chest(&[
+        (0, "bread", 3),
+        (2, "dirt", 40),
+        (5, "stone", 10),
+        (7, "dirt", 40),
+        (11, "bow", 1),
+        (13, "dirt", 5),
+        (20, "stone", 64),
+        (26, "oak_log", 7),
+        // The inventory's.
+        (30, "dirt", 9),
+        (60, "arrow", 16),
+    ]));
+    let press = |mods: &mut Mods, id: &str| {
+        mods.key("inventory_buttons", id, true);
+        mods.key("inventory_buttons", id, false);
+    };
+    // The game does each tick's clicks and shows the mod the menu they left.
+    let run = |mods: &mut Mods, world: &mut Snapshot| {
+        for tick in 0..10 {
+            let menu = world.menu.as_mut().unwrap();
+            for o in mods.drain() {
+                if let Output::Click {
+                    slot,
+                    button: 0,
+                    kind: horizon_mods::ClickKind::Pickup,
+                    ..
+                } = o
+                {
+                    left_click(menu, slot as usize);
+                }
+            }
+            assert!(
+                menu.carried.is_none(),
+                "the hand holds a stack after tick {tick}"
+            );
+            mods.set_snapshot(world.clone());
+            mods.tick(tick);
+        }
+    };
+    mods.set_snapshot(world.clone());
+    press(&mut mods, "sort_container");
+    run(&mut mods, &mut world);
+    let shown = |world: &Snapshot, range: std::ops::Range<usize>| -> Vec<String> {
+        let menu = world.menu.as_ref().unwrap();
+        range
+            .filter_map(|i| {
+                menu.slots[i]
+                    .as_ref()
+                    .map(|s| format!("{i}:{}x{}", &s.id[10..], s.count))
+            })
+            .collect()
+    };
+    assert_eq!(
+        shown(&world, 0..27),
+        [
+            "0:stonex64",
+            "1:stonex10",
+            "2:dirtx64",
+            "3:dirtx21",
+            "4:oak_logx7",
+            "5:bowx1",
+            "6:breadx3"
+        ]
+    );
+    assert_eq!(shown(&world, 27..63), ["30:dirtx9", "60:arrowx16"]);
+    // The inventory sorted, the hotbar (54 to 62 here) left.
+    press(&mut mods, "sort_inventory");
+    run(&mut mods, &mut world);
+    assert_eq!(shown(&world, 27..63), ["27:dirtx9", "60:arrowx16"]);
+    // Take all: a Shift-click on each of the chest's stacks; Deposit all: on the inventory's.
+    let quick = |mods: &mut Mods| -> Vec<i32> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Click {
+                    slot,
+                    kind: horizon_mods::ClickKind::QuickMove,
+                    ..
+                } => Some(slot),
+                _ => None,
+            })
+            .collect()
+    };
+    mods.set_snapshot(world.clone());
+    press(&mut mods, "take_all");
+    assert_eq!(quick(&mut mods), [0, 1, 2, 3, 4, 5, 6]);
+    press(&mut mods, "deposit_all");
+    assert_eq!(quick(&mut mods), [27]);
+}
+
+/// What a frame of Bedrock Inventory costs: the creative window full (a tab of 475 items), the
+/// inventory full; `cargo test --release -p horizon-mods --test sandbox bedrock_inventory_frame
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bedrock_inventory_frame_cost() {
+    struct Big;
+    impl horizon_mods::CreativeCatalog for Big {
+        fn tabs(&self) -> Vec<horizon_mods::Tab> {
+            Tabs.tabs()
+        }
+        fn items(&self, _: &str, _: &str, start: usize, count: usize) -> horizon_mods::ItemPage {
+            let all: Vec<ItemStack> = (0..475)
+                .map(|i| stack(&format!("minecraft:block_number_{i}"), 1))
+                .collect();
+            horizon_mods::ItemPage {
+                total: 475,
+                items: all.into_iter().skip(start).take(count).collect(),
+            }
+        }
+        fn order(&self, stack: &ItemStack) -> Option<u32> {
+            Tabs.order(stack)
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // BENCH_MOD: another folder (a variant of the mod) to measure.
+    let example = std::env::var_os("BENCH_MOD").map_or_else(
+        || root.join("crates/starling-mod-sdk/examples/bedrock-inventory"),
+        PathBuf::from,
+    );
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[example], |_| true, |_| false, Some(&cache));
+    let mut world = creative_world(GameMode::Creative);
+    world.creative = Some(std::sync::Arc::new(Big));
+    if let Some(menu) = &mut world.menu {
+        for (i, slot) in menu.slots.iter_mut().enumerate().skip(1) {
+            *slot = Some(stack("minecraft:oak_planks", i as u32));
+        }
+    }
+    let screen = "bedrock_inventory:inventory";
+    mods.screen_opened(screen);
+    let phone = RenderContext {
+        width: 533,
+        height: 240,
+        mouse_x: 100.0,
+        mouse_y: 76.0,
+        delta: 0.016,
+    };
+    for snapshot_each_frame in [false, true] {
+        mods.set_snapshot(world.clone());
+        let first = Instant::now();
+        mods.screen_render(screen, phone);
+        println!("the first frame: {} us", first.elapsed().as_micros());
+        let started = Instant::now();
+        for _ in 0..200 {
+            if snapshot_each_frame {
+                mods.set_snapshot(world.clone());
+            }
+            mods.screen_render(screen, phone);
+        }
+        let us = started.elapsed().as_secs_f64() * 1e6 / 200.0;
+        println!("a frame, new snapshot each: {snapshot_each_frame}: {us:.0} us");
+        // Nothing but where the screen draws its slots.
+        let out = mods.drain();
+        assert!(
+            out.iter().all(|o| matches!(o, Output::ScreenSlots { .. })),
+            "{out:?}"
+        );
+    }
+    assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+/// A cookbook of three: sticks from planks (shapeless), a torch (1 by 2), and a Potion of
+/// Healing brewed.
+struct Cookbook;
+impl Cookbook {
+    fn all() -> Vec<horizon_mods::Recipe> {
+        use horizon_mods::{Recipe, RecipeKind};
+        let healing = ItemStack {
+            components: "{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}".into(),
+            ..stack("minecraft:potion", 1)
+        };
+        let planks = vec![
+            stack("minecraft:oak_planks", 1),
+            stack("minecraft:spruce_planks", 1),
+        ];
+        let recipe = |id: &str, kind, width, height, inputs, outputs, station: &str| Recipe {
+            id: id.into(),
+            kind,
+            width,
+            height,
+            inputs,
+            outputs,
+            station: station.into(),
+            time: 0,
+            experience: 0.0,
+        };
+        vec![
+            recipe(
+                "minecraft:stick",
+                RecipeKind::Crafting,
+                0,
+                0,
+                vec![planks.clone(), planks],
+                vec![stack("minecraft:stick", 4)],
+                "minecraft:crafting_table",
+            ),
+            recipe(
+                "minecraft:torch",
+                RecipeKind::Crafting,
+                1,
+                2,
+                vec![
+                    vec![stack("minecraft:coal", 1)],
+                    vec![stack("minecraft:stick", 1)],
+                ],
+                vec![stack("minecraft:torch", 4)],
+                "minecraft:crafting_table",
+            ),
+            recipe(
+                "minecraft:brewing/healing",
+                RecipeKind::Brewing,
+                0,
+                0,
+                vec![
+                    vec![stack("minecraft:potion", 1)],
+                    vec![stack("minecraft:glistering_melon_slice", 1)],
+                ],
+                vec![healing],
+                "minecraft:brewing_stand",
+            ),
+        ]
+    }
+    fn found(stack: &ItemStack, lookup: horizon_mods::Lookup) -> Vec<horizon_mods::Recipe> {
+        let same = |s: &ItemStack| {
+            s.id == stack.id && (stack.components.is_empty() || s.components == stack.components)
+        };
+        Self::all()
+            .into_iter()
+            .filter(|r| match lookup {
+                horizon_mods::Lookup::Recipes => r.outputs.iter().any(same),
+                horizon_mods::Lookup::Uses => r.inputs.iter().flatten().any(same),
+            })
+            .collect()
+    }
+}
+impl horizon_mods::RecipeCatalog for Cookbook {
+    fn count(
+        &self,
+        stack: &ItemStack,
+        lookup: horizon_mods::Lookup,
+    ) -> Vec<(horizon_mods::RecipeKind, u32)> {
+        let mut out: Vec<(horizon_mods::RecipeKind, u32)> = Vec::new();
+        for r in Self::found(stack, lookup) {
+            match out.iter_mut().find(|(k, _)| *k == r.kind) {
+                Some((_, n)) => *n += 1,
+                None => out.push((r.kind, 1)),
+            }
+        }
+        out
+    }
+    fn recipes(
+        &self,
+        stack: &ItemStack,
+        lookup: horizon_mods::Lookup,
+        kind: horizon_mods::RecipeKind,
+        start: usize,
+        count: usize,
+    ) -> Vec<horizon_mods::Recipe> {
+        Self::found(stack, lookup)
+            .into_iter()
+            .filter(|r| r.kind == kind)
+            .skip(start)
+            .take(count)
+            .collect()
+    }
+    fn shape(&self, id: &str) -> Option<(horizon_mods::RecipeKind, u32, u32)> {
+        let r = Self::all().into_iter().find(|r| r.id == id)?;
+        Some(match r.height {
+            0 => (r.kind, r.inputs.len() as u32, 0),
+            h => (r.kind, r.width, h),
+        })
+    }
+}
+
+/// `recipes`: found by what they make and take (a stack with components only its own), paged;
+/// `fill` asks the game only for a recipe the open grid takes; `screens.get-window`.
+#[test]
+fn recipes_are_found_and_filled() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = mods_dir().join("js-recipes");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("horizon-mod.toml"),
+        "id = \"probe\"\nname = \"Probe\"\nversion = \"1\"\napi = \"starling-0.1\"\ncapabilities = [\"recipes\", \"ui\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.js"),
+        r#"import { countRecipes, getRecipes, fill } from "starling:mods/recipes@0.1.0";
+import { getWindow } from "starling:mods/screens@0.1.0";
+const s = (id, components = "") => ({ id, count: 1, damage: 0, maxDamage: 0, name: id, components });
+export const events = {
+  init() {
+    return { commands: ["probe"], tick: false, frame: false, chat: false, chatSend: false, hud: false,
+      hudElements: [], screens: false, tooltips: false, keybinds: [], channels: [],
+      connection: false, interaction: false, damage: false };
+  },
+  command(name, args) {
+    if (args === "fill") return [fill("minecraft:stick", true), fill("minecraft:torch", false), fill("minecraft:nothing", false)].join(",");
+    const sticks = getRecipes(s("minecraft:stick"), "recipes", "crafting", 0, 8);
+    const r = sticks[0];
+    const potion = s("minecraft:potion", "{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}");
+    return [
+      JSON.stringify(countRecipes(s("minecraft:stick"), "recipes")),
+      JSON.stringify(countRecipes(s("minecraft:stick"), "uses")),
+      `${r.id} ${r.kind} ${r.width}x${r.height} ${r.inputs.length} ${r.inputs[0].map((x) => x.id).join("+")} ${r.outputs[0].count} ${r.station}`,
+      getRecipes(s("minecraft:oak_planks"), "uses", "crafting", 1, 8).length,
+      JSON.stringify(countRecipes(s("minecraft:potion"), "recipes")),
+      JSON.stringify(countRecipes(potion, "recipes")),
+      JSON.stringify(countRecipes(s("minecraft:potion", "{other}"), "recipes")),
+      JSON.stringify(getWindow()),
+    ].join(" | ");
+  },
+};
+"#,
+    )
+    .unwrap();
+    let mut mods = Mods::load_cached(
+        &[dir],
+        |_| true,
+        |_| false,
+        Some(&mods_dir().join("js-cache")),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let said = |mods: &mut Mods| -> Vec<Output> { mods.drain() };
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.window = Some([125.0, 37.0, 176.0, 166.0]);
+    mods.set_snapshot(world.clone());
+    assert!(mods.command("probe find"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "[[\"crafting\",1]] | [[\"crafting\",1]] | \
+minecraft:stick crafting 0x0 2 minecraft:oak_planks+minecraft:spruce_planks 4 minecraft:crafting_table | 0 | \
+[[\"brewing\",1]] | [[\"brewing\",1]] | [] | [125,37,176,166]"
+                .into(),
+            error: false,
+        }]
+    );
+    // No grid open: nothing filled.
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "false,false,false".into(),
+            error: false
+        }]
+    );
+    // The inventory's 2 by 2 takes sticks (2 shapeless) and a torch (1 by 2): one fill a call,
+    // the last asked.
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    mods.set_snapshot(world.clone());
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [
+            Output::FillRecipe {
+                id: "probe".into(),
+                recipe: "minecraft:torch".into(),
+                all: false,
+            },
+            Output::Feedback {
+                text: "true,true,false".into(),
+                error: false
+            },
+        ]
+    );
+    // A furnace takes none of them.
+    world.crafting = Some(horizon_mods::Crafting::Furnace(
+        horizon_mods::RecipeKind::Smelting,
+    ));
+    mods.set_snapshot(world);
+    assert!(mods.command("probe fill"));
+    assert_eq!(
+        said(&mut mods),
+        [Output::Feedback {
+            text: "false,false,false".into(),
+            error: false
+        }]
+    );
+}
+
+/// The creative search lists planks, a stick and a torch.
+struct Shelf;
+impl horizon_mods::CreativeCatalog for Shelf {
+    fn tabs(&self) -> Vec<horizon_mods::Tab> {
+        vec![horizon_mods::Tab {
+            id: "minecraft:search".into(),
+            title: "Search".into(),
+            icon: "minecraft:compass".into(),
+            kind: horizon_mods::TabKind::Search,
+            top: true,
+            column: 6,
+            size: 3,
+        }]
+    }
+    fn items(
+        &self,
+        _tab: &str,
+        search: &str,
+        start: usize,
+        count: usize,
+    ) -> horizon_mods::ItemPage {
+        let all: Vec<ItemStack> = ["minecraft:oak_planks", "minecraft:stick", "minecraft:torch"]
+            .iter()
+            .filter(|id| id.contains(search))
+            .map(|id| stack(id, 1))
+            .collect();
+        horizon_mods::ItemPage {
+            total: all.len() as u32,
+            items: all.into_iter().skip(start).take(count).collect(),
+        }
+    }
+    fn order(&self, _: &ItemStack) -> Option<u32> {
+        None
+    }
+}
+
+/// EMI: the index beside the inventory's window, searched; a click opens an item's recipes, a
+/// right click its uses, on its recipes screen; + fills the grid and closes it; Backspace goes
+/// back.
+#[test]
+fn emi_shows_recipes_and_uses_beside_the_inventory() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("emi", "index");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(
+        std::slice::from_ref(&dir),
+        |_| true,
+        |_| false,
+        Some(&cache),
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.creative = Some(std::sync::Arc::new(Shelf));
+    world.window = Some([72.0, 37.0, 176.0, 166.0]);
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    mods.set_snapshot(world);
+    let ctx = |x: f32, y: f32| RenderContext {
+        width: 427,
+        height: 240,
+        mouse_x: x,
+        mouse_y: y,
+        delta: 0.05,
+    };
+    // Right of the window (from 252): 9 columns from 263, rows from 16.
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let items: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { stack, .. } => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items,
+        ["minecraft:oak_planks", "minecraft:stick", "minecraft:torch"]
+    );
+    let item_at = |ops: &[DrawOp], id: &str| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::Item { x, y, stack } if stack.id == id => Some((*x, *y)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (sx, sy) = item_at(&ops, "minecraft:stick");
+    let press = |x: f32, y: f32, button: u8| MouseEvent {
+        action: MouseAction::Press,
+        x,
+        y,
+        button,
+        scroll: 0.0,
+    };
+    // A click on the stick: its recipes.
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "emi:recipes"))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    let texts: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    // As EMI's: the station's bar and the page's, + and ++ right of the recipe; the index
+    // beside it, searched under it.
+    assert_eq!(texts, ["Crafting", "1/1", "+", "++", "1/1", "§7Search"]);
+    // In the panel (176 wide from 126): the shapeless recipe in the 3 by 3 grid, planks in the
+    // first two cells, 4 sticks out; the stick looked up in the row of buttons. The crafting
+    // table in the strip left of it.
+    let shown: Vec<&str> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { x, stack, .. } if (126.0..302.0).contains(x) => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "minecraft:oak_planks",
+            "minecraft:oak_planks",
+            "minecraft:stick",
+            "minecraft:stick"
+        ]
+    );
+    assert_eq!(item_at(&ops, "minecraft:crafting_table"), (109.0, 37.0));
+    // Right click on the planks in the recipe: their uses; Backspace: the stick's recipes again.
+    let (px, py) = item_at(&ops, "minecraft:oak_planks");
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Uses"))
+    );
+    let key = |k: &str| horizon_mods::KeyEvent {
+        key: k.into(),
+        pressed: true,
+        text: String::new(),
+        shift: false,
+        control: false,
+        alt: false,
+    };
+    assert!(mods.screen_key("emi:recipes", &key("key.keyboard.backspace")));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter().any(
+            |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
+        )
+    );
+    let button_at = |ops: &[DrawOp], name: &str| {
+        ops.iter().find_map(|o| match o {
+            DrawOp::Button { x, y, label, .. } if label == name => Some((*x, *y)),
+            _ => None,
+        })
+    };
+    // Every key has a button, for a phone: Back for Backspace (shown with somewhere to go back
+    // to), the star for A.
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Back"))
+    );
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 1));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    let (bx, by) = button_at(&ops, "Back").unwrap();
+    mods.screen_mouse("emi:recipes", press(bx + 2.0, by + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter().any(
+            |o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Recipes")
+        )
+    );
+    let star = |ops: &[DrawOp]| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::ItemId { x, y, id } if id == "minecraft:nether_star" => Some((*x, *y)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (tx, ty) = star(&ops);
+    mods.screen_mouse("emi:recipes", press(tx + 2.0, ty + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    // Framed in gold now: the stick is a favourite, left of the window.
+    assert!(ops.iter().any(|o| matches!(
+        o,
+        DrawOp::Fill {
+            color: 0xFFFF_D700,
+            ..
+        }
+    )));
+    let beside = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let left: Vec<&str> = beside
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { x, stack, .. } if *x < 72.0 => Some(stack.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left, ["minecraft:stick"]);
+    mods.screen_mouse("emi:recipes", press(tx + 2.0, ty + 2.0, 0));
+    let beside = mods.screen_render("inventory", ctx(0.0, 0.0));
+    assert!(
+        !beside
+            .iter()
+            .any(|o| matches!(o, DrawOp::Item { x, .. } if *x < 72.0))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    // EMI's buttons right of the recipe, + under ++: ++ fills as many as can be, as Shift and +.
+    let small: Vec<(f32, f32)> = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Button { x, y, w: 16.0, .. } => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(small.len(), 2);
+    assert_eq!(small[0].0, small[1].0);
+    assert_eq!(small[0].1 - small[1].1, 14.0);
+    let (ax, ay) = small[1];
+    mods.drain();
+    mods.screen_mouse("emi:recipes", press(ax + 2.0, ay + 2.0, 0));
+    let out = mods.drain();
+    assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: true, .. } if recipe == "minecraft:stick")), "{out:?}");
+    // The stick's recipes again, for +.
+    mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    // + fills the grid with the recipe and closes the screen.
+    let plus = ops
+        .iter()
+        .find_map(|o| match o {
+            DrawOp::Button { x, y, w: 16.0, .. } => Some((*x, *y)),
+            _ => None,
+        })
+        .unwrap();
+    mods.drain();
+    mods.screen_mouse("emi:recipes", press(plus.0 + 2.0, plus.1 + 2.0, 0));
+    let out = mods.drain();
+    assert!(out.iter().any(|o| matches!(o, Output::FillRecipe { recipe, all: false, .. } if recipe == "minecraft:stick")), "{out:?}");
+    assert!(out.iter().any(|o| matches!(o, Output::CloseScreen { .. })));
+    // On a touch screen (no hover): a tap picks a stack and shows its tooltip, a second tap on it
+    // its recipes; picked in a recipe, it is what the buttons under the recipes act on.
+    let mut world = player();
+    world.recipes = Some(std::sync::Arc::new(Cookbook));
+    world.creative = Some(std::sync::Arc::new(Shelf));
+    world.window = Some([72.0, 37.0, 176.0, 166.0]);
+    world.crafting = Some(horizon_mods::Crafting::Grid(2));
+    world.touch = true;
+    mods.set_snapshot(world);
+    mods.screen_opened("inventory");
+    mods.drain();
+    let tooltip_of = |ops: &[DrawOp]| {
+        ops.iter().find_map(|o| match o {
+            DrawOp::ItemTooltip { stack, .. } => Some(stack.id.clone()),
+            _ => None,
+        })
+    };
+    // The index under the game's close button there (from 40, not 16), its arrows under it.
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    let (sx, sy) = item_at(&ops, "minecraft:stick");
+    assert_eq!(sy, 41.0);
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Sprite { y, sprite, .. }
+        if sprite.starts_with("recipe_book/page_forward") && *y == 220.0))
+    );
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(mods.drain().is_empty());
+    let ops = mods.screen_render("inventory", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops).as_deref(), Some("minecraft:stick"));
+    assert!(mods.screen_mouse("inventory", press(sx + 4.0, sy + 4.0, 0)));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::OpenScreen { screen } if screen == "emi:recipes"))
+    );
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops), None);
+    let (px, py) = item_at(&ops, "minecraft:oak_planks");
+    mods.screen_mouse("emi:recipes", press(px + 2.0, py + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert_eq!(tooltip_of(&ops).as_deref(), Some("minecraft:oak_planks"));
+    // The planks in the row of buttons, Recipes and Uses both theirs to show.
+    let subject = ops
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Item { y, stack, .. } if *y > 180.0 && (126.0..302.0).contains(&stack_x(o)) => {
+                Some(stack.id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(subject, ["minecraft:oak_planks"]);
+    let (ux, uy) = button_at(&ops, "Uses").unwrap();
+    mods.screen_mouse("emi:recipes", press(ux + 2.0, uy + 2.0, 0));
+    let ops = mods.screen_render("emi:recipes", ctx(0.0, 0.0));
+    assert!(
+        ops.iter()
+            .any(|o| matches!(o, DrawOp::Button { label, active: false, .. } if label == "Uses"))
+    );
+    assert_eq!(tooltip_of(&ops), None);
+}
+
+/// Where an item op is drawn across.
+fn stack_x(o: &DrawOp) -> f32 {
+    match o {
+        DrawOp::Item { x, .. } => *x,
+        _ => f32::NAN,
+    }
+}
+
+/// ShulkerBoxTooltip: a box's contents, from its components' SNBT, as a grid on its colour in
+/// place of the game's lines; each kind once, or with Shift each slot where it is; `add-grid`
+/// only from the tooltip hook.
+#[test]
+fn shulker_box_tooltip_shows_the_contents_as_slots() {
+    if !horizon_mods::has_js_engine() {
+        eprintln!("no JavaScript engine in this build: skipped");
+        return;
+    }
+    let dir = example("shulker-box-tooltip", "grid");
+    let cache = mods_dir().join("js-cache");
+    let mut mods = Mods::load_cached(&[dir], |_| true, |_| false, Some(&cache));
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    // As the game writes a box holding stone twice, a sharp sword and dirt.
+    let components = "{minecraft:container:[{item:{count:64,id:\"minecraft:stone\"},slot:0},\
+{item:{components:{minecraft:enchantments:{\"minecraft:sharpness\":5}},count:1,id:\"minecraft:diamond_sword\"},slot:4},\
+{item:{count:10,id:\"minecraft:stone\"},slot:9},{item:{count:3,id:\"minecraft:dirt\"},slot:26}]}";
+    let boxed = ItemStack {
+        components: components.into(),
+        ..stack("minecraft:red_shulker_box", 1)
+    };
+    let (lines, grids, instead) = mods.tooltip_grids(&boxed);
+    assert_eq!(lines, ["§8Shift: each slot"]);
+    assert!(instead);
+    let grid = &grids[0];
+    assert_eq!((grid.columns, grid.color), (3, 0xFFB0_2E26));
+    let kinds: Vec<(String, u32, String)> = grid
+        .stacks
+        .iter()
+        .flatten()
+        .map(|s| (s.id.clone(), s.count, s.components.clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("minecraft:stone".into(), 74, String::new()),
+            (
+                "minecraft:diamond_sword".into(),
+                1,
+                "{minecraft:enchantments:{\"minecraft:sharpness\":5}}".into()
+            ),
+            ("minecraft:dirt".into(), 3, String::new()),
+        ]
+    );
+    // Shift: the box's 27 slots, 9 a row, each stack in its own.
+    let key = |pressed| horizon_mods::KeyEvent {
+        key: "key.keyboard.left.shift".into(),
+        pressed,
+        text: String::new(),
+        shift: pressed,
+        control: false,
+        alt: false,
+    };
+    mods.screen_key("inventory", &key(true));
+    let (lines, grids, _) = mods.tooltip_grids(&boxed);
+    assert!(lines.is_empty());
+    let grid = &grids[0];
+    assert_eq!((grid.columns, grid.stacks.len()), (9, 27));
+    let at = |i: usize| grid.stacks[i].as_ref().map(|s| (s.id.as_str(), s.count));
+    assert_eq!(at(0), Some(("minecraft:stone", 64)));
+    assert_eq!(at(1), None);
+    assert_eq!(at(9), Some(("minecraft:stone", 10)));
+    assert_eq!(at(26), Some(("minecraft:dirt", 3)));
+    // A phone has no Shift: the Config screen picks the preview shown without it, kept; Shift
+    // then shows the other.
+    mods.screen_key("inventory", &key(false));
+    assert_eq!(
+        mods.config_screen("shulker_box_tooltip").as_deref(),
+        Some("shulker_box_tooltip:settings")
+    );
+    let settings = "shulker_box_tooltip:settings";
+    let ctx = RenderContext {
+        width: 427,
+        height: 240,
+        mouse_x: 0.0,
+        mouse_y: 0.0,
+        delta: 0.05,
+    };
+    let preview = |ops: &[DrawOp]| {
+        ops.iter()
+            .find_map(|o| match o {
+                DrawOp::Button { x, y, label, .. } if label.starts_with("Preview") => {
+                    Some((*x, *y, label.clone()))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (bx, by, label) = preview(&mods.screen_render(settings, ctx));
+    assert_eq!(label, "Preview: Compact");
+    let tap = MouseEvent {
+        action: MouseAction::Press,
+        x: bx + 4.0,
+        y: by + 4.0,
+        button: 0,
+        scroll: 0.0,
+    };
+    assert!(mods.screen_mouse(settings, tap));
+    assert_eq!(
+        preview(&mods.screen_render(settings, ctx)).2,
+        "Preview: Each slot"
+    );
+    let (lines, grids, _) = mods.tooltip_grids(&boxed);
+    assert_eq!(lines, ["§8Shift: together"]);
+    assert_eq!(grids[0].stacks.len(), 27);
+    mods.screen_key("inventory", &key(true));
+    let (_, grids, _) = mods.tooltip_grids(&boxed);
+    assert_eq!(grids[0].stacks.len(), 3);
+    // An empty box, and a stick: the game's own tooltip.
+    let (lines, grids, instead) = mods.tooltip_grids(&stack("minecraft:shulker_box", 1));
+    assert!(lines.is_empty() && grids.is_empty() && !instead);
 }

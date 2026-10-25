@@ -186,7 +186,11 @@ impl Game<'_> {
         let WindowEvent::Touch(t) = event else {
             return false;
         };
-        self.touch.seen = true;
+        if !self.touch.seen {
+            self.touch.seen = true;
+            // Mods read the touch screen from this first finger on (`mobile.has-touch`).
+            self.refresh_mod_snapshot();
+        }
         self.last_input = Instant::now();
         // The offer of the Starling folder, over the title, takes the touches while it shows.
         #[cfg(target_os = "android")]
@@ -467,6 +471,14 @@ impl Game<'_> {
     fn on_scrollbar(&self, p: [f32; 2]) -> bool {
         let batch = HudBatch::new(self.touch_size());
         let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
+        // A mod's screen: where it said a finger drags (`mobile.drag-areas`).
+        if self.mods.screen.is_some() {
+            return self
+                .mods
+                .drag_areas
+                .iter()
+                .any(|a| x >= a[0] && x < a[0] + a[2] && y >= a[1] && y < a[1] + a[3]);
+        }
         if self.screen == Screen::Creative {
             let (ox, oy) = Self::creative_origin(&batch);
             return self.creative_screen.inside_scrollbar(x - ox, y - oy);

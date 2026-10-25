@@ -10,9 +10,11 @@
 //! (`"target"`), the block being broken (`"mining"`) and blocks around (`"blocks"`): see
 //! `world::world`. A step is one of:
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
-//! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}`,
+//! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}` (with `"components"`, SNBT),
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws
-//! it; a game screen's name, `pause` or `inventory`, draws the mod's buttons on it),
+//! it; a game screen's name, `pause` say, draws the mod's buttons on it; `container` and
+//! `inventory` a plain window of vanilla's layout, the menu's stacks and the mod's window
+//! buttons on it: window.rs),
 //! `{"click": [x, y], "button": 0}` (a mod's button on a game screen first), `{"type": "text"}`,
 //! `{"press": "key.keyboard.enter"}`, `{"close": true}`, `{"join": "server"}`, `{"leave": true}`,
 //! `{"hurt": 2.0}`, `{"touch": "<button id>", "pressed": true}` (a touch button, pressed and
@@ -20,8 +22,17 @@
 //! held from then on, the others let go; mods' `input.hold` adds sprint and sneak).
 //! `{"hud": {"touch": true}}` draws the mod's touch buttons too, where they start. `"menu"` (see
 //! `world::world`) is the open menu `slots.get-menu` reads; each `slots.click` is a `click` line.
+//! The creative tabs (`creative`) are the resources' `creative-inventory.json`, else a few made
+//! up; `"player": {"game_mode": "creative"}` lets a mod take from them, each a `creative` line.
+//! Pickup clicks (buttons 0 and 1, and -999 outside), Shift-clicks on a chest's or the
+//! inventory's menu, drags (`slots.drag`), `creative`'s clicks and sets change the pretend menu
+//! and cursor as the game's simplest clicks do, before the step draws; the other clicks are lines
+//! only. `{"click": [x, y], "press": false}` is a press without its release (a
+//! finger held), `{"release": [x, y]}` its release, `{"drag": [x, y]}` the mouse moved with the
+//! button held, `{"scroll": [x, y], "lines": -1}` the wheel; `{"key-press": "key.keyboard.left.shift",
+//! "pressed": true}` a key going down (false: up) without its text.
 //! Without steps it ticks once and draws the HUD. The mod's buttons (`widgets`) are a `widgets`
-//! line whenever they change.
+//! line whenever they change, its drawing in the world (`world-draw`) a `world` line.
 //!
 //! Each run starts with the mod's storage empty; `--storage <dir>` keeps it there between runs.
 //! `--watch` runs it again whenever the mod (a `.hmod`, or a folder's files) or the scenario
@@ -30,12 +41,16 @@
 //! `assets/minecraft`): the pretend world gets its items and its font's text widths.
 //! `--png <dir>` also draws each step that drew something to `<dir>/step<N>.png` (its path in the
 //! step's line), with that folder's font and sprites, or plain shapes without one.
+mod creative;
+mod recipes;
 mod render;
+mod window;
 mod world;
 
 use horizon_mods::{
-    Anchor, CONTROLS, Controls, Corner, DrawOp, Gui, ItemCatalog, ItemStack, KeyEvent, Mods,
-    MouseAction, MouseEvent, Output, RenderContext, ScreenButton, Shape, Snapshot, Status,
+    Anchor, CONTROLS, Controls, Corner, CreativeCatalog, CreativeClick, DrawOp, Facing, Gui,
+    ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output, RenderContext,
+    ScreenButton, Shape, Snapshot, Status,
 };
 use serde_json::{Value, json};
 use std::{
@@ -258,11 +273,13 @@ fn run_once(options: &Options) -> Result<(), String> {
         "config": manifest.and_then(|m| mods.config_screen(&m.id)),
     }));
     let mut hands = Hands::default();
-    outputs(&mut mods, &mut None, &mut hands);
+    let mut world = Snapshot::default();
+    outputs(&mut mods, &mut None, &mut hands, &mut world);
     if status != "running" {
         return Ok(());
     }
     let mut buttons = widgets_line(&mods, &mut Value::Null);
+    let mut layers = world_line(&mods, &mut Value::Null);
     let gui = Gui {
         width: scenario["gui"]["width"].as_u64().unwrap_or(427) as u32,
         height: scenario["gui"]["height"].as_u64().unwrap_or(240) as u32,
@@ -270,10 +287,17 @@ fn run_once(options: &Options) -> Result<(), String> {
     };
     let data = options.resources.as_deref().and_then(world::Data::read);
     let data = Arc::new(data.unwrap_or_default());
-    let mut resources = render::Resources::new(options.resources.clone());
+    let mut resources = render::Resources::new(options.resources.clone()).with_mod(path);
+    let creative: Arc<dyn CreativeCatalog> =
+        Arc::new(creative::Pretend::read(options.resources.as_deref(), &data));
     let mut world = world::world(&scenario, data.clone());
     world.gui = Some(gui);
     world.measure = resources.measure();
+    world.creative = Some(creative);
+    world.recipes = Some(Arc::new(recipes::Pretend::read(
+        options.resources.as_deref(),
+        &data,
+    )));
     hands.apply(&mut mods, &world);
     let mut screen: Option<String> = None;
     let mut ticks = 0;
@@ -296,7 +320,14 @@ fn run_once(options: &Options) -> Result<(), String> {
     for (n, step) in steps.into_iter().enumerate() {
         let (result, drawn) = match step.get("controls") {
             Some(held) => (hands.hold(held, &mut mods, &world), None),
-            None => play(&mut mods, &step, &mut screen, &mut ticks, &gui, &data),
+            None => {
+                let mut sim = Sim {
+                    screen: &mut screen,
+                    hands: &mut hands,
+                    world: &mut world,
+                };
+                play(&mut mods, &step, &mut sim, &mut ticks, &gui, &data)
+            }
         };
         let file = match (png, drawn) {
             (Some(dir), Some(ops)) if !ops.is_empty() => {
@@ -308,8 +339,9 @@ fn run_once(options: &Options) -> Result<(), String> {
             _ => None,
         };
         emit(json!({ "event": "step", "step": step, "result": result, "png": file }));
-        outputs(&mut mods, &mut screen, &mut hands);
+        outputs(&mut mods, &mut screen, &mut hands, &mut world);
         buttons = widgets_line(&mods, &mut buttons);
+        layers = world_line(&mods, &mut layers);
         hands.apply(&mut mods, &world);
         if !mods.is_running() {
             break;
@@ -423,9 +455,299 @@ impl Hands {
     }
 }
 
+/// What a step plays on: the open screen, the controls held and the pretend world.
+struct Sim<'a> {
+    screen: &'a mut Option<String>,
+    hands: &'a mut Hands,
+    world: &'a mut Snapshot,
+}
+
+impl Sim<'_> {
+    /// What the mod asked for so far done, as the game does it after a hook returns: its lines,
+    /// and the world changed by its clicks.
+    fn settle(&mut self, mods: &mut Mods) {
+        outputs(mods, self.screen, self.hands, self.world);
+        self.hands.apply(mods, self.world);
+    }
+}
+
+/// The most a stack of `id` holds in the pretend world.
+fn max_stack(world: &Snapshot, id: &str) -> u32 {
+    world
+        .items
+        .as_ref()
+        .and_then(|i| i.info(id))
+        .map_or(64, |i| i.max_stack_size.max(1))
+}
+
+fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
+    a.id == b.id && a.components == b.components
+}
+
+/// A pickup click (button 0 or 1) on the pretend menu's slot `slot` (-999 outside: a throw), as
+/// vanilla's simplest clicks: take all or half, put all or one, merge, swap. False for one it
+/// does not pretend (the inventory menu's crafting result).
+fn pretend_pickup(world: &mut Snapshot, slot: i32, button: u8) -> bool {
+    let Some(menu) = world.menu.as_mut() else {
+        return false;
+    };
+    if button > 1 {
+        return false;
+    }
+    if slot == -999 {
+        if let Some(c) = menu.carried.as_mut() {
+            if button == 0 || c.count <= 1 {
+                menu.carried = None;
+            } else {
+                c.count -= 1;
+            }
+        }
+        return true;
+    }
+    let Some(index) = usize::try_from(slot)
+        .ok()
+        .filter(|&i| i < menu.slots.len() && !(i == 0 && menu.kind == "minecraft:inventory"))
+    else {
+        return false;
+    };
+    let items = world.items.clone();
+    let max = |id: &str| {
+        items
+            .as_ref()
+            .and_then(|i| i.info(id))
+            .map_or(64, |i| i.max_stack_size.max(1))
+    };
+    let menu = world.menu.as_mut().expect("there is a menu");
+    let (here, carried) = (menu.slots[index].take(), menu.carried.take());
+    let (here, carried) = match (here, carried) {
+        (Some(mut s), None) => {
+            let taken = if button == 0 {
+                s.count
+            } else {
+                s.count.div_ceil(2)
+            };
+            let mut hand = s.clone();
+            hand.count = taken;
+            s.count -= taken;
+            ((s.count > 0).then_some(s), Some(hand))
+        }
+        (None, Some(mut c)) => {
+            let put = if button == 0 { c.count } else { 1 };
+            let mut s = c.clone();
+            s.count = put;
+            c.count -= put;
+            (Some(s), (c.count > 0).then_some(c))
+        }
+        (Some(mut s), Some(mut c)) if same_item(&s, &c) => {
+            let room = max(&s.id).saturating_sub(s.count);
+            let put = room.min(if button == 0 { c.count } else { 1 });
+            s.count += put;
+            c.count -= put;
+            (Some(s), (c.count > 0).then_some(c))
+        }
+        (here, carried) => (carried, here),
+    };
+    let menu = world.menu.as_mut().expect("there is a menu");
+    menu.slots[index] = here;
+    menu.carried = carried;
+    true
+}
+
+/// A quick-move (Shift-click) on the pretend menu's slot `slot`, as vanilla's chest menus and
+/// the inventory menu move a stack (`moveItemStackTo`): from a chest's slots into the inventory,
+/// the hotbar's end first; from the inventory into the chest; in the inventory menu between the
+/// inventory and the hotbar. False for a menu or slot it does not pretend.
+fn pretend_quick_move(world: &mut Snapshot, slot: i32) -> bool {
+    let Some(menu) = world.menu.as_ref() else {
+        return false;
+    };
+    let n = menu.slots.len();
+    let Some(i) = usize::try_from(slot).ok().filter(|&i| i < n) else {
+        return false;
+    };
+    let (to, reverse) = if menu.kind.starts_with("minecraft:generic_9x") && n > 36 {
+        let own = n - 36;
+        if i < own {
+            (own..n, true)
+        } else {
+            (0..own, false)
+        }
+    } else if menu.kind == "minecraft:inventory" && n >= 45 {
+        match i {
+            9..=35 => (36..45, false),
+            36..=44 => (9..36, false),
+            _ => return false,
+        }
+    } else {
+        return false;
+    };
+    let Some(mut moving) = menu.slots[i].clone() else {
+        return true;
+    };
+    let full = max_stack(world, &moving.id);
+    let menu = world.menu.as_mut().expect("there is a menu");
+    let order: Vec<usize> = if reverse {
+        to.rev().collect()
+    } else {
+        to.collect()
+    };
+    // Onto the same item first, then into the first empty slot.
+    for &j in &order {
+        if let Some(there) = menu.slots[j].as_mut()
+            && same_item(there, &moving)
+            && there.count < full
+        {
+            let put = (full - there.count).min(moving.count);
+            there.count += put;
+            moving.count -= put;
+            if moving.count == 0 {
+                break;
+            }
+        }
+    }
+    if moving.count > 0
+        && let Some(&j) = order.iter().find(|&&j| menu.slots[j].is_none())
+    {
+        menu.slots[j] = Some(moving.clone());
+        moving.count = 0;
+    }
+    menu.slots[i] = (moving.count > 0).then_some(moving);
+    true
+}
+
+/// `slots.drag` on the pretend menu, as vanilla's QUICK_CRAFT ends: the cursor's stack shared
+/// out evenly (button 0), one each (1) or a full stack each (2) among the slots that take it
+/// (empty, or the same item with room; not the inventory menu's crafting result), the rest left
+/// on the cursor.
+/// Armour and other slots that take only some items are not pretended: any item goes.
+fn pretend_drag(world: &mut Snapshot, slots: &[i32], button: u8) {
+    let Some(carried) = world.menu.as_ref().and_then(|m| m.carried.clone()) else {
+        return;
+    };
+    let full = max_stack(world, &carried.id);
+    let menu = world.menu.as_mut().expect("there is a menu");
+    let mut taking: Vec<usize> = Vec::new();
+    for &s in slots {
+        let Some(i) = usize::try_from(s)
+            .ok()
+            .filter(|&i| i < menu.slots.len() && !(i == 0 && menu.kind == "minecraft:inventory"))
+        else {
+            continue;
+        };
+        let takes = match &menu.slots[i] {
+            None => true,
+            Some(have) => same_item(have, &carried) && have.count < full,
+        };
+        // A drag adds a slot while the cursor has an item for it (AbstractContainerMenu).
+        if takes && !taking.contains(&i) && (button == 2 || carried.count as usize > taking.len()) {
+            taking.push(i);
+        }
+    }
+    if taking.is_empty() {
+        return;
+    }
+    let mut left = i64::from(carried.count);
+    for &i in &taking {
+        let have = menu.slots[i].as_ref().map_or(0, |s| s.count);
+        let each = match button {
+            0 => carried.count / taking.len() as u32,
+            1 => 1,
+            _ => full,
+        };
+        let count = (have + each).min(full);
+        left -= i64::from(count) - i64::from(have);
+        menu.slots[i] = Some(ItemStack {
+            count,
+            ..carried.clone()
+        });
+    }
+    menu.carried = (left > 0).then_some(ItemStack {
+        count: left as u32,
+        ..carried
+    });
+}
+
+/// `creative.click` on the pretend tabs, as `creative::click_display` does it; the hotbar slot
+/// it fills, if any.
+fn pretend_creative(
+    world: &mut Snapshot,
+    tab: &str,
+    search: &str,
+    index: u32,
+    button: u8,
+    kind: CreativeClick,
+) {
+    let Some(shown) = world
+        .creative
+        .as_ref()
+        .and_then(|c| c.items(tab, search, index as usize, 1).items.pop())
+    else {
+        if kind == CreativeClick::Pickup
+            && let Some(menu) = world.menu.as_mut()
+            && let Some(c) = menu.carried.as_mut()
+        {
+            if button == 0 || c.count <= 1 {
+                menu.carried = None;
+            } else {
+                c.count -= 1;
+            }
+        }
+        return;
+    };
+    let full = max_stack(world, &shown.id);
+    let Some(menu) = world.menu.as_mut() else {
+        return;
+    };
+    let copy = |count: u32| ItemStack {
+        count,
+        ..shown.clone()
+    };
+    match kind {
+        CreativeClick::Swap => {
+            // A hotbar slot, or the off hand (40).
+            let at = if button == 40 {
+                45
+            } else {
+                36 + button as usize
+            };
+            if (button < 9 || button == 40) && at < menu.slots.len() {
+                menu.slots[at] = Some(copy(full));
+            }
+        }
+        CreativeClick::Clone => {
+            if menu.carried.is_none() {
+                menu.carried = Some(copy(full));
+            }
+        }
+        CreativeClick::Throw => {}
+        CreativeClick::Pickup | CreativeClick::QuickMove => {
+            let quick = kind == CreativeClick::QuickMove;
+            menu.carried = match menu.carried.take() {
+                Some(mut c) if same_item(&c, &shown) => {
+                    if button == 0 {
+                        c.count = if quick { full } else { (c.count + 1).min(full) };
+                    } else {
+                        c.count -= 1;
+                    }
+                    (c.count > 0).then_some(c)
+                }
+                None => Some(copy(if quick { full } else { shown.count })),
+                Some(mut c) => {
+                    if button == 0 {
+                        None
+                    } else {
+                        c.count -= 1;
+                        (c.count > 0).then_some(c)
+                    }
+                }
+            };
+        }
+    }
+}
+
 /// What the mod asked of the game since the last look, a line each; a screen it opened or
-/// closed is followed, and so are sprint and sneak held.
-fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands) {
+/// closed is followed, and so are sprint and sneak held, and its clicks change the pretend world.
+fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, world: &mut Snapshot) {
     for output in mods.drain() {
         let line = match output {
             Output::Chat { name, text } => json!({ "event": "chat", "name": name, "text": text }),
@@ -466,7 +788,57 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands) {
                     ClickKind::Throw => "throw",
                     ClickKind::PickupAll => "pickup-all",
                 };
-                json!({ "event": "click", "slot": slot, "button": button, "kind": kind })
+                let pretended = match kind {
+                    "pickup" => pretend_pickup(world, slot, button),
+                    "quick-move" => pretend_quick_move(world, slot),
+                    _ => false,
+                };
+                json!({ "event": "click", "slot": slot, "button": button, "kind": kind, "pretended": pretended })
+            }
+            Output::Drag { slots, button, .. } => {
+                pretend_drag(world, &slots, button);
+                json!({ "event": "drag", "slots": slots, "button": button })
+            }
+            Output::DragAreas { areas, .. } => {
+                json!({ "event": "drag-areas", "areas": areas })
+            }
+            Output::ScreenSlots { slots, .. } => {
+                json!({ "event": "screen-slots", "slots": slots })
+            }
+            Output::FillRecipe { recipe, all, .. } => {
+                json!({ "event": "fill", "recipe": recipe, "all": all })
+            }
+            Output::CreativeClick {
+                tab,
+                search,
+                index,
+                button,
+                kind,
+                ..
+            } => {
+                pretend_creative(world, &tab, &search, index, button, kind);
+                let kind = match kind {
+                    CreativeClick::Pickup => "pickup",
+                    CreativeClick::QuickMove => "quick-move",
+                    CreativeClick::Swap => "swap",
+                    CreativeClick::Clone => "clone",
+                    CreativeClick::Throw => "throw",
+                };
+                json!({ "event": "creative", "click": { "tab": tab, "search": search, "index": index, "button": button, "kind": kind } })
+            }
+            Output::CreativeSlot { slot, stack, .. } => {
+                if let Some(menu) = world.menu.as_mut()
+                    && let Some(s) = menu.slots.get_mut(slot as usize)
+                {
+                    *s = stack.clone();
+                }
+                json!({ "event": "creative", "slot": slot, "stack": stack.map(|s| json!({ "id": s.id, "count": s.count })) })
+            }
+            Output::CreativeCarried { stack, .. } => {
+                if let Some(menu) = world.menu.as_mut() {
+                    menu.carried = stack.clone();
+                }
+                json!({ "event": "creative", "carried": stack.map(|s| json!({ "id": s.id, "count": s.count })) })
             }
             Output::Hold { control, held, .. } => {
                 hands.held[usize::from(control == "key.sprint")] = held;
@@ -519,6 +891,95 @@ fn widgets_line(mods: &Mods, last: &mut Value) -> Value {
         let mut line = now.clone();
         line["event"] = json!("widgets");
         emit(line);
+    }
+    now
+}
+
+/// The mod's layers in the world (`world-draw`) as JSON, a `world` line when they are not
+/// `last`: each layer's lines and boxes counted by colour (ARGB in hex) and its texts by text,
+/// with the box they span, and its labels.
+fn world_line(mods: &Mods, last: &mut Value) -> Value {
+    let Some((_, layers)) = mods.world_layers().next() else {
+        return Value::Null;
+    };
+    let layers =
+        json!(layers
+        .iter()
+        .map(|(id, l)| {
+            let mut colors = std::collections::BTreeMap::new();
+            let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for lines in &l.lines {
+                let o = [lines.origin.x, lines.origin.y, lines.origin.z];
+                for (i, e) in lines.ends.chunks_exact(6).enumerate() {
+                    let c = lines.colors.get(i).or(lines.colors.first()).copied().unwrap_or(0);
+                    *colors.entry(format!("{c:08X}")).or_insert(0) += 1;
+                    for (k, v) in e.iter().enumerate() {
+                        let v = o[k % 3] + f64::from(*v);
+                        min[k % 3] = min[k % 3].min(v);
+                        max[k % 3] = max[k % 3].max(v);
+                    }
+                }
+            }
+            let mut boxes = std::collections::BTreeMap::new();
+            for b in &l.boxes {
+                let o = [b.origin.x, b.origin.y, b.origin.z];
+                for (i, c) in b.corners.chunks_exact(6).enumerate() {
+                    let argb = b.colors.get(i).or(b.colors.first()).copied().unwrap_or(0);
+                    *boxes.entry(format!("{argb:08X}")).or_insert(0) += 1;
+                    for (k, v) in c.iter().enumerate() {
+                        let v = o[k % 3] + f64::from(*v);
+                        min[k % 3] = min[k % 3].min(v);
+                        max[k % 3] = max[k % 3].max(v);
+                    }
+                }
+            }
+            let mut texts = std::collections::BTreeMap::new();
+            for t in &l.texts {
+                for line in t.lines.split('\n') {
+                    *texts.entry(line.to_owned()).or_insert(0) += 1;
+                }
+                let o = [t.origin.x, t.origin.y, t.origin.z];
+                for (k, v) in t.places.iter().enumerate() {
+                    let v = o[k % 3] + f64::from(*v);
+                    min[k % 3] = min[k % 3].min(v);
+                    max[k % 3] = max[k % 3].max(v);
+                }
+            }
+            json!({
+                "id": id, "through_walls": l.through_walls,
+                "lines": colors, "boxes": boxes, "texts": texts,
+                "from": min.iter().all(|v| v.is_finite()).then_some(min),
+                "to": max.iter().all(|v| v.is_finite()).then_some(max),
+                "labels": l.labels.iter().map(|b| json!({
+                    "at": [b.at.x, b.at.y, b.at.z], "text": b.text, "scale": b.scale,
+                    "fixed_size": b.fixed_size, "background": format!("{:08X}", b.background),
+                    "facing": match b.facing { Facing::Camera => "camera", Facing::Up => "up" },
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>());
+    // The icons (`set-icons`), each with its layer's id.
+    let icons: Vec<Value> =
+        mods.world_icons()
+            .next()
+            .map_or(&[][..], |(_, l)| l)
+            .iter()
+            .flat_map(|(id, icons)| {
+                icons.iter().map(move |i| json!({
+                "layer": id, "at": [i.at.x, i.at.y, i.at.z], "sprite": i.sprite,
+                "color": format!("{:08X}", i.color), "size": i.size, "above": i.above,
+                "below": i.below, "fixed_size": i.fixed_size, "through_walls": i.through_walls,
+            }))
+            })
+            .collect();
+    let empty = layers.as_array().is_some_and(Vec::is_empty) && icons.is_empty();
+    let mut event = json!({ "event": "world", "layers": layers });
+    if !icons.is_empty() {
+        event["icons"] = json!(icons);
+    }
+    let now = json!([layers, icons]);
+    if now != *last && !(empty && last.is_null()) {
+        emit(event);
     }
     now
 }
@@ -650,7 +1111,7 @@ fn touch_ops(mods: &Mods, gui: &Gui) -> Vec<DrawOp> {
 fn play(
     mods: &mut Mods,
     step: &Value,
-    screen: &mut Option<String>,
+    sim: &mut Sim,
     ticks: &mut u64,
     gui: &Gui,
     data: &world::Data,
@@ -709,16 +1170,17 @@ fn play(
         let info = data.info(id);
         let stack = ItemStack {
             id: id.into(),
-            count: 1,
+            count: step["count"].as_u64().map_or(1, |c| c as u32),
             damage: 0,
             max_damage: info.as_ref().map_or(0, |i| i.max_damage),
             name: info.map_or_else(
                 || id.rsplit(':').next().unwrap_or(id).replace('_', " "),
                 |i| i.name,
             ),
-            components: String::new(),
+            // As the game gives them: SNBT, e.g. {"minecraft:container":[...]}.
+            components: step["components"].as_str().unwrap_or_default().into(),
         };
-        let lines = mods.tooltip(&stack);
+        let (lines, grids, instead) = mods.tooltip_grids(&stack);
         // The item's tooltip as the game shows it: its name, then the mod's lines.
         let shown = [vec![stack.name.clone()], lines.clone()].concat();
         let ops = vec![DrawOp::Tooltip {
@@ -726,7 +1188,25 @@ fn play(
             y: 32.0,
             lines: shown,
         }];
-        return (json!({ "lines": lines }), Some(ops));
+        if grids.is_empty() {
+            return (json!({ "lines": lines }), Some(ops));
+        }
+        // Its grids (`tooltips.add-grid`), each stack as [id, count] or null.
+        let grids: Vec<Value> = grids
+            .iter()
+            .map(|g| {
+                let stacks: Vec<Value> = g
+                    .stacks
+                    .iter()
+                    .map(|s| s.as_ref().map_or(Value::Null, |s| json!([s.id, s.count])))
+                    .collect();
+                json!({ "columns": g.columns, "color": format!("#{:08x}", g.color), "stacks": stacks })
+            })
+            .collect();
+        return (
+            json!({ "lines": lines, "grids": grids, "instead": instead }),
+            Some(ops),
+        );
     }
     if let Some(id) = step["key"].as_str() {
         let pressed = step["pressed"].as_bool().unwrap_or(true);
@@ -749,24 +1229,82 @@ fn play(
         return (Value::Null, None);
     }
     if let Some(name) = step["screen"].as_str() {
-        if screen.as_deref() != Some(name) {
+        if sim.screen.as_deref() != Some(name) {
             mods.screen_opened(name);
-            *screen = Some(name.to_owned());
+            *sim.screen = Some(name.to_owned());
         }
-        // A game screen: the mod's buttons on it, then what the mod draws over it.
+        // A game screen: the mod's buttons on it, then what the mod draws over it. A screen with
+        // slots (`container`, `inventory`) is drawn as a plain window with the menu's stacks and
+        // the mod's window buttons.
         let mut ops = Vec::new();
-        if !name.contains(':') {
+        // Its window (`screens.get-window`), and the inventory's 2 by 2 grid for `recipes.fill`.
+        let window = window::Window::of(name, sim.world.menu.as_ref(), gui);
+        sim.world.window = window.as_ref().map(window::Window::rect);
+        sim.world.crafting = (name == "inventory").then_some(horizon_mods::Crafting::Grid(2));
+        mods.set_snapshot(sim.world.clone());
+        if let Some(w) = window {
+            let mouse = context(step);
+            ops = w.ops(sim.world.menu.as_ref());
+            ops.extend(window::button_ops(mods, &w, (mouse.mouse_x, mouse.mouse_y)));
+            ops.extend(screen_button_ops(mods, name, gui).into_iter().skip(1));
+        } else if !name.contains(':') {
             ops = screen_button_ops(mods, name, gui);
         }
         ops.extend(mods.screen_render(name, context(step)));
         return drawn(ops);
     }
-    let Some(open) = screen.clone() else {
+    let Some(open) = sim.screen.clone() else {
         let error = format!("unknown step, or one for a screen while none is open: {step}");
         return (json!({ "error": error }), None);
     };
+    let at = |v: &Value| -> Option<(f32, f32)> {
+        let a = v.as_array()?;
+        Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
+    };
+    let button = step["button"].as_u64().unwrap_or(0) as u8;
+    // A held button's release, a drag, the wheel: the mouse as the game sends it, then the
+    // screen drawn with the mouse there.
+    let mouse = |action, key: &str| {
+        at(&step[key]).map(|(x, y)| MouseEvent {
+            action,
+            x,
+            y,
+            button,
+            scroll: if action == MouseAction::Scroll {
+                step["lines"].as_f64().unwrap_or(-1.0) as f32
+            } else {
+                0.0
+            },
+        })
+    };
+    for (key, action) in [
+        ("release", MouseAction::Release),
+        ("drag", MouseAction::Drag),
+        ("scroll", MouseAction::Scroll),
+    ] {
+        if let Some(event) = mouse(action, key) {
+            let handled = mods.screen_mouse(&open, event);
+            sim.settle(mods);
+            let mut context = context(step);
+            (context.mouse_x, context.mouse_y) = (event.x, event.y);
+            let (then, ops) = drawn(mods.screen_render(&open, context));
+            return (json!({ "handled": handled, "then": then }), ops);
+        }
+    }
+    if let Some(name) = step["key-press"].as_str() {
+        let event = KeyEvent {
+            key: name.into(),
+            pressed: step["pressed"].as_bool().unwrap_or(true),
+            text: String::new(),
+            shift: false,
+            control: false,
+            alt: false,
+        };
+        let handled = mods.screen_key(&open, &event);
+        sim.settle(mods);
+        return (json!({ "handled": handled }), None);
+    }
     if let Some([x, y]) = step["click"].as_array().map(|a| a.as_slice()) {
-        let button = step["button"].as_u64().unwrap_or(0) as u8;
         let event = |action| MouseEvent {
             action,
             x: x.as_f64().unwrap_or(0.0) as f32,
@@ -774,8 +1312,24 @@ fn play(
             button,
             scroll: 0.0,
         };
-        // The mod's buttons on a game screen take a left click first, as in the game.
+        // The mod's buttons on a game screen take a left click first, as in the game: its window
+        // buttons on a screen with slots, then its screen buttons.
         let at = (event(MouseAction::Press).x, event(MouseAction::Press).y);
+        let window = window::Window::of(&open, sim.world.menu.as_ref(), gui);
+        let pressed = window.as_ref().and_then(|w| {
+            window::buttons(mods, w)
+                .into_iter()
+                .rev()
+                .find(|(_, _, r)| {
+                    at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3]
+                })
+        });
+        if let (Some((owner, b, _)), 0) = (pressed, button) {
+            mods.key(&owner, &b.id, true);
+            mods.key(&owner, &b.id, false);
+            sim.settle(mods);
+            return (json!({ "button": b.id }), None);
+        }
         let hit = screen_buttons(mods, &open, gui)
             .into_iter()
             .rev()
@@ -790,8 +1344,13 @@ fn play(
             return (json!({ "button": b.id, "active": b.active }), None);
         }
         let handled = mods.screen_mouse(&open, event(MouseAction::Press));
-        mods.screen_mouse(&open, event(MouseAction::Release));
-        let (then, ops) = drawn(mods.screen_render(&open, context(step)));
+        if step["press"].as_bool() != Some(false) {
+            mods.screen_mouse(&open, event(MouseAction::Release));
+        }
+        sim.settle(mods);
+        let mut context = context(step);
+        (context.mouse_x, context.mouse_y) = at;
+        let (then, ops) = drawn(mods.screen_render(&open, context));
         return (json!({ "handled": handled, "then": then }), ops);
     }
     let key = |key: &str, text: &str| KeyEvent {
@@ -812,16 +1371,20 @@ fn play(
                 ),
             );
         }
+        sim.settle(mods);
         return drawn(mods.screen_render(&open, context(step)));
     }
     if let Some(name) = step["press"].as_str() {
         let handled = mods.screen_key(&open, &key(name, ""));
+        sim.settle(mods);
         let (then, ops) = drawn(mods.screen_render(&open, context(step)));
         return (json!({ "handled": handled, "then": then }), ops);
     }
     if step.get("close").is_some() {
         mods.screen_closed(&open);
-        *screen = None;
+        *sim.screen = None;
+        sim.world.window = None;
+        sim.world.crafting = None;
         return (Value::Null, None);
     }
     (json!({ "error": format!("unknown step: {step}") }), None)
@@ -913,6 +1476,8 @@ fn draw_ops(ops: &[DrawOp]) -> Value {
             DrawOp::Panel { x, y, w, h } => json!({ "panel": [x, y, w, h] }),
             DrawOp::Push { x, y, scale } => json!({ "push": [x, y], "scale": scale }),
             DrawOp::Pop => json!({ "pop": true }),
+            DrawOp::Player { x, y, w, h, size, turn } => json!({ "player": [x, y, w, h], "size": size, "turn": turn }),
+            DrawOp::ItemTooltip { x, y, stack } => json!({ "item-tooltip": stack.id, "at": [x, y] }),
         })
         .collect()
 }

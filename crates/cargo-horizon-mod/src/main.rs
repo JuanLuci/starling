@@ -1,7 +1,8 @@
 //! `cargo horizon-mod`: make Horizon mods in Rust (`docs/mods.md`).
 //!
 //! - `new <path> [--name "Name"] [--sdk-path <dir>]`: a mod crate from the template.
-//! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`.
+//! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`, with the crate's `assets/` and
+//!   `data/` folders (the mod's own sprites: `assets/<id>/textures/gui/sprites/`).
 //! - `run [--game <horizon-client>] [-- <game args>]`: build, then play with
 //!   the mod; run `build` again and the game reloads it.
 //! - `push [--debug] [--to <folder>]`: build, then copy the `.hmod` to the Starling on the phone
@@ -157,9 +158,43 @@ fn build(release: bool) -> Result<PathBuf, String> {
     let path = dir.join(format!("{}.hmod", manifest.id));
     // Write then rename, so a running game never reads half a file.
     let partial = path.with_extension("hmod.partial");
-    std::fs::write(&partial, Package::write(&manifest_text, &wasm)?).map_err(|e| e.to_string())?;
+    let files = content_files()?;
+    let files: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let hmod = Package::write_files(&manifest_text, Some(&wasm), &files)?;
+    std::fs::write(&partial, hmod).map_err(|e| e.to_string())?;
     std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// The files under the crate's `assets/` and `data/`, by their path in the `.hmod`.
+fn content_files() -> Result<Vec<(String, Vec<u8>)>, String> {
+    fn walk(dir: &Path, name: &str, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            let name = format!("{name}/{}", e.file_name().to_string_lossy());
+            if path.is_dir() {
+                walk(&path, &name, out)?;
+            } else {
+                out.push((name, std::fs::read(&path).map_err(|e| e.to_string())?));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for folder in ["assets", "data"] {
+        if Path::new(folder).is_dir() {
+            walk(Path::new(folder), folder, &mut out)?;
+        }
+    }
+    Ok(out)
 }
 
 fn run(args: &[String]) -> Result<(), String> {

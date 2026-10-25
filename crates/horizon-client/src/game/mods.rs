@@ -15,8 +15,9 @@ use horizon_client::{
     text::{self, Text},
 };
 use horizon_mods::{
-    BlockInfo, Capability, ChatVerdict, Clock, Controls, Effect, Entity, EntityInfo, GameMode, Gui,
-    ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot, Status, Target, WorldInfo,
+    BlockInfo, Capability, ChatVerdict, Clock, Controls, CreativeCatalog, Effect, Entity,
+    EntityInfo, GameMode, Gui, ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot,
+    Status, Target, WorldInfo,
 };
 use std::{
     collections::HashSet,
@@ -42,12 +43,20 @@ pub(super) struct ModsState {
     tree: Option<Dispatcher>,
     /// The mod screen open now, `<mod id>:<name>`, over everything else.
     pub(super) screen: Option<String>,
+    /// That screen stands in for the creative screen (`screens.replace`).
+    pub(super) replacing: bool,
     /// The screen the mods were last told of (`screen-opened` / `screen-closed`).
     pub(super) shown: Option<String>,
     /// The mouse button held on a screen, for drag events.
     pub(super) held: Option<u8>,
     /// The mod screen asked for the on-screen keyboard (`screens.keyboard`).
     pub(super) keyboard: bool,
+    /// Where on the mod screen a finger drags instead of scrolling (`mobile.drag-areas`), in
+    /// GUI pixels.
+    pub(super) drag_areas: Vec<[f32; 4]>,
+    /// Where the mod screen draws the open menu's slots (`screens.set-slots`): menu slot and the
+    /// top left of its square, in GUI pixels.
+    pub(super) screen_slots: Vec<(u32, f32, f32)>,
     /// The world the mods were last told of: None out of a world, Some(server address).
     joined: Option<Option<String>>,
     dimension: Option<String>,
@@ -71,7 +80,16 @@ pub(super) struct ModsState {
     /// The blocks needing a tool that the held item (its id here) harvests.
     harvest: Option<(String, Arc<HashSet<Arc<str>>>)>,
     biomes: Option<Arc<Vec<String>>>,
+    /// `level.get-spawn-spots`' table for a zombie (`spawn_rules::spot_table`) and every
+    /// state's outline top, made once.
+    spots: Option<Arc<Spots>>,
+    /// The `world-draw` labels' texts as read, by what the mods wrote.
+    pub(super) label_texts: std::cell::RefCell<std::collections::HashMap<String, Text>>,
     items: Option<Arc<dyn ItemCatalog>>,
+    /// The creative tabs for `creative`, made once for the language their names are in.
+    pub(super) creative: Option<(String, Arc<dyn CreativeCatalog>)>,
+    /// The recipes for mods (`recipes`), for the language their names are in.
+    pub(super) recipes: Option<(String, Arc<dyn horizon_mods::RecipeCatalog>)>,
     measure: Option<Measure>,
     /// Mods loading on their own thread ([`Game::start_mods`]), and since when.
     loading: Option<(Receiver<Mods>, Instant)>,
@@ -99,6 +117,10 @@ impl ModsState {
             self.controls[i].1 += 1;
             self.counted[i] = true;
         }
+    }
+    /// A mod's screen is open in the creative screen's place.
+    pub(super) fn standing_in(&self) -> bool {
+        self.replacing && self.screen.is_some()
     }
     /// A mod holds sneak (slot 0) or sprint (slot 1): the player's toggle state, as it were.
     pub(super) fn holding(&self, slot: usize) -> bool {
@@ -133,6 +155,22 @@ fn vanilla_command(name: &str) -> bool {
         .any(|&c| d.nodes[c].name() == name)
 }
 
+/// A grid of stacks a mod shows in a tooltip (`tooltips.add-grid`).
+pub(super) struct TooltipGrid {
+    pub(super) columns: usize,
+    pub(super) stacks: Vec<Option<ItemStack>>,
+    /// ARGB under the slots, 0 for none.
+    pub(super) color: u32,
+}
+impl TooltipGrid {
+    pub(super) fn width(&self) -> f32 {
+        (self.columns.min(self.stacks.len().max(1)) * 18) as f32
+    }
+    pub(super) fn height(&self) -> f32 {
+        (self.stacks.len().div_ceil(self.columns) * 18) as f32
+    }
+}
+
 /// The loaded chunks around the player, for `world-read` mods.
 struct LevelView {
     chunks: Vec<((i32, i32), Arc<horizon_client::chunk::Chunk>)>,
@@ -140,6 +178,13 @@ struct LevelView {
     biomes: Arc<Vec<String>>,
     facts: Arc<Vec<BlockFact>>,
     harvest: Arc<HashSet<Arc<str>>>,
+    spots: Arc<Spots>,
+}
+/// What `level.get-spawn-spots` reads of each block state: its `spawn_rules::SPOT_*` bits for a
+/// zombie, and how high its outline reaches.
+struct Spots {
+    bits: Vec<u8>,
+    tops: Vec<f32>,
 }
 /// A block state as `level.get-block-info` tells it, but for the held item.
 struct BlockFact {
@@ -172,6 +217,49 @@ impl horizon_mods::LevelView for LevelView {
     fn light(&self, pos: [i32; 3]) -> Option<(u8, u8)> {
         let light = self.chunk(pos)?.light(pos[0] & 15, pos[1], pos[2] & 15);
         Some((light & 15, light >> 4))
+    }
+    fn spawn_spots(&self, from: [i32; 3], to: [i32; 3]) -> horizon_mods::SpawnSpots {
+        use horizon_client::mobs::spawn_rules::{
+            SPOT_BELOW, SPOT_FEET, SPOT_FLOOR, SPOT_HEAD, SPOT_ROOM,
+        };
+        let (min, max) = (
+            horizon_client::chunk::MIN_Y,
+            horizon_client::chunk::MIN_Y + horizon_client::chunk::HEIGHT,
+        );
+        let mut out = Vec::new();
+        for z in from[2]..=to[2] {
+            for x in from[0]..=to[0] {
+                let Some(c) = self.chunk([x, 0, z]) else {
+                    continue;
+                };
+                let (cx, cz) = (x & 15, z & 15);
+                let bits = |y: i32| {
+                    if (min..max).contains(&y) {
+                        let state = c.block(cx, y, cz).0 as usize;
+                        (self.spots.bits.get(state).copied().unwrap_or(0), state)
+                    } else {
+                        (0, 0)
+                    }
+                };
+                for y in from[1]..=to[1] {
+                    let (below, here, above) = (bits(y - 1).0, bits(y), bits(y + 1).0);
+                    let ok = below & (SPOT_FLOOR | SPOT_BELOW) == SPOT_FLOOR
+                        && here.0 & (SPOT_ROOM | SPOT_FEET) == SPOT_ROOM
+                        && above & (SPOT_ROOM | SPOT_HEAD) == SPOT_ROOM;
+                    if ok {
+                        let top = self.spots.tops.get(here.1).copied().unwrap_or(0.0);
+                        out.push(([x, y, z], c.light(cx, y, cz), top));
+                    }
+                }
+            }
+        }
+        // The lowest first.
+        out.sort_by_key(|(pos, _, _)| pos[1]);
+        let mut spots = horizon_mods::SpawnSpots::default();
+        for (pos, light, top) in out {
+            spots.push(pos, light & 15, light >> 4, top);
+        }
+        spots
     }
     fn block_info(&self, pos: [i32; 3]) -> Option<BlockInfo> {
         let state = self.chunk(pos)?.block(pos[0] & 15, pos[1], pos[2] & 15).0 as usize;
@@ -226,12 +314,10 @@ pub(super) fn content_root(
         };
         let m = &package.manifest;
         let on = enabled.contains(&m.id) || dev.contains(path);
-        if !on
-            || !m.capabilities.contains(&Capability::Registries)
-            || mods.iter().any(|c| c.id == m.id)
-        {
+        if !on || mods.iter().any(|c| c.id == m.id) {
             continue;
         }
+        // A mod without registries brings its own GUI sprites at most (its buttons' icons).
         let content = Content::read(path, m).and_then(|content| {
             // The first of two mods owning one namespace stays on.
             let own = (m.id.as_str(), content.namespaces.as_slice());
@@ -244,6 +330,7 @@ pub(super) fn content_root(
             }
         });
         match content {
+            Ok(content) if content.is_empty() => {}
             Ok(content) => mods.push(ContentMod {
                 id: m.id.clone(),
                 content,
@@ -573,7 +660,7 @@ impl Game<'_> {
                 .items
                 .get(&*s.item)
                 .map_or(0, |i| i.max_damage),
-            name: self.stack_name(s).plain(),
+            name: self.stack_hover_name(s).plain(),
             components,
         }
     }
@@ -602,7 +689,7 @@ impl Game<'_> {
     }
     /// What mods read, taken now (between ticks), once the world's resources have loaded: mods
     /// cached from an earlier start run before they do, on the loading menus.
-    fn refresh_mod_snapshot(&mut self) {
+    pub(super) fn refresh_mod_snapshot(&mut self) {
         if self.mods.mods.is_running() && self.res.rest_ready() {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);
@@ -767,10 +854,25 @@ impl Game<'_> {
             snapshot.cursor = self.carried.as_ref().map(|s| self.mod_stack(s));
             snapshot.hovered = self.hovered_stack().map(|s| self.mod_stack(&s));
             snapshot.container = self.mod_container();
+        }
+        let creative = self.mods.mods.uses(Capability::Creative);
+        // `creative` checks the stacks it is given against the items.
+        if inventory_read || creative {
             snapshot.items = Some(self.mod_items());
+        }
+        // The tabs answer `creative` and `inventory.get-item-order`.
+        if (creative || inventory_read) && self.res.rest_ready() {
+            snapshot.creative = Some(self.mod_creative_tabs());
         }
         if self.mods.mods.uses(Capability::InventoryClick) {
             snapshot.menu = self.mod_menu();
+        }
+        if self.mods.mods.uses(Capability::Recipes) && self.res.rest_ready() {
+            snapshot.recipes = Some(self.mod_recipes());
+            snapshot.crafting = self.mod_crafting();
+        }
+        if self.mods.mods.uses(Capability::Ui) {
+            snapshot.window = self.mod_window();
         }
         if world_read && in_world {
             snapshot.level = Some(self.mod_level());
@@ -901,7 +1003,7 @@ impl Game<'_> {
         };
         let button = i32::from(button);
         // The creative screen's clicks are this client's, sent as set slots (as vanilla's).
-        if self.remote.is_some() && self.screen != Screen::Creative {
+        if self.remote.is_some() && !self.creative_menu_open() {
             let Ok(slot) = i16::try_from(slot) else {
                 return;
             };
@@ -913,9 +1015,40 @@ impl Game<'_> {
             self.container_changed(key);
         }
     }
+    /// `slots.drag`: the mouse's drag across slots (AbstractContainerScreen's QUICK_CRAFT
+    /// clicks: its start outside the window, each slot, its end).
+    pub(super) fn mod_slot_drag(&mut self, slots: &[i32], button: u8) {
+        use horizon_client::menu::Input;
+        // AbstractContainerMenu.getQuickcraftMask: the phase, and the drag's kind above it.
+        let mask = |phase: i32| phase | (i32::from(button) << 2);
+        let clicks: Vec<(i32, i32)> = std::iter::once((-999, mask(0)))
+            .chain(slots.iter().map(|&s| (s, mask(1))))
+            .chain(std::iter::once((-999, mask(2))))
+            .collect();
+        if self.remote.is_some() && !self.creative_menu_open() {
+            let clicks: Vec<(i16, i32, Input)> = clicks
+                .iter()
+                .filter_map(|&(s, b)| Some((i16::try_from(s).ok()?, b, Input::QuickCraft)))
+                .collect();
+            self.remote_menu_clicks(&clicks);
+            return;
+        }
+        let done = self.menu_session(|m, env, _| {
+            let mut done = false;
+            for &(slot, b) in &clicks {
+                done |= m.click(env, slot, b, Input::QuickCraft).is_ok();
+            }
+            Some(done)
+        });
+        if done && let Some(key) = self.container {
+            self.container_changed(key);
+        }
+    }
     /// The stack under the cursor in a screen.
     fn hovered_stack(&mut self) -> Option<ItemStack> {
-        if !matches!(self.screen, Screen::Inventory | Screen::Creative) {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || self.mods.screen.is_some()
+        {
             return None;
         }
         let renderer = self.renderer.as_ref()?;
@@ -1025,7 +1158,38 @@ impl Game<'_> {
             biomes,
             facts: self.mod_block_facts(),
             harvest: self.mod_harvest(),
+            spots: self.mod_spots(),
         })
+    }
+    /// `level.get-spawn-spots`' table, made the first time a `world-read` mod runs.
+    fn mod_spots(&mut self) -> Arc<Spots> {
+        if let Some(spots) = &self.mods.spots {
+            return spots.clone();
+        }
+        let facts = self.res.facts();
+        let (width, height) = self
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .map_or((0.6, 1.95), |t| (t.width as f32, t.height as f32));
+        let bits = horizon_client::mobs::spawn_rules::spot_table(
+            horizon_client::mobs::Species::Zombie,
+            width,
+            height,
+            facts,
+            self.res.mob_data(),
+            self.collision,
+            &self.res.items().block_tags,
+        );
+        let tops = (0..bits.len())
+            .map(|i| {
+                let f = facts.get(horizon_world::registry::BlockStateId(i as u32));
+                f.outline.iter().map(|b| b[4] as f32).fold(0.0, f32::max)
+            })
+            .collect();
+        let spots = Arc::new(Spots { bits, tops });
+        self.mods.spots = Some(spots.clone());
+        spots
     }
     /// Every block state's name, item, hardness and tool, in the player's language.
     fn mod_block_facts(&mut self) -> Arc<Vec<BlockFact>> {
@@ -1209,6 +1373,7 @@ impl Game<'_> {
                 self.sync_mod_commands();
             }
         }
+        self.swap_creative_screen();
         if !self.mods.mods.is_running() {
             return;
         }
@@ -1297,15 +1462,31 @@ impl Game<'_> {
         self.mods.mods.payload(channel, data);
         self.show_mod_output();
     }
-    /// Lines the mods add under `stack`'s tooltip.
-    pub(super) fn mods_tooltip(&mut self, stack: &ItemStack) -> Vec<Text> {
+    /// The lines and the grids of stacks mods add to `stack`'s tooltip, and whether a grid
+    /// stands instead of the game's lines of a container's contents.
+    pub(super) fn mods_tooltip_grids(
+        &mut self,
+        stack: &ItemStack,
+    ) -> (Vec<Text>, Vec<TooltipGrid>, bool) {
         if !self.mods.mods.is_running() || !self.mods.mods.wants(|h| h.tooltips) {
-            return Vec::new();
+            return (Vec::new(), Vec::new(), false);
         }
         let stack = self.mod_stack(stack);
-        let lines = self.mods.mods.tooltip(&stack);
+        let (lines, grids, instead) = self.mods.mods.tooltip_grids(&stack);
         self.show_mod_output();
-        lines.iter().map(|l| rich_text(l)).collect()
+        let grids = grids
+            .into_iter()
+            .map(|g| TooltipGrid {
+                columns: g.columns.clamp(1, 16) as usize,
+                stacks: g
+                    .stacks
+                    .iter()
+                    .map(|s| s.as_ref().and_then(|s| self.game_stack(s)))
+                    .collect(),
+                color: g.color,
+            })
+            .collect();
+        (lines.iter().map(|l| rich_text(l)).collect(), grids, instead)
     }
     /// A key or mouse button for the mods' keybinds (while playing): pressed or released.
     pub(super) fn mods_key(&mut self, name: &str, pressed: bool) {
@@ -1430,95 +1611,148 @@ impl Game<'_> {
     }
     /// Chat lines, command feedback, stopped mods, and what mods asked for.
     pub(super) fn show_mod_output(&mut self) {
+        // Slots a mod clicked or set: its next hook reads them as they are now.
+        let mut clicked = false;
         for output in self.mods.mods.drain() {
-            let line = match output {
-                Output::Chat { name, text } => {
-                    let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
-                    line.push(rich_text(&text));
-                    line
-                }
-                Output::Feedback { text, error: false } => Text::literal(text),
-                Output::Feedback { text, error: true } => Text::literal(text).with_color(text::RED),
-                Output::Stopped { name, reason } => {
-                    self.list_mods();
-                    self.sync_mod_commands();
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| !self.mods.mods.wants(|_| true) || s.is_empty())
-                    {
-                        self.mods.screen = None;
+            let line =
+                match output {
+                    Output::Chat { name, text } => {
+                        let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
+                        line.push(rich_text(&text));
+                        line
                     }
-                    Text::literal(format!("Mod {name} stopped: {reason}")).with_color(text::RED)
-                }
-                Output::Overlay { text } => {
-                    self.titles.set_overlay(rich_text(&text), false);
-                    continue;
-                }
-                Output::Send { message } => {
-                    self.mod_send(&message);
-                    continue;
-                }
-                Output::Sound { id, volume, pitch } => {
-                    self.audio.play(&id, None, volume, pitch);
-                    continue;
-                }
-                Output::Payload { channel, data } => {
-                    self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
-                        horizon_protocol::packets::configuration::CustomPayload { channel, data },
-                    ));
-                    continue;
-                }
-                Output::OpenScreen { screen } => {
-                    self.open_mod_screen(screen);
-                    continue;
-                }
-                Output::Click {
-                    slot, button, kind, ..
-                } => {
-                    self.mod_slot_click(slot, button, kind);
-                    continue;
-                }
-                Output::Hold { id, control, held } => {
-                    let slot = usize::from(control == "key.sprint");
-                    self.mods
-                        .holds
-                        .retain(|(owner, s)| !(*owner == id && *s == slot));
-                    if held {
-                        self.mods.holds.push((id, slot));
+                    Output::Feedback { text, error: false } => Text::literal(text),
+                    Output::Feedback { text, error: true } => {
+                        Text::literal(text).with_color(text::RED)
                     }
-                    self.sync_toggle(slot);
-                    continue;
-                }
-                Output::Keyboard { id, shown } => {
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
-                    {
-                        self.mods.keyboard = shown;
+                    Output::Stopped { name, reason } => {
+                        self.list_mods();
+                        self.sync_mod_commands();
+                        if self
+                            .mods
+                            .screen
+                            .as_ref()
+                            .is_some_and(|s| !self.mods.mods.wants(|_| true) || s.is_empty())
+                        {
+                            self.mods.screen = None;
+                        }
+                        Text::literal(format!("Mod {name} stopped: {reason}")).with_color(text::RED)
                     }
-                    continue;
-                }
-                Output::CloseScreen { id } => {
-                    if self
-                        .mods
-                        .screen
-                        .as_ref()
-                        .is_some_and(|s| s.split_once(':').is_some_and(|(owner, _)| owner == id))
-                    {
-                        self.close_mod_screen();
+                    Output::Overlay { text } => {
+                        self.titles.set_overlay(rich_text(&text), false);
+                        continue;
                     }
-                    continue;
-                }
-            };
+                    Output::Send { message } => {
+                        self.mod_send(&message);
+                        continue;
+                    }
+                    Output::Sound { id, volume, pitch } => {
+                        self.audio.play(&id, None, volume, pitch);
+                        continue;
+                    }
+                    Output::Payload { channel, data } => {
+                        self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                            horizon_protocol::packets::configuration::CustomPayload {
+                                channel,
+                                data,
+                            },
+                        ));
+                        continue;
+                    }
+                    Output::OpenScreen { screen } => {
+                        self.open_mod_screen(screen);
+                        continue;
+                    }
+                    Output::Click {
+                        slot, button, kind, ..
+                    } => {
+                        self.mod_slot_click(slot, button, kind);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::Drag { slots, button, .. } => {
+                        self.mod_slot_drag(&slots, button);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::DragAreas { id, areas } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.drag_areas = areas;
+                        }
+                        continue;
+                    }
+                    Output::FillRecipe { recipe, all, .. } => {
+                        self.fill_recipe(&recipe, all);
+                        continue;
+                    }
+                    Output::ScreenSlots { id, slots } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.screen_slots = slots;
+                        }
+                        continue;
+                    }
+                    Output::CreativeClick {
+                        tab,
+                        search,
+                        index,
+                        button,
+                        kind,
+                        ..
+                    } => {
+                        self.mod_creative_click(&tab, &search, index, button, kind);
+                        clicked = true;
+                        continue;
+                    }
+                    Output::CreativeSlot { slot, stack, .. } => {
+                        self.mod_creative_slot(slot, stack.as_ref());
+                        clicked = true;
+                        continue;
+                    }
+                    Output::CreativeCarried { stack, .. } => {
+                        self.mod_creative_carried(stack.as_ref());
+                        clicked = true;
+                        continue;
+                    }
+                    Output::Hold { id, control, held } => {
+                        let slot = usize::from(control == "key.sprint");
+                        self.mods
+                            .holds
+                            .retain(|(owner, s)| !(*owner == id && *s == slot));
+                        if held {
+                            self.mods.holds.push((id, slot));
+                        }
+                        self.sync_toggle(slot);
+                        continue;
+                    }
+                    Output::Keyboard { id, shown } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.mods.keyboard = shown;
+                        }
+                        continue;
+                    }
+                    Output::CloseScreen { id } => {
+                        if self.mods.screen.as_ref().is_some_and(|s| {
+                            s.split_once(':').is_some_and(|(owner, _)| owner == id)
+                        }) {
+                            self.close_mod_screen();
+                        }
+                        continue;
+                    }
+                };
             // Not through system_message: a mod must not hear its own lines.
             let focused = self.screen == Screen::Chat;
             self.ui
                 .chat
                 .add(&self.gui.atlas, line, None, self.ticks, focused);
+        }
+        if clicked {
+            self.refresh_mod_snapshot();
         }
     }
     /// `chat-send.send`: a line or `/command` as the player typed it, past the chat hooks.

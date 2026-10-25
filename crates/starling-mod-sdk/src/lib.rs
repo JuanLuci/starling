@@ -22,9 +22,10 @@
 //! ```
 //!
 //! Every interface but `log`, `types` and [`mobile`] is a capability: list the ones the mod uses in
-//! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `chat`, `chat-send`,
-//! `hud` for [`hud`] and [`draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`, `net`,
-//! `storage`).
+//! `horizon-mod.toml` (`game-read`, `world-read`, `inventory-read`, `inventory-click` for
+//! [`slots`], `creative`, `recipes`, `chat`, `chat-send`, `hud` for [`hud`], [`draw`] and [`tooltips`],
+//! `world-draw` for [`world_draw`], `ui` for [`screens`] and [`widgets`], `keys`, `input`, `sound`,
+//! `net`, `storage`).
 //!
 //! # Coming from Fabric
 //!
@@ -41,9 +42,19 @@
 //! | A custom `Screen` | [`screens::open`], then the same hooks with `<mod id>:<name>` |
 //! | Mod Menu's `ModMenuApi.getModConfigScreenFactory` | [`screens::set_config`] in [`Mod::init`] |
 //! | `interactionManager.clickSlot(syncId, slot, button, SlotActionType, player)` | [`slots::click`] (capability `inventory-click`), the menu by vanilla's ids from [`slots::get_menu`] |
+//! | `SlotActionType.QUICK_CRAFT`, a stack dragged across slots | [`slots::drag`] |
+//! | A scrollbar a finger drags on a phone | [`mobile::drag_areas`] |
+//! | Quark's chest buttons, placed from a container's slots | [`widgets::add_window_button`] (capability `ui`) |
+//! | A modded container screen's slots, for others' buttons | [`screens::set_slots`] |
+//! | The creative inventory's order of items (Inventory Profiles' default sort) | [`inventory::get_item_order`] |
+//! | `ItemGroups` / `ItemGroup.getDisplayStacks()`, the creative search | [`creative::get_tabs`], [`creative::get_items`] (capability `creative`) |
+//! | `CreativeInventoryScreen.onMouseClick`, `ClientPlayerInteractionManager.clickCreativeStack` | [`creative::click`], [`creative::set_slot`], [`creative::set_carried`] |
+//! | `MinecraftClient.setScreen` swapped for `CreativeInventoryScreen` | [`screens::replace`] |
+//! | `InventoryScreen.drawEntity` | [`draw::player`] |
 //! | `Screens.getButtons(screen).add(ButtonWidget...)` (in `ScreenEvents.AFTER_INIT`) | [`widgets::add_screen_button`] in [`Mod::init`]; a press is [`Mod::key`] with its id |
 //! | Bedrock's touch buttons (a keybind's button on a phone) | [`widgets::add_touch_button`], [`widgets::style_control`] for the game's own |
 //! | `ItemTooltipCallback` | [`Mod::tooltip`] |
+//! | `TooltipComponentCallback` (ShulkerBoxTooltip's preview) | [`tooltips::add_grid`] from [`Mod::tooltip`] (capability `hud`) |
 //! | `KeyBindingHelper.registerKeyBinding` + `wasPressed` | [`Registration::keybind`], [`Mod::key`], [`keys::is_down`] |
 //! | `options.forwardKey.isPressed()`, `KeyBinding.setPressed` (sprint, sneak) | [`keys::is_control_down`], [`keys::presses`], [`input::hold`] |
 //! | `ClientPlayNetworking.registerGlobalReceiver` / `send` | [`Registration::channel`], [`Mod::payload`], [`net::send`] |
@@ -52,6 +63,11 @@
 //! | `ClientPlayerBlockBreakEvents.AFTER` | [`Mod::block_broken`] |
 //! | `MinecraftClient.player` / `.world` / `.crosshairTarget` | [`game::get_player`], [`level`], [`game::get_target`] |
 //! | `DrawContext.fill/drawText/drawItem/drawGuiTexture/drawTooltip` | [`draw::fill`], [`draw::text`], [`draw::item`], [`draw::sprite`], [`draw::tooltip`] |
+//! | `WorldRenderEvents`, a `DebugRenderer`: lines, boxes and text in the world | [`world_draw::set_layer`] (capability `world-draw`), kept until set again |
+//! | Xaero's / JourneyMap's waypoint marks: a sprite facing the camera, a name and a distance | [`world_draw::set_icons`] (the mod's own sprites from the crate's `assets/`) |
+//! | Light Overlay's spawn checks over an area | [`level::get_spawn_spots`] |
+//! | JEI's / EMI's recipe lookups, the recipe book's placing | [`recipes::get_recipes`], [`recipes::fill`] (capability `recipes`) |
+//! | `AbstractContainerScreen.leftPos/topPos/imageWidth/imageHeight` | [`screens::get_window`] |
 
 wit_bindgen::generate!({
     path: "wit",
@@ -66,11 +82,13 @@ pub use exports::starling::mods::events::{
     Placement, Registration, RenderContext, SendAction,
 };
 pub use starling::mods::{
-    chat, chat_send, draw, game, hud, input, inventory, keys, level, log, mobile, net, screens,
+    chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log, mobile, net,
+    recipes, screens,
     slots::{self, ClickKind},
-    sound, storage,
+    sound, storage, tooltips,
     types::{self, BlockPos, Direction, GameMode, Hand, ItemStack},
     widgets::{self, Anchor, ScreenButton, Shape, TouchButton},
+    world_draw,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

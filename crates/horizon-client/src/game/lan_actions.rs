@@ -844,12 +844,23 @@ impl Game<'_> {
                     self.lan_swing_back(host, conn, swung);
                 }
             }
+            // ServerGamePacketListenerImpl.handleSetCreativeModeSlot: an inventory menu slot (1 to
+            // 45) set, or a stack dropped (below 0), no more than the item stacks to.
             S::SetCreativeModeSlot(p) => {
-                let g = &mut host.hub.guests[gi];
-                if !g.creative() || !(0..46).contains(&p.slot) {
+                if !host.hub.guests[gi].creative() {
                     return;
                 }
                 let item = self.item_from_network(host, &p.item);
+                let fits = item.as_ref().is_none_or(|s| {
+                    s.count <= self.res.items().get(&s.item).map_or(64, |i| i.max_stack)
+                });
+                if p.slot < 0 && fits {
+                    self.drop_guest_items(host, gi, item.into_iter().collect());
+                    return;
+                }
+                if !(1..=45).contains(&p.slot) || !fits {
+                    return;
+                }
                 let slot = p.slot as usize;
                 let g = &mut host.hub.guests[gi];
                 let old = g.menu_slot(slot);

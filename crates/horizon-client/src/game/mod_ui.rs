@@ -42,6 +42,20 @@ fn sane(op: &DrawOp) -> bool {
         DrawOp::Tooltip { x, y, lines } => ok(&[*x, *y]) && !lines.is_empty(),
         DrawOp::Push { x, y, scale } => ok(&[*x, *y, *scale]),
         DrawOp::Pop => true,
+        DrawOp::Player {
+            x,
+            y,
+            w,
+            h,
+            size,
+            turn,
+        } => {
+            ok(&[*x, *y, *turn])
+                && (1.0..=4096.0).contains(w)
+                && (1.0..=4096.0).contains(h)
+                && (1.0..=1024.0).contains(size)
+        }
+        DrawOp::ItemTooltip { x, y, .. } => ok(&[*x, *y]),
     }
 }
 
@@ -201,6 +215,28 @@ impl Game<'_> {
                         u32::MAX,
                     );
                 }
+                // Drawn in 3D in its box: placed by the pose itself.
+                DrawOp::Player {
+                    x,
+                    y,
+                    w,
+                    h,
+                    size,
+                    turn,
+                } => {
+                    let (x0, y0) = (tx + x * s, ty + y * s);
+                    let (x1, y1) = (x0 + w * s, y0 + h * s);
+                    self.draw_player_preview_turned(batch, [x0, y0, x1, y1], size * s, *turn);
+                    continue;
+                }
+                // Placed on the screen as the game places tooltips (inside it), so not posed.
+                DrawOp::ItemTooltip { x, y, stack } => {
+                    if let Some(stack) = self.game_stack(stack) {
+                        let tooltip = self.stack_tooltip(&stack);
+                        self.draw_tooltip(batch, &tooltip, tx + x * s, ty + y * s);
+                    }
+                    continue;
+                }
                 DrawOp::Push { x, y, scale } => {
                     poses.push((tx + x * s, ty + y * s, s * scale));
                     continue;
@@ -347,12 +383,27 @@ impl Game<'_> {
             other => Some(other.replace('-', "_")),
         }
     }
+    /// The open game screen's window, for `screens.get-window`: x, y, width, height.
+    pub(super) fn mod_window(&self) -> Option<[f32; 4]> {
+        if self.title.is_some() || !matches!(self.screen, Screen::Inventory | Screen::Creative) {
+            return None;
+        }
+        let image = self.window_image(&HudBatch::new(self.touch_size()));
+        Some([
+            image.left as f32,
+            image.top as f32,
+            image.width as f32,
+            image.height as f32,
+        ])
+    }
     /// Once a frame: `screen-closed` and `screen-opened` when the screen changed.
     pub(super) fn mods_screen_events(&mut self) {
         let now = self.mod_screen_name();
         if now == self.mods.shown {
             return;
         }
+        // What the new screen shows (its window, its menu) from its first frame.
+        self.refresh_mod_snapshot();
         if let Some(old) = self.mods.shown.take() {
             self.mods.mods.screen_closed(&old);
         }
@@ -364,14 +415,20 @@ impl Game<'_> {
     }
     /// `screens.open`: the mod's screen over everything, the mouse freed.
     pub(super) fn open_mod_screen(&mut self, screen: String) {
+        self.begin_creative_stand_in(&screen);
         self.mods.screen = Some(screen);
         self.mods.keyboard = false;
+        self.mods.drag_areas.clear();
+        self.mods.screen_slots.clear();
         self.capture(false);
     }
     pub(super) fn close_mod_screen(&mut self) {
+        self.end_creative_stand_in(false);
         self.mods.screen = None;
         self.mods.held = None;
         self.mods.keyboard = false;
+        self.mods.drag_areas.clear();
+        self.mods.screen_slots.clear();
         if self.screen == Screen::Playing
             && self.title.is_none()
             && self.player.is_some()
@@ -407,6 +464,12 @@ impl Game<'_> {
                 let key = horizon_client::keybinds::key_name(code)
                     .map(str::to_owned)
                     .unwrap_or_default();
+                // A keybind's release comes wherever it lands, before any screen takes the key:
+                // its press may have opened one (whose opening lets go every keybind in vanilla,
+                // KeyMapping.releaseAll), and a keybind held stays held.
+                if !pressed && !key.is_empty() {
+                    self.mods_key(&key, false);
+                }
                 if own && pressed && code == KeyCode::Escape {
                     self.close_mod_screen();
                     return true;
@@ -422,12 +485,23 @@ impl Game<'_> {
                     };
                     let used = self.mods.mods.screen_key(screen, &event);
                     self.show_mod_output();
+                    // The inventory key closes the creative screen's stand-in, as it closes the
+                    // creative screen, when the mod's screen did not use it (to type, say).
+                    if !used
+                        && pressed
+                        && !k.repeat
+                        && self.mods.standing_in()
+                        && self.settings.keys.translate(code) == Some(Ok(KeyCode::KeyE))
+                    {
+                        self.close_mod_screen();
+                        return true;
+                    }
                     if used || own {
                         return true;
                     }
                 }
-                if playing && !k.repeat && !key.is_empty() {
-                    self.mods_key(&key, pressed);
+                if playing && pressed && !k.repeat && !key.is_empty() {
+                    self.mods_key(&key, true);
                 }
                 false
             }
@@ -439,13 +513,16 @@ impl Game<'_> {
                     _ => return own,
                 };
                 let pressed = *state == ElementState::Pressed;
-                // The mods' buttons on the game's screen, before the screen and the mods' hooks;
+                // A keybind's release, as a key's.
+                if !pressed {
+                    self.mods_key(name, false);
+                }
+                // The mods' buttons on the game's screen (and their window buttons on a mod's
+                // screen that says where its slots are), before the screen and the mods' hooks;
                 // a button's release is its own wherever it lands (its press may have opened a
                 // mod's screen over it).
                 let release = !pressed && self.mods.pressed_button.is_some();
-                if b == 0
-                    && (release || (!own && screen.is_some()))
-                    && self.mod_screen_button_click(pressed)
+                if b == 0 && (release || screen.is_some()) && self.mod_screen_button_click(pressed)
                 {
                     return true;
                 }
@@ -468,8 +545,8 @@ impl Game<'_> {
                         return true;
                     }
                 }
-                if playing {
-                    self.mods_key(name, pressed);
+                if playing && pressed {
+                    self.mods_key(name, true);
                 }
                 false
             }

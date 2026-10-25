@@ -10,6 +10,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      keep_symbols:
+        description: Ship the library unstripped, for a profiler (simpleperf) to name its functions
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -58,7 +63,7 @@ jobs:
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
         # Releases with the fast profile (fewer codegen units: a little quicker in game).
-        run: python packaging/android/build_apk.py ${{ startsWith(github.ref, 'refs/tags/v') && '--profile fast' || '' }}
+        run: python packaging/android/build_apk.py ${{ startsWith(github.ref, 'refs/tags/v') && '--profile fast' || '' }} ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: starling-apk

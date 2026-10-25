@@ -249,6 +249,25 @@ interface level {
     get-light: func(pos: block-pos) -> option<tuple<u8, u8>>;
     /// Entities within `radius` blocks of the player (at most 128, nearest first).
     get-entities: func(radius: f32) -> list<entity>;
+
+    /// The places a monster that spawns on the ground (a zombie) has room to spawn, a place an
+    /// entry in each list (as numbers, which JavaScript gets as typed arrays at once).
+    record spawn-spots {
+        /// The block it would stand in: x, y and z, three numbers a place.
+        positions: list<s32>,
+        block-light: list<u8>,
+        sky-light: list<u8>,
+        /// How high the outline of the block there reaches (a snow layer's 0.125), 0 for air:
+        /// the ground a mark on the place goes on.
+        tops: list<f32>,
+    }
+    /// The places from `from` to `to` (both included, at most 64 blocks a side, where
+    /// `get-block` reads) where a monster that spawns on the ground (a zombie) has room to:
+    /// `SpawnPlacements.isSpawnPositionOk` (a block it may spawn on below, two it may spawn in)
+    /// and nothing in its box (`noCollision`), the lowest first. The light is the mod's to
+    /// judge: in the overworld monsters spawn where the block light is 0, at any time with a sky
+    /// light of 7 or less, only at night with more (`Monster.isDarkEnoughToSpawn`).
+    get-spawn-spots: func(%from: block-pos, to: block-pos) -> spawn-spots;
 }
 
 /// Capability `inventory-read`: the player's items and the open container.
@@ -288,6 +307,11 @@ interface inventory {
     get-container: func() -> option<container>;
     /// What an item is by default; None for an unknown id.
     get-item-info: func(id: string) -> option<item-info>;
+    /// Where a stack comes in the game's own order of items: its place in the creative
+    /// inventory's search tab (the tabs' order, building blocks first; a stack whose components
+    /// the tab lists, such as an enchanted book's, at its own place, else at its item's first),
+    /// the order Inventory Profiles sorts by; none for an item the tabs do not list.
+    get-item-order: func(stack: item-stack) -> option<u32>;
 }
 
 /// Capability `inventory-click`: the open menu's slots, and clicks in them as the player's mouse
@@ -324,12 +348,101 @@ interface slots {
         /// The stack on the cursor.
         carried: option<item-stack>,
     }
-    /// The open menu as this tick began; none on a screen without slots (the pause menu).
+    /// The open menu as this tick began, or as the mod's last clicks left it; none on a screen
+    /// without slots (the pause menu).
     get-menu: func() -> option<menu>;
     /// A click on menu slot `slot` (-999 outside the window: a throw), done in order once the
-    /// hook returns; `get-menu` shows its result from the next tick. Errs past 64 clicks in one
-    /// call, or on a slot no menu has.
+    /// hook returns; `get-menu` shows its result from the next hook. Errs past 64 clicks in one
+    /// call, or on a slot no menu has. On a mod's screen standing in for the creative screen
+    /// (`screens.replace`) the menu is the player's inventory and the clicks are the creative
+    /// screen's: done here, each slot they change sent to a server as it sends them.
     click: func(slot: s32, button: u8, kind: click-kind) -> result<_, string>;
+    /// The stack on the cursor dragged across menu slots `slots` with button `button` held, as
+    /// the mouse drags it (`ClickType.QUICK_CRAFT`): 0 shares it out evenly, 1 puts one in each,
+    /// 2 (in creative) a full stack in each. The slots that cannot take it are left out and the
+    /// rest stays on the cursor, as vanilla's drag leaves them. Done in order with the clicks, as
+    /// clicks of their own (its start, one a slot, its end: the slots and 2 of the 64 a call may
+    /// make); errs as `click` does, or on a button past 2.
+    drag: func(slots: list<s32>, button: u8) -> result<_, string>;
+}
+
+/// Capability `creative`: the creative inventory's tabs and items as the game's creative screen
+/// (CreativeModeInventoryScreen) lists and searches them, and, in creative mode, taking them as
+/// that screen does: onto the cursor or into a slot, sent to a server as vanilla's
+/// `SetCreativeModeSlot`. With `screens.replace("creative", ...)` a mod's screen stands in for the
+/// game's.
+interface creative {
+    use types.{item-stack};
+
+    /// `CreativeModeTab.Type`.
+    enum tab-kind {
+        /// Items to take: Building Blocks, Combat, a content mod's tab...
+        category,
+        /// Every item, filtered by what is searched.
+        search,
+        /// The player's survival inventory: no items of its own.
+        inventory,
+    }
+    record tab {
+        /// `minecraft:building_blocks`, `minecraft:search`, `minecraft:inventory`.
+        id: string,
+        /// Its name, as the player reads it.
+        title: string,
+        /// The item its icon shows: `minecraft:bricks`.
+        icon: string,
+        kind: tab-kind,
+        /// Where the game's screen puts it: the top row or the bottom one, and its column, 0 to 6
+        /// (5 and 6 at the right).
+        top: bool,
+        column: u32,
+        /// How many items it lists (the search tab: with nothing searched).
+        size: u32,
+    }
+    record item-page {
+        /// How many items the tab lists (the search tab: that match).
+        total: u32,
+        /// From the asked start on.
+        items: list<item-stack>,
+    }
+    /// How a click takes one of a tab's items (`slots.click-kind`'s that act on the creative
+    /// screen's grid).
+    enum click-kind {
+        /// Button 0 or 1.
+        pickup,
+        /// Shift-click: a full stack.
+        quick-move,
+        /// Button 0 to 8: a full stack into that hotbar slot.
+        swap,
+        /// Button 2: a full stack onto an empty cursor.
+        clone,
+        /// Button 0 drops one, 1 a full stack.
+        throw,
+    }
+    /// The tabs the game's creative screen shows, in its order; none before the world's
+    /// resources have loaded.
+    get-tabs: func() -> list<tab>;
+    /// Up to `count` (at most 256) of tab `tab`'s items from item `start` on, in the screen's
+    /// order. The search tab lists those matching `search` as its search box does (a name or a
+    /// line of the tooltip, `#tag`, `namespace:path`; everything for ""); the others ignore it.
+    /// An unknown tab lists nothing.
+    get-items: func(tab: string, search: string, start: u32, count: u32) -> item-page;
+    /// A click on item `index` of what `get-items(tab, search, ...)` lists, as on the creative
+    /// screen's grid (`CreativeModeInventoryScreen.slotClicked` on a tab's slot): with nothing
+    /// carried `pickup` takes it onto the cursor as listed and `quick-move` a full stack; with the
+    /// same item carried button 0 adds one (`quick-move`: fills the stack) and button 1 takes one
+    /// away; any other item carried is destroyed by button 0, one of it by button 1. `clone`,
+    /// `swap` and `throw` as their comments say. Creative mode only; done in order with the
+    /// mod's `slots.click`s once the hook returns.
+    click: func(tab: string, search: string, index: u32, button: u8, kind: click-kind) -> result<_, string>;
+    /// Puts `stack` (none empties it) in slot `slot` of the player's inventory menu, by `slots`'
+    /// ids: 1 to 4 the crafting grid, 5 to 8 the armour (head first), 9 to 35 the inventory, 36 to
+    /// 44 the hotbar, 45 the off hand (`MultiPlayerGameMode.handleCreativeModeItemAdd`). Errs on
+    /// another slot, on more than the item stacks to, and outside creative mode.
+    set-slot: func(slot: u32, stack: option<item-stack>) -> result<_, string>;
+    /// Puts `stack` on the cursor in place of what it carried; none destroys that (the creative
+    /// screen's Destroy Item slot). Errs on more than the item stacks to, and outside creative
+    /// mode.
+    set-carried: func(stack: option<item-stack>) -> result<_, string>;
 }
 
 /// Capability `chat`: messages only the local player sees.
@@ -378,6 +491,204 @@ interface draw {
     /// Moves and scales what is drawn after it, until `pop`.
     push: func(x: f32, y: f32, scale: f32);
     pop: func();
+    /// The player as the inventory shows them (`InventoryScreen.renderEntityInInventoryFollowsMouse`):
+    /// standing in the box, `size` GUI pixels a block (the inventory's is 30, the creative
+    /// screen's 20), the head toward the mouse (ahead on a touch screen), turned `turn` degrees
+    /// more.
+    player: func(x: f32, y: f32, width: f32, height: f32, size: f32, turn: f32);
+    /// A stack's tooltip as the game shows it over a slot (`Screen.getTooltipFromItem`: its
+    /// name, lore, enchantments, attributes, the mods' lines), placed from the point as `tooltip`.
+    item-tooltip: func(x: f32, y: f32, stack: item-stack);
+}
+
+/// Capability `recipes`: the game's recipes as a recipe viewer shows them (JEI, EMI): the recipes
+/// of the world's data packs in single player, the game's own and the content mods' on a server.
+interface recipes {
+    use types.{item-stack};
+
+    /// Where a recipe is made, in a viewer's order.
+    enum recipe-kind {
+        crafting,
+        smelting,
+        blasting,
+        smoking,
+        campfire-cooking,
+        stonecutting,
+        smithing,
+        brewing,
+    }
+    /// Which way a lookup goes from an item: the recipes making it, or those taking it in.
+    enum lookup {
+        recipes,
+        uses,
+    }
+    record recipe {
+        /// `minecraft:oak_planks` (its data pack file).
+        id: string,
+        kind: recipe-kind,
+        /// Crafting: the shape's width and height; 0 for a shapeless recipe, whose inputs fill a
+        /// grid in order.
+        width: u32,
+        height: u32,
+        /// Each input: the stacks it takes, a viewer showing one at a time; none for a cell left
+        /// empty. Crafting: the shape's cells row by row, or a shapeless recipe's ingredients;
+        /// cooking and stonecutting: the one; smithing: the template, the base, the addition;
+        /// brewing: the bottle, the ingredient.
+        inputs: list<list<item-stack>>,
+        /// What it makes: the stacks it may, shown one at a time as an input's.
+        outputs: list<item-stack>,
+        /// The block it is made at: `minecraft:crafting_table`, `minecraft:furnace`,
+        /// `minecraft:brewing_stand`...
+        station: string,
+        /// Cooking: the time it takes in ticks and the experience it gives.
+        time: u32,
+        experience: f32,
+    }
+    /// How many recipes `lookup` finds for `stack` of each kind there are any of (a viewer's
+    /// tabs), the kinds in order. A stack is found by its item, and by its components too when it
+    /// has any (a Potion of Healing's recipes, not every potion's); its count does not matter.
+    count-recipes: func(stack: item-stack, lookup: lookup) -> list<tuple<recipe-kind, u32>>;
+    /// The recipes of `kind` `lookup` finds for `stack`, at most `count` (16 at most) from
+    /// `start`.
+    get-recipes: func(stack: item-stack, lookup: lookup, kind: recipe-kind, start: u32, count: u32)
+        -> list<recipe>;
+    /// Puts the recipe's ingredients from the inventory into the open crafting grid or furnace,
+    /// as the recipe book's button for it does (`all`: as many times as they make up to a stack,
+    /// as Shift with the button), on a server as vanilla's client asks. False when the open
+    /// screen takes no such recipe or the player has not unlocked it.
+    fill: func(id: string, all: bool) -> bool;
+}
+
+/// Capability `world-draw`: lines and labels in the world, in layers the game draws every
+/// frame until the mod changes or removes them (a mod sets a layer when what it shows changes,
+/// not every frame).
+interface world-draw {
+    use types.{rich-text};
+
+    /// A place in the world, in blocks (a block's corner at whole numbers).
+    record point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// Straight lines, counted from `origin`.
+    record lines {
+        origin: point,
+        /// Six numbers a line: x, y and z of one end, then of the other.
+        ends: list<f32>,
+        /// ARGB colours: one a line, or one for them all.
+        colors: list<u32>,
+        /// In pixels, as the game's debug lines (the chunk borders' 1, the hitboxes' 2.5).
+        width: f32,
+    }
+    /// Boxes filled with a colour, see-through as much as it is (a tile on the ground, a block's
+    /// ghost), unlit.
+    record boxes {
+        origin: point,
+        /// Six numbers a box: x, y and z of its least corner, then of its greatest.
+        corners: list<f32>,
+        /// ARGB colours: one a box, or one for them all.
+        colors: list<u32>,
+    }
+    /// The way a label's text faces.
+    enum facing {
+        /// The camera, as a name tag.
+        camera,
+        /// Up, lying on the ground, read from the camera: its top away from it, along the
+        /// nearest of north, south, east and west to where it looks.
+        up,
+    }
+    /// A line of text in the world.
+    record label {
+        /// Where the bottom of the text is centred (facing up: its middle).
+        at: point,
+        text: rich-text,
+        /// 1: a name tag's size (a pixel of its font 1/40 of a block).
+        scale: f32,
+        /// The same size on screen however far away (a waypoint's), where a name tag gets
+        /// smaller: `scale` 1 is then the HUD's text size.
+        fixed-size: bool,
+        /// ARGB behind the text (a name tag's is 0x3F000000), 0 for none.
+        background: u32,
+        facing: facing,
+    }
+    /// Many short texts in one go (numbers on the ground): their places and colours as numbers,
+    /// the texts the lines of one string, far cheaper to send than as many labels.
+    record texts {
+        origin: point,
+        /// Three numbers a text: x, y and z of its place from `origin` (as a label's `at`).
+        places: list<f32>,
+        /// The texts, a line each (legacy `§` codes work).
+        lines: string,
+        /// ARGB: one a text, or one for them all (a `§` colour code goes over it).
+        colors: list<u32>,
+        /// As a label's.
+        scale: f32,
+        background: u32,
+        facing: facing,
+    }
+    record layer {
+        lines: list<lines>,
+        boxes: list<boxes>,
+        texts: list<texts>,
+        labels: list<label>,
+        /// Seen through what is in front of it (a waypoint behind a hill), not hidden.
+        through-walls: bool,
+    }
+    /// Shows `layer` as the mod's layer `id` (1 to 64 characters), in place of the one before.
+    /// A mod has at most 16 layers, with 65536 lines, 16384 boxes, 16384 texts and 256 labels
+    /// among them.
+    set-layer: func(id: string, layer: layer) -> result<_, string>;
+    remove-layer: func(id: string);
+
+    /// A GUI sprite standing at a point and facing the camera, with a text over it and one under
+    /// it: a waypoint's mark (JourneyMap's diamond with its name, the distance under it).
+    record icon {
+        /// The sprite's middle.
+        at: point,
+        /// A GUI sprite as `draw.sprite` names it (a mod's own: `<mod id>:<name>`, from its
+        /// `assets/<mod id>/textures/gui/sprites/`); "" for the texts alone.
+        sprite: string,
+        /// ARGB multiplied into the sprite: a white sprite takes the colour.
+        color: u32,
+        /// The sprite's side: GUI pixels with `fixed-size`, else blocks.
+        size: f32,
+        /// A line over the sprite and one under it, "" for none.
+        above: rich-text,
+        below: rich-text,
+        /// The texts' size, as a label's `scale`.
+        text-scale: f32,
+        /// ARGB behind the texts, 0 for none.
+        background: u32,
+        /// The same size on screen however far away, as a label's.
+        fixed-size: bool,
+        /// Seen through what is in front of it.
+        through-walls: bool,
+    }
+    /// Shows `icons` with the mod's layer `id`, in place of the ones before (`remove-layer`
+    /// removes them too). A mod has at most 256 icons, among 16 layers.
+    set-icons: func(id: string, icons: list<icon>) -> result<_, string>;
+}
+
+/// Capability `hud`: more than lines in the item tooltips the mod adds to (`events.tooltip`).
+interface tooltips {
+    use types.{item-stack};
+
+    /// Stacks in rows, as a container's slots (ShulkerBoxTooltip's preview, a bundle's).
+    record item-grid {
+        /// Slots a row, 1 to 16.
+        columns: u32,
+        /// In order, at most 64; none for an empty slot.
+        stacks: list<option<item-stack>>,
+        /// The slots' tint (a shulker box's colour), ARGB: the alpha how far from plain slots,
+        /// 0xFF the colour's full shade over their texture (as ShulkerBoxTooltip draws them), 0
+        /// plain ones.
+        color: u32,
+    }
+    /// From `events.tooltip`: `grid` under the tooltip's lines, and with `instead` none of the
+    /// lines the game lists a container's contents with (ItemContainerContents'). At most 4 a
+    /// tooltip.
+    add-grid: func(grid: item-grid, instead: bool) -> result<_, string>;
 }
 
 /// Capability `hud`: the mod's retained text panel (API 0.1), drawn every frame until changed.
@@ -409,6 +720,30 @@ interface screens {
     /// beside the mod on the Mods page opens it, over the page. Called in `init`; the mod draws
     /// it as any of its screens (`registration.screens`).
     set-config: func(name: string);
+    /// From now on the mod's screen `<mod id>:<name>` opens wherever the game would open its own
+    /// `screen`, and the game's opens again for "": `creative` (the creative inventory) is the one
+    /// that can be. The screen open now changes over too. False for a screen that cannot be
+    /// replaced or a bad name. Standing in for the creative screen, the mod's screen is closed by
+    /// the inventory key when `screen-key` does not use it, its `slots` clicks are the creative
+    /// screen's, and closing it destroys what the cursor carries, as the creative screen's does.
+    replace: func(screen: string, name: string) -> bool;
+    /// Where the mod's open screen draws a slot of the open menu: its id (as `slots.get-menu`
+    /// numbers it) and the top left of its 16-pixel square, in the screen's GUI pixels.
+    record screen-slot {
+        slot: u32,
+        x: f32,
+        y: f32,
+    }
+    /// The open menu's slots as the mod's open screen draws them, as a modded container screen's
+    /// slots tell Quark where they are: other mods' window buttons (`widgets.add-window-button`)
+    /// are then placed from them and pressed on the mod's screen as on the game's own. The last
+    /// call's, until the screen closes; at most 128.
+    set-slots: func(slots: list<screen-slot>);
+    /// The window of the game screen open, as a container screen has it (`leftPos`, `topPos`,
+    /// `imageWidth`, `imageHeight`): x, y, width and height in GUI pixels, the open recipe book
+    /// moving it; None on a screen without one (the pause menu) or none. A recipe viewer's
+    /// panels go beside it (EMI, JEI).
+    get-window: func() -> option<tuple<f32, f32, f32, f32>>;
 }
 
 /// Capability `ui`: buttons the mod puts on the game's own screens and on the touch controls. A
@@ -482,9 +817,46 @@ interface widgets {
         y: f32,
         size: f32,
     }
+    /// The part of a slotted screen's window a `window-button` is placed from.
+    enum window-part {
+        /// The slots of what was opened: a chest's, a barrel's, a furnace's...
+        container,
+        /// The player's inventory and hotbar: on the inventory, under a container's slots, on
+        /// the creative screen's inventory tab.
+        inventory,
+    }
+    /// Quark's and Inventory Profiles' chest buttons: a small button on the window of a screen
+    /// with slots, placed from the box around one part's slots (each slot's 18-pixel cell) as the
+    /// game lays that part out on the screen open, so it sits right on a chest of any size, a
+    /// barrel, a hopper, the inventory and the creative screen's inventory tab alike. Shown while
+    /// the screen shows the part (the creative screen's item tabs show no inventory) and the menu
+    /// is one of `menus`; pressed as a screen button is.
+    record window-button {
+        id: string,
+        part: window-part,
+        /// The point of the part's box, and the same point of the button, its offset is from:
+        /// `top-right` with x -1 and y -12 puts a 10-pixel button right-aligned in the title row
+        /// above the slots.
+        anchor: anchor,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        /// A GUI sprite drawn as the whole button, its frame too, and the one with
+        /// `_highlighted` after its name under the mouse or a finger when the atlas has it. A
+        /// mod's own sprites (`assets/<id>/textures/gui/sprites/`) load as the game starts.
+        icon: string,
+        /// Drawn on a plain button instead while the icon is not in the atlas: a letter or two.
+        label: rich-text,
+        tooltip: list<rich-text>,
+        /// The open menus it shows on, by `slots.get-menu`'s kind (`minecraft:generic_9x3`,
+        /// `minecraft:inventory`...); empty: every menu with the part.
+        menus: list<string>,
+    }
     add-screen-button: func(button: screen-button) -> result<_, string>;
     add-touch-button: func(button: touch-button) -> result<_, string>;
-    /// Takes away the mod's button with this id, of either kind.
+    add-window-button: func(button: window-button) -> result<_, string>;
+    /// Takes away the mod's button with this id, of any kind.
     remove: func(id: string);
     /// Restyles one of the game's own touch buttons, as Bedrock's resource packs retexture
     /// theirs: `jump`, `sneak`, `attack`, `use`, `inventory`, `chat`, `command`, `pause`,
@@ -504,6 +876,12 @@ interface mobile {
     /// draws: on a phone there is no keyboard otherwise. Its keys come to `screen-key` with
     /// their text. Closing the screen hides it. Without a touch screen it does nothing.
     keyboard: func(shown: bool);
+    /// Where on the mod's open screen a finger drags whichever way it moves (pressed, then a
+    /// `drag` for each move, as the mouse held) instead of scrolling when it moves up or down:
+    /// a scrollbar that follows the finger, slots a stack is spread across. Boxes as (x, y,
+    /// width, height) in the screen's GUI pixels, kept until the next call or until the screen
+    /// closes; at most 64. Without a touch screen it does nothing.
+    drag-areas: func(areas: list<tuple<f32, f32, f32, f32>>);
 }
 
 /// Capability `keys`: whether the mod's keybinds (from its registration) are held.
@@ -720,9 +1098,13 @@ world starling-mod {
     import level;
     import inventory;
     import slots;
+    import creative;
+    import recipes;
     import chat;
     import chat-send;
     import draw;
+    import world-draw;
+    import tooltips;
     import hud;
     import screens;
     import widgets;
@@ -759,6 +1141,14 @@ interface js-draw {
     batch: func(ops: list<u8>, count: u32, texts: list<u8>);
 }
 
+/// The JavaScript engine's own import too, linked with `tooltips`: `tooltips.add-grid` with the
+/// grid's ARGB colour as s32 (the same bits), for js-draw's reason.
+interface js-tooltips {
+    use types.{item-stack};
+
+    add-grid: func(columns: u32, stacks: list<option<item-stack>>, color: s32, instead: bool) -> result<_, string>;
+}
+
 /// The JavaScript engine's own import too, linked with `keys`: the game's controls held now, one
 /// bit each in `keys.is-control-down`'s order (`key.forward` the lowest), which the engine reads
 /// once a hook instead of a call a control.
@@ -774,4 +1164,5 @@ world starling-js {
     import js-source;
     import js-draw;
     import js-keys;
+    import js-tooltips;
 }

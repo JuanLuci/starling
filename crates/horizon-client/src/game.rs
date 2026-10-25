@@ -89,8 +89,11 @@ mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
+mod mod_creative;
+mod mod_recipes;
 mod mod_ui;
 mod mod_widgets;
+mod mod_world;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -4551,8 +4554,10 @@ impl Game<'_> {
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = self.hud_layers(size);
         self.draw_slot_touch(&mut batch);
+        self.draw_mod_window_buttons(&mut batch, false);
         self.draw_mod_screen_buttons(&mut batch);
         self.draw_mod_screens(&mut batch);
+        self.draw_mod_window_buttons(&mut batch, true);
         self.draw_pack_prompt(&mut batch);
         self.draw_touch(&mut batch);
         self.draw_chat_bar(&mut batch);
@@ -5255,7 +5260,7 @@ impl Game<'_> {
         button: i32,
         input: horizon_client::menu::Input,
     ) {
-        use horizon_client::creative::{DisplayClick, click_display};
+        use horizon_client::creative::click_display;
         if self.creative_screen.tab().search {
             // CreativeModeInventoryScreen.slotClicked: moveCursorToEnd, then
             // setHighlightPos(0), so typing replaces the whole query.
@@ -5267,11 +5272,8 @@ impl Game<'_> {
         let shown = items.get(first * 9 + slot - Creative::DISPLAY);
         let catalog = self.res.items();
         let max = |s: &ItemStack| catalog.get(&s.item).map_or(64, |i| i.max_stack);
-        match click_display(&mut self.carried, shown, max, button, input) {
-            DisplayClick::Hotbar(i, stack) => self.inventory[i] = Some(stack),
-            DisplayClick::Drop(stack) => self.player_drop(stack),
-            DisplayClick::Nothing => {}
-        }
+        let effect = click_display(&mut self.carried, shown, max, button, input);
+        self.creative_display_effect(effect);
     }
     /// Several clicks on one menu instance (a quick craft drag is three).
     fn menu_ops(&mut self, ops: &[(Option<usize>, i32, horizon_client::menu::Input)]) -> bool {
@@ -5495,7 +5497,7 @@ impl Game<'_> {
         let creative = self.creative;
         // CreativeModeInventoryScreen clicks the menu itself and sends every
         // changed slot, which the server sets by player.
-        let equipment_before = (self.screen == Screen::Creative).then(|| self.player_equipment());
+        let equipment_before = self.creative_menu_open().then(|| self.player_equipment());
         let station_menu = self.station.as_ref().map(|s| {
             (
                 s.loom.selected.map_or(-1, |i| i as i32),
@@ -5602,6 +5604,12 @@ impl Game<'_> {
                 self.player_drop(stack);
             }
             self.award_crafted(&crafted);
+        } else if self.creative_menu_open() {
+            // The creative screen's clicks are not the server's: it drops what they throw
+            // (handleCreativeModeItemDrop).
+            for stack in dropped {
+                self.creative_drop(stack);
+            }
         }
         if kind == Kind::Loom {
             if let Some(s) = self.station.as_mut() {
@@ -9089,8 +9097,8 @@ impl Game<'_> {
         } else if self.carried.is_none()
             && let Some(item) = hovered
         {
-            let lines = self.stack_tooltip(&item);
-            self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
+            let tooltip = self.stack_tooltip(&item);
+            self.draw_tooltip(batch, &tooltip, self.cursor.0, self.cursor.1);
         }
         self.draw_inventory_effects(batch, (ox, oy), Creative::WIDTH as i32);
     }
@@ -9416,6 +9424,10 @@ impl Game<'_> {
             lines.extend(g.lines);
             on_top = g.on_top;
         }
+        // The mods' (`world-draw`).
+        if self.title.is_none() {
+            self.mod_world_lines(&mut lines, &mut on_top);
+        }
         let view = horizon_client::camera::view_matrix(view_yaw, view_pitch);
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
@@ -9511,6 +9523,9 @@ impl Game<'_> {
             entities = horizon_client::spans::time("entity_geometry", || {
                 self.entity_geometry(camera, alpha, entities)
             });
+            let mut see_through = std::mem::take(&mut self.see_through_vertices);
+            self.mod_world_geometry(camera, fov_degrees, size, &mut entities, &mut see_through);
+            self.see_through_vertices = see_through;
         }
         let mut additive = Vec::new();
         if !title {
@@ -9812,6 +9827,9 @@ impl Game<'_> {
             return Ok(());
         }
         match key {
+            // The creative screen's stand-in closes as the creative screen does, for the keys that
+            // do not come through its window events (a controller's, the control socket's).
+            KeyCode::Escape | KeyCode::KeyE if self.mods.standing_in() => self.close_mod_screen(),
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {

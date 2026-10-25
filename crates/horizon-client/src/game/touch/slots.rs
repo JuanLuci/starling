@@ -3,10 +3,12 @@
 //! another slot moves it there (onto the same item as much as fits, onto another item the two
 //! swap); a finger held on a stack picks half of it, shown by a bar on the slot; a second quick
 //! tap on the picked stack sends it to the other side (Shift-click); a tap outside the window
-//! throws it. In creative an item of the tabs taps into a slot as a full stack. Stacks slide to
-//! where they went, and a finger on a slot's frame or just past it still means that slot. A
-//! finger dragged across the player turns it round. A finger that moves from a slot scrolls or
-//! drags as the pointer does elsewhere.
+//! throws it. In creative an item of the tabs taps into a slot as a full stack. With a stack
+//! picked (or a finger still on the half it held), a finger drawn across slots shares it out
+//! among them, as the mouse's drag does (QUICK_CRAFT). Stacks slide to where they went, and a
+//! finger on a slot's frame or just past it still means that slot. A finger dragged across the
+//! player turns it round. A finger that moves from a slot (nothing picked) scrolls or drags as the
+//! pointer does elsewhere.
 use super::super::{Game, Screen};
 use horizon_client::{
     creative::Creative,
@@ -43,6 +45,8 @@ pub(super) struct SlotTouch {
     slides: Vec<Slide>,
     /// The finger turning the player, and where it was last (window pixels).
     turning: Option<(u64, f64)>,
+    /// The finger drawing the pick across slots.
+    spread: Option<Spread>,
     /// How far the player was turned, in degrees.
     spin: f32,
 }
@@ -53,6 +57,13 @@ struct Slide {
     from: usize,
     to: usize,
     at: Instant,
+}
+
+/// A finger drawn across slots with a stack picked: the slots it crossed, in order, which share
+/// the stack out once it lifts.
+struct Spread {
+    finger: u64,
+    slots: Vec<usize>,
 }
 
 struct Down {
@@ -73,11 +84,13 @@ struct Picked {
 }
 
 impl Game<'_> {
-    /// The screens whose slots the fingers work as Bedrock's.
+    /// The screens whose slots the fingers work as Bedrock's: not under a mod's screen, which
+    /// takes the fingers (EMI's recipes over the inventory).
     fn slot_touch_screen(&self) -> bool {
         matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.title.is_none()
             && self.carried.is_none()
+            && self.mods.screen.is_none()
             && self.has_touch()
     }
 
@@ -178,7 +191,10 @@ impl Game<'_> {
         }
         match t.phase {
             TouchPhase::Started => {
-                if self.touch.slots.down.is_some() || self.touch.slots.turning.is_some() {
+                if self.touch.slots.down.is_some()
+                    || self.touch.slots.turning.is_some()
+                    || self.touch.slots.spread.is_some()
+                {
                     return true;
                 }
                 if self.touch_on_player(t.location) {
@@ -203,6 +219,12 @@ impl Game<'_> {
                 true
             }
             TouchPhase::Moved => {
+                if let Some(spread) = &self.touch.slots.spread {
+                    if spread.finger == t.id {
+                        self.touch_spread_over(t.location);
+                    }
+                    return true;
+                }
                 let Some(down) = &self.touch.slots.down else {
                     return false;
                 };
@@ -215,7 +237,26 @@ impl Game<'_> {
                     t.location.x - down.touch.location.x,
                     t.location.y - down.touch.location.y,
                 );
-                if down.held || (dx * dx + dy * dy).sqrt() < f64::from(slop) {
+                if (dx * dx + dy * dy).sqrt() < f64::from(slop) {
+                    return true;
+                }
+                // From a slot with a stack picked (or the half the finger held): drawn across
+                // slots, which share it out. A tab's items still scroll under a finger.
+                if self.touch.slots.picked.is_some()
+                    && let Some(slot) = down.slot
+                    && !self.touch_display_slot(slot)
+                {
+                    let finger = down.touch.id;
+                    self.touch.slots.down = None;
+                    self.touch.slots.spread = Some(Spread {
+                        finger,
+                        slots: Vec::new(),
+                    });
+                    self.touch_spread_add(slot);
+                    self.touch_spread_over(t.location);
+                    return true;
+                }
+                if down.held {
                     return true;
                 }
                 // It moves: the pointer's from where it landed (a list scrolls, a scrollbar
@@ -234,6 +275,18 @@ impl Game<'_> {
                 true
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
+                if let Some(spread) = self.touch.slots.spread.take_if(|s| s.finger == t.id) {
+                    if t.phase == TouchPhase::Ended {
+                        self.touch_spread_end(
+                            event_loop,
+                            id,
+                            t.device_id,
+                            spread.slots,
+                            t.location,
+                        );
+                    }
+                    return true;
+                }
                 let Some(down) = self.touch.slots.down.take_if(|d| d.touch.id == t.id) else {
                     return self.touch.slots.down.is_some();
                 };
@@ -311,6 +364,103 @@ impl Game<'_> {
                 self.touch_unpick(event_loop, id, device);
             }
         }
+    }
+
+    /// The slot under a finger drawing the pick across slots joins them.
+    fn touch_spread_over(&mut self, at: PhysicalPosition<f64>) {
+        if let (Some(slot), _) = self.slot_touch_at(at) {
+            self.touch_spread_add(slot);
+        }
+    }
+
+    /// Slot `slot` joins the slots the pick is shared out among: not the pick's own, a tab's
+    /// display slot or a crafting result (200).
+    fn touch_spread_add(&mut self, slot: usize) {
+        let Some(p) = self.touch.slots.picked else {
+            return;
+        };
+        if slot == p.slot || slot == 200 || self.touch_display_slot(slot) {
+            return;
+        }
+        if let Some(spread) = &mut self.touch.slots.spread
+            && !spread.slots.contains(&slot)
+        {
+            spread.slots.push(slot);
+        }
+    }
+
+    /// The finger drawn across `slots` lifted at `at`: the pick shared out among them, as the
+    /// mouse's drag does it (pressed on the first, moved over the rest, let go), what the hand
+    /// keeps going back where the pick was. Across one slot it is a tap there.
+    fn touch_spread_end(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        device: DeviceId,
+        slots: Vec<usize>,
+        at: PhysicalPosition<f64>,
+    ) {
+        let Some(p) = self.touch.slots.picked else {
+            return;
+        };
+        match slots[..] {
+            [] => {}
+            [slot] => self.touch_slot_tap(event_loop, id, device, Some(slot), at),
+            _ => {
+                let before = self.touch_contents();
+                self.touch_grab(event_loop, id, device, p);
+                for (i, &slot) in slots.iter().enumerate() {
+                    let position = self.touch_slot_center(slot);
+                    self.window_event(
+                        event_loop,
+                        id,
+                        WindowEvent::CursorMoved {
+                            device_id: device,
+                            position,
+                        },
+                    );
+                    if i == 0 {
+                        self.touch_mouse_button(event_loop, id, device, ElementState::Pressed);
+                    }
+                }
+                self.touch_mouse_button(event_loop, id, device, ElementState::Released);
+                if self.carried.is_some() {
+                    if self.touch_display_slot(p.slot) {
+                        // A tab's item: what is left goes, as the creative screen's cursor does.
+                        self.carried = None;
+                    } else {
+                        self.touch_slot_click(
+                            event_loop,
+                            id,
+                            device,
+                            p.slot,
+                            MouseButton::Left,
+                            false,
+                        );
+                    }
+                }
+                self.touch_slide(&before, p.slot);
+                self.touch_unpick(event_loop, id, device);
+            }
+        }
+    }
+
+    fn touch_mouse_button(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        device: DeviceId,
+        state: ElementState,
+    ) {
+        self.window_event(
+            event_loop,
+            id,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button: MouseButton::Left,
+            },
+        );
     }
 
     /// What every slot holds now (a creative tab's display slots aside: they never change).
@@ -485,6 +635,56 @@ impl Game<'_> {
         }
         self.draw_slides(batch);
         self.draw_slot_pick(batch);
+        self.draw_spread(batch);
+    }
+
+    /// The slots a finger drew the pick across, framed, each with what it would get: the stack
+    /// shared out evenly (AbstractContainerMenu.getQuickCraftPlaceCount).
+    fn draw_spread(&mut self, batch: &mut HudBatch) {
+        let (Some(p), Some(spread)) = (self.touch.slots.picked, &self.touch.slots.spread) else {
+            return;
+        };
+        let slots = spread.slots.clone();
+        let Some(stack) = self.touch_stack(p.slot) else {
+            return;
+        };
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(64, |i| i.max_stack)
+            .max(1);
+        let count = if self.touch_display_slot(p.slot) {
+            max
+        } else if p.half {
+            stack.count.div_ceil(2)
+        } else {
+            stack.count
+        };
+        let share = count / slots.len().max(1) as u32;
+        let (ox, oy) = self.inventory_origin(batch);
+        let white = rgba(255, 255, 255, 255);
+        for slot in slots {
+            let there = self.slot_view(slot);
+            if there
+                .as_ref()
+                .is_some_and(|s| s.item != stack.item || s.extra != stack.extra)
+            {
+                continue;
+            }
+            let (sx, sy) = self.slot_position(slot);
+            let (x, y) = (ox + sx, oy + sy);
+            let atlas = &self.gui.atlas;
+            batch.fill(atlas, x - 1.0, y - 1.0, 18.0, 1.0, white);
+            batch.fill(atlas, x - 1.0, y + 16.0, 18.0, 1.0, white);
+            batch.fill(atlas, x - 1.0, y, 1.0, 16.0, white);
+            batch.fill(atlas, x + 16.0, y, 1.0, 16.0, white);
+            if share > 0 {
+                let mut shown = stack.clone();
+                shown.count = (there.map_or(0, |s| s.count) + share).min(max);
+                self.draw_slot_item(batch, None, usize::MAX, Some(shown), x, y);
+            }
+        }
     }
 
     /// A moved stack slides from where it was (eased out), its slot showing it once it lands.
@@ -548,11 +748,16 @@ impl Game<'_> {
         const GAP: f32 = 8.0;
         let (room_right, room_left) = (batch.width - right - GAP - 4.0, left - GAP - 4.0);
         let room = room_right.max(room_left);
-        let lines = self.stack_tooltip(&stack);
-        let lines = self.wrap_tooltip(lines, room);
-        let width = lines
+        let tooltip = self.stack_tooltip(&stack);
+        let tooltip = crate::game::stations::StackTooltip {
+            lines: self.wrap_tooltip(tooltip.lines, room),
+            grids: tooltip.grids,
+        };
+        let width = tooltip
+            .lines
             .iter()
             .map(|(t, _)| HudBatch::text_width(&self.gui.atlas, t))
+            .chain(tooltip.grids.iter().map(|g| g.width()))
             .fold(0.0, f32::max);
         let (tx, ty) = if width <= room_right {
             (right + GAP, y + 4.0)
@@ -562,8 +767,8 @@ impl Game<'_> {
             let bottom = (window.top + window.height) as f32;
             ((x + 8.0 - width / 2.0).max(4.0), bottom + GAP)
         };
-        // draw_tooltip_lines puts the box 12 right of and 12 above the point it is given.
-        self.draw_tooltip_lines(batch, &lines, tx - 12.0, ty + 12.0);
+        // draw_tooltip puts the box 12 right of and 12 above the point it is given.
+        self.draw_tooltip(batch, &tooltip, tx - 12.0, ty + 12.0);
     }
 
     /// Tooltip lines wrapped to `width` GUI pixels (left whole when that is too narrow to read).

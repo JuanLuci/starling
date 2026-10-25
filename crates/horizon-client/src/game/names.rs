@@ -320,14 +320,61 @@ impl Game<'_> {
     ) {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
+        let background = background.then_some(BACKGROUND);
+        self.text_quads(
+            o, lines, 0.025, text_alpha, background, text_layer, light, out,
+        );
+    }
+    /// Lines of text facing the camera as a name tag's, `scale` blocks a text pixel: the text
+    /// at `text_alpha` in its layer, on `background` (RGBA8, alpha on top: unlit, a hair
+    /// behind).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn text_quads(
+        &self,
+        o: glam::DVec3,
+        lines: &[(Text, f64)],
+        scale: f32,
+        text_alpha: u32,
+        background: Option<u32>,
+        text_layer: u32,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let axes = self.camera_text_axes();
+        self.text_quads_along(
+            o, lines, axes, scale, text_alpha, background, text_layer, light, out,
+        );
+    }
+    /// The axes of text facing the camera.
+    pub(super) fn camera_text_axes(&self) -> TextAxes {
         let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
         let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
         let up = right.cross(forward).normalize_or_zero();
+        TextAxes {
+            right: right.as_vec3(),
+            up: up.as_vec3(),
+            away: forward.as_vec3() * 0.002,
+        }
+    }
+    /// [`Self::text_quads`] along `axes`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn text_quads_along(
+        &self,
+        o: glam::DVec3,
+        lines: &[(Text, f64)],
+        axes: TextAxes,
+        scale: f32,
+        text_alpha: u32,
+        background: Option<u32>,
+        text_layer: u32,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
         let white = self.gui.atlas.font.white();
-        let away = forward.as_vec3() * 0.002;
+        let away = axes.away;
         for (text, lift) in lines {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
-            let (r, u) = (right.as_vec3() * 0.025, up.as_vec3() * 0.025);
+            let (r, u) = (axes.right * scale, axes.up * scale);
             // Text space: x right, y down (scale 0.025, -0.025).
             let at = |x: f32, y: f32| o + r * x - u * y;
             let chars: Vec<(char, u32)> = text
@@ -372,11 +419,11 @@ impl Game<'_> {
                     });
                 }
             };
-            if background {
+            if let Some(background) = background {
                 quad(
                     [x0 - 1.0, y0 - 1.0, x0 + width, y0 + 8.0],
                     [white.u0, white.v0, white.u1, white.v1],
-                    BACKGROUND,
+                    background,
                     true,
                     2,
                 );
@@ -400,6 +447,15 @@ impl Game<'_> {
             }
         }
     }
+}
+
+/// The way text lies: unit vectors to its right and its top, and the small step a background
+/// goes behind it.
+#[derive(Clone, Copy)]
+pub(super) struct TextAxes {
+    pub(super) right: glam::Vec3,
+    pub(super) up: glam::Vec3,
+    pub(super) away: glam::Vec3,
 }
 
 /// A name tag: where it hangs, its lines (text, lift), the packed light at

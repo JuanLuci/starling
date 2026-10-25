@@ -60,7 +60,11 @@ impl Image {
 }
 
 fn read_png(path: &Path) -> Option<Image> {
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    png_image(std::io::BufReader::new(std::fs::File::open(path).ok()?))
+}
+
+fn png_image(source: impl std::io::BufRead + std::io::Seek) -> Option<Image> {
+    let mut decoder = png::Decoder::new(source);
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
@@ -101,6 +105,8 @@ fn nine_slice(png: &Path) -> Option<u32> {
 /// The player's prepared resources: the font and the textures, loaded as asked for.
 pub struct Resources {
     root: Option<PathBuf>,
+    /// The mod's folder or `.hmod`: its own textures (its GUI sprites), as the game loads them.
+    own: Option<PathBuf>,
     glyphs: Option<Rc<Image>>,
     textures: HashMap<String, Option<Rc<(Image, Option<u32>)>>>,
 }
@@ -114,9 +120,15 @@ impl Resources {
             .map(Rc::new);
         Resources {
             root,
+            own: None,
             glyphs,
             textures: HashMap::new(),
         }
+    }
+    /// The mod at `path` (a folder or a `.hmod`) brings its own textures.
+    pub fn with_mod(mut self, path: &Path) -> Self {
+        self.own = Some(path.to_owned());
+        self
     }
     pub fn has_font(&self) -> bool {
         self.glyphs.is_some()
@@ -134,15 +146,29 @@ impl Resources {
                 .sum()
         }))
     }
-    /// `assets/<ns>/textures/<path>.png` and its nine-slice border.
+    /// `assets/<ns>/textures/<path>.png` and its nine-slice border: the resources', else the
+    /// mod's own.
     fn texture(&mut self, id: &str) -> Option<Rc<(Image, Option<u32>)>> {
-        let root = self.root.as_ref()?;
+        let (root, own) = (self.root.clone(), self.own.clone());
         self.textures
             .entry(id.to_owned())
             .or_insert_with(|| {
                 let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
-                let file = root.join(format!("assets/{ns}/textures/{path}.png"));
-                read_png(&file).map(|image| Rc::new((image, nine_slice(&file))))
+                let name = format!("assets/{ns}/textures/{path}.png");
+                if let Some(root) = root {
+                    let file = root.join(&name);
+                    if let Some(image) = read_png(&file) {
+                        return Some(Rc::new((image, nine_slice(&file))));
+                    }
+                }
+                let own = own.filter(|_| ns != "minecraft")?;
+                if own.is_dir() {
+                    return read_png(&own.join(&name)).map(|image| Rc::new((image, None)));
+                }
+                let mut zip = zip::ZipArchive::new(std::fs::File::open(&own).ok()?).ok()?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut zip.by_name(&name).ok()?, &mut bytes).ok()?;
+                png_image(std::io::Cursor::new(bytes)).map(|image| Rc::new((image, None)))
             })
             .clone()
     }
@@ -505,7 +531,15 @@ pub fn render(ops: &[DrawOp], width: u32, height: u32, scale: u32, res: &mut Res
             } => {
                 canvas.text(*x, *y, text, *color, *shadow);
             }
-            DrawOp::Item { x, y, stack } => canvas.item(&stack.id, *x, *y),
+            DrawOp::Item { x, y, stack } => {
+                canvas.item(&stack.id, *x, *y);
+                // The count, as an inventory shows it.
+                if stack.count > 1 {
+                    let count = stack.count.to_string();
+                    let w = canvas.text_width(&count) - 1.0;
+                    canvas.text(x + 17.0 - w - 1.0, y + 9.0, &count, 0xFFFFFF, true);
+                }
+            }
             DrawOp::ItemId { x, y, id } => canvas.item(id, *x, *y),
             DrawOp::Sprite { x, y, w, h, sprite } => {
                 // As the game looks it up: a GUI sprite, else a texture (`item/compass_16`).
@@ -551,6 +585,24 @@ pub fn render(ops: &[DrawOp], width: u32, height: u32, scale: u32, res: &mut Res
                 if canvas.poses.len() > 1 {
                     canvas.poses.pop();
                 }
+            }
+            // The game draws the player's model: here a figure of its size, standing in the box.
+            DrawOp::Player {
+                x, y, w, h, size, ..
+            } => {
+                let (cx, bottom) = (x + w / 2.0, y + h / 2.0 + size * 0.9625);
+                let px = size / 16.0;
+                let part = |c: &mut Canvas, dx: f32, top: f32, pw: f32, ph: f32, colour: u32| {
+                    c.fill(cx + dx * px, bottom - top * px, pw * px, ph * px, colour);
+                };
+                part(&mut canvas, -4.0, 32.0, 8.0, 8.0, 0xFFB5_8D6E);
+                part(&mut canvas, -4.0, 24.0, 8.0, 12.0, 0xFF2F_8FA8);
+                part(&mut canvas, -8.0, 24.0, 4.0, 12.0, 0xFFB5_8D6E);
+                part(&mut canvas, 4.0, 24.0, 4.0, 12.0, 0xFFB5_8D6E);
+                part(&mut canvas, -4.0, 12.0, 8.0, 12.0, 0xFF3B_3B8F);
+            }
+            DrawOp::ItemTooltip { x, y, stack } => {
+                canvas.tooltip(*x, *y, std::slice::from_ref(&stack.name));
             }
         }
     }

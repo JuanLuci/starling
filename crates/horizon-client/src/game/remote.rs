@@ -7,7 +7,7 @@
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
 use super::{Dim, Game, Mining, Screen};
-use horizon_client::first_person::Hand;
+use horizon_client::first_person::{Hand, SwingAnimation};
 use horizon_client::{
     Result,
     chunk::{BIOME_STRATEGY, Chunk, Light, MIN_Y, SECTIONS, Section, block_strategy},
@@ -257,6 +257,9 @@ pub(super) struct Remote {
     player_type: Option<Arc<MobType>>,
     /// Inventory as last synchronised, for creative-mode slot updates.
     synced: Vec<Option<ItemStack>>,
+    /// While a creative screen is open: the inventory menu's crafting grid, armour and off hand
+    /// (slots 1 to 8 and 45) as last sent or received, which its clicks send when they change.
+    creative_menu: Option<[Option<ItemStack>; 9]>,
     decode_errors: u32,
     clock: Option<i32>,
     /// `ClientClockManager.ClientClockInstance`'s rate and partial tick for
@@ -665,6 +668,7 @@ impl Game<'_> {
             death_message: None,
             player_type,
             synced: vec![None; 36],
+            creative_menu: None,
             decode_errors: 0,
             clock: None,
             clock_rate: 1.0,
@@ -3730,13 +3734,104 @@ impl Game<'_> {
                 item,
             }));
         }
+        self.remote_creative_menu_sync();
     }
     /// Inventory as the server last described it.
     fn remote_synced(&mut self) {
         let inventory = self.inventory.clone();
+        let menu = self.creative_menu_slots();
         if let Some(r) = self.remote.as_mut() {
             r.synced = inventory;
+            if let Some(m) = r.creative_menu.as_mut() {
+                *m = menu;
+            }
         }
+    }
+    /// The inventory menu's slots 1 to 8 and 45: the crafting grid, the armour (head first) and
+    /// the off hand.
+    fn creative_menu_slots(&self) -> [Option<ItemStack>; 9] {
+        let g = &self.craft_grid;
+        let [head, chest, legs, feet] = self.armor.clone();
+        [
+            g[0].clone(),
+            g[1].clone(),
+            g[2].clone(),
+            g[3].clone(),
+            head,
+            chest,
+            legs,
+            feet,
+            self.offhand.clone(),
+        ]
+    }
+    /// CreativeModeInventoryScreen's slot listener for the slots the inventory's sync leaves
+    /// out (the crafting grid, the armour, the off hand): each one a creative screen's clicks
+    /// changed is sent as SetCreativeModeSlot, while one is open and once more as it closes.
+    pub(super) fn remote_creative_menu_sync(&mut self) {
+        const MENU: [i16; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 45];
+        let open = self.creative && self.creative_menu_open();
+        let now = self.creative_menu_slots();
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let Some(before) = r.creative_menu.as_mut() else {
+            if open {
+                r.creative_menu = Some(now);
+            }
+            return;
+        };
+        let changed: Vec<usize> = (0..MENU.len()).filter(|&i| before[i] != now[i]).collect();
+        *before = now.clone();
+        if !open {
+            r.creative_menu = None;
+        }
+        for i in changed {
+            let item = self.to_network(&now[i]);
+            self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+                slot: MENU[i],
+                item,
+            }));
+        }
+    }
+    /// `handleCreativeModeItemAdd` (a mod's `creative.set-slot`): the inventory menu's slot
+    /// `slot`, game slot `game`, sent now.
+    pub(super) fn remote_creative_slot(
+        &mut self,
+        slot: i16,
+        game: usize,
+        stack: &Option<ItemStack>,
+    ) {
+        let menu = self.creative_menu_slots();
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        // What the per-tick syncs would send again.
+        if game < 36 {
+            r.synced[game] = stack.clone();
+        }
+        if let Some(m) = r.creative_menu.as_mut() {
+            *m = menu;
+        }
+        let item = self.to_network(stack);
+        self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot,
+            item,
+        }));
+    }
+    /// `MultiPlayerGameMode.handleCreativeModeItemDrop`: a stack the creative screen throws,
+    /// which a server makes (slot -1); in single player it is dropped here.
+    pub(super) fn creative_drop(&mut self, stack: ItemStack) {
+        if self.remote.is_none() {
+            self.player_drop(stack);
+            return;
+        }
+        // LivingEntity.drop on the client: only the swing.
+        self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+        let item = self.to_network(&Some(stack));
+        self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot: -1,
+            item,
+        }));
     }
 
     pub(super) fn stop_remote_mining(&mut self) {

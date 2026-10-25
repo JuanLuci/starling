@@ -7,6 +7,8 @@ import * as game from "starling:mods/game@0.1.0";
 import * as level from "starling:mods/level@0.1.0";
 import * as inventory from "starling:mods/inventory@0.1.0";
 import * as slots from "starling:mods/slots@0.1.0";
+import * as creative from "starling:mods/creative@0.1.0";
+import * as recipes from "starling:mods/recipes@0.1.0";
 import * as chat from "starling:mods/chat@0.1.0";
 import * as chatSend from "starling:mods/chat-send@0.1.0";
 import * as draw from "starling:mods/draw@0.1.0";
@@ -18,16 +20,18 @@ import * as input from "starling:mods/input@0.1.0";
 import * as sound from "starling:mods/sound@0.1.0";
 import * as net from "starling:mods/net@0.1.0";
 import * as storage from "starling:mods/storage@0.1.0";
+import * as worldDrawApi from "starling:mods/world-draw@0.1.0";
 import { get as source, snapshot as snapshotNow } from "starling:mods/js-source@0.1.0";
 import { held as heldNow } from "starling:mods/js-keys@0.1.0";
+import { addGrid as addGridBits } from "starling:mods/js-tooltips@0.1.0";
 import {
   fill as fillBits, gradient as gradientBits, batch,
 } from "starling:mods/js-draw@0.1.0";
 
 // A render hook's drawing reaches the game in one call when the hook returns: each call from
 // JavaScript into the game costs microseconds (the engine's interpreter crossing into native
-// code), and a HUD mod makes dozens a frame. Fills, gradients, texts, sprites, pushes and pops
-// are queued in order (their numbers in 32-bit slots, colours as their bits, so an alpha of 0x80
+// code), and a HUD mod makes dozens a frame. Fills, gradients, texts, sprites, items, pushes and
+// pops are queued in order (their numbers in 32-bit slots, colours as their bits, so an alpha of 0x80
 // or more passes right: componentize-js passes such a u32 wrong); the other calls send the queue
 // first. A text's width, which `text` returns, comes from a cache of the game's measures. The
 // queue uses no builtin functions (push, Map, String...) but a join and an encode a frame: in
@@ -143,11 +147,36 @@ const drawing = {
     ints[used] = 6;
     used += 1;
   },
-  item: after(draw.item),
-  itemId: after(draw.itemId),
+  // What the game draws of a stack: its id, count, damage and components (an inventory's worth
+  // of items a frame, each a call of its own, cost a millisecond on a phone).
+  item(x, y, stack) {
+    if (!rendering) return draw.item(x, y, stack);
+    if (used + 7 > SLOTS) flush();
+    const at = used;
+    ints[at] = 7;
+    floats[at + 1] = x; floats[at + 2] = y;
+    ints[at + 3] = stack.count | 0; ints[at + 4] = stack.damage | 0;
+    ints[at + 5] = count;
+    texts[count++] = `${stack.id}`;
+    ints[at + 6] = count;
+    texts[count++] = stack.components ? `${stack.components}` : "";
+    used = at + 7;
+  },
+  itemId(x, y, id) {
+    if (!rendering) return draw.itemId(x, y, id);
+    if (used + 4 > SLOTS) flush();
+    const at = used;
+    ints[at] = 8;
+    floats[at + 1] = x; floats[at + 2] = y;
+    ints[at + 3] = count;
+    texts[count++] = typeof id === "string" ? id : `${id}`;
+    used = at + 4;
+  },
   tooltip: after(draw.tooltip),
   button: after(draw.button),
   panel: after(draw.panel),
+  player: after(draw.player),
+  itemTooltip: after(draw.itemTooltip),
 };
 // A render hook: its drawing queued, then sent when it returns.
 function render(name) {
@@ -224,6 +253,7 @@ const reading = {
     getBiome: keep("biome", level.getBiome, pos),
     getLight: keep("light", level.getLight, pos),
     getEntities: keep("entities", level.getEntities, one),
+    getSpawnSpots: keep("spawnSpots", level.getSpawnSpots, (a, b) => `${pos(a)},${pos(b)}`),
   },
   inventory: {
     ...inventory,
@@ -233,8 +263,20 @@ const reading = {
     getHovered: keep("hovered", inventory.getHovered),
     getContainer: keep("container", inventory.getContainer),
     getItemInfo: keep("itemInfo", inventory.getItemInfo, one),
+    getItemOrder: keep("itemOrder", inventory.getItemOrder, (s) => `${s.id}\u0000${s.components}`),
   },
   slots: { ...slots, getMenu: keep("menu", slots.getMenu) },
+  creative: {
+    ...creative,
+    getTabs: keep("tabs", creative.getTabs),
+    getItems: keep("items", creative.getItems, (tab, search, start, n) => `${tab}\u0000${search}\u0000${start},${n}`),
+  },
+  recipes: {
+    ...recipes,
+    countRecipes: keep("recipeCount", recipes.countRecipes, (s, lookup) => `${s.id}\u0000${s.components}\u0000${lookup}`),
+    getRecipes: keep("recipes", recipes.getRecipes, (s, lookup, kind, start, n) => `${s.id}\u0000${s.components}\u0000${lookup}\u0000${kind}\u0000${start},${n}`),
+  },
+  screens: { ...screens, getWindow: keep("window", screens.getWindow) },
 };
 
 // The controls held, read once a hook (they change between frames, not during a hook) instead of
@@ -282,18 +324,89 @@ const widgets = {
   addTouchButton: withPress(widgetsApi.addTouchButton, {
     label: "", icon: "", shape: "round", x: 0.5, y: 0.5, size: 0.5,
   }),
+  addWindowButton: withPress(widgetsApi.addWindowButton, {
+    part: "container", anchor: "top-right", x: -1, y: -12, width: 10, height: 10, icon: "",
+    label: "", tooltip: [], menus: [],
+  }),
   remove: (id) => {
     presses.delete(id);
     widgetsApi.remove(id);
   },
 };
 
+// World layers as a mod writes them: lines', boxes' and texts' numbers plain arrays or typed
+// ones (texts' lines an array or one string), the fields left out their usual values. The game
+// takes the numbers as typed arrays, which componentize-js copies whole (and a colour of alpha
+// 0x80 or more as its bits).
+const ORIGIN = { x: 0, y: 0, z: 0 };
+// A mod's own typed array (of its realm, which instanceof does not see) as it is, else a copy.
+const tag = Object.prototype.toString;
+const typed = (v, Type, name) =>
+  ArrayBuffer.isView(v) && tag.call(v) === `[object ${name}]` ? v : Type.from(v || []);
+const worldDraw = {
+  ...worldDrawApi,
+  setLayer(id, layer) {
+    const l = layer || {};
+    return worldDrawApi.setLayer(id, {
+      lines: (l.lines || []).map((s) => ({
+        origin: s.origin || ORIGIN,
+        ends: typed(s.ends, Float32Array, "Float32Array"),
+        colors: typed(s.colors, Uint32Array, "Uint32Array"),
+        width: s.width === undefined ? 1 : s.width,
+      })),
+      boxes: (l.boxes || []).map((s) => ({
+        origin: s.origin || ORIGIN,
+        corners: typed(s.corners, Float32Array, "Float32Array"),
+        colors: typed(s.colors, Uint32Array, "Uint32Array"),
+      })),
+      texts: (l.texts || []).map((t) => ({
+        origin: t.origin || ORIGIN,
+        places: typed(t.places, Float32Array, "Float32Array"),
+        lines: Array.isArray(t.lines) ? t.lines.join("\n") : `${t.lines === undefined ? "" : t.lines}`,
+        colors: typed(t.colors, Uint32Array, "Uint32Array"),
+        scale: t.scale === undefined ? 1 : t.scale,
+        background: t.background === undefined ? 0 : t.background,
+        facing: t.facing || "camera",
+      })),
+      labels: (l.labels || []).map((b) => ({
+        at: b.at || ORIGIN, text: `${b.text === undefined ? "" : b.text}`,
+        scale: b.scale === undefined ? 1 : b.scale, fixedSize: !!b.fixedSize,
+        background: b.background === undefined ? 0 : b.background,
+        facing: b.facing || "camera",
+      })),
+      throughWalls: !!l.throughWalls,
+    });
+  },
+  setIcons(id, icons) {
+    return worldDrawApi.setIcons(id, (icons || []).map((i) => ({
+      at: i.at || ORIGIN, sprite: i.sprite || "",
+      color: i.color === undefined ? 0xFFFFFFFF : i.color,
+      size: i.size === undefined ? 1 : i.size,
+      above: `${i.above === undefined ? "" : i.above}`,
+      below: `${i.below === undefined ? "" : i.below}`,
+      textScale: i.textScale === undefined ? 1 : i.textScale,
+      background: i.background === undefined ? 0 : i.background,
+      fixedSize: !!i.fixedSize,
+      throughWalls: !!i.throughWalls,
+    })));
+  },
+};
+
+// A grid's colour goes as its bits (js-tooltips): componentize-js passes a u32 of 2^31 or more
+// (an alpha of 0x80 or more) wrong.
+const tooltips = {
+  addGrid(grid, instead) {
+    return addGridBits(grid.columns, grid.stacks, grid.color | 0, !!instead);
+  },
+};
+
 // `types` holds only types: nothing to import from it.
 const API = {
   types: {}, mobile, log, game: reading.game, level: reading.level, inventory: reading.inventory,
-  slots: reading.slots,
+  slots: reading.slots, creative: reading.creative, recipes: reading.recipes,
   chat, "chat-send": chatSend, draw: drawing, hud,
-  screens, widgets, keys: controls, input, sound, net, storage,
+  screens: reading.screens, widgets, keys: controls, input, sound, net, storage,
+  "world-draw": worldDraw, tooltips,
 };
 
 // The interface a module name imports: starling:mods/<interface>@0.1.x.

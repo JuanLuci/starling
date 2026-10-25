@@ -574,7 +574,7 @@ pub fn spawn_box(x: f64, y: f64, z: f64, width: f32, height: f32) -> Aabb {
 }
 /// `EntityType.spawnDimensionsScale`: cube mobs are checked for room at
 /// their largest spawn size.
-fn spawn_dimensions_scale(s: Species) -> f32 {
+pub(crate) fn spawn_dimensions_scale(s: Species) -> f32 {
     match s {
         Species::Slime | Species::MagmaCube => 4.0,
         Species::SulfurCube => 2.0,

@@ -431,6 +431,7 @@ pub fn grindstone_experience(
 #[derive(Clone, Debug)]
 pub enum Smithing {
     Transform {
+        id: String,
         template: Ingredient,
         base: Ingredient,
         addition: Ingredient,
@@ -509,6 +510,7 @@ impl StationRecipes {
             );
             match v["type"].as_str().unwrap_or("") {
                 "minecraft:smithing_transform" => smithing.push(Smithing::Transform {
+                    id,
                     template: ingredient(&v["template"], items),
                     base: ingredient(&v["base"], items),
                     addition: ingredient(&v["addition"], items),
@@ -612,6 +614,7 @@ impl StationRecipes {
                     base: b,
                     addition: a,
                     result,
+                    ..
                 } => {
                     if t.test(template) && b.test(base) && a.test(addition) {
                         // SmithingTransformRecipe: transmute the base keeping its components.

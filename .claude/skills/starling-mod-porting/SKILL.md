@@ -33,7 +33,29 @@ pitfalls and the port log. Then:
    GUI (`"gui": {"width": 533, "height": 240}`) and the scenario fields `player`, `target`,
    `mining`, `blocks` and the `controls` step to set the scene. `--watch` reruns on every save.
    Buttons a mod adds (`widgets`): `{"screen": "pause"}` draws them on that game screen, `click`
-   and `touch` press them, `{"hud": {"touch": true}}` shows its touch buttons.
+   and `touch` press them, `{"hud": {"touch": true}}` shows its touch buttons. Inventory screens:
+   the scenario's `menu` and `"player": {"game_mode": "creative", "touch": true}`; pickup,
+   `slots.drag` and `creative` clicks change the pretend menu before the step draws (`release`,
+   `drag`, `scroll`, `key-press` steps too). On a phone a finger moving up or down scrolls, so a
+   screen with a scrollbar or slots to drag across names them with `mobile.drag-areas`.
+   A phone has no keyboard, no Shift, no right click and no hover: everything a key, Shift or a
+   right click does needs a button too (EMI's ++, Back and star), or a setting in the mod's
+   Config (`screens.set-config`; ShulkerBoxTooltip's preview), and nothing may only show on hover.
+   `{"screen": "container"}` (a menu `{"kind": "minecraft:generic_9x3", "size": 63}`) and
+   `{"screen": "inventory"}` draw a plain window of vanilla's layout with the menu's stacks and
+   the mod's window buttons (`widgets.add-window-button`), which `click` presses; Shift-clicks
+   (`quick-move`) between the parts change the pretend menu too. A mod's own icons are
+   `assets/<id>/textures/gui/sprites/*.png`, read from the mod for the PNGs. A mod screen standing in for a game screen: `screens.replace`.
+   Drawing in the world (`world-draw`): a `world` line counts each layer's lines, boxes and texts
+   and lists its icons (`set-icons`: a sprite facing the camera, a waypoint's diamond);
+   `"light": [block, sky]` lights the scenario's `blocks` for `level.get-spawn-spots`. In
+   JavaScript a list of records crossing into or out of the game costs tens of microseconds a
+   record (500 labels: 16 ms; a tick's fuel runs out near 2000), a typed array almost nothing:
+   send many things as numbers (`lines`, `boxes`, `texts`), read `get-spawn-spots`' arrays.
+   A render hook has a fifth of an event's fuel: fetch what is heavy (a page of recipes, whose
+   slots list every log) in the click's or key's hook and keep it for the frames.
+   `{"tooltip": "<item>", "components": "<SNBT>"}` hovers a stack carrying those components (a
+   shulker box's `minecraft:container`); its result lists the mod's grids (`tooltips.add-grid`).
 6. **Test in the game** on the PC: `target/quick/horizon-client.exe --world <name> --resources
    .local/horizon-client/26.3 --dev-mod <mod> --control-socket <short path>`, driven with
    `target/quick/horizon-ctl.exe --socket <path>` (`state`, `screen`, `touch tap X Y`,

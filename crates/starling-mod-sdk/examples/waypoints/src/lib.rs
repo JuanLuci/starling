@@ -3,10 +3,16 @@
 //! here" saves where the player stands,
 //! a place's button picks it, "x" forgets it and "Rename" names the picked one (bringing up the
 //! on-screen keyboard on a phone; Enter keeps the name). The chosen place's distance and
-//! direction show at the top of the HUD. Places are kept with `storage`, one per line.
+//! direction show at the top of the HUD. In the world each place of the dimension has a beam of
+//! its colour up from it and a diamond of its colour on the beam, its name over the diamond and
+//! its distance under it, seen through hills and the same size at any distance (JourneyMap's
+//! beacons and diamonds, Xaero's waypoints), with `world-draw`; the chosen one ringed in white.
+//! The diamonds are the mod's own sprites (`assets/`). Places are kept with `storage`, one per
+//! line.
 use starling_mod_sdk::{
     Anchor, KeyEvent, Mod, MouseAction, MouseEvent, Registration, RenderContext, ScreenButton,
     Shape, TouchButton, draw, game, mobile, screens, storage, widgets,
+    world_draw::{self, Icon, Layer, Lines, Point},
 };
 
 struct Place {
@@ -20,6 +26,9 @@ struct Waypoints {
     chosen: Option<usize>,
     /// The new name being typed for the chosen place.
     renaming: Option<String>,
+    /// What the world shows now (the icons' texts and places), to set it again only when it
+    /// changes.
+    shown: String,
 }
 
 const SCREEN: &str = "waypoints:list";
@@ -27,6 +36,13 @@ const SCREEN: &str = "waypoints:list";
 const PANEL: [f32; 2] = [220.0, 176.0];
 const ROW: f32 = 22.0;
 const ROWS: usize = 5;
+/// The places' colours, one each in turn (chat's red, green, blue, gold, light purple).
+const COLORS: [u32; 5] = [0xFF5555, 0x55FF55, 0x5555FF, 0xFFAA00, 0xFF55FF];
+/// A beam's height above its place and its width in pixels.
+const BEAM: f32 = 256.0;
+const BEAM_WIDTH: f32 = 3.0;
+/// The diamond's height above a place.
+const DIAMOND_HEIGHT: f64 = 1.2;
 
 /// What a press on the screen means.
 enum Hit {
@@ -94,6 +110,98 @@ impl Waypoints {
     fn distance(p: &Place, x: f64, z: f64) -> f64 {
         ((p.pos[0] - x).powi(2) + (p.pos[2] - z).powi(2)).sqrt()
     }
+    /// The places of the player's dimension in the world: a beam each, hidden by what is in
+    /// front of it, and its diamond, name and distance seen through everything; set when that
+    /// changes (the distances by the metre).
+    fn show_in_world(&mut self) {
+        let Some(p) = game::get_player() else {
+            return;
+        };
+        let here: Vec<(usize, &Place)> = self
+            .places
+            .iter()
+            .enumerate()
+            .filter(|(_, place)| place.dimension == p.dimension)
+            .collect();
+        let mut icons = Vec::new();
+        for (i, place) in &here {
+            let [x, y, z] = place.pos;
+            let color = COLORS[i % COLORS.len()];
+            let metres = Self::distance(place, p.x, p.z);
+            let diamond = Icon {
+                sprite: "waypoints:diamond".into(),
+                color: 0xFF_000000 | color,
+                size: 11.0,
+                above: format!(
+                    "{{\"text\":\"{}\",\"color\":\"#{color:06X}\"}}",
+                    place.name.replace(['\\', '"'], "")
+                ),
+                below: format!("{{\"text\":\"{metres:.0} m\",\"color\":\"#E0E0E0\"}}"),
+                // On the beam, at the height of someone standing there.
+                at: Point {
+                    x,
+                    y: y + DIAMOND_HEIGHT,
+                    z,
+                },
+                text_scale: 1.0,
+                background: 0x80_000000,
+                fixed_size: true,
+                through_walls: true,
+            };
+            if self.chosen == Some(*i) {
+                // Ringed in white, the texts outside the ring.
+                icons.push(Icon {
+                    sprite: "waypoints:diamond_ring".into(),
+                    color: 0xFF_FFFFFF,
+                    size: 17.0,
+                    ..diamond.clone()
+                });
+                icons.push(Icon {
+                    above: String::new(),
+                    below: String::new(),
+                    ..diamond
+                });
+            } else {
+                icons.push(diamond);
+            }
+        }
+        let shown: String = icons
+            .iter()
+            .map(|i| {
+                format!(
+                    "{}|{}|{}|{}|{}\n",
+                    i.sprite, i.above, i.below, i.at.x, i.at.z
+                )
+            })
+            .collect();
+        if shown == self.shown {
+            return;
+        }
+        self.shown = shown;
+        let beams: Vec<Lines> = here
+            .iter()
+            .map(|(i, place)| {
+                let [x, y, z] = place.pos;
+                Lines {
+                    origin: Point { x, y, z },
+                    ends: vec![0.0, 0.0, 0.0, 0.0, BEAM, 0.0],
+                    colors: vec![0xC0_000000 | COLORS[i % COLORS.len()]],
+                    width: BEAM_WIDTH,
+                }
+            })
+            .collect();
+        let _ = world_draw::set_layer(
+            "beams",
+            &Layer {
+                lines: beams,
+                boxes: Vec::new(),
+                texts: Vec::new(),
+                labels: Vec::new(),
+                through_walls: false,
+            },
+        );
+        let _ = world_draw::set_icons("marks", &icons);
+    }
 }
 
 fn inside(r: [f32; 4], x: f32, y: f32) -> bool {
@@ -104,7 +212,8 @@ impl Mod for Waypoints {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = Registration::new()
             .keybind("open", "Waypoints", "key.keyboard.j")
-            .on_hud();
+            .on_hud()
+            .on_tick();
         // The keybind's touch button, a compass at the left; and a button on the pause menu.
         widgets::add_touch_button(&TouchButton {
             id: "open".into(),
@@ -133,6 +242,7 @@ impl Mod for Waypoints {
                 places: Self::load(),
                 chosen: None,
                 renaming: None,
+                shown: String::new(),
             },
             hooks,
         ))
@@ -142,6 +252,10 @@ impl Mod for Waypoints {
         if id == "open" && pressed {
             screens::open("list");
         }
+    }
+
+    fn tick(&mut self, _tick: u64) {
+        self.show_in_world();
     }
 
     fn screen_render(&mut self, screen: &str, context: RenderContext) {

@@ -5,7 +5,7 @@
 use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -19,6 +19,8 @@ mod starling {
     wasmtime::component::bindgen!({
         path: "../starling-mod-sdk/wit",
         world: "starling-mod",
+        // `creative`'s outputs carry stacks, and outputs compare.
+        additional_derives: [PartialEq],
     });
 }
 mod v1 {
@@ -27,24 +29,52 @@ mod v1 {
         world: "horizon-mod",
     });
 }
+// bindgen's type: no derive.
+#[allow(clippy::derivable_impls)]
+impl Default for SpawnSpots {
+    fn default() -> Self {
+        SpawnSpots {
+            positions: Vec::new(),
+            block_light: Vec::new(),
+            sky_light: Vec::new(),
+            tops: Vec::new(),
+        }
+    }
+}
+impl SpawnSpots {
+    /// Adds a place.
+    pub fn push(&mut self, pos: [i32; 3], block_light: u8, sky_light: u8, top: f32) {
+        self.positions.extend(pos);
+        self.block_light.push(block_light);
+        self.sky_light.push(sky_light);
+        self.tops.push(top);
+    }
+}
 pub use starling::exports::starling::mods::events::{
     ChatAction, HudElement, HudPart, KeyEvent, Keybind, MouseAction, MouseEvent, Placement,
     RenderContext, SendAction,
 };
 pub use starling::starling::mods::{
+    creative::{ClickKind as CreativeClick, ItemPage, Tab, TabKind},
     game::{BlockHit, Clock, Effect, EntityHit, Gui, Mining, Player, Target, WorldInfo},
     hud::{Corner, Line},
     inventory::{Container, Food, ItemInfo},
-    level::{BlockInfo, Entity, EntityInfo},
+    level::{BlockInfo, Entity, EntityInfo, SpawnSpots},
+    recipes::{Lookup, Recipe, RecipeKind},
     slots::{ClickKind, Menu},
+    tooltips::ItemGrid,
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
-    widgets::{Anchor, ScreenButton, Shape, TouchButton},
+    widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
+    world_draw::{
+        Boxes as WorldBoxes, Facing, Icon as WorldIcon, Label as WorldLabel, Layer as WorldLayer,
+        Lines as WorldLines, Point, Texts as WorldTexts,
+    },
 };
 use starling::{
     exports::starling::mods::events::Registration,
     starling::mods::{
-        chat, chat_send, draw, game, hud, input, inventory, keys, level, log as mod_log, mobile,
-        net, screens, slots, sound, storage, types, widgets,
+        chat, chat_send, creative, draw, game, hud, input, inventory, keys, level, log as mod_log,
+        mobile, net, recipes, screens, slots, sound, storage, tooltips, types, widgets, world_draw,
     },
 };
 
@@ -57,6 +87,10 @@ const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_RENDER: u64 = 20_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// A JavaScript mod's first call of a render hook compiles the functions it runs (the engine
+/// compiles a function the first time it is called: a screen's first frame can cost eight of
+/// its next), so each render hook's first call gets an event's fuel.
+const FUEL_FIRST_RENDER: u64 = FUEL_EVENT;
 /// Chat lines a mod may show per call, HUD lines and their length.
 const CHAT_PER_CALL: usize = 8;
 const HUD_LINES: usize = 16;
@@ -72,11 +106,27 @@ const SEND_CHARS: usize = 256;
 const PAYLOAD_BYTES: usize = 32 << 10;
 /// `level.get-entities`' cap.
 const ENTITIES: usize = 128;
-/// `slots.click`s one call may queue.
+/// `slots.click`s (and `creative`'s clicks and sets) one call may queue.
 const CLICKS_PER_CALL: usize = 64;
+/// `mobile.drag-areas` kept.
+const DRAG_AREAS: usize = 64;
+/// `world-draw`'s caps: a mod's layers, and the lines and labels among them.
+const WORLD_LAYERS: usize = 16;
+const WORLD_LINES: usize = 65536;
+const WORLD_BOXES: usize = 16384;
+const WORLD_TEXTS: usize = 16384;
+const WORLD_LABELS: usize = 256;
+const WORLD_ICONS: usize = 256;
+/// `level.get-spawn-spots`' longest side.
+const SPAWN_SPOTS_SIDE: i32 = 64;
+/// The items one `creative.get-items` may list.
+const CREATIVE_PAGE: u32 = 256;
+/// The game's screens a mod's may stand in for (`screens.replace`).
+pub const REPLACEABLE_SCREENS: [&str; 1] = ["creative"];
 /// Buttons one mod may put on the game's screens, and on the touch controls.
 const SCREEN_BUTTONS: usize = 32;
 const TOUCH_BUTTONS: usize = 16;
+const WINDOW_BUTTONS: usize = 16;
 /// The game's own touch buttons a mod may restyle (`widgets.style-control`).
 pub const TOUCH_CONTROLS: [&str; 11] = [
     "jump",
@@ -118,10 +168,49 @@ pub trait LevelView: Send + Sync {
     fn block_info(&self, _pos: [i32; 3]) -> Option<BlockInfo> {
         None
     }
+    /// `level.get-spawn-spots` from `from` to `to` (the least corner, then the greatest).
+    fn spawn_spots(&self, _from: [i32; 3], _to: [i32; 3]) -> SpawnSpots {
+        SpawnSpots::default()
+    }
 }
 /// The game's items by id, for `inventory.get-item-info`.
 pub trait ItemCatalog: Send + Sync {
     fn info(&self, id: &str) -> Option<ItemInfo>;
+}
+/// The creative screen's tabs and their items, for `creative`.
+pub trait CreativeCatalog: Send + Sync {
+    fn tabs(&self) -> Vec<Tab>;
+    /// Up to `count` of tab `tab`'s items from `start` (the search tab's that match `search`).
+    fn items(&self, tab: &str, search: &str, start: usize, count: usize) -> ItemPage;
+    /// `inventory.get-item-order`: the stack's place in the search tab with nothing searched
+    /// (its components' own place, else its item's first); None for one the tab lacks.
+    fn order(&self, stack: &ItemStack) -> Option<u32>;
+}
+/// The game's recipes, for `recipes`.
+pub trait RecipeCatalog: Send + Sync {
+    /// How many recipes `lookup` finds for `stack` (by its item, and its components when it has
+    /// any) of each kind there are any of, in order.
+    fn count(&self, stack: &ItemStack, lookup: Lookup) -> Vec<(RecipeKind, u32)>;
+    /// Up to `count` of the recipes of `kind` `lookup` finds for `stack`, from `start`.
+    fn recipes(
+        &self,
+        stack: &ItemStack,
+        lookup: Lookup,
+        kind: RecipeKind,
+        start: usize,
+        count: usize,
+    ) -> Vec<Recipe>;
+    /// A recipe's kind and the grid it needs: its width and height, a shapeless one's inputs
+    /// and 0.
+    fn shape(&self, id: &str) -> Option<(RecipeKind, u32, u32)>;
+}
+/// What the open screen's recipe book places (`recipes.fill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Crafting {
+    /// A crafting grid this many cells a side (the inventory's 2, a crafting table's 3).
+    Grid(u32),
+    /// A furnace of this kind: smelting, blasting or smoking.
+    Furnace(RecipeKind),
 }
 /// A text's width in GUI pixels.
 pub type Measure = Arc<dyn Fn(&str) -> f32 + Send + Sync>;
@@ -153,6 +242,13 @@ pub struct Snapshot {
     pub entity_info: Vec<EntityInfo>,
     pub level: Option<Arc<dyn LevelView>>,
     pub items: Option<Arc<dyn ItemCatalog>>,
+    /// The creative tabs (`creative`).
+    pub creative: Option<Arc<dyn CreativeCatalog>>,
+    /// The recipes (`recipes`), and what the open screen's recipe book places.
+    pub recipes: Option<Arc<dyn RecipeCatalog>>,
+    pub crafting: Option<Crafting>,
+    /// The open game screen's window (`screens.get-window`): x, y, width, height.
+    pub window: Option<[f32; 4]>,
     pub measure: Option<Measure>,
     /// The mods' keybinds held now, as `<mod id>:<keybind id>`.
     pub keys_down: Vec<String>,
@@ -206,6 +302,48 @@ pub enum Output {
         slot: i32,
         button: u8,
         kind: ClickKind,
+    },
+    /// `slots.drag`: the cursor's stack dragged across the open menu's slots `slots` with
+    /// button `button` held (QUICK_CRAFT).
+    Drag {
+        id: String,
+        slots: Vec<i32>,
+        button: u8,
+    },
+    /// `mobile.drag-areas`: where on mod `id`'s open screen a finger drags instead of scrolling
+    /// (x, y, width, height in GUI pixels).
+    DragAreas { id: String, areas: Vec<[f32; 4]> },
+    /// `screens.set-slots`: where mod `id`'s open screen draws the open menu's slots (menu slot,
+    /// x, y of its 16-pixel square in GUI pixels).
+    ScreenSlots {
+        id: String,
+        slots: Vec<(u32, f32, f32)>,
+    },
+    /// `recipes.fill`: the recipe book's placing of recipe `recipe` in the open screen.
+    FillRecipe {
+        id: String,
+        recipe: String,
+        all: bool,
+    },
+    /// `creative.click`: a click on item `index` of tab `tab`'s list for `search`.
+    CreativeClick {
+        id: String,
+        tab: String,
+        search: String,
+        index: u32,
+        button: u8,
+        kind: CreativeClick,
+    },
+    /// `creative.set-slot`: the player's inventory menu's slot `slot` set.
+    CreativeSlot {
+        id: String,
+        slot: u32,
+        stack: Option<ItemStack>,
+    },
+    /// `creative.set-carried`: the cursor's stack set.
+    CreativeCarried {
+        id: String,
+        stack: Option<ItemStack>,
     },
     /// `input.hold`: mod `id` holds `control` (`key.sprint` or `key.sneak`), or lets it go.
     Hold {
@@ -283,6 +421,21 @@ pub enum DrawOp {
         scale: f32,
     },
     Pop,
+    /// `draw.player`.
+    Player {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        size: f32,
+        turn: f32,
+    },
+    /// `draw.item-tooltip`.
+    ItemTooltip {
+        x: f32,
+        y: f32,
+        stack: ItemStack,
+    },
 }
 
 /// A mod's text panel, drawn every frame until it changes.
@@ -322,6 +475,7 @@ pub struct Widgets {
     pub screen: Vec<ScreenButton>,
     pub touch: Vec<TouchButton>,
     pub styles: Vec<ControlStyle>,
+    pub window: Vec<WindowButton>,
 }
 
 /// `widgets.style-control`: one of [`TOUCH_CONTROLS`] with the mod's label, icon and shape ("" for
@@ -396,6 +550,8 @@ struct Running {
     guest: Guest,
     hooks: Hooks,
     capabilities: Vec<Capability>,
+    /// The render hooks called already (`hud`, `element`, `screen`).
+    rendered: Vec<&'static str>,
 }
 
 struct State {
@@ -411,9 +567,19 @@ struct State {
     panel: Option<Panel>,
     /// Some while a render hook runs: what it drew.
     draw: Option<Vec<DrawOp>>,
+    /// Some while the tooltip hook runs: the grids it added, and whether instead of the game's
+    /// lines of a container's contents.
+    grids: Option<Vec<(ItemGrid, bool)>>,
     /// Its settings screen (`screens.set-config`), `<mod id>:<name>`.
     config: Option<String>,
+    /// The game's screens its own stand in for (`screens.replace`): the game's name, then
+    /// `<mod id>:<name>`.
+    replaces: Vec<(String, String)>,
     widgets: Widgets,
+    /// Its `world-draw` layers by id, in the order first set.
+    world: Vec<(String, WorldLayer)>,
+    /// Its layers' icons (`world-draw.set-icons`) by id, in the order first set.
+    icons: Vec<(String, Vec<WorldIcon>)>,
     /// The mod's payload channels.
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
@@ -545,8 +711,27 @@ impl Mods {
         };
         // The digests of every installed mod's code, on or off, kept in the cache.
         let mut digests = Vec::new();
-        for path in paths {
-            let modified = modified(path);
+        // Of the copies of one mod (a download's `name (2).hmod` beside `name.hmod`), the newest
+        // file runs, whatever the names' order; the older ones stay off and say so.
+        let packages: Vec<_> = paths
+            .iter()
+            .map(|p| (modified(p), Package::read(p)))
+            .collect();
+        let mut newest: HashMap<&str, usize> = HashMap::new();
+        for (i, (modified, package)) in packages.iter().enumerate() {
+            if let Ok(package) = package {
+                newest
+                    .entry(package.manifest.id.as_str())
+                    .and_modify(|best| {
+                        if *modified > packages[*best].0 {
+                            *best = i;
+                        }
+                    })
+                    .or_insert(i);
+            }
+        }
+        for (i, (path, (modified, package))) in paths.iter().zip(&packages).enumerate() {
+            let modified = *modified;
             let mut entry = Entry {
                 path: path.clone(),
                 manifest: None,
@@ -556,10 +741,11 @@ impl Mods {
                 modified,
                 retry_full: false,
             };
-            match Package::read(path) {
-                Err(e) => entry.status = Status::Failed(e),
+            match package {
+                Err(e) => entry.status = Status::Failed(e.clone()),
                 Ok(package) => {
-                    let on = enabled(&package.manifest.id);
+                    let runs = newest[package.manifest.id.as_str()];
+                    let on = enabled(&package.manifest.id) && runs == i;
                     entry.manifest = Some(package.manifest.clone());
                     if let (Some(_), Some(wasm)) = (cache, &package.wasm) {
                         digests.push(digest(wasm));
@@ -574,13 +760,19 @@ impl Mods {
                         // content is refused stays off, with the reason.
                         let content = crate::Content::read(path, &package.manifest);
                         entry.status =
-                            match content.and_then(|_| mods.start(path, &package, &reserved)) {
+                            match content.and_then(|_| mods.start(path, package, &reserved)) {
                                 Ok(run) => {
                                     entry.run = run;
                                     Status::Running
                                 }
                                 Err(e) => Status::Failed(e),
                             };
+                    }
+                    if runs != i {
+                        let newer = paths[runs]
+                            .file_name()
+                            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        entry.status = Status::Failed(format!("an older copy: {newer} runs"));
                     }
                 }
             }
@@ -727,8 +919,12 @@ impl Mods {
             out: Vec::new(),
             panel: None,
             draw: None,
+            grids: None,
             config: None,
+            replaces: Vec::new(),
             widgets: Widgets::default(),
+            world: Vec::new(),
+            icons: Vec::new(),
             channels: Vec::new(),
             sent: VecDeque::new(),
             data_dir,
@@ -784,6 +980,7 @@ impl Mods {
             guest,
             hooks,
             capabilities: m.capabilities.clone(),
+            rendered: Vec::new(),
         }))
     }
 
@@ -813,11 +1010,35 @@ impl Mods {
         self.running()
             .any(|r| !Engine::same(r.store.engine(), main))
     }
+    /// The mod screen (`<mod id>:<name>`) standing in for the game's `screen`
+    /// (`screens.replace`): the first running mod's that asked.
+    pub fn replacement(&self, screen: &str) -> Option<String> {
+        self.running().find_map(|r| {
+            let state = r.store.data();
+            state
+                .replaces
+                .iter()
+                .find(|(game, _)| game == screen)
+                .map(|(_, own)| own.clone())
+        })
+    }
     /// Every running mod's buttons, with its id.
     pub fn widgets(&self) -> impl Iterator<Item = (&str, &Widgets)> {
         self.running()
             .map(|r| r.store.data())
             .map(|s| (s.id.as_str(), &s.widgets))
+    }
+    /// Every running mod's world layers (`world-draw`), with its id.
+    pub fn world_layers(&self) -> impl Iterator<Item = (&str, &[(String, WorldLayer)])> {
+        self.running()
+            .map(|r| r.store.data())
+            .map(|s| (s.id.as_str(), s.world.as_slice()))
+    }
+    /// The running mods' `world-draw` icons: mod id, then each layer's.
+    pub fn world_icons(&self) -> impl Iterator<Item = (&str, &[(String, Vec<WorldIcon>)])> {
+        self.running()
+            .map(|r| r.store.data())
+            .map(|s| (s.id.as_str(), s.icons.as_slice()))
     }
     /// Whether a running mod asked for `c` (the game fills that part of the snapshot only then).
     pub fn uses(&self, c: Capability) -> bool {
@@ -927,16 +1148,22 @@ impl Mods {
         }
     }
 
-    /// A render hook's call into mod `i`: what it drew.
+    /// A call of render hook `hook` into mod `i`: what it drew.
     fn render(
         &mut self,
         i: usize,
+        hook: &'static str,
         f: impl FnOnce(&starling::StarlingMod, &mut Store<State>) -> wasmtime::Result<()>,
     ) -> Vec<DrawOp> {
+        let mut fuel = FUEL_RENDER;
         if let Some(run) = self.entries[i].run.as_mut() {
             run.store.data_mut().draw = Some(Vec::new());
+            if !run.rendered.contains(&hook) {
+                run.rendered.push(hook);
+                fuel = FUEL_FIRST_RENDER;
+            }
         }
-        self.call(i, FUEL_RENDER, |g, s| match g {
+        self.call(i, fuel, |g, s| match g {
             Guest::Starling(m) => f(m, s),
             Guest::Horizon(_) => Ok(()),
         });
@@ -1035,7 +1262,7 @@ impl Mods {
     pub fn hud_render(&mut self, context: RenderContext) -> Vec<DrawOp> {
         let mut ops = Vec::new();
         for i in self.indices(|h| h.hud) {
-            ops.extend(self.render(i, |m, s| {
+            ops.extend(self.render(i, "hud", |m, s| {
                 m.starling_mods_events().call_hud_render(s, context)
             }));
         }
@@ -1071,7 +1298,7 @@ impl Mods {
                 })
                 .unwrap_or_default();
             for id in ids {
-                ops.extend(self.render(i, |m, s| {
+                ops.extend(self.render(i, "element", |m, s| {
                     m.starling_mods_events()
                         .call_render_hud_element(s, &id, context)
                 }));
@@ -1107,7 +1334,7 @@ impl Mods {
     pub fn screen_render(&mut self, screen: &str, context: RenderContext) -> Vec<DrawOp> {
         let mut ops = Vec::new();
         for i in self.screen_mods(screen) {
-            ops.extend(self.render(i, |m, s| {
+            ops.extend(self.render(i, "screen", |m, s| {
                 m.starling_mods_events()
                     .call_screen_render(s, screen, context)
             }));
@@ -1141,16 +1368,35 @@ impl Mods {
     }
     /// Lines the mods add under `stack`'s tooltip (rich text).
     pub fn tooltip(&mut self, stack: &ItemStack) -> Vec<String> {
-        let mut lines = Vec::new();
+        self.tooltip_grids(stack).0
+    }
+    /// The lines mods add under `stack`'s tooltip, the grids (`tooltips.add-grid`) and whether
+    /// one stands instead of the game's lines of a container's contents.
+    pub fn tooltip_grids(&mut self, stack: &ItemStack) -> (Vec<String>, Vec<ItemGrid>, bool) {
+        let (mut lines, mut grids, mut instead) = (Vec::new(), Vec::new(), false);
         for i in self.indices(|h| h.tooltips) {
+            if let Some(run) = self.entries[i].run.as_mut() {
+                run.store.data_mut().grids = Some(Vec::new());
+            }
             if let Some(more) = self.call(i, FUEL_EVENT, |g, s| match g {
                 Guest::Starling(m) => m.starling_mods_events().call_tooltip(s, stack),
                 Guest::Horizon(_) => Ok(Vec::new()),
             }) {
                 lines.extend(more.into_iter().take(32).map(|l| clip_to(l, TEXT_CHARS)));
             }
+            let added = self.entries[i]
+                .run
+                .as_mut()
+                .and_then(|r| r.store.data_mut().grids.take())
+                .unwrap_or_default();
+            for (grid, over) in added {
+                if grids.len() < TOOLTIP_GRIDS {
+                    instead |= over;
+                    grids.push(grid);
+                }
+            }
         }
-        lines
+        (lines, grids, instead)
     }
     /// Every running mod's keybinds, with the mod's id.
     pub fn keybinds(&self) -> Vec<(String, Keybind)> {
@@ -1619,6 +1865,31 @@ fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
                 state.pop();
                 Some(1)
             }
+            // An item stack's icon: what `draw.item` draws of it (its id, count and components).
+            7 => (|| {
+                let (x, y, count, damage) = (f(at + 1)?, f(at + 2)?, n(at + 3)?, n(at + 4)?);
+                n(at + 6)?;
+                if let (Some(id), Some(components)) = (text(at + 5), text(at + 6)) {
+                    let stack = ItemStack {
+                        id,
+                        count: count as u32,
+                        damage: damage as u32,
+                        max_damage: 0,
+                        name: String::new(),
+                        components,
+                    };
+                    state.item(x, y, stack);
+                }
+                Some(7)
+            })(),
+            8 => (|| {
+                let (x, y) = (f(at + 1)?, f(at + 2)?);
+                n(at + 3)?;
+                if let Some(id) = text(at + 3) {
+                    state.item_id(x, y, id);
+                }
+                Some(4)
+            })(),
             _ => None,
         };
         match drawn {
@@ -1629,7 +1900,7 @@ fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
 }
 
 /// A JavaScript mod's linker: the interfaces its manifest declares (and the ones every mod has),
-/// the engine's `js-source` (and `js-draw` with `draw`), and a trap for every other import, which
+/// the engine's `js-source` (and `js-draw` with `draw`, and so on), and a trap for every other import, which
 /// stops the mod.
 fn js_linker(
     engine: &Engine,
@@ -1654,6 +1925,8 @@ fn js_linker(
             "level" => api::level::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "inventory" => api::inventory::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "slots" => api::slots::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "creative" => api::creative::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "recipes" => api::recipes::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat" => api::chat::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "chat-send" => api::chat_send::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "draw" => api::draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
@@ -1665,6 +1938,8 @@ fn js_linker(
             "sound" => api::sound::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "net" => api::net::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             "storage" => api::storage::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "world-draw" => api::world_draw::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
+            "tooltips" => api::tooltips::add_to_linker::<State, HasSelf<State>>(l, |s| s)?,
             _ => {}
         }
     }
@@ -1737,6 +2012,24 @@ fn js_linker(
             },
         )?;
     }
+    if interfaces.contains(&"tooltips") {
+        use tooltips::Host;
+        type Grid = (u32, Vec<Option<ItemStack>>, i32, bool);
+        linker
+            .instance("starling:mods/js-tooltips@0.1.0")?
+            .func_wrap(
+                "add-grid",
+                |mut store: wasmtime::StoreContextMut<'_, State>,
+                 (columns, stacks, color, instead): Grid| {
+                    let grid = ItemGrid {
+                        columns,
+                        stacks,
+                        color: color as u32,
+                    };
+                    Ok((store.data_mut().add_grid(grid, instead),))
+                },
+            )?;
+    }
     // The other interfaces: each function says which capability the manifest lacks.
     for (name, item) in component.component_type().imports(engine) {
         let interface = name
@@ -1747,10 +2040,11 @@ fn js_linker(
         else {
             continue;
         };
-        // js-draw goes with draw, js-keys with keys.
+        // js-draw goes with draw, js-keys with keys, js-tooltips with tooltips.
         let granting = match interface {
             "js-draw" => "draw",
             "js-keys" => "keys",
+            "js-tooltips" => "tooltips",
             other => other,
         };
         if interface == "js-source" || interfaces.contains(&granting) {
@@ -1901,11 +2195,11 @@ pub fn finish_background_compiles() -> bool {
 fn modified(path: &Path) -> Option<SystemTime> {
     let meta = std::fs::metadata(path).ok()?;
     if meta.is_dir() {
-        // A folder mod changes when its component does.
-        return std::fs::metadata(path.join(crate::manifest::WASM))
-            .ok()?
-            .modified()
-            .ok();
+        // A folder mod changes when its component does, or its JavaScript.
+        return [crate::manifest::WASM, crate::manifest::JS]
+            .iter()
+            .filter_map(|file| std::fs::metadata(path.join(file)).ok()?.modified().ok())
+            .max();
     }
     meta.modified().ok()
 }
@@ -2042,6 +2336,19 @@ impl level::Host for State {
     fn get_light(&mut self, pos: BlockPos) -> Option<(u8, u8)> {
         self.snapshot.level.as_ref()?.light([pos.x, pos.y, pos.z])
     }
+    fn get_spawn_spots(&mut self, from: BlockPos, to: BlockPos) -> SpawnSpots {
+        let Some(level) = self.snapshot.level.as_ref() else {
+            return SpawnSpots::default();
+        };
+        let (from, to) = ([from.x, from.y, from.z], [to.x, to.y, to.z]);
+        let lo: [i32; 3] = std::array::from_fn(|i| from[i].min(to[i]));
+        let hi: [i32; 3] = std::array::from_fn(|i| {
+            from[i]
+                .max(to[i])
+                .min(lo[i].saturating_add(SPAWN_SPOTS_SIDE - 1))
+        });
+        level.spawn_spots(lo, hi)
+    }
     fn get_entities(&mut self, radius: f32) -> Vec<Entity> {
         let Some(p) = &self.snapshot.player else {
             return Vec::new();
@@ -2082,6 +2389,9 @@ impl inventory::Host for State {
     }
     fn get_item_info(&mut self, id: String) -> Option<ItemInfo> {
         self.snapshot.items.as_ref()?.info(&id)
+    }
+    fn get_item_order(&mut self, stack: ItemStack) -> Option<u32> {
+        self.snapshot.creative.as_ref()?.order(&stack)
     }
 }
 impl chat::Host for State {
@@ -2226,6 +2536,19 @@ impl draw::Host for State {
     fn pop(&mut self) {
         self.draw(DrawOp::Pop);
     }
+    fn player(&mut self, x: f32, y: f32, width: f32, height: f32, size: f32, turn: f32) {
+        self.draw(DrawOp::Player {
+            x,
+            y,
+            w: width,
+            h: height,
+            size,
+            turn,
+        });
+    }
+    fn item_tooltip(&mut self, x: f32, y: f32, stack: ItemStack) {
+        self.draw(DrawOp::ItemTooltip { x, y, stack });
+    }
 }
 impl hud::Host for State {
     fn set_panel(&mut self, corner: Corner, lines: Vec<Line>) {
@@ -2273,6 +2596,116 @@ impl screens::Host for State {
             );
         }
     }
+    fn replace(&mut self, screen: String, name: String) -> bool {
+        if !REPLACEABLE_SCREENS.contains(&screen.as_str())
+            || !(name.is_empty() || screen_name_ok(&name))
+        {
+            return false;
+        }
+        self.replaces.retain(|(game, _)| *game != screen);
+        if !name.is_empty() {
+            let own = format!("{}:{name}", self.id);
+            self.replaces.push((screen, own));
+        }
+        true
+    }
+    fn set_slots(&mut self, slots: Vec<screens::ScreenSlot>) {
+        let slots: Vec<(u32, f32, f32)> = slots
+            .into_iter()
+            .filter(|s| s.slot < 128 && s.x.is_finite() && s.y.is_finite())
+            .take(128)
+            .map(|s| (s.slot, s.x, s.y))
+            .collect();
+        // The last call's slots are the ones.
+        let id = self.id.clone();
+        self.out
+            .retain(|o| !matches!(o, Output::ScreenSlots { id: owner, .. } if *owner == id));
+        self.out.push(Output::ScreenSlots { id, slots });
+    }
+    fn get_window(&mut self) -> Option<(f32, f32, f32, f32)> {
+        self.snapshot.window.map(|[x, y, w, h]| (x, y, w, h))
+    }
+}
+/// `tooltips.add-grid`'s grids a tooltip, and stacks a grid.
+const TOOLTIP_GRIDS: usize = 4;
+const GRID_STACKS: usize = 64;
+impl tooltips::Host for State {
+    fn add_grid(&mut self, grid: ItemGrid, instead: bool) -> Result<(), String> {
+        let Some(grids) = self.grids.as_mut() else {
+            return Err("grids go in tooltips: add them from events.tooltip".into());
+        };
+        if !(1..=16).contains(&grid.columns) {
+            return Err(format!("a grid has 1 to 16 columns, not {}", grid.columns));
+        }
+        if grid.stacks.len() > GRID_STACKS {
+            return Err(format!("a grid has at most {GRID_STACKS} stacks"));
+        }
+        if grids.len() >= TOOLTIP_GRIDS {
+            return Err(format!("a tooltip has at most {TOOLTIP_GRIDS} grids"));
+        }
+        grids.push((grid, instead));
+        Ok(())
+    }
+}
+/// `recipes.get-recipes`' page.
+const RECIPE_PAGE: u32 = 16;
+impl recipes::Host for State {
+    fn count_recipes(&mut self, stack: ItemStack, lookup: Lookup) -> Vec<(RecipeKind, u32)> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map(|r| r.count(&stack, lookup))
+            .unwrap_or_default()
+    }
+    fn get_recipes(
+        &mut self,
+        stack: ItemStack,
+        lookup: Lookup,
+        kind: RecipeKind,
+        start: u32,
+        count: u32,
+    ) -> Vec<Recipe> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map(|r| {
+                r.recipes(
+                    &stack,
+                    lookup,
+                    kind,
+                    start as usize,
+                    count.min(RECIPE_PAGE) as usize,
+                )
+            })
+            .unwrap_or_default()
+    }
+    fn fill(&mut self, id: String, all: bool) -> bool {
+        let Some((kind, width, height)) = self.snapshot.recipes.as_ref().and_then(|r| r.shape(&id))
+        else {
+            return false;
+        };
+        let fits = match self.snapshot.crafting {
+            // A shapeless recipe's inputs fill the grid in turn.
+            Some(Crafting::Grid(n)) if height == 0 => {
+                kind == RecipeKind::Crafting && width <= n * n
+            }
+            Some(Crafting::Grid(n)) => kind == RecipeKind::Crafting && width <= n && height <= n,
+            Some(Crafting::Furnace(furnace)) => kind == furnace,
+            None => false,
+        };
+        if fits {
+            let owner = self.id.clone();
+            // One fill a call: the last one asked.
+            self.out
+                .retain(|o| !matches!(o, Output::FillRecipe { id, .. } if *id == owner));
+            self.out.push(Output::FillRecipe {
+                id: owner,
+                recipe: id,
+                all,
+            });
+        }
+        fits
+    }
 }
 impl slots::Host for State {
     fn get_menu(&mut self) -> Option<Menu> {
@@ -2282,14 +2715,7 @@ impl slots::Host for State {
         if slot != -999 && !(0..128).contains(&slot) {
             return Err(format!("no menu has slot {slot}"));
         }
-        let queued = self
-            .out
-            .iter()
-            .filter(|o| matches!(o, Output::Click { .. }))
-            .count();
-        if queued >= CLICKS_PER_CALL {
-            return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
-        }
+        self.room_for_click()?;
         let id = self.id.clone();
         self.out.push(Output::Click {
             id,
@@ -2299,8 +2725,357 @@ impl slots::Host for State {
         });
         Ok(())
     }
+    fn drag(&mut self, slots: Vec<i32>, button: u8) -> Result<(), String> {
+        if button > 2 {
+            return Err(format!("no drag with button {button}: 0 to 2"));
+        }
+        if let Some(slot) = slots.iter().find(|s| !(0..128).contains(*s)) {
+            return Err(format!("no menu has slot {slot}"));
+        }
+        // Its start, a click a slot, its end.
+        self.room_for_clicks(slots.len() + 2)?;
+        let id = self.id.clone();
+        self.out.push(Output::Drag { id, slots, button });
+        Ok(())
+    }
 }
 
+impl State {
+    /// Whether one more click (of `slots` or `creative`) fits in this call.
+    fn room_for_click(&self) -> Result<(), String> {
+        self.room_for_clicks(1)
+    }
+    /// Whether `more` clicks fit in this call.
+    fn room_for_clicks(&self, more: usize) -> Result<(), String> {
+        let queued: usize = self
+            .out
+            .iter()
+            .map(|o| match o {
+                Output::Click { .. }
+                | Output::CreativeClick { .. }
+                | Output::CreativeSlot { .. }
+                | Output::CreativeCarried { .. } => 1,
+                Output::Drag { slots, .. } => slots.len() + 2,
+                _ => 0,
+            })
+            .sum();
+        if queued + more > CLICKS_PER_CALL {
+            return Err(format!("at most {CLICKS_PER_CALL} clicks a call"));
+        }
+        Ok(())
+    }
+    /// `creative`'s takings need the player in creative mode.
+    fn in_creative(&self) -> Result<(), String> {
+        match &self.snapshot.player {
+            Some(p) if p.game_mode == GameMode::Creative => Ok(()),
+            _ => Err("only in creative mode".into()),
+        }
+    }
+    /// A stack a mod gives: a known item, no more than it stacks to.
+    fn stack_ok(&self, stack: &ItemStack) -> Result<(), String> {
+        let Some(info) = self.snapshot.items.as_ref().and_then(|i| i.info(&stack.id)) else {
+            return Err(format!("no item {}", clip(stack.id.clone())));
+        };
+        if stack.count == 0 || stack.count > info.max_stack_size {
+            return Err(format!(
+                "{} of {} (it stacks to {})",
+                stack.count, stack.id, info.max_stack_size
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl creative::Host for State {
+    fn get_tabs(&mut self) -> Vec<Tab> {
+        self.snapshot
+            .creative
+            .as_ref()
+            .map(|c| c.tabs())
+            .unwrap_or_default()
+    }
+    fn get_items(&mut self, tab: String, search: String, start: u32, count: u32) -> ItemPage {
+        let empty = ItemPage {
+            total: 0,
+            items: Vec::new(),
+        };
+        let Some(c) = self.snapshot.creative.as_ref() else {
+            return empty;
+        };
+        let search = clip(search);
+        c.items(
+            &tab,
+            &search,
+            start as usize,
+            count.min(CREATIVE_PAGE) as usize,
+        )
+    }
+    fn click(
+        &mut self,
+        tab: String,
+        search: String,
+        index: u32,
+        button: u8,
+        kind: CreativeClick,
+    ) -> Result<(), String> {
+        self.in_creative()?;
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeClick {
+            id,
+            tab: clip(tab),
+            search: clip(search),
+            index,
+            button,
+            kind,
+        });
+        Ok(())
+    }
+    fn set_slot(&mut self, slot: u32, stack: Option<ItemStack>) -> Result<(), String> {
+        self.in_creative()?;
+        if !(1..=45).contains(&slot) {
+            return Err(format!(
+                "the inventory menu's slot {slot} takes no item: 1 to 45 do"
+            ));
+        }
+        if let Some(s) = &stack {
+            self.stack_ok(s)?;
+        }
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeSlot { id, slot, stack });
+        Ok(())
+    }
+    fn set_carried(&mut self, stack: Option<ItemStack>) -> Result<(), String> {
+        self.in_creative()?;
+        if let Some(s) = &stack {
+            self.stack_ok(s)?;
+        }
+        self.room_for_click()?;
+        let id = self.id.clone();
+        self.out.push(Output::CreativeCarried { id, stack });
+        Ok(())
+    }
+}
+
+/// Lines in a `world-draw` layer.
+fn layer_lines(layer: &WorldLayer) -> usize {
+    layer.lines.iter().map(|l| l.ends.len() / 6).sum()
+}
+/// Boxes in a `world-draw` layer.
+fn layer_boxes(layer: &WorldLayer) -> usize {
+    layer.boxes.iter().map(|b| b.corners.len() / 6).sum()
+}
+/// Texts in a `world-draw` layer.
+fn layer_texts(layer: &WorldLayer) -> usize {
+    layer.texts.iter().map(|t| t.places.len() / 3).sum()
+}
+impl world_draw::Host for State {
+    fn set_layer(&mut self, id: String, layer: WorldLayer) -> Result<(), String> {
+        if id.is_empty() || id.chars().count() > 64 {
+            return Err(format!(
+                "{:?} is not a layer's id (1 to 64 characters)",
+                clip(id)
+            ));
+        }
+        // Within the world border and then some.
+        let point_ok = |p: &Point| {
+            [p.x, p.y, p.z]
+                .iter()
+                .all(|n| n.is_finite() && n.abs() <= 3.0e7)
+        };
+        for l in &layer.lines {
+            if !point_ok(&l.origin)
+                || l.ends.len() % 6 != 0
+                || l.ends.iter().any(|n| !n.is_finite())
+            {
+                return Err("lines need a place and six finite numbers a line".into());
+            }
+            let count = l.ends.len() / 6;
+            if l.colors.len() != 1 && l.colors.len() != count {
+                return Err(format!(
+                    "lines need one colour for all, or one a line ({} for {count})",
+                    l.colors.len()
+                ));
+            }
+            if !(l.width.is_finite() && l.width > 0.0) {
+                return Err("lines need a width".into());
+            }
+        }
+        for b in &layer.boxes {
+            if !point_ok(&b.origin)
+                || b.corners.len() % 6 != 0
+                || b.corners.iter().any(|n| !n.is_finite())
+            {
+                return Err("boxes need a place and six finite numbers a box".into());
+            }
+            let count = b.corners.len() / 6;
+            if b.colors.len() != 1 && b.colors.len() != count {
+                return Err(format!(
+                    "boxes need one colour for all, or one a box ({} for {count})",
+                    b.colors.len()
+                ));
+            }
+        }
+        for t in &layer.texts {
+            if !point_ok(&t.origin)
+                || t.places.len() % 3 != 0
+                || t.places.iter().any(|n| !n.is_finite())
+                || !(t.scale.is_finite() && t.scale > 0.0)
+            {
+                return Err("texts need a place, a size and three finite numbers a text".into());
+            }
+            let count = t.places.len() / 3;
+            let lines = if t.lines.is_empty() {
+                0
+            } else {
+                t.lines.split('\n').count()
+            };
+            if lines != count {
+                return Err(format!("{count} places for texts, {lines} lines"));
+            }
+            if t.colors.len() != 1 && t.colors.len() != count {
+                return Err(format!(
+                    "texts need one colour for all, or one a text ({} for {count})",
+                    t.colors.len()
+                ));
+            }
+        }
+        if let Some(b) = layer
+            .labels
+            .iter()
+            .find(|b| !point_ok(&b.at) || !(b.scale.is_finite() && b.scale > 0.0))
+        {
+            return Err(format!(
+                "label {:?} needs a place and a size",
+                clip_to(b.text.clone(), 32)
+            ));
+        }
+        let others = self.world.iter().filter(|(k, _)| *k != id);
+        let count = |l: &WorldLayer| {
+            [
+                layer_lines(l),
+                layer_boxes(l),
+                layer_texts(l),
+                l.labels.len(),
+            ]
+        };
+        let totals = others.fold(count(&layer), |t, (_, l)| {
+            let c = count(l);
+            std::array::from_fn(|i| t[i] + c[i])
+        });
+        let caps = [WORLD_LINES, WORLD_BOXES, WORLD_TEXTS, WORLD_LABELS];
+        if totals.iter().zip(caps).any(|(n, cap)| *n > cap) {
+            return Err(format!(
+                "a mod draws at most {WORLD_LINES} lines, {WORLD_BOXES} boxes, {WORLD_TEXTS} \
+                 texts and {WORLD_LABELS} labels in the world"
+            ));
+        }
+        let layer = WorldLayer {
+            lines: layer
+                .lines
+                .into_iter()
+                .filter(|l| !l.ends.is_empty())
+                .map(|l| WorldLines {
+                    width: l.width.min(32.0),
+                    ..l
+                })
+                .collect(),
+            boxes: layer
+                .boxes
+                .into_iter()
+                .filter(|b| !b.corners.is_empty())
+                .collect(),
+            texts: layer
+                .texts
+                .into_iter()
+                .filter(|t| !t.places.is_empty())
+                .map(|t| WorldTexts {
+                    scale: t.scale.min(64.0),
+                    ..t
+                })
+                .collect(),
+            labels: layer
+                .labels
+                .into_iter()
+                .map(|b| WorldLabel {
+                    text: clip(b.text),
+                    scale: b.scale.min(64.0),
+                    ..b
+                })
+                .collect(),
+            ..layer
+        };
+        let full = self.world.len() >= WORLD_LAYERS;
+        match self.world.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, old)) => *old = layer,
+            None if full => {
+                return Err(format!(
+                    "a mod has at most {WORLD_LAYERS} layers in the world"
+                ));
+            }
+            None => self.world.push((id, layer)),
+        }
+        Ok(())
+    }
+    fn remove_layer(&mut self, id: String) {
+        self.world.retain(|(k, _)| *k != id);
+        self.icons.retain(|(k, _)| *k != id);
+    }
+    fn set_icons(&mut self, id: String, icons: Vec<WorldIcon>) -> Result<(), String> {
+        if id.is_empty() || id.chars().count() > 64 {
+            return Err(format!(
+                "{:?} is not a layer's id (1 to 64 characters)",
+                clip(id)
+            ));
+        }
+        let size_ok = |n: f32| n.is_finite() && n > 0.0;
+        if let Some(i) = icons.iter().find(|i| {
+            let at = [i.at.x, i.at.y, i.at.z];
+            !at.iter().all(|n| n.is_finite() && n.abs() <= 3.0e7)
+                || !size_ok(i.size)
+                || !size_ok(i.text_scale)
+        }) {
+            return Err(format!(
+                "icon {:?} needs a place, a size and a text size",
+                clip_to(i.sprite.clone(), 32)
+            ));
+        }
+        let others: usize = self
+            .icons
+            .iter()
+            .filter(|(k, _)| *k != id)
+            .map(|(_, i)| i.len())
+            .sum();
+        if others + icons.len() > WORLD_ICONS {
+            return Err(format!(
+                "a mod draws at most {WORLD_ICONS} icons in the world"
+            ));
+        }
+        let icons: Vec<WorldIcon> = icons
+            .into_iter()
+            .map(|i| WorldIcon {
+                sprite: clip(i.sprite),
+                above: clip(i.above),
+                below: clip(i.below),
+                size: i.size.min(256.0),
+                text_scale: i.text_scale.min(64.0),
+                ..i
+            })
+            .collect();
+        let full = self.icons.len() >= WORLD_LAYERS;
+        match self.icons.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, old)) => *old = icons,
+            None if full => {
+                return Err(format!(
+                    "a mod has at most {WORLD_LAYERS} layers in the world"
+                ));
+            }
+            None => self.icons.push((id, icons)),
+        }
+        Ok(())
+    }
+}
 impl widgets::Host for State {
     fn add_screen_button(&mut self, b: ScreenButton) -> Result<(), String> {
         button_id_ok(&b.id)?;
@@ -2346,9 +3121,41 @@ impl widgets::Host for State {
         });
         Ok(())
     }
+    fn add_window_button(&mut self, b: WindowButton) -> Result<(), String> {
+        button_id_ok(&b.id)?;
+        let finite = [b.x, b.y, b.width, b.height].iter().all(|n| n.is_finite());
+        if !finite || b.width < 1.0 || b.height < 1.0 {
+            return Err(format!("button {} has no size", b.id));
+        }
+        if let Some(menu) = b
+            .menus
+            .iter()
+            .find(|m| !screen_name_ok(&m.replace(':', "/")))
+        {
+            return Err(format!("{:?} is not a menu's name", clip(menu.clone())));
+        }
+        let all = &mut self.widgets.window;
+        all.retain(|o| o.id != b.id);
+        if all.len() >= WINDOW_BUTTONS {
+            return Err(format!("a mod has at most {WINDOW_BUTTONS} window buttons"));
+        }
+        all.push(WindowButton {
+            x: b.x.clamp(-512.0, 512.0),
+            y: b.y.clamp(-512.0, 512.0),
+            width: b.width.min(64.0),
+            height: b.height.min(64.0),
+            label: clip_to(b.label, 24),
+            icon: clip(b.icon),
+            tooltip: b.tooltip.into_iter().take(8).map(clip).collect(),
+            menus: b.menus.into_iter().take(32).collect(),
+            ..b
+        });
+        Ok(())
+    }
     fn remove(&mut self, id: String) {
         self.widgets.screen.retain(|b| b.id != id);
         self.widgets.touch.retain(|b| b.id != id);
+        self.widgets.window.retain(|b| b.id != id);
     }
     fn style_control(
         &mut self,
@@ -2397,6 +3204,19 @@ impl mobile::Host for State {
             id: self.id.clone(),
             shown,
         });
+    }
+    fn drag_areas(&mut self, areas: Vec<(f32, f32, f32, f32)>) {
+        let areas: Vec<[f32; 4]> = areas
+            .into_iter()
+            .take(DRAG_AREAS)
+            .map(|(x, y, w, h)| [x, y, w, h])
+            .filter(|a| a.iter().all(|v| v.is_finite()) && a[2] > 0.0 && a[3] > 0.0)
+            .collect();
+        // The last call's areas are the ones.
+        let id = self.id.clone();
+        self.out
+            .retain(|o| !matches!(o, Output::DragAreas { id: owner, .. } if *owner == id));
+        self.out.push(Output::DragAreas { id, areas });
     }
 }
 impl keys::Host for State {
