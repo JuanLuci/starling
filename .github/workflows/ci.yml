@@ -50,6 +50,14 @@ jobs:
         with:
           shared-key: verify
           save-if: ${{ github.ref == 'refs/heads/android' }}
+      # The JavaScript mods' tests need Starling's JavaScript engine, which horizon-mods embeds when
+      # target/js-engine/engine.wasm exists (as build_apk.py builds it for the APK).
+      - name: Build the JavaScript engine
+        if: steps.rust.outputs.required != 'false'
+        working-directory: crates/starling-mod-sdk/js-engine
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
       - name: Check formatting and lint
         if: steps.rust.outputs.required != 'false'
         run: |

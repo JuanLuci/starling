@@ -1070,12 +1070,21 @@ fn duplicate_mod_ids_are_refused() {
     let second = dir.join("second.hmod");
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &first).unwrap();
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &second).unwrap();
+    // The second an hour older: of copies the newest runs, and two copied in a row may differ
+    // by nanoseconds either way.
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&second)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
     // Both declare id "test_guest" (the guest's own manifest): sharing a
     // `data_dir` would let the second read, overwrite or delete the
-    // first's storage, so only the first-loaded one may start.
+    // first's storage, so only one of them may start.
     let mods = Mods::load(&[first, second], |_| true, |_| false);
     assert_eq!(mods.entries()[0].status, Status::Running);
-    let refused = Status::Failed("another running mod already uses id test_guest".into());
+    let refused = Status::Failed("an older copy: first.hmod runs".into());
     assert_eq!(mods.entries()[1].status, refused);
 }
 
