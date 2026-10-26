@@ -104,7 +104,10 @@ pub fn body(m: &Mob) -> (String, String) {
         }
     };
     if &*m.kind.id == "minecraft:player" {
-        return ("main".into(), m.kind.texture.to_string());
+        return (
+            "main".into(),
+            m.skin.clone().unwrap_or_else(|| m.kind.texture.clone()),
+        );
     }
     match m.species() {
         S::Llama | S::TraderLlama => {
@@ -633,11 +636,12 @@ pub fn layers(m: &Mob) -> Vec<Layer> {
             } else {
                 "entity/zombie_villager"
             };
-            let baby = if m.is_baby() { "baby/" } else { "" };
+            // VillagerProfessionLayer: a baby's type texture is in `baby/`.
+            let group = if m.is_baby() { "baby" } else { "type" };
             push(
                 &mut v,
                 &model,
-                &format!("{folder}/type/{baby}{t}"),
+                &format!("{folder}/{group}/{t}"),
                 white,
                 false,
             );
@@ -749,7 +753,8 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         let ticks = (m.age as f32 + alpha).floor();
         body += (f64::from(ticks * 3.25).cos() * std::f64::consts::PI * 0.4) as f32;
     }
-    let sleep = (m.species() == Species::Villager)
+    // A sleeping villager, or another player lying in their bed.
+    let sleep = (m.species() == Species::Villager || m.kind.id == "minecraft:player")
         .then(|| super::villager::sleep_pose(m))
         .flatten();
     let rotation = match sleep {
@@ -770,6 +775,11 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
             .sqrt()
             .min(1.0);
         base *= glam::Mat4::from_rotation_z(f * flip_degrees(m).to_radians());
+    } else if m.extra.auto_spin_attack {
+        // Riptide: lying along the look direction, spinning 75 degrees a tick.
+        let pitch = m.previous_head_pitch + (m.head_pitch - m.previous_head_pitch) * alpha;
+        base *= glam::Mat4::from_rotation_x((-90.0 - pitch).to_radians())
+            * glam::Mat4::from_rotation_y(((m.age as f32 + alpha) * -75.0).to_radians());
     } else if matches!(m.custom_name.as_deref(), Some("Dinnerbone" | "Grumm")) {
         // isEntityUpsideDown
         base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, m.height() + 0.1, 0.0))
@@ -780,7 +790,9 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         let ticks = m.extra.fall_fly_ticks as f32 + alpha;
         let scale = (ticks * ticks / 100.0).min(1.0);
         let pitch = m.previous_head_pitch + (m.head_pitch - m.previous_head_pitch) * alpha;
-        base *= glam::Mat4::from_rotation_x((scale * (-90.0 - pitch)).to_radians());
+        if !m.extra.auto_spin_attack {
+            base *= glam::Mat4::from_rotation_x((scale * (-90.0 - pitch)).to_radians());
+        }
         let yaw = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
         let (look_x, look_z) = (-(yaw.to_radians()).msin(), (yaw.to_radians()).mcos());
         let v = m.velocity;
@@ -1087,9 +1099,11 @@ fn render_visible(
         let mut poses = Poses::new(&part);
         anim::setup(m, &s, &mut poses, &data.animations);
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)
-            && let Some((folder, variant)) = layer.texture.split_once("/type/")
+            && let Some((folder, variant)) = layer
+                .texture
+                .split_once("/type/")
+                .or_else(|| layer.texture.split_once("/baby/"))
         {
-            let variant = variant.strip_prefix("baby/").unwrap_or(variant);
             let profession = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
             data.villager_hats
                 .read()
@@ -1263,6 +1277,44 @@ pub fn held_item_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// VillagerProfessionLayer's textures (type, or baby for a baby;
+    /// profession; level) of every villager and zombie villager are in the
+    /// prepared resources: a missing one draws nothing.
+    #[test]
+    fn villager_layers_name_textures_that_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let types = super::super::MobTypes::load(&root).unwrap();
+        for kind in ["minecraft:villager", "minecraft:zombie_villager"] {
+            let kind = std::sync::Arc::new(types.types[kind].clone());
+            for baby in [false, true] {
+                for t in 0..VILLAGER_TYPES.len() {
+                    for p in 0..PROFESSIONS.len() {
+                        let mut m =
+                            Mob::new(1, kind.clone(), horizon_core::geometry::Vec3::ZERO, 0.0);
+                        m.extra.age = if baby { -24000 } else { 0 };
+                        (m.extra.variant, m.extra.variant2, m.extra.variant3) =
+                            (t as u8, p as u8, 5);
+                        let layers = layers(&m);
+                        let group = if baby { "/baby/" } else { "/type/" };
+                        assert!(
+                            layers.iter().any(|l| l.texture.contains(group)),
+                            "{kind:?} baby={baby}: no {group} layer"
+                        );
+                        for layer in layers {
+                            let png = root
+                                .join(format!("assets/minecraft/textures/{}.png", layer.texture));
+                            assert!(png.is_file(), "missing {}", png.display());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn sulfur_cube_opaque_core_is_submitted_before_its_translucent_shell() {

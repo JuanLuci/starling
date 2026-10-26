@@ -48,9 +48,9 @@ mod window;
 mod world;
 
 use horizon_mods::{
-    Anchor, CONTROLS, Controls, Corner, CreativeCatalog, CreativeClick, DrawOp, Facing, Gui,
-    ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output, RenderContext,
-    ScreenButton, Shape, Snapshot, Status,
+    Anchor, ButtonShape as Shape, CONTROLS, Controls, Corner, CreativeCatalog, CreativeClick,
+    DrawOp, Facing, Gui, ItemCatalog, ItemStack, KeyEvent, Mods, MouseAction, MouseEvent, Output,
+    RenderContext, ScreenButton, Snapshot, Status,
 };
 use serde_json::{Value, json};
 use std::{
@@ -776,6 +776,14 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
             Output::Keyboard { id, shown } => {
                 json!({ "event": "keyboard", "id": id, "shown": shown })
             }
+            Output::Command { line } => json!({ "event": "command", "line": line }),
+            Output::OpenUiScreen { owner } => json!({ "event": "open-ui-screen", "owner": owner }),
+            Output::CloseUiScreen { owner } => {
+                json!({ "event": "close-ui-screen", "owner": owner })
+            }
+            Output::Shake { strength, seconds } => {
+                json!({ "event": "shake", "strength": strength, "seconds": seconds })
+            }
             Output::Click {
                 slot, button, kind, ..
             } => {
@@ -1158,10 +1166,10 @@ fn play(
             return (json!({ "error": format!("no touch button {id}") }), None);
         };
         match step["pressed"].as_bool() {
-            Some(pressed) => mods.key(&owner, id, pressed),
+            Some(pressed) => mods.keybind(&owner, id, pressed),
             None => {
-                mods.key(&owner, id, true);
-                mods.key(&owner, id, false);
+                mods.keybind(&owner, id, true);
+                mods.keybind(&owner, id, false);
             }
         }
         return (Value::Null, None);
@@ -1213,7 +1221,7 @@ fn play(
         let Some((owner, _)) = mods.keybinds().into_iter().find(|(_, k)| k.id == id) else {
             return (json!({ "error": format!("no keybind {id}") }), None);
         };
-        mods.key(&owner, id, pressed);
+        mods.keybind(&owner, id, pressed);
         return (Value::Null, None);
     }
     if let Some(server) = step.get("join") {
@@ -1325,8 +1333,8 @@ fn play(
                 })
         });
         if let (Some((owner, b, _)), 0) = (pressed, button) {
-            mods.key(&owner, &b.id, true);
-            mods.key(&owner, &b.id, false);
+            mods.keybind(&owner, &b.id, true);
+            mods.keybind(&owner, &b.id, false);
             sim.settle(mods);
             return (json!({ "button": b.id }), None);
         }
@@ -1338,8 +1346,8 @@ fn play(
             });
         if let (Some((owner, b, _)), 0) = (hit, button) {
             if b.active {
-                mods.key(&owner, &b.id, true);
-                mods.key(&owner, &b.id, false);
+                mods.keybind(&owner, &b.id, true);
+                mods.keybind(&owner, &b.id, false);
             }
             return (json!({ "button": b.id, "active": b.active }), None);
         }

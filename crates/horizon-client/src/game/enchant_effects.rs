@@ -6,7 +6,16 @@
 //! the armor attribute effects (respiration, depth strider, ...).
 use super::Game;
 use horizon_client::{enchant::EffectContext, items::ItemStack};
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::random::RandomSource;
+
+/// Where Mending found a damaged item (`EnchantedItemInUse.inSlot`).
+#[derive(Clone, Copy)]
+enum MendSlot {
+    Main,
+    Off,
+    /// An `armor` index (head first).
+    Armor(usize),
+}
 
 impl Game<'_> {
     /// `Player.getDestroySpeed` after the tool speed: mining efficiency, haste
@@ -84,7 +93,52 @@ impl Game<'_> {
             - fx.amplifier("weakness")
                 .map_or(0.0, |a| 4.0 * (a + 1) as f32)
     }
-    /// After a successful melee hit: knockback enchantment and fire aspect.
+    /// `Player.attack`'s extra knockback: `getKnockback` (the weapon's knockback
+    /// enchantment, halved) plus 0.5 for a sprinting full-strength hit, and
+    /// whether the hit is that knockback attack.
+    pub(super) fn extra_knockback(&mut self, target_kind: &str, scale: f32) -> (f32, bool) {
+        let knockback_attack = scale > 0.9 && self.player.as_ref().is_some_and(|p| p.sprinting);
+        let enchanted = match self.inventory[self.selected].clone() {
+            Some(held) => {
+                let ctx = EffectContext {
+                    this: Some(target_kind),
+                    attacker: Some("minecraft:player"),
+                    direct_attacker: Some("minecraft:player"),
+                    is_direct: true,
+                    items: Some(self.res.items()),
+                    ..Default::default()
+                };
+                self.res.stations().enchantments.modify_value(
+                    Some(&held),
+                    "minecraft:knockback",
+                    &ctx,
+                    &mut self.world.random,
+                    0.0,
+                )
+            }
+            None => 0.0,
+        };
+        let bonus = if knockback_attack { 0.5 } else { 0.0 };
+        (enchanted / 2.0 + bonus, knockback_attack)
+    }
+    /// `causeExtraKnockback`'s direction, `(sin yRot, -cos yRot)` from Mth's
+    /// sine table: the target flies where the attacker looks, not away from
+    /// it (straight along an axis when the attacker faces one).
+    pub(super) fn extra_knockback_direction(&self) -> (f64, f64) {
+        use horizon_core::geometry::trig;
+        let yaw = f64::from(self.yaw * trig::DEG_TO_RAD);
+        (f64::from(trig::sin(yaw)), -f64::from(trig::cos(yaw)))
+    }
+    /// The attacker's side of `causeExtraKnockback` as the attacking client
+    /// sees it: the server's player stops sprinting, and its flag reaches the
+    /// client. (The server's 0.6 speed cut never does: the client's own
+    /// `Player.attack` simulates no hurt, so it skips the knockback.)
+    pub(super) fn stop_sprint_after_extra_knockback(&mut self) {
+        if let Some(p) = self.player.as_mut() {
+            let _ = p.set_sprinting(false);
+        }
+    }
+    /// After a successful melee hit: fire aspect and wind burst.
     pub(super) fn post_attack(&mut self, mob: usize) {
         let Some(held) = self.inventory[self.selected].clone() else {
             return;
@@ -99,34 +153,6 @@ impl Game<'_> {
             items: Some(self.res.items()),
             ..Default::default()
         };
-        let knockback = self.res.stations().enchantments.modify_value(
-            Some(&held),
-            "minecraft:knockback",
-            &ctx,
-            &mut self.world.random,
-            0.0,
-        );
-        if knockback > 0.0 {
-            // LivingEntity.knockback(strength * 0.5, sin(yRot), -cos(yRot)).
-            let strength = f64::from(knockback) * 0.5;
-            let (s, c) = (
-                f64::from(self.yaw.to_radians().sin()),
-                f64::from(self.yaw.to_radians().cos()),
-            );
-            let (dx, dz) = (s, -c);
-            let l = (dx * dx + dz * dz).sqrt().max(1e-5);
-            let m = &mut self.mobs[mob];
-            let v = m.velocity;
-            m.velocity = Vec3::new(
-                v.x / 2.0 - dx / l * strength,
-                if m.on_ground {
-                    (v.y / 2.0 + strength).min(0.4)
-                } else {
-                    v.y
-                },
-                v.z / 2.0 - dz / l * strength,
-            );
-        }
         // minecraft:post_attack ignite effects of the attacker's weapon (fire aspect).
         let mut ignite = 0.0f32;
         for (id, level) in held.enchantments() {
@@ -299,36 +325,29 @@ impl Game<'_> {
     pub(super) fn mending(&mut self, amount: u32) -> u32 {
         let mut amount = amount;
         loop {
-            // EnchantmentHelper.getRandomItemWith(REPAIR_WITH_XP, damaged): held and armor.
-            let mut candidates: Vec<(bool, usize)> = Vec::new();
-            if let Some(s) = &self.inventory[self.selected]
-                && s.damage > 0
-                && s.enchantment_level("minecraft:mending") > 0
-            {
-                candidates.push((false, self.selected));
-            }
-            for (i, s) in self.armor.iter().enumerate() {
-                if let Some(s) = s
-                    && s.damage > 0
-                    && s.enchantment_level("minecraft:mending") > 0
-                {
-                    candidates.push((true, i));
-                }
-            }
+            // EnchantmentHelper.getRandomItemWith(REPAIR_WITH_XP, damaged), in
+            // EquipmentSlot order: the main hand, the off hand, then feet, legs,
+            // chest and head (`armor` holds head first).
+            let mending = |s: &Option<ItemStack>| {
+                s.as_ref()
+                    .is_some_and(|s| s.damage > 0 && s.enchantment_level("minecraft:mending") > 0)
+            };
+            let candidates: Vec<MendSlot> = [MendSlot::Main, MendSlot::Off]
+                .into_iter()
+                .chain((0..self.armor.len()).rev().map(MendSlot::Armor))
+                .filter(|&slot| mending(self.mend_slot(slot)))
+                .collect();
             if candidates.is_empty() {
                 return amount;
             }
-            let (armor, i) = candidates[self
+            let slot = candidates[self
                 .world
                 .random
                 .next_int_bound(candidates.len() as i32)
                 .unwrap_or(0) as usize];
-            let stack = if armor {
-                self.armor[i].clone()
-            } else {
-                self.inventory[i].clone()
+            let Some(stack) = self.mend_slot(slot).clone() else {
+                return amount;
             };
-            let Some(stack) = stack else { return amount };
             let ctx = EffectContext {
                 items: Some(self.res.items()),
                 ..Default::default()
@@ -341,12 +360,7 @@ impl Game<'_> {
                 amount as f32,
             ) as u32;
             let repaired = to_repair_xp.min(stack.damage);
-            let slot = if armor {
-                &mut self.armor[i]
-            } else {
-                &mut self.inventory[i]
-            };
-            if let Some(s) = slot.as_mut() {
+            if let Some(s) = self.mend_slot_mut(slot).as_mut() {
                 s.damage -= repaired;
             }
             if repaired == 0 || to_repair_xp == 0 {
@@ -357,6 +371,20 @@ impl Game<'_> {
                 return 0;
             }
             amount = remaining;
+        }
+    }
+    fn mend_slot(&self, slot: MendSlot) -> &Option<ItemStack> {
+        match slot {
+            MendSlot::Main => &self.inventory[self.selected],
+            MendSlot::Off => &self.offhand,
+            MendSlot::Armor(i) => &self.armor[i],
+        }
+    }
+    fn mend_slot_mut(&mut self, slot: MendSlot) -> &mut Option<ItemStack> {
+        match slot {
+            MendSlot::Main => &mut self.inventory[self.selected],
+            MendSlot::Off => &mut self.offhand,
+            MendSlot::Armor(i) => &mut self.armor[i],
         }
     }
     /// Bow enchantments at release: (extra base damage, infinity keeps the arrow).
@@ -433,10 +461,15 @@ impl Game<'_> {
         ignite
     }
     /// Enchantment attribute modifiers of worn armor (respiration, depth strider...).
+    /// Each piece's modifier id ends with its slot (`EnchantmentAttributeEffect.idForSlot`),
+    /// so the same enchantment on two pieces stacks instead of replacing itself.
     pub(super) fn apply_enchantment_attributes(&mut self) {
         let mut wanted: Vec<(String, String, f64, String)> = Vec::new();
-        for stack in self.armor.iter().flatten() {
-            wanted.extend(self.res.stations().enchantments.attributes(stack));
+        for (stack, slot) in self.armor.iter().zip(["head", "chest", "legs", "feet"]) {
+            let Some(stack) = stack else { continue };
+            for (attr, id, amount, op) in self.res.stations().enchantments.attributes(stack) {
+                wanted.push((attr, format!("{id}/{slot}"), amount, op));
+            }
         }
         let Some(p) = self.player.as_mut() else {
             return;

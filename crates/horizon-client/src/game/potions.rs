@@ -2,20 +2,27 @@
 //! `Consumable`), throwing splash/lingering potions (`ThrownSplashPotion`),
 //! filling glass bottles (`BottleItem`), the per-tick effect application,
 //! effect attribute modifiers and the HUD effect icons (`Hud.extractEffects`).
-use super::{Game, Screen};
+use super::{Game, Screen, item_draw::owner_at};
+use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
+    block_entity_render::vertex_light,
     brewing,
     effects::{EffectAction, EffectInstance, PlayerEffects},
     hud::HudBatch,
     hud_layout, hud_overlays, inventory_effects,
     items::ItemStack,
+    mesher::Vertex,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
 /// A thrown splash or lingering potion in flight.
 #[derive(Clone, Debug)]
 pub(super) struct ThrownPotion {
+    /// Its entity id once a server's clients track it (0 until then).
+    id: u32,
     stack: ItemStack,
+    /// The position before the last tick, for drawing between ticks.
+    previous: Vec3,
     position: Vec3,
     velocity: Vec3,
     age: u32,
@@ -42,7 +49,9 @@ impl Game<'_> {
     /// player's throws and dispensers both end up here).
     pub(super) fn launch_thrown(&mut self, stack: ItemStack, position: Vec3, velocity: Vec3) {
         self.potions.thrown.push(ThrownPotion {
+            id: 0,
             stack,
+            previous: position,
             position,
             velocity,
             age: 0,
@@ -84,18 +93,77 @@ impl PotionState {
     pub(super) fn thrown_entities(&self) -> Vec<(&'static str, Vec3, Vec3)> {
         self.thrown
             .iter()
-            .map(|t| {
-                let kind = match &*t.stack.item {
-                    "minecraft:lingering_potion" => "minecraft:lingering_potion",
-                    "minecraft:experience_bottle" => "minecraft:experience_bottle",
-                    _ => "minecraft:splash_potion",
-                };
-                (kind, t.position, t.velocity)
-            })
+            .map(|t| (thrown_kind(&t.stack), t.position, t.velocity))
             .collect()
     }
     pub(super) fn clear_thrown(&mut self) {
         self.thrown.clear();
+    }
+    /// Their entity ids, for a server to number them.
+    pub(super) fn thrown_ids(&mut self) -> impl Iterator<Item = &mut u32> {
+        self.thrown.iter_mut().map(|t| &mut t.id)
+    }
+    /// The numbered ones as a server's clients track them: (id, entity
+    /// type, item, position, motion).
+    pub(super) fn thrown_tracked(
+        &self,
+    ) -> impl Iterator<Item = (u32, &'static str, &ItemStack, Vec3, Vec3)> {
+        self.thrown.iter().filter(|t| t.id != 0).map(|t| {
+            (
+                t.id,
+                thrown_kind(&t.stack),
+                &t.stack,
+                t.position,
+                t.velocity,
+            )
+        })
+    }
+    /// `handleAddEntity` for a thrown potion or bottle on a server's client:
+    /// drawn where the server says (its item comes in its entity data).
+    pub(super) fn add_remote_thrown(&mut self, id: u32, kind: &str, at: Vec3, velocity: Vec3) {
+        self.thrown.retain(|t| t.id != id);
+        let item = match kind {
+            "minecraft:lingering_potion" | "minecraft:experience_bottle" => kind,
+            _ => "minecraft:splash_potion",
+        };
+        self.thrown.push(ThrownPotion {
+            id,
+            stack: ItemStack::new(item, 1),
+            previous: at,
+            position: at,
+            velocity,
+            age: 0,
+        });
+    }
+    /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.
+    pub(super) fn remote_thrown_item(&mut self, id: u32, stack: ItemStack) {
+        if let Some(t) = self.thrown.iter_mut().find(|t| t.id == id) {
+            t.stack = stack;
+        }
+    }
+    /// One tick of a server's client: `step` moves each toward where the
+    /// server put it.
+    pub(super) fn step_remote_thrown(&mut self, mut step: impl FnMut(u32, Vec3) -> Vec3) {
+        for t in &mut self.thrown {
+            t.previous = t.position;
+            t.age += 1;
+            t.position = step(t.id, t.position);
+        }
+    }
+    pub(super) fn remove_remote_thrown(&mut self, id: u32) {
+        self.thrown.retain(|t| t.id != id);
+    }
+    pub(super) fn has_thrown(&self, id: u32) -> bool {
+        self.thrown.iter().any(|t| t.id == id)
+    }
+}
+
+/// The entity type of a thrown potion or bottle.
+fn thrown_kind(stack: &ItemStack) -> &'static str {
+    match &*stack.item {
+        "minecraft:lingering_potion" => "minecraft:lingering_potion",
+        "minecraft:experience_bottle" => "minecraft:experience_bottle",
+        _ => "minecraft:splash_potion",
     }
 }
 
@@ -291,10 +359,14 @@ impl Game<'_> {
         }
     }
     /// The local player's effects (`tick_mob_effects`), then the potions
-    /// in flight, which a server without a local player still has.
-    pub(super) fn tick_effects(&mut self) {
+    /// in flight, which a server without a local player still has. A frozen
+    /// tick (`/tick freeze`) leaves the potions where they are
+    /// (`TickRateManager.isEntityFrozen`); players' effects still run.
+    pub(super) fn tick_effects(&mut self, running: bool) {
         self.tick_mob_effects();
-        self.tick_thrown_potions();
+        if running {
+            self.tick_thrown_potions();
+        }
     }
     /// `LivingEntity.tickEffects` (server side) for `self.player`, the local
     /// player or a guest acting (`as_guest`), then its attribute modifiers
@@ -411,6 +483,7 @@ impl Game<'_> {
         let mut landed = Vec::new();
         thrown.retain_mut(|t| {
             t.age += 1;
+            t.previous = t.position;
             let next = Vec3::new(
                 t.position.x + t.velocity.x,
                 t.position.y + t.velocity.y,
@@ -461,31 +534,54 @@ impl Game<'_> {
             );
             t.age < 1200 && t.position.y > -128.0
         });
-        // ThrownItemRenderer stand-in: a short-lived sprite of the potion at its position.
-        for t in &thrown {
-            let sprite = match &*t.stack.item {
-                "minecraft:lingering_potion" => "item/lingering_potion",
-                "minecraft:experience_bottle" => "item/experience_bottle",
-                _ => "item/splash_potion",
-            };
-            let mut fixed = horizon_core::random::LegacyRandom::new(0);
-            let mut p = horizon_client::particles::Particle::terrain(
-                &mut fixed,
-                [t.position.x, t.position.y, t.position.z],
-                [0.0; 3],
-                sprite.into(),
-                0xFFFFFF,
-            );
-            p.velocity = [0.0; 3];
-            p.gravity = 0.0;
-            p.lifetime = 2;
-            p.size = 0.25;
-            p.uv = [0.0, 0.0, 1.0, 1.0];
-            self.particles.push(p);
-        }
         self.potions.thrown = thrown;
         for (stack, at) in landed {
             self.splash(&stack, at);
+        }
+    }
+    /// `ThrownItemRenderer` for thrown splash and lingering potions and
+    /// experience bottles: the item (GROUND) facing the camera at scale 1,
+    /// lit at the light probe (the eye, 0.85 of the 0.25 height).
+    pub(super) fn thrown_potion_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+    ) {
+        let orientation = glam::Mat4::from_quat(self.camera_orientation());
+        for t in &self.potions.thrown {
+            let previous = glam::DVec3::new(t.previous.x, t.previous.y, t.previous.z);
+            let position = glam::DVec3::new(t.position.x, t.position.y, t.position.z);
+            // ThrowableProjectile.shouldRenderAtSqrDistance: hidden for its
+            // first two ticks within 3.5 blocks (not in the thrower's face).
+            if t.age < 2 && position.distance_squared(camera) < 12.25 {
+                continue;
+            }
+            if !self.standing_entity_in_view(
+                camera,
+                super::entity_culling::at(t.previous),
+                super::entity_culling::at(t.position),
+                alpha,
+                0.25,
+                0.25,
+                64.0,
+                0.0,
+            ) {
+                continue;
+            }
+            let p = previous.lerp(position, alpha);
+            let owner = owner_at(p.to_array(), 0.0, &t.stack.item);
+            let state = self.resolve_item(&t.stack, DisplayContext::Ground, Some(&owner), 0);
+            if state.is_empty() {
+                continue;
+            }
+            let pose = glam::Mat4::from_translation((p - camera).as_vec3()) * orientation;
+            let light = self.world.light(
+                p.x.floor() as i32,
+                (p.y + 0.2125).floor() as i32,
+                p.z.floor() as i32,
+            );
+            self.submit_item_world(&state, pose, vertex_light(light), out);
         }
     }
     /// A splash potion's effects on the player in place, by their distance.
@@ -659,7 +755,7 @@ impl Game<'_> {
             image_width,
             &self.potions.effects.list,
             self.clock.rate(),
-            &|key| self.pack.names.get(key).map(str::to_owned),
+            &|key| self.pack.names.display_get(key),
             &|text| self.gui.atlas.font.width(text).ceil() as i32,
         );
         if let Some(lines) = inventory_effects::paint(

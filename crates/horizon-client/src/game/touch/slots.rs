@@ -756,7 +756,7 @@ impl Game<'_> {
         let width = tooltip
             .lines
             .iter()
-            .map(|(t, _)| HudBatch::text_width(&self.gui.atlas, t))
+            .map(|(t, _)| self.gui.atlas.font.width_text(t))
             .chain(tooltip.grids.iter().map(|g| g.width()))
             .fold(0.0, f32::max);
         let (tx, ty) = if width <= room_right {
@@ -772,7 +772,11 @@ impl Game<'_> {
     }
 
     /// Tooltip lines wrapped to `width` GUI pixels (left whole when that is too narrow to read).
-    fn wrap_tooltip(&self, lines: Vec<(String, u32)>, width: f32) -> Vec<(String, u32)> {
+    fn wrap_tooltip(
+        &self,
+        lines: Vec<(horizon_client::text::Text, u32)>,
+        width: f32,
+    ) -> Vec<(horizon_client::text::Text, u32)> {
         if width < 60.0 {
             return lines;
         }
@@ -780,9 +784,9 @@ impl Game<'_> {
         lines
             .into_iter()
             .flat_map(|(text, colour)| {
-                font.split(&horizon_client::text::Text::literal(text), width)
+                font.split(&text, width)
                     .into_iter()
-                    .map(move |part| (part.plain(), colour))
+                    .map(move |part| (part, colour))
             })
             .collect()
     }

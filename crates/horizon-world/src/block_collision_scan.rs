@@ -37,17 +37,6 @@ pub trait BlockCollisionWorld {
         block: CollisionBlock,
         position: BlockPos,
     ) -> Result<bool, Self::Error>;
-    /// Whether the 16-block section `section` (`y >> 4`) of `chunk` may hold
-    /// a block that collides outside its own cell: a large collision shape
-    /// or a moving piston. The cells a scan visits only for those skip their
-    /// block reads where none can be. A provider that can't tell keeps true.
-    fn section_may_reach(
-        &mut self,
-        _chunk: Self::Chunk,
-        _section: i32,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
     /// Query against the global collision world, not the cached chunk provider.
     /// Shapes must preserve canonical block identity (including imported shapes).
     fn context_shape(
@@ -56,6 +45,13 @@ pub trait BlockCollisionWorld {
         position: BlockPos,
         context: &CollisionContext<'_>,
     ) -> Result<VoxelShape, Self::Error>;
+    /// Whether a block of the chunk's section `section_y` (block y >> 4) may
+    /// have a large collision shape or be a moving piston: the only blocks
+    /// the scan keeps outside the box's own cells. False lets the scan pass
+    /// that section's outer cells without reading them; true reads them all.
+    fn may_reach_out(&mut self, _chunk: Self::Chunk, _section_y: i32) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]
@@ -103,8 +99,8 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     count: usize,
     budget: usize,
     chunk: Option<(ChunkPos, W::Chunk)>,
-    /// The last section asked [`BlockCollisionWorld::section_may_reach`].
-    section: Option<(ChunkPos, i32, bool)>,
+    /// `may_reach_out` of the last section an outer cell was in.
+    reach: Option<(ChunkPos, i32, bool)>,
     failed: bool,
 }
 impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
@@ -154,9 +150,28 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             count,
             budget: candidate_budget,
             chunk: None,
-            section: None,
+            reach: None,
             failed: false,
         })
+    }
+
+    /// Move the cursor `n` cells further along its row; `n` must not pass
+    /// the row's end.
+    fn skip(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let [width, height, _] = self.sizes;
+        self.index += n;
+        self.cursor[0] += n;
+        if self.cursor[0] == width {
+            self.cursor[0] = 0;
+            self.cursor[1] += 1;
+            if self.cursor[1] == height {
+                self.cursor[1] = 0;
+                self.cursor[2] += 1;
+            }
+        }
     }
 
     /// The next hit as a collider: a full block stays a [`MovedBlock`]
@@ -180,7 +195,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             if self.index >= self.budget {
                 return Err(CollisionScanError::VisitBudget);
             }
-            let [width, height, _] = self.sizes;
+            let [width, height, depth] = self.sizes;
             let relative = self.cursor;
             self.index += 1;
             self.cursor[0] += 1;
@@ -218,22 +233,38 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             let Some(chunk) = chunk else {
                 continue;
             };
-            // Off the box's own cells only blocks reaching out of theirs
-            // collide (below); a section with none needs no reads there.
+            // An outer cell only counts for a block reaching out of its own
+            // cell: most sections hold none, so their outer cells go unread
+            // (the result is the same, with a fifth of the block reads for a
+            // mob's box).
             if kind != 0 {
-                let section = p.y >> 4;
-                let reaches = match self.section {
-                    Some((at, y, reaches)) if at == chunk_position && y == section => reaches,
+                let section_y = p.y >> 4;
+                let reaches = match self.reach {
+                    Some((at, y, reaches)) if at == chunk_position && y == section_y => reaches,
                     _ => {
                         let reaches = self
                             .world
-                            .section_may_reach(chunk, section)
+                            .may_reach_out(chunk, section_y)
                             .map_err(CollisionScanError::World)?;
-                        self.section = Some((chunk_position, section, reaches));
+                        self.reach = Some((chunk_position, section_y, reaches));
                         reaches
                     }
                 };
                 if !reaches {
+                    // On a row along the box's bottom, top or sides every
+                    // cell is outer: the rest of it in this chunk is passed
+                    // at once (never beyond the budget, which still ends the
+                    // scan where it would have).
+                    if relative[1] == 0
+                        || relative[1] == height - 1
+                        || relative[2] == 0
+                        || relative[2] == depth - 1
+                    {
+                        let rest = (width - 1 - relative[0])
+                            .min(15 - (p.x & 15) as usize)
+                            .min(self.budget.saturating_sub(self.index));
+                        self.skip(rest);
+                    }
                     continue;
                 }
             }

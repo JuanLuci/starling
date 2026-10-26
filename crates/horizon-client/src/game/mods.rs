@@ -1,8 +1,11 @@
 //! Horizon mods in the game (`docs/mods.md`): loading the ones turned on, the snapshot they
 //! read each tick, their hooks (tick, frame, chat, commands, connection, keys, payloads, damage)
-//! and what they ask for (chat lines, sounds, payloads, screens). With no mod on,
-//! `horizon_mods::Mods` holds no engine and every hook here returns after one check. Drawing
-//! and screens are in `mod_ui.rs`.
+//! and what they ask for (chat lines, sounds, payloads, screens, commands). With no mod on,
+//! `horizon_mods::Mods` holds no engine and every hook here returns after one check. Starling's
+//! drawing and screens are in `mod_ui.rs`; a Horizon `ui` mod's screen and settings page are
+//! here, its `render` shapes in `mod_render.rs` and its `input` in `mod_input.rs`.
+//!
+//! Starling's mods need the mod runtime: the client builds with its `mods` feature.
 use super::{Game, Screen};
 use horizon_client::{
     command::{Dispatcher, vanilla},
@@ -10,14 +13,17 @@ use horizon_client::{
     extras_hud::{self, Corners},
     hud::HudBatch,
     items::ItemStack,
+    keybinds,
     mobs::finalize,
     mod_list::{self, Installed},
+    options_ui::Page,
     text::{self, Text},
+    ui,
 };
 use horizon_mods::{
     BlockInfo, Capability, ChatVerdict, Clock, Controls, CreativeCatalog, Effect, Entity,
     EntityInfo, GameMode, Gui, ItemCatalog, ItemInfo, Measure, Mods, Output, Player, Snapshot,
-    Status, Target, WorldInfo,
+    Status, Target, UiScreen, UiWidget, WorldInfo,
 };
 use std::{
     collections::HashSet,
@@ -33,6 +39,10 @@ use winit::keyboard::KeyCode;
 #[derive(Default)]
 pub(super) struct ModsState {
     pub(super) mods: Mods,
+    /// Horizon's capability `input`: a claimed item's use while the button is down.
+    pub(super) using: Option<super::mod_input::ModUse>,
+    /// Horizon's capability `render`'s camera shakes.
+    pub(super) shake: super::mod_render::Shake,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
@@ -41,6 +51,16 @@ pub(super) struct ModsState {
     retried: Option<Instant>,
     /// The chat's command tree while a running mod owns commands.
     tree: Option<Dispatcher>,
+    /// On a server, its tree (`Remote::commands`) with the running mods' commands it lacks.
+    remote_tree: Option<Dispatcher>,
+    /// Horizon's `command.run` lines for this window's own world, run on the next tick: run at
+    /// once, their chat lines would reach the mods while their output is still being shown, and
+    /// a mod answering its own lines would recurse.
+    commands: Vec<String>,
+    /// A Horizon `ui` mod's screen or settings page while it is up (`Screen::Mod`).
+    ui_screen: Option<ModScreen>,
+    /// The HUD font's advances for Horizon's `render.text-width`, made once.
+    font_widths: Arc<[f32]>,
     /// The mod screen open now, `<mod id>:<name>`, over everything else.
     pub(super) screen: Option<String>,
     /// That screen stands in for the creative screen (`screens.replace`).
@@ -132,6 +152,48 @@ impl ModsState {
             .as_ref()
             .unwrap_or_else(|| vanilla::game_dispatcher())
     }
+    /// The server's tree with the mods' commands, apart from the one the server sent
+    /// ([`Game::merge_remote_tree`]).
+    pub(super) fn remote_dispatcher(&self) -> Option<&Dispatcher> {
+        self.remote_tree.as_ref()
+    }
+    /// Whether a mod runs: the chat keeps its lines for them.
+    pub(super) fn running(&self) -> bool {
+        self.mods.is_running()
+    }
+    /// Whether a mod draws a HUD panel or a corner panel.
+    pub(super) fn has_panels(&self) -> bool {
+        self.mods.panels().next().is_some() || self.mods.corner_panels().next().is_some()
+    }
+}
+
+/// The mappings Horizon's `input.mapping` answers for, with the default key their binding is
+/// translated to (none: a mouse button, attack or use).
+const MAPPINGS: [(&str, Option<KeyCode>); 9] = [
+    ("key.forward", Some(KeyCode::KeyW)),
+    ("key.left", Some(KeyCode::KeyA)),
+    ("key.back", Some(KeyCode::KeyS)),
+    ("key.right", Some(KeyCode::KeyD)),
+    ("key.jump", Some(KeyCode::Space)),
+    ("key.sneak", Some(KeyCode::ShiftLeft)),
+    ("key.sprint", Some(KeyCode::ControlLeft)),
+    ("key.attack", None),
+    ("key.use", None),
+];
+/// Characters Horizon's `render.text-width` knows exactly: U+0000 to U+024F.
+const FONT_CHARS: u32 = 0x250;
+
+/// A Horizon `ui` mod's own screen, or its settings page from Options > Mods: the widgets the
+/// mod pushed, laid out and drawn with the menus' own widgets.
+struct ModScreen {
+    /// The running mod's index in `mods.mods.entries()`.
+    owner: usize,
+    /// Opened from Options > Mods: Done and Esc return there.
+    settings: bool,
+    /// What the mod's screen replaced (Playing, Chat, ...), to restore.
+    under: Screen,
+    /// One scroll per `list` widget, in widget order.
+    scrolls: Vec<ui::Scroll>,
 }
 /// A mod in the folder as the watcher saw it: path, size, file id and change time. On Android's
 /// shared storage a replaced file's modification time goes back to the old file's a moment
@@ -515,6 +577,8 @@ impl Game<'_> {
         }
         self.mods.mods = mods;
         self.mods.screen = None;
+        // Entries were replaced wholesale: a Horizon screen's owner index is stale.
+        self.mods.ui_screen = None;
         self.mods.joined = None;
         self.release_mod_holds(|_| false);
         self.list_mods();
@@ -547,6 +611,7 @@ impl Game<'_> {
                         config: None,
                         problem,
                         dev: false,
+                        has_settings: false,
                     };
                 };
                 // What it may do first: the row cuts long descriptions.
@@ -564,6 +629,7 @@ impl Game<'_> {
                     config: self.mods.mods.config_screen(&m.id),
                     problem,
                     dev: dev.contains(&e.path),
+                    has_settings: e.has_ui_settings(),
                 }
             })
             .collect();
@@ -575,25 +641,23 @@ impl Game<'_> {
             .peek()
             .is_some()
             .then(|| vanilla::game_dispatcher().with_mod_commands(names));
-        self.merge_remote_commands();
+        self.merge_remote_tree();
     }
     /// On a server, the chat's tree: the server's, with the running mods' commands it does not
-    /// have (the server's own win).
-    pub(super) fn merge_remote_commands(&mut self) {
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        r.commands = r.server_commands.as_ref().map(|tree| {
+    /// have (the server's own win). None while no mod adds one.
+    pub(super) fn merge_remote_tree(&mut self) {
+        let tree = self.remote.as_ref().and_then(|r| r.commands.as_ref());
+        self.mods.remote_tree = tree.and_then(|tree| {
             let mut names = self
                 .mods
                 .mods
                 .commands()
                 .filter(|name| tree.find(name).is_none())
                 .peekable();
-            match names.peek() {
-                Some(_) => tree.with_mod_commands(names),
-                None => tree.clone(),
-            }
+            names
+                .peek()
+                .is_some()
+                .then(|| tree.with_mod_commands(names))
         });
     }
     /// `/command` typed in chat on a server: true when a mod owns it and the server has no
@@ -603,7 +667,7 @@ impl Game<'_> {
         let server_has = self
             .remote
             .as_ref()
-            .and_then(|r| r.server_commands.as_ref())
+            .and_then(|r| r.commands.as_ref())
             .is_some_and(|tree| tree.find(name).is_some());
         !server_has && self.mod_command(command)
     }
@@ -835,8 +899,36 @@ impl Game<'_> {
             keys_down: self.mods.keys_down.clone(),
             touch: self.has_touch(),
             measure: Some(self.mod_measure()),
+            gui_size: (gw, gh),
+            held: self.mod_held(),
             ..Snapshot::default()
         };
+        // Horizon's `render` and `input`: the frame counter, the clicks, the movement and click
+        // mappings as the keystroke overlay reads them (keys by the default key their binding is
+        // translated to), and the HUD font's advances.
+        if self.mods.mods.uses(Capability::Render) || self.mods.mods.uses(Capability::Input) {
+            snapshot.frame = self.frame_reading();
+            let (cps, mouse) = self.mouse_reading();
+            snapshot.cps = cps;
+            snapshot.mappings = MAPPINGS
+                .iter()
+                .map(|&(name, key)| {
+                    let label = keybinds::display_name(self.settings.keys.get(name)).plain();
+                    let down = match key {
+                        Some(k) => self.keys.contains(&k),
+                        None => mouse[usize::from(name == "key.use")],
+                    };
+                    (name, label, down)
+                })
+                .collect();
+            if self.mods.font_widths.is_empty() {
+                let atlas = &self.gui.atlas;
+                self.mods.font_widths = (0..FONT_CHARS)
+                    .map(|c| char::from_u32(c).map_or(6.0, |c| atlas.glyph_cell(c).1))
+                    .collect();
+            }
+            snapshot.font_widths = self.mods.font_widths.clone();
+        }
         if inventory_read {
             let mut slots: Vec<Option<horizon_mods::ItemStack>> = self.inventory[..36]
                 .iter()
@@ -942,7 +1034,8 @@ impl Game<'_> {
                 menu,
                 self.remote
                     .as_ref()
-                    .and_then(|r| r.menu_title.clone())
+                    .and_then(|r| r.menu_title.as_ref())
+                    .map(|t| t.plain())
                     .unwrap_or_default(),
             ),
             None if self.container.is_some() => ("minecraft:generic_9x3".to_owned(), String::new()),
@@ -1295,6 +1388,11 @@ impl Game<'_> {
     }
     /// A game tick: the snapshot, the connection and damage events, then the tick hook.
     pub(super) fn tick_mods(&mut self) {
+        // Here, at the player's level: shown inside a console call (a control socket command set
+        // the hook off), they would run as the console.
+        for line in std::mem::take(&mut self.mods.commands) {
+            self.run_command(&line);
+        }
         // A mod that stopped lets go of what it held.
         if !self.mods.holds.is_empty() {
             let running: Vec<String> = self
@@ -1310,6 +1408,7 @@ impl Game<'_> {
         if !self.mods.mods.is_running() {
             return;
         }
+        self.tick_mod_use();
         let snapshot = self.mod_snapshot();
         let joined = snapshot
             .player
@@ -1379,6 +1478,14 @@ impl Game<'_> {
         }
         self.mods_screen_events();
         self.frame_mod_controls();
+        // Horizon's `input.mapping` reads the keys as of this frame for a mod with a frame hook.
+        if self.mods.mods.wants_frames()
+            && (self.mods.mods.uses(Capability::Render) || self.mods.mods.uses(Capability::Input))
+            && self.res.rest_ready()
+        {
+            let snapshot = self.mod_snapshot();
+            self.mods.mods.set_snapshot(snapshot);
+        }
         self.mods.mods.frame(elapsed.as_secs_f32());
         self.show_mod_output();
     }
@@ -1513,7 +1620,7 @@ impl Game<'_> {
         } else {
             self.mods.keys_down.retain(|k| *k != full);
         }
-        self.mods.mods.key(id, bind, pressed);
+        self.mods.mods.keybind(id, bind, pressed);
         self.show_mod_output();
     }
     /// Minecraft.startAttack: whether the mods let it go ahead, on the entity or block under
@@ -1625,6 +1732,41 @@ impl Game<'_> {
                     Output::Feedback { text, error: true } => {
                         Text::literal(text).with_color(text::RED)
                     }
+                    // Horizon's `command.run`: vanilla's commands only, as a mod running a mod
+                    // command could loop.
+                    Output::Command { line } => {
+                        let name = line.split(' ').next().unwrap_or_default();
+                        if !vanilla_command(name) {
+                            // Dropped.
+                        } else if self.remote.is_some() {
+                            // The server checks the player's permissions.
+                            self.send_chat(&format!("/{line}"));
+                        } else {
+                            self.mods.commands.push(line);
+                        }
+                        continue;
+                    }
+                    Output::OpenUiScreen { owner } => {
+                        self.open_mod_ui(owner, false);
+                        continue;
+                    }
+                    Output::CloseUiScreen { owner } => {
+                        if self
+                            .mods
+                            .ui_screen
+                            .as_ref()
+                            .is_some_and(|s| s.owner == owner)
+                        {
+                            self.close_mod_ui(false);
+                        }
+                        continue;
+                    }
+                    Output::Shake { strength, seconds } => {
+                        self.mods.shake.add(strength, seconds);
+                        continue;
+                    }
+                    // A Horizon mod's screen goes with it: the entry's run is gone, so
+                    // `mod_ui_view` finds no widgets and the screen closes.
                     Output::Stopped { name, reason } => {
                         self.list_mods();
                         self.sync_mod_commands();
@@ -1754,6 +1896,12 @@ impl Game<'_> {
         if clicked {
             self.refresh_mod_snapshot();
         }
+        // A Horizon mod may set or clear its settings page in any call, not only while loading:
+        // its row's Settings button follows.
+        let rows = self.settings.mods.installed.iter_mut();
+        for (row, e) in rows.zip(self.mods.mods.entries()) {
+            row.has_settings = e.has_ui_settings();
+        }
     }
     /// `chat-send.send`: a line or `/command` as the player typed it, past the chat hooks.
     fn mod_send(&mut self, message: &str) {
@@ -1785,8 +1933,341 @@ impl Game<'_> {
                 .collect();
             extras_hud::draw_lines(batch, &self.gui.atlas, corners, corner, &lines);
         }
+        // Horizon's capability `render`'s corner panels, placed the same way.
+        for panel in self.mods.mods.corner_panels() {
+            let corner = match panel.corner {
+                horizon_mods::RenderCorner::TopLeft => Corner::TopLeft,
+                horizon_mods::RenderCorner::TopRight => Corner::TopRight,
+                horizon_mods::RenderCorner::BottomLeft => Corner::BottomLeft,
+                horizon_mods::RenderCorner::BottomRight => Corner::BottomRight,
+            };
+            if self.debug && corner == Corner::TopLeft {
+                continue;
+            }
+            let at = corners.place(corner, panel.width, panel.height);
+            self.draw_shapes(batch, &panel.shapes, at);
+        }
+    }
+
+    /// A Horizon `ui` screen's title and widgets as the mod last pushed them; None when the
+    /// surface is gone (the mod stopped or closed it). Borrows `mods` only, so
+    /// `self.mods.ui_screen` may stay borrowed for the scrolls.
+    fn mod_ui_view<'a>(mods: &'a Mods, ms: &ModScreen) -> Option<(&'a str, &'a [UiWidget])> {
+        if ms.settings {
+            let widgets = mods.settings_widgets(ms.owner);
+            if widgets.is_empty() {
+                return None;
+            }
+            let name = mods
+                .entries()
+                .get(ms.owner)
+                .and_then(|e| e.manifest.as_ref())
+                .map_or("Mod", |m| m.name.as_str());
+            Some((name, widgets))
+        } else {
+            let s: &UiScreen = mods.screen(ms.owner)?;
+            Some((s.title.as_str(), s.widgets.as_slice()))
+        }
+    }
+    /// The layout the mod screen's widgets get at `h`: (widget, top, height), the column being
+    /// `MOD_UI_COLUMN` wide down the middle.
+    fn mod_ui_layout(h: f32, widgets: &[UiWidget]) -> Vec<(f32, f32)> {
+        let mut out = Vec::with_capacity(widgets.len());
+        let mut y = MOD_UI_TOP;
+        for w in widgets {
+            let wh = match w {
+                UiWidget::Text(_) => 12.0,
+                UiWidget::Item(_) | UiWidget::Button(_) => 20.0,
+                UiWidget::List(l) => (l.rows.len().min(6) as f32 * 12.0) + 8.0,
+            };
+            // Nothing may cover Done; a crowded mod loses what won't fit.
+            if y + wh > h - 34.0 {
+                break;
+            }
+            out.push((y, wh));
+            y += wh + 6.0;
+        }
+        out
+    }
+    /// A Horizon mod pushes its screen (`ui.open-screen`), or Options > Mods opens its settings
+    /// page (`settings`, the mod's `installed` index). Starling's mod screens are
+    /// `open_mod_screen` (`mod_ui.rs`).
+    pub(super) fn open_mod_ui(&mut self, owner: usize, settings: bool) {
+        if self.title.is_some() {
+            return;
+        }
+        if settings {
+            self.mods.mods.ui_settings_opened(owner);
+            if self.mods.mods.settings_widgets(owner).is_empty() {
+                self.show_mod_output();
+                return;
+            }
+        }
+        self.mods.ui_screen = Some(ModScreen {
+            owner,
+            settings,
+            under: self.screen,
+            scrolls: Vec::new(),
+        });
+        self.screen = Screen::Mod;
+        if self.player.is_some() {
+            self.capture(false);
+        }
+        self.show_mod_output();
+    }
+    /// Leaves the Horizon mod screen: back to Options for a settings page, to what it covered
+    /// for a mod's own. `tell` is Esc/Done, heard as `closed`.
+    pub(super) fn close_mod_ui(&mut self, tell: bool) {
+        let Some(ms) = self.mods.ui_screen.take() else {
+            return;
+        };
+        if ms.settings {
+            self.open_options_at(self.options_from_title, Page::Mods);
+        } else {
+            self.screen = ms.under;
+            if self.screen == Screen::Playing && self.player.is_some() {
+                self.capture(true);
+            }
+        }
+        if tell {
+            self.mods.mods.ui_closed(ms.owner);
+            self.show_mod_output();
+        }
+    }
+    /// The Horizon mod's screen or settings page: its title over widgets stacked down the
+    /// middle, a Done button, Esc to leave (vanilla's menus).
+    pub(super) fn draw_mod_screen(&mut self, batch: &mut HudBatch) {
+        let Some(ms) = self.mods.ui_screen.as_mut() else {
+            // The screen was dropped while it was up: back to the world, mouse held again like
+            // any return to Playing.
+            self.screen = Screen::Playing;
+            if self.player.is_some() {
+                self.capture(true);
+            }
+            return;
+        };
+        let Some((title, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
+            // The mod's surface is gone (it stopped or cleared it): leave the screen like Done
+            // did, without `closed` — the mod ended it.
+            self.close_mod_ui(false);
+            return;
+        };
+        // Item icons draw in a second pass: `draw_item` needs `&mut self`, so `atlas` may not
+        // stay borrowed across it.
+        let mut items: Vec<(String, f32, f32)> = Vec::new();
+        let atlas = &self.gui.atlas;
+        let in_world = self.player.is_some();
+        ui::menu_background(batch, atlas, 0.0, 0.0, batch.width, batch.height, in_world);
+        ui::centered_text(
+            batch,
+            atlas,
+            &Text::literal(title),
+            0.0,
+            15.0,
+            batch.width,
+            u32::MAX,
+        );
+        let cx = (batch.width / 2.0).floor();
+        let x = cx - MOD_UI_COLUMN / 2.0;
+        let layout = Self::mod_ui_layout(batch.height, widgets);
+        let mut list_i = 0usize;
+        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
+            match w {
+                UiWidget::Button(b) => {
+                    let hover = ui::hovered(self.cursor, x, wy, MOD_UI_COLUMN, 20.0);
+                    let label = Text::literal(b.label.clone());
+                    ui::button(
+                        batch,
+                        atlas,
+                        x,
+                        wy,
+                        MOD_UI_COLUMN,
+                        20.0,
+                        &label,
+                        true,
+                        hover,
+                    );
+                }
+                UiWidget::Text(t) => {
+                    let color = if t.color == 0 {
+                        u32::MAX
+                    } else {
+                        t.color | 0xFF00_0000
+                    };
+                    ui::centered_text(
+                        batch,
+                        atlas,
+                        &Text::literal(t.text.clone()),
+                        x,
+                        wy + 1.0,
+                        MOD_UI_COLUMN,
+                        color,
+                    );
+                }
+                UiWidget::Item(i) => {
+                    if self.res.items().get(&i.item).is_some() {
+                        items.push((i.item.clone(), x + 2.0, wy + 2.0));
+                    } else {
+                        batch.text(atlas, "?", x + 6.0, wy + 6.0, u32::MAX, true);
+                    }
+                    let name = if i.name.is_empty() {
+                        i.item.rsplit(':').next().unwrap_or(&i.item).to_string()
+                    } else {
+                        i.name.clone()
+                    };
+                    batch.text_styled(
+                        atlas,
+                        &Text::literal(name),
+                        x + 22.0,
+                        wy + 6.0,
+                        u32::MAX,
+                        true,
+                    );
+                }
+                UiWidget::List(l) => {
+                    ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+                    let scroll = ms.scrolls[list_i];
+                    list_i += 1;
+                    let rows_top = wy + 4.0;
+                    let rows_bottom = wy + wh - 4.0;
+                    batch.fill(atlas, x, wy, MOD_UI_COLUMN, wh, 0x8000_0000);
+                    for (b, yy) in [(x, wy), (x, wy + wh - 1.0)] {
+                        batch.fill(atlas, b, yy, MOD_UI_COLUMN, 1.0, 0xFF50_5050);
+                    }
+                    for (xx, yy) in [(x, wy), (x + MOD_UI_COLUMN - 1.0, wy)] {
+                        batch.fill(atlas, xx, yy, 1.0, wh, 0xFF50_5050);
+                    }
+                    let content = l.rows.len() as f32 * 12.0;
+                    let first = (scroll.amount / 12.0) as usize;
+                    let last = (first + ((rows_bottom - rows_top) / 12.0).ceil() as usize + 1)
+                        .min(l.rows.len());
+                    for (vi, ri) in (first..last).enumerate() {
+                        let ry = rows_top + vi as f32 * 12.0 - (scroll.amount % 12.0);
+                        if ui::hovered(self.cursor, x, ry, MOD_UI_COLUMN - 6.0, 12.0) {
+                            batch.fill(atlas, x + 1.0, ry, MOD_UI_COLUMN - 8.0, 12.0, 0x20FF_FFFF);
+                        }
+                        if l.selected == Some(ri as u32) {
+                            batch.fill(atlas, x + 1.0, ry, 3.0, 12.0, 0xFFFF_FFFF);
+                        }
+                        batch.text_styled(
+                            atlas,
+                            &Text::literal(l.rows[ri].clone()),
+                            x + 6.0,
+                            ry + 2.0,
+                            u32::MAX,
+                            true,
+                        );
+                    }
+                    ui::scrollbar(
+                        batch,
+                        atlas,
+                        x + MOD_UI_COLUMN - 5.0,
+                        rows_top,
+                        rows_bottom,
+                        content,
+                        scroll.amount,
+                    );
+                }
+            }
+        }
+        let hover = ui::hovered(self.cursor, cx - 100.0, batch.height - 27.0, 200.0, 20.0);
+        ui::button(
+            batch,
+            atlas,
+            cx - 100.0,
+            batch.height - 27.0,
+            200.0,
+            20.0,
+            &Text::literal("Done"),
+            true,
+            hover,
+        );
+        for (id, ix, iy) in items {
+            let stack = ItemStack::new(id.as_str(), 1);
+            self.draw_item(batch, &stack, ix, iy);
+        }
+    }
+    /// A click on the Horizon mod screen: Done leaves it, a `list` row is the mod's
+    /// `ui-events::select`.
+    pub(super) fn mod_screen_click(&mut self) {
+        let (w, h) = self.gui_size();
+        let cursor = self.cursor;
+        if ui::hovered(cursor, (w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0) {
+            self.audio.play_button_click();
+            self.close_mod_ui(true);
+            return;
+        }
+        let Some(ms) = self.mods.ui_screen.as_ref() else {
+            return;
+        };
+        let Some((_, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
+            return;
+        };
+        let owner = ms.owner;
+        let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
+        let layout = Self::mod_ui_layout(h, widgets);
+        let mut list_i = 0usize;
+        // The `ui_select` call needs `&mut`: find the pick first.
+        let mut hit = None;
+        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
+            // A button is `select(id, 0)`.
+            if let UiWidget::Button(b) = w
+                && ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0)
+            {
+                self.audio.play_button_click();
+                let owner = self.mods.ui_screen.as_ref().map_or(0, |ms| ms.owner);
+                self.mods.mods.ui_select(owner, b.id, 0);
+                self.show_mod_output();
+                return;
+            }
+            let UiWidget::List(l) = w else { continue };
+            let scroll = ms.scrolls.get(list_i).copied().unwrap_or_default();
+            list_i += 1;
+            let row = ((cursor.1 - (wy + 4.0) + scroll.amount) / 12.0) as i64;
+            if ui::hovered(cursor, x + 1.0, wy + 1.0, MOD_UI_COLUMN - 7.0, wh - 2.0)
+                && row >= 0
+                && (row as usize) < l.rows.len()
+            {
+                hit = Some((l.id, row as u32));
+                break;
+            }
+        }
+        if let Some((id, row)) = hit {
+            self.audio.play_button_click();
+            self.mods.mods.ui_select(owner, id, row);
+            self.show_mod_output();
+        }
+    }
+    /// The wheel over a Horizon mod screen's `list` scrolls it.
+    pub(super) fn mod_screen_scroll(&mut self, delta: f32) {
+        let (w, h) = self.gui_size();
+        let cursor = self.cursor;
+        let Some(ms) = self.mods.ui_screen.as_mut() else {
+            return;
+        };
+        let Some((_, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
+            return;
+        };
+        let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
+        let layout = Self::mod_ui_layout(h, widgets);
+        let mut list_i = 0usize;
+        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
+            let UiWidget::List(l) = w else { continue };
+            let over = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, wh);
+            ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+            if over {
+                let content = l.rows.len() as f32 * 12.0;
+                ms.scrolls[list_i].wheel(delta, 12.0, wy + 4.0, wy + wh - 4.0, content);
+                return;
+            }
+            list_i += 1;
+        }
     }
 }
+
+/// Where a Horizon mod screen's widgets start, and their column's width.
+const MOD_UI_TOP: f32 = 40.0;
+const MOD_UI_COLUMN: f32 = 200.0;
 
 fn block_pos(p: [i32; 3]) -> horizon_mods::BlockPos {
     horizon_mods::BlockPos {

@@ -22,6 +22,23 @@ pub(super) struct PreparedWorld {
 }
 
 impl WorldRequest {
+    pub fn new(
+        folder: &str,
+        name: Option<&str>,
+        seed: Option<i64>,
+        creative: bool,
+        create: Option<&horizon_client::title::WorldOptions>,
+    ) -> Result<Self> {
+        Ok(Self {
+            save_root: std::env::current_dir()?.join("saves").join(folder),
+            folder: folder.to_owned(),
+            name: name.map(str::to_owned),
+            seed,
+            creative,
+            create: create.cloned(),
+        })
+    }
+
     pub fn prepare(
         self,
         res: &Resources,
@@ -229,6 +246,9 @@ pub(super) fn make_streaming(
         let inner = Arc::new(VanillaTerrain::for_world(&options.resources.join("worldgen"), pack.assets.registry, res.biomes(), seed, dim.id(), structures).map_err(|e| {
                 format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
             })?);
+        if dim == Dim::Overworld && structures {
+            inner.search_rings_behind();
+        }
         locator = Some(inner.clone());
         Streaming::new(
             Arc::new(Persistent {
@@ -245,13 +265,12 @@ pub(super) fn make_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
-    streaming.cull_leaves = settings.horizon.cull_leaves;
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
     streaming.nether_shading = dim == Dim::Nether;
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
-    streaming.mesh = !options.integrated && options.dedicated.is_none();
+    streaming.mesh = options.execution_role.is_client();
     Ok((streaming, save, locator))
 }
 

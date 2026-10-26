@@ -4,7 +4,12 @@
 //! inactive until the dragon dies.
 use super::{Dim, Game};
 use horizon_client::{
-    Result, environment::Environment, items::ItemStack, mesher::Vertex, motion::PlayerMotion,
+    Result,
+    environment::Environment,
+    items::ItemStack,
+    mesher::Vertex,
+    motion::PlayerMotion,
+    particles::{ParticleOptions, ParticleType},
     vanillagen::VanillaTerrain,
 };
 use horizon_core::{
@@ -23,7 +28,7 @@ const GATEWAY_FILE: &str = "horizon-end-gateways.json";
 
 /// A gateway teleport waiting for its destination chunks.
 #[derive(Clone, Copy, Debug)]
-enum GatewayJob {
+pub(super) enum GatewayJob {
     /// TheEndGatewayBlockEntity.findOrCreateValidTeleportPos from this gateway.
     Find { gateway: [i32; 3] },
     /// A known exit (exact, or findExitPosition around it).
@@ -97,8 +102,58 @@ impl EndState {
     }
 }
 
+impl EndState {
+    /// The eyes' entity ids, for a server to number them.
+    pub(super) fn eye_ids(&mut self) -> impl Iterator<Item = &mut u32> {
+        self.eyes.iter_mut().map(|e| &mut e.id)
+    }
+    /// The numbered eyes as a server's clients track them: (id, position, motion).
+    pub(super) fn eyes_tracked(&self) -> impl Iterator<Item = (u32, [f64; 3], [f64; 3])> {
+        self.eyes
+            .iter()
+            .filter(|e| e.id != 0)
+            .map(|e| (e.id, e.position.to_array(), e.velocity.to_array()))
+    }
+    /// `handleAddEntity` for an eye of ender on a server's client: it flies
+    /// where the server says.
+    pub(super) fn add_remote_eye(&mut self, id: u32, at: [f64; 3], velocity: [f64; 3]) {
+        self.eyes.retain(|e| e.id != id);
+        let at = glam::DVec3::from_array(at);
+        self.eyes.push(EyeOfEnder {
+            id,
+            position: at,
+            previous: at,
+            velocity: glam::DVec3::from_array(velocity),
+            target: at,
+            life: 0,
+            survive: false,
+        });
+    }
+    /// One tick of a server's client: `step` moves each toward where the
+    /// server put it.
+    pub(super) fn step_remote_eyes(&mut self, mut step: impl FnMut(u32, [f64; 3]) -> [f64; 3]) {
+        for e in &mut self.eyes {
+            e.previous = e.position;
+            e.life += 1;
+            e.position = glam::DVec3::from_array(step(e.id, e.position.to_array()));
+        }
+    }
+    pub(super) fn remove_remote_eye(&mut self, id: u32) {
+        self.eyes.retain(|e| e.id != id);
+    }
+    pub(super) fn clear_remote_eyes(&mut self) {
+        self.eyes.clear();
+    }
+    /// Where each eye is, for `status`.
+    pub(super) fn eye_positions(&self) -> impl Iterator<Item = (u32, [f64; 3])> {
+        self.eyes.iter().map(|e| (e.id, e.position.to_array()))
+    }
+}
+
 /// The EyeOfEnder entity.
 struct EyeOfEnder {
+    /// Its entity id once a server's clients track it (0 until then).
+    id: u32,
     position: glam::DVec3,
     previous: glam::DVec3,
     velocity: glam::DVec3,
@@ -138,47 +193,12 @@ impl Game<'_> {
         }
     }
 
-    /// SkyRenderer.buildEndSky: six faces of end_sky.png tiled 16 times,
-    /// tinted 0x282828. The atlas does not wrap, so each face is 16×16 quads.
-    pub(super) fn end_sky_geometry(&self) -> Vec<Vertex> {
-        let mut out = Vec::with_capacity(6 * 256 * 4);
-        let Some(r) = self.gui.atlas.sprites.get("environment/end_sky").copied() else {
+    /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.
+    pub(super) fn end_flash_geometry(&self) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        // The old combined sky/flash draw also skipped the flash without a sky sprite.
+        if !self.gui.atlas.sprites.contains_key("environment/end_sky") {
             return out;
-        };
-        use std::f32::consts::FRAC_PI_2;
-        let faces = [
-            glam::Mat4::IDENTITY,
-            glam::Mat4::from_rotation_x(FRAC_PI_2),
-            glam::Mat4::from_rotation_x(-FRAC_PI_2),
-            glam::Mat4::from_rotation_x(std::f32::consts::PI),
-            glam::Mat4::from_rotation_z(FRAC_PI_2),
-            glam::Mat4::from_rotation_z(-FRAC_PI_2),
-        ];
-        let step = 200.0 / 16.0;
-        for pose in faces {
-            for a in 0..16 {
-                for b in 0..16 {
-                    let (x0, z0) = (-100.0 + step * a as f32, -100.0 + step * b as f32);
-                    let (x1, z1) = (x0 + step, z0 + step);
-                    let corners = [
-                        (x0, z0, [r.u0, r.v0]),
-                        (x0, z1, [r.u0, r.v1]),
-                        (x1, z1, [r.u1, r.v1]),
-                        (x1, z0, [r.u1, r.v0]),
-                    ];
-                    for (x, z, uv) in corners {
-                        let p = pose.transform_point3(glam::Vec3::new(x, -100.0, z));
-                        out.push(Vertex {
-                            normal: [0; 4],
-                            pos: p.to_array(),
-                            uv,
-                            layer: 2,
-                            color: 0xFF28_2828,
-                            light: 0,
-                        });
-                    }
-                }
-            }
         }
         // SkyRenderer.renderEndFlash: the end_flash sprite at height 100, scale 60.
         let intensity = self.end.flash.intensity(self.clock.fraction() as f32);
@@ -296,9 +316,10 @@ impl Game<'_> {
                     )?;
                 }
             }
-            // Global LevelEvent 1038: END_PORTAL_SPAWN.
-            self.audio
-                .play("minecraft:block.end_portal.spawn", None, 1.0, 1.0);
+            // EnderEyeItem.useOn: global level event 1038 (END_PORTAL_SPAWN),
+            // heard by every player (vanilla places it at the frame's corner
+            // + (1, 0, 1); only its direction matters).
+            self.global_level_event(1038, c, 0);
         }
         Ok(true)
     }
@@ -350,6 +371,7 @@ impl Game<'_> {
             self.tick_fight();
             self.tick_dragon_fireballs();
         }
+        self.tick_crystals();
         self.tick_eyes();
         if self.dim == Dim::End {
             self.end.flash.tick(self.world.game_time);
@@ -376,7 +398,10 @@ impl Game<'_> {
             f64::from(p.dimensions.width),
             f64::from(p.dimensions.height),
         );
-        if portal {
+        if portal && self.dim == Dim::End && !self.level.seen_credits {
+            // EndPortalBlock.entityInside: the first exit shows the credits.
+            self.show_end_credits()?;
+        } else if portal {
             if self.portals.player.cooldown == 0 {
                 let target = if self.dim == Dim::End {
                     Dim::Overworld
@@ -447,7 +472,15 @@ impl Game<'_> {
                 f64::from(END_SPAWN[2]) + 0.5,
             ));
         }
-        // Leaving the End: the respawn position (the world spawn here).
+        // Leaving the End: the respawn position, a bed's found once it has
+        // loaded (findRespawnPositionAndUseSpawnBlock, not using it up).
+        if let Some(c) = self.respawn_config.filter(|c| c.dim == target) {
+            return Some(Vec3::new(
+                f64::from(c.pos[0]) + 0.5,
+                f64::from(c.pos[1]),
+                f64::from(c.pos[2]) + 0.5,
+            ));
+        }
         let s = self.level.spawn.unwrap_or([0.0, 64.0, 0.0]);
         Some(Vec3::new(s[0].floor() + 0.5, s[1], s[2].floor() + 0.5))
     }
@@ -518,7 +551,16 @@ impl Game<'_> {
             // Direction.WEST.toYRot().
             return Ok((target, Some(90.0)));
         }
-        // ServerPlayer.findRespawnPositionAndUseSpawnBlock: onto the spawn column.
+        // ServerPlayer.findRespawnPositionAndUseSpawnBlock: where the bed or
+        // anchor puts the player, facing it; else onto the spawn column.
+        let mut target = target;
+        if let Some(c) = self.respawn_config.filter(|c| c.dim == self.dim) {
+            if let Some((at, yaw)) = self.find_respawn_and_use(c, false)? {
+                return Ok((at, Some(yaw)));
+            }
+            let s = self.level.spawn.unwrap_or([0.0, 64.0, 0.0]);
+            target = Vec3::new(s[0].floor() + 0.5, s[1], s[2].floor() + 0.5);
+        }
         let y = self
             .land_column(target.x.floor() as i32, target.z.floor() as i32)
             .map_or(target.y, f64::from);
@@ -734,6 +776,20 @@ impl Game<'_> {
     fn enter_gateway(&mut self, gateway: [i32; 3]) -> Result<()> {
         // TheEndGatewayBlockEntity.triggerCooldown: 40 ticks.
         self.end.gateway_cooldown = 40;
+        let (job, destination) = self.gateway_job(gateway);
+        let Some(player) = self.player.take() else {
+            return Ok(());
+        };
+        self.end.job = Some(job);
+        self.end_travel = true;
+        self.travelling = Some((player, destination));
+        Ok(())
+    }
+
+    /// Where `gateway` leads (TheEndGatewayBlockEntity.getPortalPosition):
+    /// its exit, or the search for one, and the spot to load before either
+    /// is resolved ([`Game::resolve_gateway`]).
+    pub(super) fn gateway_job(&mut self, gateway: [i32; 3]) -> (GatewayJob, Vec3) {
         let known = self.gateway_exits().get(&gateway).copied();
         let job = match known {
             Some((exit, exact)) => GatewayJob::Known { exit, exact },
@@ -759,13 +815,7 @@ impl Game<'_> {
                 Vec3::new(d.x, 75.0, d.y)
             }
         };
-        let Some(player) = self.player.take() else {
-            return Ok(());
-        };
-        self.end.job = Some(job);
-        self.end_travel = true;
-        self.travelling = Some((player, destination));
-        Ok(())
+        (job, destination)
     }
 
     fn chunk_empty(&self, x: f64, z: f64) -> Option<bool> {
@@ -802,7 +852,7 @@ impl Game<'_> {
 
     /// The teleport position of a gateway job, creating the exit gateway (and
     /// an island when the chunk has no landing spot) for new destinations.
-    fn resolve_gateway(&mut self, job: GatewayJob, target: Vec3) -> Result<Vec3> {
+    pub(super) fn resolve_gateway(&mut self, job: GatewayJob, target: Vec3) -> Result<Vec3> {
         let bottom_center = |p: [i32; 3]| {
             Vec3::new(
                 f64::from(p[0]) + 0.5,
@@ -1029,6 +1079,7 @@ impl Game<'_> {
         };
         let survive = self.world.random.next_int_bound(5).unwrap_or(0) > 0;
         self.end.eyes.push(EyeOfEnder {
+            id: 0,
             position: start,
             previous: start,
             velocity: glam::DVec3::ZERO,
@@ -1077,6 +1128,35 @@ impl Game<'_> {
         self.end.eyes = eyes;
     }
 
+    /// `EyeOfEnder.tick` on a client: behind each eye (a quarter of its last
+    /// move back), four bubbles in water, else a portal particle.
+    pub(super) fn eye_particles(&mut self) {
+        for i in 0..self.end.eyes.len() {
+            let e = &self.end.eyes[i];
+            let movement = (e.position - e.previous).to_array();
+            let origin = (e.position - (e.position - e.previous) * 0.25).to_array();
+            let block = origin.map(|v| v.floor() as i32);
+            let water = self
+                .res
+                .facts()
+                .get(self.world.block(block[0], block[1], block[2]))
+                .fluid
+                == horizon_client::blocks::Fluid::Water;
+            if water {
+                let bubble = ParticleOptions::simple(ParticleType::Bubble);
+                for _ in 0..4 {
+                    self.particles.add(&bubble, origin, movement);
+                }
+            } else {
+                let r = self.particles.random();
+                let x = origin[0] + r.next_double() * 0.6 - 0.3;
+                let z = origin[2] + r.next_double() * 0.6 - 0.3;
+                let portal = ParticleOptions::simple(ParticleType::Portal);
+                self.particles
+                    .add(&portal, [x, origin[1] - 0.5, z], movement);
+            }
+        }
+    }
     /// ThrownItemRenderer: the ender eye item facing the camera.
     fn eye_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         let Some(r) = self.gui.atlas.sprites.get("item/ender_eye").copied() else {

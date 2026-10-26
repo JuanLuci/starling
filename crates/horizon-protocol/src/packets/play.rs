@@ -7,14 +7,15 @@ use crate::{
         Vec3d, Writer,
     },
     chunk::{ChunkData, LightData},
-    entity_data::{EntityData, Value},
+    entity_data::{EntityData, Particle, Value},
     item::{Hashed, HashedSlot, Slot, Stack},
     packet, packet_enum,
     packets::{
         Empty,
         configuration::{
-            ClientInformation, CustomPayload, Disconnect, KeepAlive, Ping, ResourcePackPush,
-            ResourcePackResponse, UpdateTags,
+            ClientInformation, CookieRequest, CookieResponse, CustomClickAction, CustomPayload,
+            Disconnect, KeepAlive, Ping, ResourcePackPop, ResourcePackPush, ResourcePackResponse,
+            StoreCookie, Transfer, UpdateTags,
         },
         login::Property,
     },
@@ -189,6 +190,35 @@ impl Codec<i32> for HolderId {
         w.varint(v + 1)
     }
 }
+/// `Holder<Dialog>` as Dialog.STREAM_CODEC sends it: an entry of the
+/// `minecraft:dialog` registry the server sent in configuration, or the
+/// dialog itself.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DialogHolder {
+    Registry(i32),
+    Direct(Tag),
+}
+impl Codec<DialogHolder> for DialogHolder {
+    fn read(r: &mut Reader) -> Result<Self> {
+        Ok(match r.varint()? {
+            0 => Self::Direct(r.nbt()?),
+            id => Self::Registry(id - 1),
+        })
+    }
+    fn write(v: &Self, w: &mut Writer) {
+        match v {
+            Self::Registry(id) => w.varint(id + 1),
+            Self::Direct(tag) => {
+                w.varint(0);
+                w.nbt(tag);
+            }
+        }
+    }
+}
+packet!(
+    /// ClientboundShowDialogPacket.
+    ShowDialog { dialog: DialogHolder => DialogHolder }
+);
 packet!(
     /// ChatType.Bound.
     ChatTypeBound { chat_type: i32 => HolderId, name: Tag => Nbt, target: Option<Tag> => Opt<Nbt> }
@@ -272,6 +302,68 @@ packet!(Login {
     spawn: SpawnInfo => SpawnInfo,
     online_mode: bool => Bool,
     enforces_secure_chat: bool => Bool,
+});
+packet!(
+/// MapDecoration: a registry holder, its map position and rotation, and an
+/// optional name.
+MapDecoration {
+    kind: i32 => VarInt,
+    x: i8 => Byte,
+    y: i8 => Byte,
+    rot: i8 => Byte,
+    name: Option<Tag> => Opt<Nbt>,
+}
+);
+
+/// MapItemSavedData.MapPatch: an empty patch is a zero width.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapPatch {
+    pub start_x: i32,
+    pub start_y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub colors: Vec<u8>,
+}
+pub struct MapPatchOpt;
+impl Codec<Option<MapPatch>> for MapPatchOpt {
+    fn read(r: &mut Reader) -> Result<Option<MapPatch>> {
+        let width = i32::from(r.u8()?);
+        if width == 0 {
+            return Ok(None);
+        }
+        let height = i32::from(r.u8()?);
+        let start_x = i32::from(r.u8()?);
+        let start_y = i32::from(r.u8()?);
+        let n = r.count(r.remaining())?;
+        let colors = r.bytes(n)?.to_vec();
+        Ok(Some(MapPatch {
+            start_x,
+            start_y,
+            width,
+            height,
+            colors,
+        }))
+    }
+    fn write(patch: &Option<MapPatch>, w: &mut Writer) {
+        let Some(patch) = patch else {
+            w.u8(0);
+            return;
+        };
+        w.u8(patch.width as u8);
+        w.u8(patch.height as u8);
+        w.u8(patch.start_x as u8);
+        w.u8(patch.start_y as u8);
+        w.varint(patch.colors.len() as i32);
+        w.bytes(&patch.colors);
+    }
+}
+
+packet!(MapItemData {
+    map_id: i32 => VarInt,
+    scale: i8 => Byte,
+    locked: bool => Bool,
+    decorations: Option<Vec<MapDecoration>> => Opt<List<MapDecoration>>,
+    patch: Option<MapPatch> => MapPatchOpt,
 });
 /// VecDelta: per-axis deltas in 1/4096 blocks, linear or in timed steps.
 #[derive(Clone, Debug, PartialEq)]
@@ -396,10 +488,17 @@ move_entity!(MoveEntityPos, pos: true, rot: false);
 move_entity!(MoveEntityPosRot, pos: true, rot: true);
 move_entity!(MoveEntityRot, pos: false, rot: true);
 packet!(OpenScreen { container: i32 => VarInt, menu: i32 => VarInt, title: Tag => Nbt });
+// ClientboundMountScreenOpenPacket: a horse's or llama's inventory, with its
+// chest's columns (`getInventoryColumns`).
+packet!(MountScreenOpen { container: i32 => VarInt, columns: i32 => VarInt, entity: i32 => Int });
 packet!(
-    /// ClientboundOpenSignEditorPacket: the sign at `pos` to edit, and which side (SignTextSlot's
-    /// id, 0 back and 1 front).
-    OpenSignEditor { pos: [i32; 3] => Pos, front: bool => Bool }
+    /// ClientboundOpenSignEditorPacket: the sign whose side the player edits.
+    OpenSignEditor { pos: [i32; 3] => Pos, front: bool => SignSide }
+);
+packet!(
+    /// ClientboundOpenBookPacket: the hand (InteractionHand, 0 main, 1 off)
+    /// whose written book the player reads.
+    OpenBook { hand: i32 => VarInt }
 );
 packet!(PlayerAbilities { flags: i8 => Byte, flying_speed: f32 => Float, walking_speed: f32 => Float });
 /// MessageSignature.Packed: an index into the last-seen cache or a full signature.
@@ -612,8 +711,18 @@ packet!(SetDefaultSpawnPosition { pos: GlobalPos => GlobalPos, yaw: f32 => Float
 packet!(SetEntityData { id: i32 => VarInt, values: Vec<(u8, i32, Value)> => EntityData });
 packet!(SetEntityMotion { id: i32 => VarInt, velocity: [f64; 3] => LpVec3 });
 packet!(
+    /// ClientboundSetEntityLinkPacket: the entity holding a leashed entity's
+    /// lead, 0 when none (Leashable.setDelayedLeashHolderId).
+    SetEntityLink { source: i32 => Int, dest: i32 => Int }
+);
+packet!(
     /// ClientboundSetPassengersPacket: a vehicle and every entity riding it.
     SetPassengers { vehicle: i32 => VarInt, passengers: Vec<i32> => List<VarInt> }
+);
+packet!(
+    /// ClientboundMoveVehiclePacket: the server puts a vehicle its rider
+    /// controls back where it was (PositionAndRotation: x, y, z, yRot, xRot).
+    MoveVehicle { position: [f64; 3] => Vec3d, yaw: f32 => Float, pitch: f32 => Float }
 );
 /// ClientboundSetEquipmentPacket: (EquipmentSlot ordinal, stack) pairs.
 pub struct Equipment;
@@ -813,6 +922,116 @@ impl Codec<SetObjective> for SetObjective {
         }
     }
 }
+/// ClientboundLevelParticlesPacket: a particle, whether it ignores the
+/// client's particle setting (`overrideLimiter`) and its distance limit
+/// (`alwaysShow`), where, the spread and the speed on each axis, how many
+/// (0: one, moving by speed times spread) and the randomization type
+/// (0 default: gaussian spread and speed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LevelParticles {
+    pub particle: Particle,
+    pub override_limiter: bool,
+    pub always_show: bool,
+    pub pos: [f64; 3],
+    pub dist: [f32; 3],
+    pub max_speed: [f32; 3],
+    pub count: i32,
+    pub randomization: i32,
+}
+impl Codec<LevelParticles> for LevelParticles {
+    fn read(r: &mut Reader) -> Result<Self> {
+        Ok(Self {
+            particle: Particle::read(r)?,
+            override_limiter: r.bool()?,
+            always_show: r.bool()?,
+            pos: Vec3d::read(r)?,
+            dist: [r.f32()?, r.f32()?, r.f32()?],
+            max_speed: [r.f32()?, r.f32()?, r.f32()?],
+            count: r.varint()?,
+            randomization: r.varint()?,
+        })
+    }
+    fn write(v: &Self, w: &mut Writer) {
+        v.particle.write(w);
+        w.bool(v.override_limiter);
+        w.bool(v.always_show);
+        Vec3d::write(&v.pos, w);
+        for f in v.dist.iter().chain(&v.max_speed) {
+            w.f32(*f);
+        }
+        w.varint(v.count);
+        w.varint(v.randomization);
+    }
+}
+/// `ExplosionParticleInfo` in a `WeightedList`: a particle the blast
+/// scatters, its scaling and speed, then its weight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplosionParticle {
+    pub particle: Particle,
+    pub scaling: f32,
+    pub speed: f32,
+    pub weight: i32,
+}
+/// ClientboundExplodePacket: the centre, radius and blocks destroyed, the
+/// push the receiving player takes, the particle at the centre, the sound,
+/// the particles the blast scatters, and whether the sound plays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Explode {
+    pub center: [f64; 3],
+    pub radius: f32,
+    pub block_count: i32,
+    pub knockback: Option<[f64; 3]>,
+    pub particle: Particle,
+    pub sound: (i32, Option<(String, Option<f32>)>),
+    pub block_particles: Vec<ExplosionParticle>,
+    pub play_sound: bool,
+}
+impl Codec<Explode> for Explode {
+    fn read(r: &mut Reader) -> Result<Self> {
+        let center = Vec3d::read(r)?;
+        let radius = r.f32()?;
+        let block_count = r.i32()?;
+        let knockback = <Opt<Vec3d>>::read(r)?;
+        let particle = Particle::read(r)?;
+        let sound = SoundHolder::read(r)?;
+        let n = r.varint()?;
+        let mut block_particles = Vec::new();
+        for _ in 0..n {
+            block_particles.push(ExplosionParticle {
+                particle: Particle::read(r)?,
+                scaling: r.f32()?,
+                speed: r.f32()?,
+                weight: r.varint()?,
+            });
+        }
+        Ok(Self {
+            center,
+            radius,
+            block_count,
+            knockback,
+            particle,
+            sound,
+            block_particles,
+            play_sound: r.bool()?,
+        })
+    }
+    fn write(v: &Self, w: &mut Writer) {
+        Vec3d::write(&v.center, w);
+        w.f32(v.radius);
+        w.i32(v.block_count);
+        <Opt<Vec3d>>::write(&v.knockback, w);
+        v.particle.write(w);
+        SoundHolder::write(&v.sound, w);
+        w.varint(v.block_particles.len() as i32);
+        for b in &v.block_particles {
+            b.particle.write(w);
+            w.f32(b.scaling);
+            w.f32(b.speed);
+            w.varint(b.weight);
+        }
+        w.bool(v.play_sound);
+    }
+}
 /// `ClientboundSetPlayerTeamPacket.Parameters`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TeamParameters {
@@ -929,6 +1148,42 @@ packet!(SoundEntity {
     pitch: f32 => Float,
     seed: i64 => Long,
 });
+
+/// ClientboundStopSoundPacket: bit 0 selects a source, bit 1 an event id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StopSound {
+    pub source: Option<i32>,
+    pub sound: Option<String>,
+}
+impl Codec<StopSound> for StopSound {
+    fn read(r: &mut Reader) -> crate::Result<Self> {
+        let flags = r.u8()?;
+        let source = if flags & 1 != 0 {
+            let value = r.varint()?;
+            if !(0..11).contains(&value) {
+                return Err(crate::Error::new("invalid sound source"));
+            }
+            Some(value)
+        } else {
+            None
+        };
+        let sound = if flags & 2 != 0 {
+            Some(r.string(32767)?)
+        } else {
+            None
+        };
+        Ok(Self { source, sound })
+    }
+    fn write(p: &Self, w: &mut Writer) {
+        w.u8(u8::from(p.source.is_some()) | (u8::from(p.sound.is_some()) << 1));
+        if let Some(source) = p.source {
+            w.varint(source);
+        }
+        if let Some(sound) = &p.sound {
+            w.string(sound);
+        }
+    }
+}
 /// One entry of ClientboundCommandsPacket: a literal or an argument node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandNode {
@@ -1391,6 +1646,125 @@ impl Codec<Vec<(i32, i32, i32)>> for StatList {
     }
 }
 
+/// `ClientboundBossEventPacket` (`boss_event`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum BossAction {
+    Add {
+        name: Tag,
+        progress: f32,
+        /// `BossBarColor` ordinal.
+        color: i32,
+        /// `BossBarOverlay` ordinal.
+        overlay: i32,
+        darken: bool,
+        music: bool,
+        fog: bool,
+    },
+    Remove,
+    UpdateProgress {
+        progress: f32,
+    },
+    UpdateName {
+        name: Tag,
+    },
+    UpdateStyle {
+        color: i32,
+        overlay: i32,
+    },
+    UpdateProperties {
+        darken: bool,
+        music: bool,
+        fog: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BossEvent {
+    pub id: u128,
+    pub action: BossAction,
+}
+fn boss_flags(darken: bool, music: bool, fog: bool) -> u8 {
+    u8::from(darken) | (u8::from(music) << 1) | (u8::from(fog) << 2)
+}
+fn split_flags(flags: u8) -> (bool, bool, bool) {
+    (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0)
+}
+impl Codec<BossEvent> for BossEvent {
+    fn read(r: &mut Reader) -> Result<BossEvent> {
+        let id = r.uuid()?;
+        let action = match r.varint()? {
+            0 => {
+                let name = r.nbt()?;
+                let progress = r.f32()?;
+                let color = r.varint()?;
+                let overlay = r.varint()?;
+                let (darken, music, fog) = split_flags(r.u8()?);
+                BossAction::Add {
+                    name,
+                    progress,
+                    color,
+                    overlay,
+                    darken,
+                    music,
+                    fog,
+                }
+            }
+            1 => BossAction::Remove,
+            2 => BossAction::UpdateProgress { progress: r.f32()? },
+            3 => BossAction::UpdateName { name: r.nbt()? },
+            4 => BossAction::UpdateStyle {
+                color: r.varint()?,
+                overlay: r.varint()?,
+            },
+            5 => {
+                let (darken, music, fog) = split_flags(r.u8()?);
+                BossAction::UpdateProperties { darken, music, fog }
+            }
+            op => return Err(Error::new(format!("unknown boss event operation {op}"))),
+        };
+        Ok(BossEvent { id, action })
+    }
+    fn write(v: &BossEvent, w: &mut Writer) {
+        w.uuid(v.id);
+        match &v.action {
+            BossAction::Add {
+                name,
+                progress,
+                color,
+                overlay,
+                darken,
+                music,
+                fog,
+            } => {
+                w.varint(0);
+                w.nbt(name);
+                w.f32(*progress);
+                w.varint(*color);
+                w.varint(*overlay);
+                w.u8(boss_flags(*darken, *music, *fog));
+            }
+            BossAction::Remove => w.varint(1),
+            BossAction::UpdateProgress { progress } => {
+                w.varint(2);
+                w.f32(*progress);
+            }
+            BossAction::UpdateName { name } => {
+                w.varint(3);
+                w.nbt(name);
+            }
+            BossAction::UpdateStyle { color, overlay } => {
+                w.varint(4);
+                w.varint(*color);
+                w.varint(*overlay);
+            }
+            BossAction::UpdateProperties { darken, music, fog } => {
+                w.varint(5);
+                w.u8(boss_flags(*darken, *music, *fog));
+            }
+        }
+    }
+}
+
 packet_enum!(Clientbound, crate::ids::play::clientbound {
     BundleDelimiter(Empty) = BUNDLE_DELIMITER,
     AddEntity(AddEntity) = ADD_ENTITY,
@@ -1401,6 +1775,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     BlockEntityData(BlockEntityData) = BLOCK_ENTITY_DATA,
     BlockEvent(BlockEvent) = BLOCK_EVENT,
     BlockUpdate(BlockUpdate) = BLOCK_UPDATE,
+    BossEvent(BossEvent) = BOSS_EVENT,
     ChangeDifficulty(ChangeDifficulty) = CHANGE_DIFFICULTY,
     ChunkBatchFinished(ChunkBatchFinished) = CHUNK_BATCH_FINISHED,
     ChunkBatchStart(Empty) = CHUNK_BATCH_START,
@@ -1414,6 +1789,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     ContainerSetContent(ContainerSetContent) = CONTAINER_SET_CONTENT,
     ContainerSetData(ContainerSetData) = CONTAINER_SET_DATA,
     ContainerSetSlot(ContainerSetSlot) = CONTAINER_SET_SLOT,
+    CookieRequest(CookieRequest) = COOKIE_REQUEST,
     CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
     Disconnect(Disconnect) = DISCONNECT,
     DisguisedChat(DisguisedChat) = DISGUISED_CHAT,
@@ -1430,11 +1806,14 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     LevelEvent(LevelEvent) = LEVEL_EVENT,
     LightUpdate(LightUpdate) = LIGHT_UPDATE,
     Login(Login) = LOGIN,
+    MapItemData(MapItemData) = MAP_ITEM_DATA,
     MoveEntityPos(MoveEntityPos) = MOVE_ENTITY_POS,
     MoveEntityPosRot(MoveEntityPosRot) = MOVE_ENTITY_POS_ROT,
     MoveEntityRot(MoveEntityRot) = MOVE_ENTITY_ROT,
     MerchantOffers(MerchantOffers) = MERCHANT_OFFERS,
+    MountScreenOpen(MountScreenOpen) = MOUNT_SCREEN_OPEN,
     OpenScreen(OpenScreen) = OPEN_SCREEN,
+    OpenBook(OpenBook) = OPEN_BOOK,
     OpenSignEditor(OpenSignEditor) = OPEN_SIGN_EDITOR,
     Ping(Ping) = PING,
     PongResponse(crate::packets::status::Ping) = PONG_RESPONSE,
@@ -1448,6 +1827,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     RemoveEntities(RemoveEntities) = REMOVE_ENTITIES,
     RemoveMobEffect(RemoveMobEffect) = REMOVE_MOB_EFFECT,
     ResetScore(ResetScore) = RESET_SCORE,
+    ResourcePackPop(ResourcePackPop) = RESOURCE_PACK_POP,
     ResourcePackPush(ResourcePackPush) = RESOURCE_PACK_PUSH,
     Respawn(Respawn) = RESPAWN,
     RotateHead(RotateHead) = ROTATE_HEAD,
@@ -1466,12 +1846,14 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     SetDisplayObjective(SetDisplayObjective) = SET_DISPLAY_OBJECTIVE,
     SetEntityData(SetEntityData) = SET_ENTITY_DATA,
     SetEntityMotion(SetEntityMotion) = SET_ENTITY_MOTION,
+    SetEntityLink(SetEntityLink) = SET_ENTITY_LINK,
     SetEquipment(SetEquipment) = SET_EQUIPMENT,
     SetExperience(SetExperience) = SET_EXPERIENCE,
     SetHealth(SetHealth) = SET_HEALTH,
     SetHeldSlot(SetHeldSlot) = SET_HELD_SLOT,
     SetObjective(SetObjective) = SET_OBJECTIVE,
     SetPassengers(SetPassengers) = SET_PASSENGERS,
+    MoveVehicle(MoveVehicle) = MOVE_VEHICLE,
     ProjectilePower(ProjectilePower) = PROJECTILE_POWER,
     SetPlayerInventory(SetPlayerInventory) = SET_PLAYER_INVENTORY,
     SetPlayerTeam(SetPlayerTeam) = SET_PLAYER_TEAM,
@@ -1483,7 +1865,9 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     SetTitlesAnimation(TitlesAnimation) = SET_TITLES_ANIMATION,
     Sound(Sound) = SOUND,
     SoundEntity(SoundEntity) = SOUND_ENTITY,
+    StopSound(StopSound) = STOP_SOUND,
     StartConfiguration(Empty) = START_CONFIGURATION,
+    StoreCookie(StoreCookie) = STORE_COOKIE,
     SwingAnimation(SwingAnimation) = SWING_ANIMATION,
     SystemChat(SystemChat) = SYSTEM_CHAT,
     TabList(TabList) = TAB_LIST,
@@ -1491,11 +1875,16 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     TeleportEntity(TeleportEntity) = TELEPORT_ENTITY,
     TickingState(TickingState) = TICKING_STATE,
     TickingStep(TickingStep) = TICKING_STEP,
+    Transfer(Transfer) = TRANSFER,
     UpdateAdvancements(UpdateAdvancements) = UPDATE_ADVANCEMENTS,
     UpdateAttributes(UpdateAttributes) = UPDATE_ATTRIBUTES,
+    LevelParticles(LevelParticles) = LEVEL_PARTICLES,
+    Explode(Explode) = EXPLODE,
     UpdateMobEffect(UpdateMobEffect) = UPDATE_MOB_EFFECT,
     UpdateTags(UpdateTags) = UPDATE_TAGS,
     TrackedWaypoint(TrackedWaypoint) = WAYPOINT,
+    ClearDialog(Empty) = CLEAR_DIALOG,
+    ShowDialog(ShowDialog) = SHOW_DIALOG,
 });
 packet!(
     /// ClientboundClearTitlesPacket: whether to also reset the timings.
@@ -1680,6 +2069,8 @@ packet!(
 );
 packet!(ChangeDifficultyRequest { difficulty: i32 => VarInt });
 packet!(LockDifficulty { locked: bool => Bool });
+// ServerboundPlayerAbilitiesPacket: only whether the player flies (2).
+packet!(PlayerAbilitiesRequest { flags: i8 => Byte });
 packet!(SetGameRule { entries: Vec<GameRuleEntry> => List<GameRuleEntry> });
 packet!(ChunkBatchReceived { chunks_per_tick: f32 => Float });
 packet!(
@@ -1717,13 +2108,78 @@ packet!(
 );
 packet!(SelectTrade { item: i32 => VarInt });
 packet!(
-    /// ServerboundContainerButtonClickPacket: a menu's button (an enchantment, a stonecutter
-    /// recipe, a loom pattern, a lectern page).
+    /// ServerboundContainerButtonClickPacket: `AbstractContainerMenu.clickMenuButton`
+    /// (the loom's patterns, the stonecutter's recipes, the enchanting table's offers).
     ContainerButtonClick { container: i32 => VarInt, button: i32 => VarInt }
 );
 packet!(
-    /// ServerboundRenameItemPacket: the anvil's name box.
+    /// ServerboundContainerSlotStateChangedPacket: the crafter's slot toggle
+    /// (`CrafterBlockEntity.setSlotState`).
+    ContainerSlotStateChanged { slot: i32 => VarInt, container: i32 => VarInt, enabled: bool => Bool }
+);
+packet!(
+    /// ServerboundRenameItemPacket: `AnvilMenu.setItemName`.
     RenameItem { name: String => Str }
+);
+packet!(
+    /// ServerboundSignUpdatePacket: the four lines the player wrote on a side.
+    SignUpdate { pos: [i32; 3] => Pos, lines: [String; 4] => SignLines, front: bool => SignSide }
+);
+packet!(
+    /// ServerboundEditBookPacket: the book's slot (a hotbar slot, or 40 for
+    /// the off hand), its pages and, to sign it, its title.
+    EditBook {
+        slot: i32 => VarInt,
+        pages: Vec<String> => BookPages,
+        title: Option<String> => Opt<StrN<32>>,
+    }
+);
+/// `stringUtf8(1024)` in `list(100)`: a book's pages.
+pub struct BookPages;
+impl Codec<Vec<String>> for BookPages {
+    fn read(r: &mut Reader) -> Result<Vec<String>> {
+        let n = r.varint()?;
+        if !(0..=100).contains(&n) {
+            return Err(Error::new(format!("{n} book pages, at most 100")));
+        }
+        (0..n).map(|_| r.string(1024)).collect()
+    }
+    fn write(v: &Vec<String>, w: &mut Writer) {
+        List::<StrN<1024>>::write(v, w);
+    }
+}
+/// SignTextSlot.STREAM_CODEC: VarInt 0 for the back, 1 for the front (any
+/// other id reads as the back, ByIdMap's ZERO strategy).
+pub struct SignSide;
+impl Codec<bool> for SignSide {
+    fn read(r: &mut Reader) -> Result<bool> {
+        Ok(r.varint()? == 1)
+    }
+    fn write(v: &bool, w: &mut Writer) {
+        w.varint(i32::from(*v));
+    }
+}
+/// `stringUtf8(384)` in `fixedSizeList(4)`: four lines, no count.
+pub struct SignLines;
+impl Codec<[String; 4]> for SignLines {
+    fn read(r: &mut Reader) -> Result<[String; 4]> {
+        Ok([
+            r.string(384)?,
+            r.string(384)?,
+            r.string(384)?,
+            r.string(384)?,
+        ])
+    }
+    fn write(v: &[String; 4], w: &mut Writer) {
+        for line in v {
+            w.string(line);
+        }
+    }
+}
+packet!(
+    /// ServerboundSetBeaconPacket: `BeaconMenu.updateEffects`, each power an
+    /// optional `mob_effect` id.
+    SetBeacon { primary: Option<i32> => Opt<VarInt>, secondary: Option<i32> => Opt<VarInt> }
 );
 packet!(Interact { id: i32 => VarInt, hand: i32 => VarInt, location: [f64; 3] => LpVec3, secondary: bool => Bool });
 packet!(
@@ -1733,6 +2189,15 @@ packet!(
 packet!(MovePlayerPosRot { x: f64 => Double, y: f64 => Double, z: f64 => Double, yaw: f32 => Float, pitch: f32 => Float, flags: u8 => UByte });
 packet!(MovePlayerRot { yaw: f32 => Float, pitch: f32 => Float, flags: u8 => UByte });
 packet!(MovePlayerStatus { flags: u8 => UByte });
+packet!(
+    /// ServerboundMoveVehiclePacket: where the rider moved the vehicle it
+    /// controls (PositionAndRotation, then onGround).
+    MoveVehicleRequest { position: [f64; 3] => Vec3d, yaw: f32 => Float, pitch: f32 => Float, on_ground: bool => Bool }
+);
+packet!(
+    /// ServerboundPaddleBoatPacket: the boat's left and right paddles.
+    PaddleBoat { left: bool => Bool, right: bool => Bool }
+);
 packet!(PickItemFromBlock { pos: [i32; 3] => Pos, include_data: bool => Bool });
 packet!(
     /// ServerboundPlayerActionPacket.Action: 0 start destroy, 1 change destroy
@@ -1749,31 +2214,7 @@ packet!(
     /// Input flags: forward 1, backward 2, left 4, right 8, jump 16, shift 32, sprint 64.
     PlayerInput { flags: u8 => UByte }
 );
-packet!(
-    /// ServerboundPlayerAbilitiesPacket: the player started (flag 2) or stopped flying.
-    PlayerAbilitiesUpdate { flags: u8 => UByte }
-);
 packet!(SetCarriedItem { slot: i16 => Short });
-packet!(
-    /// ServerboundSignUpdatePacket: a sign side's four lines as typed, then the side
-    /// (SignTextSlot's id, 0 back and 1 front: one byte, as a Bool writes it).
-    SignUpdate { pos: [i32; 3] => Pos, lines: [String; 4] => SignLines, front: bool => Bool }
-);
-/// The four lines of ServerboundSignUpdatePacket (the server reads at most 384 characters each).
-pub struct SignLines;
-impl Codec<[String; 4]> for SignLines {
-    fn read(r: &mut Reader) -> Result<[String; 4]> {
-        Ok([
-            r.string(384)?,
-            r.string(384)?,
-            r.string(384)?,
-            r.string(384)?,
-        ])
-    }
-    fn write(v: &[String; 4], w: &mut Writer) {
-        v.iter().for_each(|line| w.string(line));
-    }
-}
 packet!(SetCreativeModeSlot { slot: i16 => Short, item: Option<Stack> => Slot });
 packet!(UseItem { hand: i32 => VarInt, sequence: i32 => VarInt, yaw: f32 => Float, pitch: f32 => Float });
 packet!(UseItemOn {
@@ -1817,25 +2258,32 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ContainerButtonClick(ContainerButtonClick) = CONTAINER_BUTTON_CLICK,
     ContainerClick(ContainerClick) = CONTAINER_CLICK,
     ContainerClose(ContainerClose) = CONTAINER_CLOSE,
+    CookieResponse(CookieResponse) = COOKIE_RESPONSE,
     CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
+    CustomClickAction(CustomClickAction) = CUSTOM_CLICK_ACTION,
+    EditBook(EditBook) = EDIT_BOOK,
     Interact(Interact) = INTERACT,
     KeepAlive(KeepAlive) = KEEP_ALIVE,
     MovePlayerPos(MovePlayerPos) = MOVE_PLAYER_POS,
     MovePlayerPosRot(MovePlayerPosRot) = MOVE_PLAYER_POS_ROT,
     MovePlayerRot(MovePlayerRot) = MOVE_PLAYER_ROT,
     MovePlayerStatus(MovePlayerStatus) = MOVE_PLAYER_STATUS_ONLY,
+    MoveVehicle(MoveVehicleRequest) = MOVE_VEHICLE,
+    PaddleBoat(PaddleBoat) = PADDLE_BOAT,
     PickItemFromBlock(PickItemFromBlock) = PICK_ITEM_FROM_BLOCK,
     PingRequest(crate::packets::status::Ping) = PING_REQUEST,
-    PlayerAbilities(PlayerAbilitiesUpdate) = PLAYER_ABILITIES,
+    PlayerAbilities(PlayerAbilitiesRequest) = PLAYER_ABILITIES,
     PlayerAction(PlayerAction) = PLAYER_ACTION,
     PlayerCommand(PlayerCommand) = PLAYER_COMMAND,
     PlayerInput(PlayerInput) = PLAYER_INPUT,
     PlayerLoaded(Empty) = PLAYER_LOADED,
     Pong(Ping) = PONG,
-    Punch(Empty) = PUNCH,
     RenameItem(RenameItem) = RENAME_ITEM,
+    ContainerSlotStateChanged(ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED,
+    Punch(Empty) = PUNCH,
     ResourcePack(ResourcePackResponse) = RESOURCE_PACK,
     SelectTrade(SelectTrade) = SELECT_TRADE,
+    SetBeacon(SetBeacon) = SET_BEACON,
     SetCarriedItem(SetCarriedItem) = SET_CARRIED_ITEM,
     SetCreativeModeSlot(SetCreativeModeSlot) = SET_CREATIVE_MODE_SLOT,
     SignUpdate(SignUpdate) = SIGN_UPDATE,
@@ -1849,36 +2297,14 @@ mod tests {
     use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
 
     #[test]
-    fn sign_and_flight_packets_match_vanilla_stream_codecs() {
-        // 26.3: BlockPos, four UTF-8 strings with no count, then SignTextSlot's VarInt id.
-        let sign = Serverbound::SignUpdate(SignUpdate {
-            pos: [1, 2, 3],
-            lines: ["a".into(), String::new(), "bc".into(), String::new()],
-            front: true,
-        });
-        let mut expected = crate::buf::pack_block_pos([1, 2, 3]).to_be_bytes().to_vec();
-        expected.extend_from_slice(&[1, b'a', 0, 2, b'b', b'c', 0, 1]);
-        assert_eq!(&sign.encode()[1..], &expected[..]);
-        round_trip(sign, Serverbound::encode, Serverbound::decode);
-        let editor = Clientbound::decode(
-            crate::ids::play::clientbound::OPEN_SIGN_EDITOR,
-            &[
-                &crate::buf::pack_block_pos([4, 5, 6]).to_be_bytes()[..],
-                &[0],
-            ]
-            .concat(),
-        )
-        .unwrap();
+    fn serverbound_abilities_carry_only_flying() {
+        // ServerboundPlayerAbilitiesPacket.write: one byte, 2 when flying.
+        let flying = Serverbound::PlayerAbilities(PlayerAbilitiesRequest { flags: 2 });
         assert_eq!(
-            editor,
-            Clientbound::OpenSignEditor(OpenSignEditor {
-                pos: [4, 5, 6],
-                front: false
-            })
+            flying.encode(),
+            [crate::ids::play::serverbound::PLAYER_ABILITIES as u8, 2]
         );
-        // ServerboundPlayerAbilitiesPacket: one byte, 2 while flying.
-        let flying = Serverbound::PlayerAbilities(PlayerAbilitiesUpdate { flags: 2 });
-        assert_eq!(&flying.encode()[1..], &[2]);
+        round_trip(flying, Serverbound::encode, Serverbound::decode);
     }
 
     #[test]
@@ -2138,6 +2564,11 @@ mod tests {
                 menu: 2,
                 title: literal("Chest"),
             }),
+            Clientbound::MountScreenOpen(MountScreenOpen {
+                container: 4,
+                columns: 5,
+                entity: 300,
+            }),
             Clientbound::MerchantOffers(MerchantOffers {
                 container: 3,
                 offers: vec![NetOffer {
@@ -2212,6 +2643,35 @@ mod tests {
             Clientbound::SetPassengers(SetPassengers {
                 vehicle: 2,
                 passengers: vec![3, 300],
+            }),
+            Clientbound::SetEntityLink(SetEntityLink { source: 2, dest: 0 }),
+            Clientbound::LevelParticles(LevelParticles {
+                particle: Particle {
+                    id: 21,
+                    data: Some(crate::entity_data::ParticleData::ColorScale(0xFF0000, 1.5)),
+                },
+                override_limiter: true,
+                always_show: false,
+                pos: [0.5, 101.0, 3.0],
+                dist: [0.2, 0.0, 0.2],
+                max_speed: [0.0; 3],
+                count: 60,
+                randomization: 0,
+            }),
+            Clientbound::Explode(Explode {
+                center: [1.0, 2.0, 3.0],
+                radius: 4.0,
+                block_count: 12,
+                knockback: Some([0.5, 0.1, 0.0]),
+                particle: Particle { id: 29, data: None },
+                sound: (-1, Some(("minecraft:entity.generic.explode".into(), None))),
+                block_particles: vec![ExplosionParticle {
+                    particle: Particle { id: 69, data: None },
+                    scaling: 0.5,
+                    speed: 1.0,
+                    weight: 1,
+                }],
+                play_sound: true,
             }),
             Clientbound::ProjectilePower(ProjectilePower { id: 4, power: 0.1 }),
             Clientbound::SetEquipment(SetEquipment {
@@ -2436,6 +2896,34 @@ mod tests {
             Serverbound::encode,
             Serverbound::decode,
         );
+        // CONTAINER_ID and the button, both VarInts.
+        let button = Serverbound::ContainerButtonClick(ContainerButtonClick {
+            container: 3,
+            button: 200,
+        });
+        assert_eq!(&button.encode()[1..], &[3, 0xC8, 1]);
+        round_trip(button, Serverbound::encode, Serverbound::decode);
+        // The name, a UTF-8 string with its VarInt length.
+        let rename = Serverbound::RenameItem(RenameItem {
+            name: "Blade".into(),
+        });
+        assert_eq!(&rename.encode()[1..], &[5, b'B', b'l', b'a', b'd', b'e']);
+        round_trip(rename, Serverbound::encode, Serverbound::decode);
+        // The slot, the container id (VarInts), then the new state.
+        let toggle = Serverbound::ContainerSlotStateChanged(ContainerSlotStateChanged {
+            slot: 4,
+            container: 2,
+            enabled: false,
+        });
+        assert_eq!(&toggle.encode()[1..], &[4, 2, 0]);
+        round_trip(toggle, Serverbound::encode, Serverbound::decode);
+        // Two optional mob effect ids: a presence byte, then the VarInt.
+        let beacon = Serverbound::SetBeacon(SetBeacon {
+            primary: Some(2),
+            secondary: None,
+        });
+        assert_eq!(&beacon.encode()[1..], &[1, 2, 0]);
+        round_trip(beacon, Serverbound::encode, Serverbound::decode);
     }
 
     #[test]
@@ -2467,10 +2955,11 @@ mod tests {
 
     #[test]
     fn unknown_packets_keep_their_payload() {
-        let p = Clientbound::decode(crate::ids::play::clientbound::BOSS_EVENT, &[1, 2, 3]).unwrap();
+        let p =
+            Clientbound::decode(crate::ids::play::clientbound::PLAYER_LOOK_AT, &[1, 2, 3]).unwrap();
         assert_eq!(
             p,
-            Clientbound::Unknown(crate::ids::play::clientbound::BOSS_EVENT, vec![1, 2, 3])
+            Clientbound::Unknown(crate::ids::play::clientbound::PLAYER_LOOK_AT, vec![1, 2, 3])
         );
         assert_eq!(p.encode()[1..], [1, 2, 3]);
     }
@@ -2500,5 +2989,133 @@ mod tests {
         assert_eq!(body, expected);
         assert_eq!(crate::ids::play::clientbound::UPDATE_ATTRIBUTES, 134);
         assert_eq!(Clientbound::decode(134, &body[2..]).unwrap(), p);
+    }
+
+    #[test]
+    fn map_item_data_carries_a_server_patch() {
+        let patch = MapPatch {
+            start_x: 3,
+            start_y: 4,
+            width: 2,
+            height: 1,
+            colors: vec![1, 2],
+        };
+        let mut w = Writer::new();
+        MapPatchOpt::write(&Some(patch.clone()), &mut w);
+        assert_eq!(w.data, [2, 1, 3, 4, 2, 1, 2]);
+        let p = Clientbound::MapItemData(MapItemData {
+            map_id: 2146483647,
+            scale: 1,
+            locked: true,
+            decorations: None,
+            patch: Some(patch),
+        });
+        round_trip(p, Clientbound::encode, Clientbound::decode);
+    }
+
+    #[test]
+    fn sign_packets_match_vanilla_stream_codecs() {
+        // ClientboundOpenSignEditorPacket: BlockPos, then SignTextSlot as a VarInt (FRONT is 1).
+        let open = Clientbound::OpenSignEditor(OpenSignEditor {
+            pos: [1, 2, 3],
+            front: true,
+        });
+        let body = open.encode();
+        assert_eq!(
+            body[1..9],
+            crate::buf::pack_block_pos([1, 2, 3]).to_be_bytes()
+        );
+        assert_eq!(body[9..], [1]);
+        round_trip(open, Clientbound::encode, Clientbound::decode);
+        // ServerboundSignUpdatePacket: BlockPos, four strings with no count, then the slot.
+        let update = Serverbound::SignUpdate(SignUpdate {
+            pos: [-4, 70, 9],
+            lines: ["Hi".into(), String::new(), "x".into(), String::new()],
+            front: false,
+        });
+        let body = update.encode();
+        assert_eq!(body[9..], [2, b'H', b'i', 0, 1, b'x', 0, 0]);
+        round_trip(update, Serverbound::encode, Serverbound::decode);
+    }
+
+    #[test]
+    fn book_packets_match_vanilla_stream_codecs() {
+        // ClientboundOpenBookPacket: InteractionHand as a VarInt.
+        let open = Clientbound::OpenBook(OpenBook { hand: 1 });
+        assert_eq!(open.encode()[1..], [1]);
+        round_trip(open, Clientbound::encode, Clientbound::decode);
+        // ServerboundEditBookPacket: the slot, the pages (a counted list), then an optional title.
+        let sign = Serverbound::EditBook(EditBook {
+            slot: 40,
+            pages: vec!["a".into(), String::new()],
+            title: Some("T".into()),
+        });
+        assert_eq!(sign.encode()[1..], [40, 2, 1, b'a', 0, 1, 1, b'T']);
+        round_trip(sign, Serverbound::encode, Serverbound::decode);
+        let mut w = Writer::new();
+        w.varint(101);
+        assert!(BookPages::read(&mut Reader::new(&w.data)).is_err());
+    }
+
+    #[test]
+    fn boss_event_round_trips() {
+        let add = Clientbound::BossEvent(BossEvent {
+            id: 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
+            action: BossAction::Add {
+                name: Tag::String("Wither".into()),
+                progress: 0.5,
+                color: 5,
+                overlay: 0,
+                darken: true,
+                music: false,
+                fog: true,
+            },
+        });
+        let body = add.encode();
+        // Packet id 9, then the uuid, operation 0, and the property byte
+        // (darken 1, fog 4).
+        assert_eq!(body[0], 9);
+        assert_eq!(*body.last().unwrap(), 5);
+        round_trip(add, Clientbound::encode, Clientbound::decode);
+        round_trip(
+            Clientbound::BossEvent(BossEvent {
+                id: 7,
+                action: BossAction::UpdateProgress { progress: 0.25 },
+            }),
+            Clientbound::encode,
+            Clientbound::decode,
+        );
+        round_trip(
+            Clientbound::BossEvent(BossEvent {
+                id: 7,
+                action: BossAction::Remove,
+            }),
+            Clientbound::encode,
+            Clientbound::decode,
+        );
+    }
+
+    /// A registry entry is its id + 1, the dialog itself a 0 then its NBT.
+    #[test]
+    fn dialogs_round_trip() {
+        let notice = Tag::compound([("type", Tag::String("minecraft:notice".into()))]);
+        for dialog in [DialogHolder::Registry(3), DialogHolder::Direct(notice)] {
+            crate::packets::round_trip(
+                Clientbound::ShowDialog(ShowDialog { dialog }),
+                Clientbound::encode,
+                Clientbound::decode,
+            );
+        }
+        let mut w = Writer::new();
+        DialogHolder::write(&DialogHolder::Registry(3), &mut w);
+        assert_eq!(w.data, [4]);
+        crate::packets::round_trip(
+            Serverbound::CustomClickAction(CustomClickAction {
+                id: "minecraft:custom".into(),
+                payload: None,
+            }),
+            Serverbound::encode,
+            Serverbound::decode,
+        );
     }
 }

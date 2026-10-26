@@ -11,7 +11,7 @@ name = "starling-mod"
 path = "src/main.rs"
 
 [dependencies]
-horizon-mods = { path = "../horizon-mods" }
+horizon-mods = { path = "../horizon-mods", features = ["runtime"] }
 serde_json = "1.0.151"
 log = "0.4"
 png = "0.18"

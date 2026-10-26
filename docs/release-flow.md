@@ -2,8 +2,8 @@
 
 How a change gets from a pull request to players: the checks a pull request passes, how it merges, and the
 automatic releases that follow. Releases are automatic and frequent so the latest Horizon is always playable.
-Each one goes out as a **beta** and becomes **stable** 6 hours later unless something holds it back
-([Channels](#channels)): launchers and servers install stable builds unless their owner turns betas on.
+There is one channel ([One channel](#one-channel)): each release is published as the release and GitHub's *latest*
+once its smoke test passed and no `release-blocker` is open, and launchers and servers install it at once.
 
 ## Pull request checks
 
@@ -13,7 +13,7 @@ reopened; labels never start it):
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
 | `verify` | GitHub `ubuntu-latest` | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests. Dependencies and the workspace build come from a cache saved by main's runs | ~4 min cold, less warm |
-| `parity / parity` | The Mac mini's runner (`ludovics-mac-mini`, label `horizon-game`) | The vanilla harnesses the change can affect (`tools/parity.py --changed <base>`) | seconds when nothing is affected; minutes per affected harness |
+| `parity / parity` | A runner with the label `horizon-game`: the Mac mini's two, and the desktop's while nobody uses it (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
 
@@ -28,10 +28,13 @@ The job is `.github/workflows/parity.yml`, a reusable workflow: `checks` calls i
 repository, `run-parity.yml` for a fork's pull request a maintainer labels `run-parity`.
 
 Horizon never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
-copy is: the Mac mini. Its runner runs as the maintainer's account and keeps its checkout between runs
-(`clean: false`), so the probes build incrementally into `.local/parity-target` and earlier passes stand.
+copy is: the Mac mini and his Linux desktop. Their runners run as the maintainer's account and keep their checkout
+between runs (`clean: false`), so the probes build incrementally into `.local/parity-target` and earlier passes
+stand.
 
-1. `tools/ci/runner-env.sh` puts the machine's Python 3.13 and the JDK `research-lock.json` pins on the PATH.
+1. `tools/ci/runner-env.sh` puts the machine's Python 3.13 and the JDK `research-lock.json` pins on the PATH
+   (Homebrew and `java_home` on the Mac; on NixOS what `linux-runner.sh` pinned, else nixpkgs), and sccache when
+   the machine has it.
 2. `tools/ci/vanilla-data.sh` links `.local/` to the runner's copy of the vanilla data, cloned once from
    `~/code/horizon-parity/shared-local` into `~/.actions-runners/horizon/_work/horizon/shared-local`, and
    prepares `.local/horizon-client` with the pull request's own `horizon-prepare` once per preparer version
@@ -39,10 +42,17 @@ copy is: the Mac mini. Its runner runs as the maintainer's account and keeps its
    depend only on the Minecraft version, are kept once in `shared-local/sounds/<version>/` (copied from a folder
    `horizon-prepare sounds` made from the maintainer's own game; the Mac mini has no official launcher of its own)
    and cloned into each preparation (not linked: vanilla's packs refuse symbolic links), for the audio harnesses.
+   `tools/prepare_output.py check` then compares what was prepared with `crates/horizon-prepare/output-versions.txt`:
+   launchers keep a player's prepared resources across releases whose preparer declares the same `OUTPUT_VERSION`
+   (`crates/horizon-prepare/src/lib.rs`), so a change to the prepared files fails here until it bumps the number
+   and appends the new digest (the error gives both lines).
 3. `tools/parity.py --changed <base sha>` picks the harnesses whose traced dependencies (their script, Python
    modules, Java oracles and every Rust source their probes compile) changed since the merge base, plus any
    harness nothing is recorded about yet, and runs those that have no pass for their current inputs. A change to
    `Cargo.lock` or `research-lock.json` affects every harness. Each harness has 25 minutes, the job 45.
+   The selection runs with main's `tools/parity.py` and `tools/parity_reach.py` (`--changed <base> --list`), so a
+   branch made before a better selection landed gets it too, and the head's own `parity.py` then runs the named
+   harnesses. A branch that changes either file selects with its own code.
 
 Failed harnesses' logs are uploaded as the `parity-logs` artifact.
 
@@ -64,6 +74,26 @@ release's macOS build back. Each keeps its own checkout, `target/` and Rust inst
 `_work/horizon/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
 time, under a lock) and the parity passes and slots.
 
+**The desktop's runner.** `ludodesktop-horizon` (labels `self-hosted`, `Linux`, `X64`, `ludodesktop`, and
+`horizon-game` once a full trial has passed there) runs on the maintainer's Linux desktop while nobody uses it: its
+screen locked, or untouched for 15 minutes (his rule, 2026-10-26). `tools/ci/linux-runner.sh install`, run there as
+him, registers it and installs two systemd user services: `horizon-runner` (the runner, in
+`~/.actions-runners/horizon`, nice 19, in `horizon-ci.slice` with CPU and I/O weight 20, half the threads (on all of
+them the CPU package reached 92–96 °C) and memory capped at two thirds of the RAM; `CARGO_BUILD_JOBS` and the harness slots at 8, after the machine froze under ~7 cold cargo
+builds on 2026-10-14; its own Rust install; the JDK, sccache and the build libraries from nixpkgs; its own
+`vscreen` so no game it starts reaches his screen) and `horizon-runner-pause` (`tools/ci/runner_pause.py`), the
+only thing that starts the runner. The watcher stops it at once on keyboard, mouse or gamepad input (read from
+`/dev/input`: only whether bytes came, never what), while an unlocked session has had input in the last 15 minutes,
+while the CPU package is at 90 °C or more, while a game runs (Steam, gamescope, Wine, Proton or Minecraft
+processes, fleet-load's own detection, or a process outside the CI slice using the GPU at 50 % or more), or while
+`~/.actions-runners/horizon/pause` exists, and starts it again 5 minutes after the last such sign. A job already
+under way is throttled to 2 threads at the lowest weight and the runner stops after it: freezing the job would make
+GitHub drop it as lost and the harnesses time out. Old pull requests' `runner-env.sh` know only the Mac: the
+runner's `.env` and `.path` give their jobs Python, the JDK and the vanilla data (`HORIZON_SHARED_SOURCE`) all the
+same. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous night,
+so it stays on one platform, and a parity-main job slowed down on the desktop because he came back could time out,
+and its failures bisect and comment on merges.
+
 ## Merging
 
 Pull requests merge with a merge commit. The orchestrator sessions review a pull request, then turn on
@@ -80,10 +110,34 @@ gh api -X POST repos/ludovic111/horizon/branches/main/protection/required_status
 A skipped `parity` (a fork's pull request without the label) counts as passed, so requiring it never blocks a
 fork's pull request; the maintainer decides whether to run it.
 
+## Parity on main
+
+Most pull requests merge on `verify` alone and leave the vanilla harnesses to `.github/workflows/parity-main.yml`,
+which runs them on main a batch of merges at a time, on the Mac mini's runner:
+
+- It starts on every push to main, one run at a time (`concurrency: parity-main`). Merges that land while a run
+  goes on wait in one pending run: GitHub keeps only the newest and cancels the others, so the next run takes them
+  all.
+- `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
+  merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
+  since then can affect, once, with every earlier pass reused.
+- On a failure, `tools/parity_main.py bisect` checks out the batch's first-parent merges by halves and runs only
+  the failing harnesses, names the first merge they fail on in the run's summary and comments on its pull request
+  (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
+  run checks from the last green commit again.
+- Game releases ship only a commit both `checks` and `parity-main` passed on (`tools/release_train.py`, see
+  below), so a broken merge holds releases instead of reaching players. `release.yml` also starts when a
+  parity-main run finishes. A forced release (`force=true`) doesn't wait for parity-main.
+
+A pull request still runs its own parity job when it changes a harness script, an oracle
+(`mods/horizon/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
+(`tools/parity*.py`, `tools/lab.py`, `tools/parity_hosts.json`, `parity*.yml`), or carries the `run-parity` label
+(`run-parity.yml` runs it when the label is added).
+
 ## Game releases
 
-`.github/workflows/release.yml` releases the game by itself. It starts after every green `checks` run of a push
-to main, every 10 minutes (so a release waiting for merges to settle goes out without another merge), and by hand.
+`.github/workflows/release.yml` releases the game by itself. It starts after every green `checks` or `parity-main`
+run of a push to main (it releases a commit only once both passed on it), every 10 minutes (so a release waiting for merges to settle goes out without another merge), and by hand.
 
 ```mermaid
 flowchart LR
@@ -93,19 +147,18 @@ flowchart LR
     main --> mainchecks{"checks on main"}
     mainchecks -- green --> decide{"decide<br/>tools/release_train.py"}
     cron(["every hour :17"]) --> decide
-    decide -- "player-facing PRs settled 15 min<br/>(or waiting 1 h), or release-now" --> build
+    decide -- "player-facing PRs settled 5 min<br/>(or waiting 20 min), or release-now" --> build
     decide -- otherwise --> wait(["wait"])
     subgraph build["build, in parallel"]
         linux["Linux x86_64<br/>GitHub ubuntu-22.04"]
         windows["Windows x64<br/>GitHub windows-latest"]
         mac["macOS arm64<br/>Mac mini runner<br/>+ offscreen game run"]
     end
-    build --> publish["publish vYYYY.MM.DD[.N] as a beta<br/>notes from the merged PRs"]
-    publish --> beta(["launchers with Beta builds on install it"])
-    publish --> promote{"promote.yml, every 30 min:<br/>6 h old, smoke test, no release-blocker"}
-    promote --> stable["stable and latest<br/>notes since the last stable"]
-    stable --> launcher(["every launcher and server installs it"])
-    stable --> kira(["Kira posts it;<br/>pings only with ### New"])
+    build --> gate{"gate: the smoke test drew a world,<br/>no release-blocker is open"}
+    gate -- no --> nothing(["nothing is published"])
+    gate -- yes --> publish["publish vX.Y.Z as the release and latest<br/>notes from the merged PRs"]
+    publish --> launcher(["every launcher and server installs it"])
+    publish --> kira(["Kira posts it; the first release<br/>after 20:00 UTC pings, once a day"])
 ```
 
 ### When it releases
@@ -117,14 +170,27 @@ commits) since the last **published** game release:
   `xtask/`, `packaging/`, `Cargo.toml`, `Cargo.lock`, `research-lock.json`, or an exporter `horizon-prepare`
   compiles (the `mods/horizon/src/test/java/dev/horizonlab/parity/*.java` files its sources name). Markdown never
   counts.
-- It releases when at least one pull request counts and the newest of them merged at least 15 minutes ago, so a burst
-  of merges becomes one release; if merges never pause, it releases once the oldest has waited an hour. There is no
-  minimum time between releases: every settled player-facing change ships.
+- It releases in batches, so players get a few releases a day rather than one per merge: once 5 pull requests count
+  and the newest of them merged at least 5 minutes ago (a wave of merges becomes one release), or once the oldest has
+  waited 6 hours, however few they are.
 - A pull request labelled `release-now` (a crash or a blocker) releases at once.
 - A pull request labelled `skip-release` (work players don't see) doesn't count and isn't listed in the notes.
+- An open issue labelled `release-blocker` holds every game release, forced ones too (`held by release-blocker #N`).
 - One release at a time (concurrency group `game-release`); a run that finds nothing new does nothing.
 - A scheduled or hand-started run releases main's newest commit whose `checks` passed; after `checks`, the commit
   they passed on.
+- The first release of a new release line (below) goes out at once, without waiting for a pull request.
+
+### Tags
+
+How releases are numbered, and how installs from before 0.2 reach it: [versioning.md](versioning.md).
+
+- With a release line in `.github/release-line.txt` (`MAJOR.MINOR`, e.g. `0.2`), a game release is `vMAJOR.MINOR.PATCH`,
+  the patch after the newest release tagged on that line (`v0.2.0` first). A `feature` label doesn't change the line:
+  only that file does, by pull request.
+- Without the file (every release before 0.2), `vYYYY.MM.DD`, then `.01`, `.02`… the same UTC day.
+- Every reader (`release_train.py`, the launcher, `horizon-server update`, the website) ranks
+  every `vX.Y.Z` tag above every dated one.
 
 ### Labels
 
@@ -135,7 +201,7 @@ commits) since the last **published** game release:
 | `skip-release` | Doesn't trigger a release and isn't listed in the notes |
 | `run-parity` | Runs the parity job once on a fork's pull request |
 | `parity-regression` | Opened by the nightly audit for a harness that fails on main |
-| `release-blocker` | On an issue: holds every beta back from stable while it is open ([Channels](#channels)) |
+| `release-blocker` | On an issue: no game release is published while it is open ([One channel](#one-channel)) |
 
 Pull requests without `feature` are listed under **Fixed**. Titles are written for players, since they become
 the notes.
@@ -158,55 +224,46 @@ runs the game: GitHub's runners have neither a GPU worth the name nor the game f
 
 `tools/release_train.py notes` writes them from the same pull requests:
 
-- the title, `Horizon 2026.10.15.01: <the first pull request titles>` (a day's later releases count .01, .02…, two digits so GitHub's releases page, which sorts them as text, keeps them in order), features first, newest first;
+- the title, `Horizon 0.2.3: <the first pull request titles>` (before 0.2, `Horizon 2026.10.15.01: …`, a day's later releases counting .01, .02…, two digits so GitHub's releases page, which sorts them as text, kept them in order), features first, newest first;
+- a line's first release (`X.Y.0`) opens with a paragraph that says so; 0.2.0's says releases are numbered from now
+  on and how a server that says it is up to date takes it;
 - `### New` (label `feature`) and `### Fixed` (the rest), one line per pull request: its title, its number, the
   issues it closes;
 - `### Known issues`: the bullets of [docs/known-issues.md](known-issues.md);
 - thanks to outside contributors, how to install, the disclaimer.
 
-Kira posts every published release in #releases and pings the releases role only when the notes have a
-`### New` section.
+Kira posts every release once in Discord's #releases. It pings the releases role at most once a day: the first game
+release published after 20:00 UTC, with a short list of what came out since its last ping. Every other post is
+silent (no ping and Discord's @silent flag). Launcher releases post without a ping.
 
-### Channels
+### One channel
 
-Every game release is published as a **beta**, a GitHub pre-release, so GitHub's *latest* release stays the last
-**stable** one. Launchers and `horizon-server update` install stable builds by default (the launcher's Settings
-has a "Beta builds" switch; `horizon-server update --version <beta>` takes one by name), and Kira announces a release
-when it becomes stable: Discord's #releases only ever shows stable ones.
+Since 2026-10-23 there is one channel. Every game release is published as the release, never a pre-release, and
+marked GitHub's *latest*: the launcher, `horizon-server update` and `install.sh` take it at once. Because nothing
+promotes it later, the checks that used to gate a promotion run in the release itself, and the publish job
+(`tools/release_train.py gate`) publishes nothing unless both pass:
 
-`.github/workflows/promote.yml` runs `tools/release_channels.py promote` every 30 minutes. It promotes the newest
-beta that
+- the release smoke test: the macOS build runs the game offscreen on the Mac mini and keeps its report,
+  `smoke-test.json`, only when the game drew a world. The gate reads the report again before publishing, and the
+  release carries it. A run whose macOS build went to GitHub (`MAC_RUNNER=macos-latest`) has no report, so it
+  publishes nothing;
+- no open issue labelled `release-blocker`. `decide` checks first, so a blocked train builds nothing; the gate checks
+  again right before publishing, so an issue labelled while the builds ran still holds the release. Only the label
+  and the issue's state count, never its text: whoever opened the issue can edit the text after a maintainer
+  labels it. Close the issue (or remove the label) and the next run releases everything waiting, with notes
+  covering all of it.
 
-- is newer than the stable release,
-- has been out 6 hours,
-- passed its release smoke test: the macOS build attaches `smoke-test.json` (the offscreen game run's report) only
-  when the game drew a world on the Mac mini, so a release built while `MAC_RUNNER` sends macOS to GitHub waits
-  for a hand,
-- and isn't covered by an issue labelled `release-blocker`. An open blocker holds every beta; closed as completed
-  it still holds the betas published before it closed (they have the bug); closed as not planned it holds
-  nothing. Only the label and the issue's state count, never its text: whoever opened the issue can edit the
-  text after a maintainer labels it, so it can't pick which betas go out.
+A failed gate fails the run; the next run (10 minutes later) decides again. Nothing older than the latest release is
+ever published: tags only count up.
 
-Nothing older than the stable release is ever promoted, not even with `force`: GitHub's latest release is what
-`horizon-server update` and `install.sh` download, so it only moves forward.
+The launcher has no channel setting any more and looks for releases every 30 minutes. The game pre-releases of the
+old Alpha channel (v0.2.1 on, published before this change) stay listed for anyone who wants one by hand, but no
+launcher installs them as an update, and `release_train.py` ignores them: the first release of the single channel
+lists everything since the last release that was not a pre-release (v0.2.0). Launchers from before this change keep
+updating either way: with Alpha (or 0.17's "Beta builds") on they take every release, pre-release or not; with it
+off, every release that is not a pre-release, which is now every new one.
 
-When the oldest beta newer than the stable release has waited 24 hours, promote.yml opens an issue titled
-"Promotion to stable has stalled" with the reason from the last check (a blocker left open, smoke tests not
-running). It closes itself after the next promotion.
-
-Promoting marks the beta stable and latest and rewrites its notes to list everything since the previous stable
-release (`release_train.py notes --stable`), so players who skipped the betas see all of it. Older betas stay
-betas. By hand, from a phone too (GitHub app: Actions, promote, Run workflow):
-
-```sh
-gh workflow run promote -f tag=v2026.10.19.03               # that beta now: no 6-hour wait, still no blocker
-gh workflow run promote -f tag=v2026.10.19.03 -f force=true  # even blocked or without a smoke test
-gh workflow run promote -f dry_run=true                      # what would be promoted now
-```
-
-A beta's notes cover only what changed since the release before it (beta or stable), and say it is a beta.
-`release_train.py decide` counts pull requests from the newest release of either channel, so betas don't
-release the same changes again.
+`promote.yml` and `tools/release_channels.py` (the daily promotion at 20:00 UTC) are gone.
 
 ### Signed checksums
 
@@ -268,18 +325,19 @@ gh variable set RELEASES_PAUSED --body 1     # no automatic game or launcher rel
 gh variable delete RELEASES_PAUSED           # back on; the next hourly run catches up
 ```
 
-While paused, runs still decide and say why in their summary; `force=true` still releases.
+While paused, runs still decide and say why in their summary; `force=true` still releases, but never past an open
+`release-blocker`.
 
 ### Rolling back
 
 A bad release is withdrawn by turning it back into a draft:
 
 ```sh
-gh release edit v2026.10.15.01 --draft
+gh release edit v0.2.3 --draft
 ```
 
-A beta that is not promoted yet needs no rollback: label an issue about it `release-blocker`. For a stable
-release: launchers list only published releases, so the previous version becomes the newest one again, launchers that
+To stop the next releases while a problem is fixed, label an issue about it `release-blocker`. For the bad
+release itself: launchers list only published releases, so the previous version becomes the newest one again, launchers that
 didn't install the bad one won't, and players who did can pick the previous version in the launcher's version
 list (`launcher/src/backend.rs` tests `withdrawn_release_is_never_offered`). The tag stays, so the next release
 that day takes the next number, and its notes start from the last *published* release, so they list the
@@ -294,24 +352,36 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
 
 - `tools/release_train.py decide --kind launcher` counts the pull requests merged since the last published
   launcher release that changed those paths (not `launcher/links.json`, which the launcher reads from main, nor
-  tests or Markdown), with the same settling rule (15 minutes, at most an hour), `release-now`, `skip-release` and `RELEASES_PAUSED`.
-- The tag is `launcher-vX.Y.Z`: the patch after the last launcher tag, or the next minor (`X.Y+1.0`) when one of
-  those pull requests is labelled `feature`.
-- No version-bump commits: the build gets the version in `HORIZON_LAUNCHER_VERSION`, which
-  `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s), so `--version`, the window,
-  the User-Agent and the self-update comparison all use it. Each build checks `--version` says it.
+  tests or Markdown), with the same batching rule (5 pull requests settled 5 minutes, or the oldest 6 hours), `release-now`, `skip-release` and `RELEASES_PAUSED`.
+- The tag is `launcher@X.Y.Z` on the release line (`launcher@0.2.0` first; the game and the launcher count their
+  patches separately). Without `.github/release-line.txt`, `launcher-vX.Y.Z`: the patch after the last launcher tag,
+  or the next minor (`X.Y+1.0`) when one of those pull requests is labelled `feature`. `launcher-v0.2.0` was taken
+  long before 0.2, hence the new prefix.
+- No version-bump commits: the build gets the version in `HORIZON_LAUNCHER_VERSION` and the tag in
+  `HORIZON_LAUNCHER_TAG`, which `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s),
+  so `--version`, the window, the User-Agent and the self-update comparison all use them. Each build checks
+  `--version` says it.
 - Linux on GitHub `ubuntu-22.04`, Windows on `windows-latest`, macOS on the Mac mini's runner; each runs the
   launcher's tests, checks its libraries, and installs the latest game release with the new launcher.
 - Published with `--latest=false`: the repository's latest release stays a game release. Notes list the pull
   requests under New and Fixed; Kira posts launcher releases without pinging.
 
+Making a launcher release GitHub's latest instead would break servers: every `horizon-server` already installed,
+`install.sh` and `install.ps1` ask for `releases/latest` and expect the game's archives there, and a server that
+can't update can't fetch the fix either. So the game release stays the latest, and it sends people to the launcher
+(#1647): its notes open with a "Want to play? Download the Horizon launcher" block (`PLAYERS` in
+`tools/release_train.py`: raw HTML, which GitHub shows and launchers' notes skip; the site's Releases page leaves
+it out too), and its archives carry labels ("Game files the
+launcher installs: Linux (…)") that GitHub shows in place of the file names. Everything that downloads matches
+the asset's name, which is unchanged.
+
 Starting by hand, pausing and rolling back work as for the game (`gh workflow run launcher …`,
-`RELEASES_PAUSED`, `gh release edit launcher-vX.Y.Z --draft`). Launchers older than the withdrawn release then
+`RELEASES_PAUSED`, `gh release edit launcher@X.Y.Z --draft`). Launchers older than the withdrawn release then
 see the previous one as the newest; launchers that already updated keep running.
 
 With several game releases a day, the newest launcher release soon falls out of the newest 100 releases the
-launcher and the website read: both then look the newest `launcher-v` tags up one by one
-(`git/matching-refs/tags/launcher-v`, then `releases/tags/<tag>`).
+launcher and the website read: both then look the newest launcher tags up one by one
+(`git/matching-refs/tags/launcher@`, then `launcher-v` if there is none, then `releases/tags/<tag>`).
 
 ## Nightly audit
 

@@ -698,13 +698,12 @@ impl PlacementContext for World<'_> {
         self.set_block_entity(position, nbt)
     }
     /// BeehiveDecorator: `getBlockEntity(pos, BEEHIVE)` then
-    /// `storeBee(Occupant.create(ticks))` for each bee (min ticks in hive 600).
+    /// `storeBee(Occupant.create(ticks))` for each bee.
     fn store_beehive_occupants(
         &mut self,
         position: [i32; 3],
         ticks_in_hive: &[i32],
     ) -> Result<(), PlacementQueryError> {
-        use crate::nbt::Tag;
         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
         let state = chunk.block(position[0], position[1], position[2]);
         let registry = self.decoration.bindings.registry();
@@ -714,22 +713,7 @@ impl PlacementContext for World<'_> {
         ) {
             return Ok(());
         }
-        let bees = ticks_in_hive
-            .iter()
-            .map(|&ticks| {
-                let mut entity = crate::nbt::Compound::new();
-                entity.insert("id".into(), Tag::String("minecraft:bee".into()));
-                let mut bee = crate::nbt::Compound::new();
-                bee.insert("entity_data".into(), Tag::Compound(entity));
-                bee.insert("ticks_in_hive".into(), Tag::Int(ticks));
-                bee.insert("min_ticks_in_hive".into(), Tag::Int(600));
-                Tag::Compound(bee)
-            })
-            .collect();
-        let mut nbt = crate::nbt::Compound::new();
-        nbt.insert("id".into(), Tag::String("minecraft:beehive".into()));
-        nbt.insert("bees".into(), Tag::List(bees));
-        self.set_block_entity(position, nbt)
+        self.set_block_entity(position, super::tree::beehive_occupants(ticks_in_hive))
     }
     /// SpawnerBlockEntity.setEntityId: the next spawn data and no potentials.
     fn configure_spawner(
@@ -831,6 +815,19 @@ impl PlacementContext for World<'_> {
         support
             .is_face_sturdy(self, state, position, direction, SupportType::Center)
             .map_err(query)
+    }
+    fn can_occlude(&mut self, state: BlockStateId) -> Result<bool, PlacementQueryError> {
+        if let Some(behaviours) = self.behaviours {
+            return Ok(behaviours.has_flag(state, crate::level::data::state_flags::CAN_OCCLUDE));
+        }
+        let properties = &self.blocks()?.properties;
+        let name = properties
+            .registry()
+            .state(state)
+            .ok_or(PlacementQueryError::Unavailable)?
+            .name
+            .clone();
+        Ok(properties.definition(&name).is_some_and(|d| d.can_occlude))
     }
     fn collision_full_block(
         &mut self,
@@ -1131,5 +1128,42 @@ impl PlacementContext for World<'_> {
     }
     fn height(&mut self, kind: HeightmapType, x: i32, z: i32) -> Result<i32, PlacementQueryError> {
         self.region.height(kind, x, z)
+    }
+    /// OreFeature's search for a column under its blob, without a trait call
+    /// per column. Defers to `height` when a heightmap still has to be primed.
+    fn any_height_at_least(
+        &mut self,
+        kind: HeightmapType,
+        [x0, z0]: [i32; 2],
+        size: i32,
+        y: i32,
+    ) -> Result<Option<bool>, PlacementQueryError> {
+        let (x1, z1) = (x0.wrapping_add(size), z0.wrapping_add(size));
+        if size < 0 || x1 < x0 || z1 < z0 {
+            return Ok(None);
+        }
+        for cx in x0 >> 4..=x1 >> 4 {
+            for cz in z0 >> 4..=z1 >> 4 {
+                if !self
+                    .region
+                    .chunk(cx, cz)
+                    .is_ok_and(|c| c.heightmap(kind).is_some())
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                let map = self.region.chunk(x >> 4, z >> 4)?.heightmap(kind).unwrap();
+                let floor = map
+                    .first_available(x & 15, z & 15)
+                    .map_err(|e| RegionError::from(super::terrain::TerrainError::from(e)))?;
+                if y <= floor {
+                    return Ok(Some(true));
+                }
+            }
+        }
+        Ok(Some(false))
     }
 }

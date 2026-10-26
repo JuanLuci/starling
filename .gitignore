@@ -37,3 +37,5 @@
 
 # Mod storage the game writes beside a mod it runs (--dev-mod of a source folder).
 .horizon-mod-data/
+# Release-only compiled original exporter bundle.
+/exporters/

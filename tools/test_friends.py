@@ -15,6 +15,9 @@ is off: nothing leaves the machine.
 
     python3 tools/test_friends.py --client target/fast/horizon-client --relay target/fast/horizon-relay
 
+`--server-thread` runs the host's world on its integrated server's own
+thread (the window is a client of it, as Open to LAN publishes it).
+
 `--role host|guest` runs one side only (two machines, e.g. over a tailnet):
 the host prints the code, the guest takes it with `--code` (`--relay-url`
 for a relay elsewhere, `--path relay` to force it). Needs a display on Linux
@@ -69,12 +72,6 @@ def wait_for(endpoint, line, predicate, timeout=60, what=None):
     raise AssertionError(f'timed out waiting for {what or line}: {last}')
 
 
-def free_port():
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
 def health(relay_url):
     with urllib.request.urlopen(f'http://{relay_url}/health', timeout=5) as r:
         return json.loads(r.read())
@@ -86,8 +83,12 @@ class Game:
     # Extra words before and after the client (`--xvfb`, `--offscreen`).
     prefix = []
     extra = []
+    # The host's world on its server thread (`--server-thread`), else in the window.
+    server_thread = False
 
     def __init__(self, client, resources, work, name, env):
+        # Either way explicitly, whatever the game's default.
+        env = dict(env, HORIZON_SERVER_THREAD='1' if Game.server_thread and name == 'host' else '0')
         self.home = work / name
         self.home.mkdir()
         self.endpoint = self.home / 'c.sock'
@@ -95,7 +96,7 @@ class Game:
         self.process = subprocess.Popen(Game.prefix + [
             str(client), '--resources', str(resources), '--render-distance', '2', '--test-terrain',
             '--control-socket', str(self.endpoint), '--timeout-seconds', '600',
-        ] + Game.extra, cwd=self.home, env=dict(os.environ, HORIZON_HOME=str(self.home), HORIZON_NO_AUDIO='1', **env),
+        ] + Game.extra, cwd=self.home, env=lab.game_env(HORIZON_HOME=self.home, **env),
             stdout=self.log, stderr=subprocess.STDOUT)
         wait_for(self.endpoint, 'screen', lambda v: v['screen'] == 'title', 120, f'{name} title')
 
@@ -155,7 +156,9 @@ def play_together(host, guest, name, round_index):
     # The host moves; the guest sees the host's player there.
     hp = host('status')['player']['position']
     target = [hp[0] + 3.0, hp[1], hp[2] + 1.0]
-    host(f'tp {target[0]} {target[1]} {target[2]}')
+    # The /tp command, not the control socket's local move: on the server thread the window is a
+    # client, and its server has the last word on where the host stands.
+    host(f'command tp @s {target[0]} {target[1]} {target[2]}')
     guest.wait('status', lambda v: any(math.dist(p, target) < 0.6 for p in v['server']['player_positions']), 20,
                'host movement on the guest')
     # A block the host places, which the guest sees and then breaks.
@@ -163,8 +166,9 @@ def play_together(host, guest, name, round_index):
     feet = [math.floor(gp[0]), math.floor(gp[1]), math.floor(gp[2])]
     block = [feet[0] + 2, feet[1] + 1, feet[2]]
     # Clear the line of sight (the test terrain has hills), then the block at eye level.
-    host(f'fill {feet[0] + 1} {feet[1]} {feet[2]} {feet[0] + 1} {feet[1] + 2} {feet[2]} minecraft:air')
-    host(f'setblock {block[0]} {block[1]} {block[2]} minecraft:gold_block')
+    # As commands, for the same reason as the /tp above.
+    host(f'command fill {feet[0] + 1} {feet[1]} {feet[2]} {feet[0] + 1} {feet[1] + 2} {feet[2]} minecraft:air')
+    host(f'command setblock {block[0]} {block[1]} {block[2]} minecraft:gold_block')
     guest.wait(f'getblock {block[0]} {block[1]} {block[2]}', lambda v: v['block'] == 'minecraft:gold_block', 20,
                'the host block on the guest')
     eye = [gp[0], gp[1] + 1.62, gp[2]]
@@ -194,7 +198,7 @@ def leave(host, guest, name):
 
 def start_relay(args, work):
     """A relay on a free local port, as anyone would run their own."""
-    port = free_port()
+    port = lab.free_port()
     url = f'127.0.0.1:{port}'
     log = (work / 'relay.log').open('w+')
     process = subprocess.Popen([str(args.relay.resolve())], env=dict(os.environ, PORT=str(port)),
@@ -343,10 +347,12 @@ def main():
     parser.add_argument('--hold', type=float, default=0, help='guest: stay this many seconds before leaving')
     parser.add_argument('--baseline', action='store_true', help='first run the same checks over plain LAN')
     parser.add_argument('--offscreen', action='store_true', help='run the games without a window')
+    parser.add_argument('--server-thread', action='store_true', help="the host's world on its server thread")
     parser.add_argument('--xvfb', action='store_true', help='run the games under xvfb-run (headless Linux)')
     args = parser.parse_args()
     Game.prefix = ['xvfb-run', '-a'] if args.xvfb else []
     Game.extra = ['--offscreen'] if args.offscreen else []
+    Game.server_thread = args.server_thread
     args.client, args.resources = args.client.resolve(), args.resources.resolve()
     # Short: Unix socket paths are limited to about 100 bytes.
     with tempfile.TemporaryDirectory(prefix='hzf-', dir='/tmp') as directory:

@@ -255,6 +255,13 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
                     self.sync_mods();
+                    self.sync_agent_control();
+                    self.ui.options.agent_status = self.agent_status_lines();
+                }
+                Event::CopyAgentDetails => {
+                    use horizon_client::clipboard::Clipboard;
+                    let text = self.agent_details();
+                    self.clipboard.set(&text);
                 }
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
@@ -310,6 +317,8 @@ impl Game<'_> {
                         std::time::Instant::now(),
                     ));
                 }
+                Event::ModSettings(i) => self.open_mod_ui(i, true),
+                Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
             }
         }
         Ok(())
@@ -318,6 +327,7 @@ impl Game<'_> {
     pub(super) fn load_language(&mut self, code: &str) {
         let root = self.options.resources.clone();
         lang::set(lang::Language::load(&[&root], code));
+        self.refresh_remote_language();
         self.ui.chat.rescale(&self.gui.atlas);
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
@@ -357,14 +367,6 @@ impl Game<'_> {
             font.japanese = s.japanese_glyphs;
             font.reset_cache();
             self.ui.chat.rescale(&self.gui.atlas);
-        }
-        // A new renderer (resource reload, first window) takes the loaded pack.
-        let stale = self
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.shader_pack_id() != self.shader_packs.id());
-        if stale && let Err(e) = self.apply_shader_pack() {
-            log::warn!("Horizon: shader pack: {e}");
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window

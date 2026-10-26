@@ -3,7 +3,7 @@
 //! Entity-dependent rules use the defaults for players and the supported mobs.
 use crate::{Result, world::World};
 use horizon_core::{
-    geometry::{Aabb, Vec3, VoxelShape},
+    geometry::{Aabb, Vec3, VoxelShape, border::BorderGeometry},
     position::{BlockPos, ChunkPos},
 };
 use horizon_world::{
@@ -15,8 +15,9 @@ use horizon_world::{
     entity_obstruction::EntityIdentity,
     fluid::{FluidKind, FluidState},
     liquid_collision::LiquidCollisionWorld,
+    piston_shape::PistonCollisionWorld,
     powder_snow_collision::{PowderSnowEntity, PowderSnowWorld},
-    registry::{BlockRegistry, BlockTableFile},
+    registry::{BlockRegistry, BlockStateId, BlockTableFile},
     world_movement::{
         CollisionCheckRequest, EntityMovementWorld, MovementRequest, no_world_collision,
         resolve_world_movement,
@@ -63,6 +64,9 @@ pub struct SceneCollisions<'w, 'r> {
 pub struct EntityCollisions<'a, W> {
     pub blocks: W,
     pub entities: &'a [Aabb],
+    /// The world border and the moving entity's x and z
+    /// (`CollisionGetter.borderCollision`); None: the blocks' answer.
+    pub border: Option<(&'a BorderGeometry, [f64; 2])>,
 }
 impl<W: BlockCollisionWorld> BlockCollisionWorld for EntityCollisions<'_, W> {
     type Error = W::Error;
@@ -88,12 +92,12 @@ impl<W: BlockCollisionWorld> BlockCollisionWorld for EntityCollisions<'_, W> {
     ) -> std::result::Result<bool, Self::Error> {
         self.blocks.is_suffocating(chunk, block, p)
     }
-    fn section_may_reach(
+    fn may_reach_out(
         &mut self,
         chunk: Self::Chunk,
-        section: i32,
+        section_y: i32,
     ) -> std::result::Result<bool, Self::Error> {
-        self.blocks.section_may_reach(chunk, section)
+        self.blocks.may_reach_out(chunk, section_y)
     }
     fn context_shape(
         &mut self,
@@ -120,12 +124,44 @@ impl<W: EntityMovementWorld<Error = io::Error>> EntityMovementWorld for EntityCo
         }
         Ok(shapes)
     }
+    /// `WorldBorder.isInsideCloseToBorder`: an entity inside the border and
+    /// near it collides with its walls.
     fn movement_border(
         &mut self,
         entity: EntityIdentity,
         bounds: Aabb,
     ) -> io::Result<Option<VoxelShape>> {
-        self.blocks.movement_border(entity, bounds)
+        let Some((border, [x, z])) = self.border else {
+            return self.blocks.movement_border(entity, bounds);
+        };
+        if !border.is_inside_close_to_border(x, z, bounds) {
+            return Ok(None);
+        }
+        border.collision_shape().map(Some).map_err(io::Error::other)
+    }
+}
+impl EntityCollisions<'_, SceneCollisions<'_, '_>> {
+    /// `SceneCollisions::resolve` that also stops at the entity boxes.
+    pub fn resolve(
+        &mut self,
+        bounds: Aabb,
+        movement: Vec3,
+        max_step: f32,
+        on_ground: bool,
+    ) -> Result<Vec3> {
+        let context = self.blocks.context(bounds);
+        Ok(resolve_world_movement(
+            self,
+            MovementRequest {
+                entity: EntityIdentity(0),
+                context,
+                bounds,
+                movement,
+                max_step,
+                on_ground,
+                candidate_budget: 1_000_000,
+            },
+        )?)
     }
 }
 impl SceneCollisions<'_, '_> {
@@ -249,6 +285,17 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
     fn collision_block(&mut self, chunk: Self::Chunk, p: BlockPos) -> io::Result<CollisionBlock> {
         self.binding.collision_block(chunk.block(p.x, p.y, p.z))
     }
+    /// From the section's palette, without reading its blocks; a palette
+    /// of the whole registry reads every cell.
+    fn may_reach_out(&mut self, chunk: Self::Chunk, section_y: i32) -> io::Result<bool> {
+        let blocks = usize::try_from(section_y - (crate::chunk::MIN_Y >> 4))
+            .ok()
+            .and_then(|s| chunk.sections.get(s))
+            .map(|section| &section.blocks);
+        Ok(blocks.is_none_or(|blocks| {
+            blocks.is_global() || blocks.maybe_has(|v| self.binding.reaches_out(BlockStateId(v)))
+        }))
+    }
     fn is_suffocating(
         &mut self,
         _: Self::Chunk,
@@ -256,9 +303,6 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
         _: BlockPos,
     ) -> io::Result<bool> {
         Ok(false)
-    }
-    fn section_may_reach(&mut self, chunk: Self::Chunk, section: i32) -> io::Result<bool> {
-        Ok(section_may_reach(self.binding, chunk, section))
     }
     fn context_shape(
         &mut self,
@@ -285,8 +329,30 @@ impl DynamicSupportWorld for SceneCollisions<'_, '_> {
     fn shulker_is_closed(&mut self, _: [i32; 3]) -> io::Result<Option<bool>> {
         Ok(None)
     }
-    fn moving_piston_shape(&mut self, _: [i32; 3]) -> io::Result<Option<VoxelShape>> {
-        Ok(None)
+    /// `MovingPistonBlock.getCollisionShape`: the block entity's moving shape
+    /// (`PistonMovingBlockEntity.getCollisionShape`), outside any push.
+    fn moving_piston_shape(&mut self, p: [i32; 3]) -> io::Result<Option<VoxelShape>> {
+        let Some(&(_, piston)) = self.world.moving_pistons.iter().find(|(q, _)| *q == p) else {
+            return Ok(None);
+        };
+        let binding = self.binding;
+        let Some(pistons) = binding.pistons() else {
+            return Ok(None);
+        };
+        pistons
+            .collision_shape(self, p, piston, None)
+            .map(Some)
+            .map_err(io::Error::other)
+    }
+}
+impl PistonCollisionWorld for SceneCollisions<'_, '_> {
+    type Error = io::Error;
+    /// `BlockState.getCollisionShape(level, pos)` of the moved state.
+    fn collision_shape(&mut self, state: BlockStateId, p: [i32; 3]) -> io::Result<VoxelShape> {
+        let binding = self.binding;
+        binding
+            .collision_shape(self, state, p)
+            .map_err(io::Error::other)
     }
 }
 impl DynamicCollisionWorld for SceneCollisions<'_, '_> {

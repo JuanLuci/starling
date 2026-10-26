@@ -154,7 +154,15 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
 }
 /// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock(#[allow(dead_code)] fs::File);
+pub struct SessionLock(fs::File);
+impl Drop for SessionLock {
+    /// `DirectoryLock.close`: release the lock, then close the file. Closing
+    /// alone keeps the lock while any copy of the descriptor lives on, such as
+    /// the one a process spawned on another thread holds until its `exec`.
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
 impl SessionLock {
     pub fn acquire(world: &Path) -> Result<Self> {
         use std::io::Write;
@@ -492,7 +500,12 @@ pub fn encode_block_entity(
             entries.push(("cooking_time_spent", Tag::Int(f.cooking_timer)));
             entries.push(("cooking_total_time", Tag::Int(f.cooking_total)));
             entries.push(("speed_multiplier", Tag::Float(f.speed.to_bits())));
-            entries.push(("RecipesUsed", Tag::Compound(Compound::new())));
+            let used: Compound = f
+                .recipes_used
+                .iter()
+                .map(|(id, count)| (id.as_str().into(), Tag::Int(*count as i32)))
+                .collect();
+            entries.push(("RecipesUsed", Tag::Compound(used)));
         }
         BlockEntity::Brewing(b) => {
             entries.push(("Items", encode_items(&b.items)));
@@ -552,6 +565,17 @@ pub fn encode_block_entity(
                 entries.push(("creaking", uuid_tag(uuid)));
             }
         }
+        BlockEntity::Skull(s) => {
+            if let Some(profile) = &s.profile {
+                entries.push(("profile", profile.clone()));
+            }
+            if let Some(sound) = &s.note_block_sound {
+                entries.push(("note_block_sound", string(sound)));
+            }
+            if let Some(name) = &s.custom_name {
+                entries.push(("custom_name", name.clone()));
+            }
+        }
         BlockEntity::Spawner(s) => entries.extend(s.save()),
         BlockEntity::TrialSpawner(s) => entries.extend(s.save()),
         BlockEntity::Vault(v) => entries.extend(v.save()),
@@ -570,6 +594,17 @@ fn merge_block_entity(original: &Tag, loaded: &Tag, current: &Tag) -> Tag {
         map.remove(&"LootTableSeed".into());
     }
     merged
+}
+/// `BannerBlockEntity.loadAdditional` (and the `components` a block entity keeps).
+pub fn decode_banner(tag: &Tag) -> crate::containers::Banner {
+    crate::containers::Banner {
+        layers: crate::banner::layers_from_nbt(tag.get("patterns")),
+        name: text(tag.get("CustomName")),
+        components: match tag.get("components") {
+            Some(Tag::Compound(c)) => c.clone(),
+            _ => Compound::new(),
+        },
+    }
 }
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;
@@ -604,17 +639,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
     if id == "minecraft:banner" {
-        return Some((
-            pos,
-            BlockEntity::Banner(crate::containers::Banner {
-                layers: crate::banner::layers_from_nbt(tag.get("patterns")),
-                name: text(tag.get("CustomName")),
-                components: match tag.get("components") {
-                    Some(Tag::Compound(c)) => c.clone(),
-                    _ => Compound::new(),
-                },
-            }),
-        ));
+        return Some((pos, BlockEntity::Banner(decode_banner(tag))));
     }
     if id == "minecraft:beacon" {
         let beacon = crate::containers::Beacon {
@@ -625,6 +650,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             ..Default::default()
         };
         return Some((pos, BlockEntity::Beacon(Box::new(beacon))));
+    }
+    // A skull's block entity id is not its block's name (every head block).
+    if id == "minecraft:skull" {
+        return Some((
+            pos,
+            BlockEntity::Skull(crate::containers::Skull::new(
+                tag.get("profile").cloned(),
+                text(tag.get("note_block_sound")),
+                tag.get("custom_name")
+                    .and_then(crate::block_entity_nbt::component),
+            )),
+        ));
     }
     // A spawner's block entity id is not its block's name.
     let block = match id.as_str() {
@@ -643,6 +680,17 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             f.cooking_total = int("cooking_total_time").unwrap_or(0);
             if let Some(speed) = float(tag.get("speed_multiplier")) {
                 f.speed = speed as f32;
+            }
+            // A save without it owes nothing: the field is newer than some worlds.
+            if let Some(Tag::Compound(used)) = tag.get("RecipesUsed") {
+                for (id, count) in used {
+                    let count = match count {
+                        Tag::Int(n) => *n,
+                        _ => continue,
+                    };
+                    f.recipes_used
+                        .insert(id.to_string_lossy(), count.max(0) as u32);
+                }
             }
         }
         BlockEntity::Brewing(b) => {
@@ -687,7 +735,8 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Beacon(_)
         | BlockEntity::Lectern(_)
         | BlockEntity::Banner(_)
-        | BlockEntity::CreakingHeart(_) => {}
+        | BlockEntity::CreakingHeart(_)
+        | BlockEntity::Skull(_) => {}
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
         BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
@@ -753,12 +802,6 @@ fn heightmaps(chunk: &Chunk, tables: &SaveTables) -> Tag {
             Tag::LongArray(m.raw_data().iter().map(|&w| w as i64).collect()),
         )
     }))
-}
-/// The heightmaps a ClientboundLevelChunkPacketData carries (the types with
-/// sendToClient: WORLD_SURFACE, MOTION_BLOCKING, MOTION_BLOCKING_NO_LEAVES),
-/// as (network id, packed longs) in Heightmap.Types order.
-pub fn client_heightmaps(chunk: &Chunk, tables: &SaveTables) -> Vec<(i32, Vec<i64>)> {
-    client_heightmaps_in(&chunk.sections, tables, MIN_Y, SECTIONS as i32 * 16)
 }
 /// The client heightmaps of a column's sections, in a level from `min_y`,
 /// `height` blocks high.
@@ -1309,8 +1352,73 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
         };
         layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
     }
-    let above = [if sky_light { 15 } else { 0 }; 256];
-    crate::light::light_from_layers(chunk, &layers, above, sky_light);
+    // Uniform saved layers need no expanded allocation. Both nibbles of
+    // each byte must match, not merely the bytes across the layer.
+    let uniform_layer = |layer: &[u8]| {
+        let first = layer[0];
+        (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
+    };
+    let mut above = [if sky_light { 15 } else { 0 }; 256];
+    for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
+        let sky = sky.filter(|_| sky_light);
+        let sky_uniform = sky.map_or_else(
+            || above.iter().all(|&v| v == above[0]).then_some(above[0]),
+            uniform_layer,
+        );
+        let block_uniform = block.map_or(Some(0), uniform_layer);
+        let section = Arc::make_mut(&mut chunk.sections[si]);
+        if let (Some(s), Some(b)) = (sky_uniform, block_uniform) {
+            section.light = Light::Uniform(s << 4 | b);
+            above.fill(s);
+        } else {
+            let mut data = Box::new([0u8; 4096]);
+            match (sky, block) {
+                (Some(sky), Some(block)) => {
+                    for ((pair, &s), &b) in
+                        data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
+                    {
+                        pair[0] = s << 4 | (b & 15);
+                        pair[1] = (s & 0xf0) | (b >> 4);
+                    }
+                }
+                (Some(sky), None) => {
+                    for (pair, &s) in data.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
+                        pair[0] = s << 4;
+                        pair[1] = s & 0xf0;
+                    }
+                }
+                (None, Some(block)) => {
+                    for (i, (pair, &b)) in data
+                        .as_chunks_mut::<2>()
+                        .0
+                        .iter_mut()
+                        .zip(block)
+                        .enumerate()
+                    {
+                        pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
+                        pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
+                    }
+                }
+                (None, None) => {
+                    for layer in data.as_chunks_mut::<256>().0 {
+                        for (v, &s) in layer.iter_mut().zip(&above) {
+                            *v = s << 4;
+                        }
+                    }
+                }
+            }
+            if let Some(sky) = sky {
+                for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
+                    pair[0] = s & 15;
+                    pair[1] = s >> 4;
+                }
+            }
+            section.light = Light::Full(data);
+        }
+        section.compact();
+    }
+    chunk.lit = true;
+    chunk.light_loaded = true;
 }
 
 type RegionCache = Mutex<HashMap<(i32, i32), Option<Arc<Mutex<RegionFile>>>>>;
@@ -1897,7 +2005,8 @@ fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
             Some(stem) => path.with_file_name(format!("{stem}.dat_old")),
             None => path.with_file_name(format!("{file}_old")),
         };
-        let _ = fs::rename(path, old);
+        // Util.safeReplaceFile: no backup, no replacement.
+        fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     fs::rename(temporary, path)?;
     Ok(())
@@ -2370,14 +2479,18 @@ pub struct Level {
     pub game_mode: i32,
     pub time: i64,
     pub day_time: i64,
-    /// The player's respawn point (bed, or the world spawn).
+    /// Where the player respawns when it has no bed or anchor: its forced
+    /// Overworld point (`spawnpoint`), or the world spawn.
     pub spawn: Option<[f64; 3]>,
-    /// A respawn point in another dimension than the Overworld (a respawn
-    /// anchor): dimension, block, yaw and `forced`.
+    /// A respawn point resolved through its block when the player respawns
+    /// (a bed, a respawn anchor, a forced point outside the Overworld):
+    /// dimension, block, yaw and `forced`.
     pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
     pub position: Option<[f64; 3]>,
     pub rotation: [f32; 2],
     pub health: f32,
+    /// LivingEntity `AbsorptionAmount`: the golden hearts left.
+    pub absorption: f32,
     pub food: i32,
     pub saturation: f32,
     /// (slot, item, count, damage): 0..36 inventory, 100..103 armor (feet..head), 150 offhand.
@@ -2386,6 +2499,8 @@ pub struct Level {
     pub inventory_components: HashMap<u8, Box<crate::item_data::StackData>>,
     /// Player.XpSeed: the enchanting table seed.
     pub xp_seed: i32,
+    /// ServerPlayer.seenCredits: the end poem has been shown.
+    pub seen_credits: bool,
     /// Player.active_effects: (id, duration, amplifier, ambient, show_icon).
     pub active_effects: Vec<(String, i32, i32, bool, bool)>,
     /// Player.EnderItems: the ender chest inventory (27 slots).
@@ -2400,6 +2515,8 @@ pub struct Level {
     pub dimension: String,
     /// World spawn (`level.dat` `spawn`), distinct from a bed respawn point.
     pub world_spawn: Option<[i32; 3]>,
+    /// The world spawn's yaw and pitch (`setworldspawn`'s rotation).
+    pub world_spawn_angle: [f32; 2],
     pub difficulty: String,
     pub hardcore: bool,
     /// `difficulty_settings.locked` (LevelData.isDifficultyLocked).
@@ -2477,6 +2594,11 @@ impl Level {
                 ]
             }),
         };
+        let angle = |k: &str| match data.get("spawn").and_then(|s| s.get(k)) {
+            Some(Tag::Float(b)) => f32::from_bits(*b),
+            _ => 0.0,
+        };
+        level.world_spawn_angle = [angle("yaw"), angle("pitch")];
         if let Some(d) = data.get("difficulty_settings") {
             level.difficulty = text(d.get("difficulty")).unwrap_or_else(|| "normal".into());
             level.hardcore = n(d.get("hardcore")) != 0;
@@ -2567,6 +2689,7 @@ impl Level {
         }
         self.motion = read_doubles::<3>(p.get("Motion")).unwrap_or_default();
         self.health = f("Health").map_or(20.0, |v| v as f32);
+        self.absorption = f("AbsorptionAmount").map_or(0.0, |v| v as f32);
         self.food = n("foodLevel").map_or(20, |v| v as i32);
         self.saturation = f("foodSaturationLevel").map_or(5.0, |v| v as f32);
         self.food_exhaustion = f("foodExhaustionLevel").unwrap_or(0.0) as f32;
@@ -2577,6 +2700,7 @@ impl Level {
         self.selected_slot = n("SelectedItemSlot").unwrap_or(0) as i32;
         self.fall_distance = f("fall_distance").unwrap_or(0.0);
         self.on_ground = n("OnGround").unwrap_or(0) != 0;
+        self.seen_credits = n("seenCredits").unwrap_or(0) != 0;
         if let Some(mode) = n("playerGameType") {
             self.creative = mode == 1;
             self.game_mode = mode as i32;
@@ -2594,14 +2718,17 @@ impl Level {
         {
             let dimension =
                 text(respawn.get("dimension")).unwrap_or_else(|| "minecraft:overworld".into());
-            if dimension == "minecraft:overworld" {
+            let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
+            // A forced point in the Overworld (`spawnpoint`) is where the
+            // player respawns; anything else (a bed, an anchor) is resolved
+            // through its block then.
+            if dimension == "minecraft:overworld" && forced {
                 self.spawn = Some([f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]);
             } else {
                 let yaw = match respawn.get("yaw") {
                     Some(Tag::Float(b)) => f32::from_bits(*b),
                     _ => 0.0,
                 };
-                let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
                 self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
             }
         }
@@ -2738,6 +2865,7 @@ impl Level {
             ("OnGround", Tag::Byte(i8::from(self.on_ground))),
             ("fall_distance", Tag::Double(self.fall_distance.to_bits())),
             ("Health", Tag::Float(self.health.to_bits())),
+            ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
             ("foodSaturationLevel", Tag::Float(self.saturation.to_bits())),
             (
@@ -2798,6 +2926,7 @@ impl Level {
         if let Some(pos) = self.position {
             entries.push(("Pos", doubles(&pos)));
         }
+        entries.push(("seenCredits", Tag::Byte(i8::from(self.seen_credits))));
         // A respawn point other than the world spawn: an anchor elsewhere, or a bed.
         if let Some((dimension, block, yaw, forced)) = &self.respawn_elsewhere {
             let mut respawn = vec![
@@ -2816,6 +2945,8 @@ impl Level {
                 s[1].floor() as i32,
                 s[2].floor() as i32,
             ];
+            // A point of the player's own in the Overworld other than a bed
+            // (`respawn_elsewhere`): `spawnpoint`'s, forced.
             if Some(block) != self.world_spawn {
                 entries.push((
                     "respawn",
@@ -2824,6 +2955,7 @@ impl Level {
                         ("pos", Tag::IntArray(block.to_vec())),
                         ("yaw", Tag::Float(0f32.to_bits())),
                         ("pitch", Tag::Float(0f32.to_bits())),
+                        ("forced", Tag::Byte(1)),
                     ]),
                 ));
             }
@@ -2843,7 +2975,6 @@ impl Level {
                 ("seenCredits", Tag::Byte(0)),
                 ("HurtTime", Tag::Short(0)),
                 ("DeathTime", Tag::Short(0)),
-                ("AbsorptionAmount", Tag::Float(0)),
                 ("FallFlying", Tag::Byte(0)),
             ] {
                 map.entry(key.into()).or_insert(value);
@@ -2969,8 +3100,8 @@ impl Level {
                 Tag::compound([
                     ("pos", Tag::IntArray(spawn.to_vec())),
                     ("dimension", string("minecraft:overworld")),
-                    ("yaw", Tag::Float(0f32.to_bits())),
-                    ("pitch", Tag::Float(0f32.to_bits())),
+                    ("yaw", Tag::Float(self.world_spawn_angle[0].to_bits())),
+                    ("pitch", Tag::Float(self.world_spawn_angle[1].to_bits())),
                 ]),
             ),
             ("difficulty_settings", difficulty),
@@ -3914,6 +4045,19 @@ mod tests {
         assert!(super::SessionLock::acquire(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// #749: a copy of the lock's descriptor (a child process spawned on
+    /// another thread holds one until it execs) must not keep a released
+    /// world locked.
+    #[test]
+    fn session_lock_releases_while_a_descriptor_copy_lives() {
+        let dir = std::env::temp_dir().join(format!("horizon-lock-copy-{}", std::process::id()));
+        let lock = super::SessionLock::acquire(&dir).expect("first lock");
+        let copy = lock.0.try_clone().unwrap();
+        drop(lock);
+        assert!(super::SessionLock::acquire(&dir).is_ok());
+        drop(copy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn crafter_block_entity_round_trips() {
         let mut crafter = crate::containers::Crafter::default();
@@ -3981,6 +4125,54 @@ mod tests {
         assert_eq!(back.components, banner.components);
     }
     use super::*;
+
+    #[test]
+    fn skull_block_entity_keeps_its_profile() {
+        // A placed `player_head` as vanilla saves it: the owning player's
+        // `profile` survives load, encode and `canonical`.
+        let saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:skull",x:10,y:64,z:20,profile:{name:"Steve",id:[I;1,2,3,4],properties:[{name:"textures",value:"abc"}]},note_block_sound:"minecraft:entity.player.hurt",custom_name:"Trophy"}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, back) = decode_block_entity(&saved).expect("skull");
+        assert_eq!(pos, (10, 64, 20));
+        let crate::containers::BlockEntity::Skull(skull) = &back else {
+            panic!("not a skull");
+        };
+        assert_eq!(skull.profile, saved.get("profile").cloned());
+        assert_eq!(
+            skull.note_block_sound.as_deref(),
+            Some("minecraft:entity.player.hurt")
+        );
+        assert_eq!(back.id(), "minecraft:skull");
+        let tag = encode_block_entity(pos, &back, "minecraft:player_head");
+        assert_eq!(
+            crate::block_entity_nbt::id(&tag).as_deref(),
+            Some("minecraft:skull")
+        );
+        assert_eq!(tag.get("profile"), saved.get("profile"));
+        let (_, again) = decode_block_entity(&tag).expect("skull again");
+        let crate::containers::BlockEntity::Skull(again) = again else {
+            panic!("not a skull");
+        };
+        assert_eq!(again.profile, skull.profile);
+        // A profile-less head (skeleton, creeper) round-trips too.
+        let plain = encode_block_entity(
+            pos,
+            &crate::containers::BlockEntity::Skull(crate::containers::Skull::default()),
+            "minecraft:creeper_head",
+        );
+        let (_, decoded) = decode_block_entity(&plain).expect("plain skull");
+        assert!(matches!(decoded, crate::containers::BlockEntity::Skull(_)));
+        // The heads and skulls have one; the piston's head is no skull.
+        use crate::containers::BlockEntity;
+        assert!(matches!(
+            BlockEntity::for_block("minecraft:player_wall_head"),
+            Some(BlockEntity::Skull(_))
+        ));
+        assert!(BlockEntity::for_block("minecraft:piston_head").is_none());
+    }
 
     #[test]
     fn uuid_text_round_trips() {
@@ -4080,6 +4272,151 @@ mod tests {
         assert!(!unlit.lit && !unlit.light_loaded);
     }
     #[test]
+    fn saved_light_matches_reference_for_layers_and_metadata() {
+        fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
+            if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
+                return;
+            }
+            let Some(Tag::List(sections)) = tag.get("sections") else {
+                return;
+            };
+            let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
+            for section in sections {
+                let Some(y) = number(section.get("Y")) else {
+                    continue;
+                };
+                let si = y as i32 - (MIN_Y >> 4);
+                if !(0..SECTIONS as i32).contains(&si) {
+                    continue;
+                }
+                let layer = |name: &str| match section.get(name) {
+                    Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
+                    _ => None,
+                };
+                layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
+            }
+            let above = [if sky_light { 15 } else { 0 }; 256];
+            crate::light::light_from_layers(chunk, &layers, above, sky_light);
+        }
+
+        let section = |y: Tag, sky: Option<Tag>, block: Option<Tag>| {
+            let mut entries = vec![("Y", y)];
+            if let Some(v) = sky {
+                entries.push(("SkyLight", v));
+            }
+            if let Some(v) = block {
+                entries.push(("BlockLight", v));
+            }
+            Tag::compound(entries)
+        };
+        let root = |sections| {
+            Tag::compound([
+                ("isLightOn", Tag::Byte(1)),
+                ("sections", Tag::List(sections)),
+            ])
+        };
+        let check = |tag: &Tag| {
+            for sky_light in [false, true] {
+                let mut expected = Chunk::empty(-3, 5);
+                let s = Arc::make_mut(&mut expected.sections[0]);
+                s.light = Light::Full(Box::new([0xab; 4096]));
+                s.blocks.set(0, 1);
+                s.blocks.set(0, 0);
+                s.biomes.set(0, 1);
+                s.biomes.set(0, 0);
+                let mut actual = expected.clone();
+                reference(tag, &mut expected, sky_light);
+                load_light(tag, &mut actual, sky_light);
+                assert_eq!(
+                    (actual.lit, actual.light_loaded),
+                    (expected.lit, expected.light_loaded)
+                );
+                for (a, b) in actual.sections.iter().zip(&expected.sections) {
+                    assert_eq!(
+                        std::mem::discriminant(&a.light),
+                        std::mem::discriminant(&b.light)
+                    );
+                    assert_eq!(
+                        format!("{:?}", a.blocks.to_wire()),
+                        format!("{:?}", b.blocks.to_wire())
+                    );
+                    assert_eq!(
+                        format!("{:?}", a.biomes.to_wire()),
+                        format!("{:?}", b.biomes.to_wire())
+                    );
+                    for i in 0..4096 {
+                        assert_eq!(a.light(i), b.light(i), "index {i}, sky {sky_light}");
+                    }
+                }
+            }
+        };
+        for tag in [
+            Tag::compound(Vec::<(&str, Tag)>::new()),
+            Tag::compound([("isLightOn", Tag::Byte(0))]),
+            Tag::compound([("isLightOn", Tag::Byte(2))]),
+            Tag::compound([("isLightOn", Tag::Int(1)), ("sections", Tag::List(vec![]))]),
+            Tag::compound([("isLightOn", Tag::Byte(1)), ("sections", Tag::Int(0))]),
+            root(vec![]),
+        ] {
+            check(&tag);
+        }
+        // Cover every repeated byte, including 0xF0/0x0F: a uniform byte
+        // array need not hold uniform nibbles.
+        for byte in 0..=255u8 {
+            check(&root(vec![section(
+                Tag::Byte(19),
+                Some(Tag::ByteArray(vec![byte; 2048])),
+                Some(Tag::ByteArray(vec![255 - byte; 2048])),
+            )]));
+        }
+        // Every pair of uniform sky/block nibble values, with missing
+        // sections below inheriting the stored bottom row.
+        for sky in 0..16u8 {
+            for block in 0..16u8 {
+                check(&root(vec![section(
+                    Tag::Byte(1),
+                    Some(Tag::ByteArray(vec![sky * 17; 2048])),
+                    Some(Tag::ByteArray(vec![block * 17; 2048])),
+                )]));
+            }
+        }
+        for length in [0, 1, 2047, 2048, 2049] {
+            for invalid in [
+                Tag::Int(1),
+                Tag::List(vec![]),
+                Tag::ByteArray(vec![0xf0; length]),
+            ] {
+                check(&root(vec![section(
+                    Tag::Byte(-4),
+                    Some(invalid.clone()),
+                    Some(invalid),
+                )]));
+            }
+        }
+        let varied: Vec<u8> = (0..2048)
+            .map(|i| (i as u8).wrapping_mul(73).wrapping_add(31))
+            .collect();
+        check(&root(vec![
+            section(Tag::Byte(-5), Some(Tag::ByteArray(varied.clone())), None),
+            section(Tag::Byte(20), Some(Tag::ByteArray(varied.clone())), None),
+            section(
+                Tag::String("19".into()),
+                Some(Tag::ByteArray(varied.clone())),
+                None,
+            ),
+            section(Tag::Byte(19), Some(Tag::ByteArray(varied.clone())), None),
+            section(Tag::Byte(17), None, Some(Tag::ByteArray(varied.clone()))),
+            section(Tag::Byte(-4), Some(Tag::ByteArray(varied.clone())), None),
+            // Last duplicate wins, even when its arrays have wrong types.
+            section(
+                Tag::Byte(-4),
+                Some(Tag::Int(15)),
+                Some(Tag::ByteArray(vec![7; 2047])),
+            ),
+            section(Tag::Byte(0), None, Some(Tag::ByteArray(varied))),
+        ]));
+    }
+    #[test]
     fn level_round_trips_through_the_vanilla_files() {
         let dir = std::env::temp_dir().join(format!("horizon-level-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -4092,6 +4429,7 @@ mod tests {
             position: Some([1.5, 70.0, -3.25]),
             rotation: [90.0, 10.0],
             health: 17.0,
+            absorption: 5.0,
             food: 15,
             saturation: 2.5,
             inventory: vec![
@@ -4104,6 +4442,7 @@ mod tests {
             xp_total: 30,
             dimension: "minecraft:the_nether".into(),
             world_spawn: Some([8, 64, 8]),
+            world_spawn_angle: [45.0, -10.0],
             spawn: Some([20.0, 70.0, 20.0]),
             difficulty_locked: true,
             flying: true,
@@ -4122,6 +4461,7 @@ mod tests {
         assert_eq!(back.position, Some([1.5, 70.0, -3.25]));
         assert_eq!(back.rotation, [90.0, 10.0]);
         assert_eq!((back.health, back.food, back.saturation), (17.0, 15, 2.5));
+        assert_eq!(back.absorption, 5.0);
         let mut inv = back.inventory.clone();
         inv.sort();
         assert_eq!(
@@ -4138,6 +4478,7 @@ mod tests {
         );
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
+        assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
         assert_eq!(back.spawn, Some([20.0, 70.0, 20.0]));
         assert!(back.difficulty_locked);
         assert!(back.weather.raining);
@@ -4156,10 +4497,13 @@ mod tests {
         let mut again = Level {
             player_extra: Some(extra),
             ender_items: ender,
+            // The live amount, not the one the loaded compound held (#1307).
+            absorption: 2.0,
             ..back
         };
         again.write(&dir).unwrap();
         let third = Level::read(&dir).unwrap();
+        assert_eq!(third.absorption, 2.0);
         assert!(matches!(
             third
                 .player_extra
@@ -4229,5 +4573,22 @@ mod tests {
             .and_then(|a| number(a.get("flying")))
             .unwrap_or(0);
         assert_eq!(flying_survival, 0);
+    }
+
+    /// `RecipesUsed` is what a furnace owes in experience, so a save that drops it pays the
+    /// player nothing after a reload.
+    #[test]
+    fn a_furnaces_recipes_used_survive_a_save() {
+        use crate::containers::BlockEntity;
+        let Some(BlockEntity::Furnace(mut f)) = BlockEntity::for_block("minecraft:furnace") else {
+            panic!("a furnace");
+        };
+        f.recipes_used
+            .insert("minecraft:cooked_porkchop".to_owned(), 3);
+        let tag = encode_block_entity((1, 64, 2), &BlockEntity::Furnace(f), "minecraft:furnace");
+        let Some((_, BlockEntity::Furnace(back))) = decode_block_entity(&tag) else {
+            panic!("a furnace back");
+        };
+        assert_eq!(back.recipes_used.get("minecraft:cooked_porkchop"), Some(&3));
     }
 }

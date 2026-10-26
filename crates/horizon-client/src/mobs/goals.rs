@@ -1,7 +1,11 @@
 //! Vanilla's `GoalSelector` (priorities, MOVE/LOOK/JUMP/TARGET control flags,
 //! interruption) and the shared goals of `net.minecraft.world.entity.ai.goal`.
 use super::{Mob, MobEvent, MobWorld, Seen, Species, Who, world::TargetInfo};
-use horizon_core::{geometry::Vec3, jmath, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    jmath,
+    random::RandomSource,
+};
 use std::sync::Arc;
 
 pub const MOVE: u8 = 1;
@@ -71,9 +75,6 @@ pub struct GoalSelector {
     goals: Vec<Wrapped>,
     locked: [Option<usize>; 4],
     pub disabled: u8,
-}
-fn flag_index(f: u8) -> usize {
-    f.trailing_zeros() as usize
 }
 impl GoalSelector {
     pub fn add(&mut self, priority: i32, goal: impl Goal + 'static) {
@@ -169,10 +170,6 @@ impl GoalSelector {
             self.stop(i, m, cx);
         }
         self.locked = [None; 4];
-    }
-    #[allow(dead_code)]
-    fn locked_by(&self, flag: u8) -> Option<usize> {
-        self.locked[flag_index(flag)]
     }
 }
 
@@ -540,36 +537,6 @@ impl Mob {
             xd = self.random.next_double() - 0.5;
             zd = self.random.next_double() - 0.5;
         }
-        self.pick_best(w, |m| {
-            let d = m.random_direction_within(
-                0.0,
-                f64::from(h),
-                v,
-                0,
-                xd,
-                zd,
-                std::f64::consts::FRAC_PI_2,
-            )?;
-            let p = m.toward(f64::from(h), d);
-            if p[1] < crate::chunk::MIN_Y
-                || p[1] >= 320
-                || m.restricted(f64::from(h), p)
-                || !m.stable_destination(w, p)
-            {
-                return None;
-            }
-            m.land_up_out_of_solid(w, p)
-        })
-    }
-    /// LandRandomPos.getPosTowards
-    pub fn land_random_pos_towards(
-        &mut self,
-        w: &MobWorld,
-        h: i32,
-        v: i32,
-        to: [f64; 3],
-    ) -> Option<[f64; 3]> {
-        let (xd, zd) = (to[0] - self.position.x, to[2] - self.position.z);
         self.pick_best(w, |m| {
             let d = m.random_direction_within(
                 0.0,
@@ -970,8 +937,7 @@ impl Goal for LookAtPlayer {
         let (id, only) = (m.id, self.only);
         let at = Vec3::new(m.position.x, m.eye_y(), m.position.z);
         let candidates: Vec<(u32, Vec3)> =
-            cx.w.others
-                .iter()
+            cx.w.others_near(area)
                 .filter(|s| s.id != id && s.alive && s.bounds.intersects(area))
                 .filter(|s| only.is_none_or(|o| s.species == o))
                 .map(|s| (s.id, s.position))
@@ -1902,7 +1868,12 @@ impl Goal for FollowParent {
         let species = m.species();
         let pos = m.position;
         let mut best: Option<(u32, f64)> = None;
-        for s in cx.w.others.iter().filter(|s| {
+        // Every position in range puts the box's bottom face in this area.
+        let area = Aabb::new(
+            Vec3::new(pos.x - 9.0, pos.y - 5.0, pos.z - 9.0),
+            Vec3::new(pos.x + 9.0, pos.y + 5.0, pos.z + 9.0),
+        );
+        for s in cx.w.others_near(area).filter(|s| {
             s.alive
                 && s.species == species
                 && !s.baby

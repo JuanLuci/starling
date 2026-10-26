@@ -98,19 +98,27 @@ impl PresentMode {
 /// macOS). Applies at the next start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GraphicsApi {
-    /// Vulkan, and DirectX 12 when Vulkan has no adapter or device.
+    /// Vulkan, then DirectX 12 (Windows), then OpenGL when neither has a surface, adapter or device.
     #[default]
     Auto,
     Vulkan,
     Dx12,
+    /// OpenGL, for GPUs with no Vulkan or DirectX 12 driver (Windows and Linux).
+    OpenGl,
 }
 impl GraphicsApi {
-    pub const ALL: [GraphicsApi; 3] = [GraphicsApi::Auto, GraphicsApi::Vulkan, GraphicsApi::Dx12];
+    pub const ALL: [GraphicsApi; 4] = [
+        GraphicsApi::Auto,
+        GraphicsApi::Vulkan,
+        GraphicsApi::Dx12,
+        GraphicsApi::OpenGl,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "auto",
             GraphicsApi::Vulkan => "vulkan",
             GraphicsApi::Dx12 => "dx12",
+            GraphicsApi::OpenGl => "opengl",
         }
     }
     pub fn label(self) -> &'static str {
@@ -118,6 +126,7 @@ impl GraphicsApi {
             GraphicsApi::Auto => "Auto",
             GraphicsApi::Vulkan => "Vulkan",
             GraphicsApi::Dx12 => "DirectX 12",
+            GraphicsApi::OpenGl => "OpenGL",
         }
     }
     /// The API a name stands for, ignoring case; `None` for anything else.
@@ -126,7 +135,7 @@ impl GraphicsApi {
             .into_iter()
             .find(|api| api.name().eq_ignore_ascii_case(s.trim()))
     }
-    /// `HORIZON_GRAPHICS_API` (auto, vulkan or dx12) if set, else the setting.
+    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else the setting.
     pub fn with_env(self) -> Self {
         std::env::var("HORIZON_GRAPHICS_API")
             .ok()
@@ -159,6 +168,48 @@ pub enum Overlay {
     Stats,
 }
 
+/// How finely far terrain is drawn (`FarDetail` in the LOD options).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FarDetail {
+    /// Each tile level starts at eight times its size from the camera.
+    #[default]
+    Full,
+    /// Coarser levels start at half that distance: about a quarter of the
+    /// far quads, for GPUs that far terrain slows down. Changes the picture.
+    Reduced,
+}
+impl FarDetail {
+    pub fn name(self) -> &'static str {
+        match self {
+            FarDetail::Full => "full",
+            FarDetail::Reduced => "reduced",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FarDetail::Full => "Full",
+            FarDetail::Reduced => "Reduced",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        if s == "reduced" {
+            FarDetail::Reduced
+        } else {
+            FarDetail::Full
+        }
+    }
+}
+
+static REDUCED_SUGGESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether the settings suggest Reduced far detail: set when the renderer
+/// starts, on the GPUs `lod_capped` names (far terrain slows them most).
+pub fn suggest_reduced_far_detail(on: bool) {
+    REDUCED_SUGGESTED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn reduced_far_detail_suggested() -> bool {
+    REDUCED_SUGGESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -184,10 +235,10 @@ pub struct Graphics {
     pub preset: Preset,
     /// Distant surface terrain range, in chunks; 0 disables LODs.
     pub lod_distance: u32,
+    /// How finely far terrain is drawn; Full unless the player picks Reduced.
+    pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Hide shared leaf and mangrove-root faces, reducing foliage density.
-    pub cull_leaves: bool,
     /// Skip drawing entities hidden behind opaque terrain.
     pub entity_culling: bool,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
@@ -207,15 +258,10 @@ pub struct Graphics {
     pub resolution_scale: u32,
     /// FXAA over the world.
     pub fxaa: bool,
-    /// The settings level last shown: Advanced, or Simple.
-    pub advanced: bool,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
     pub battery: bool,
-    /// The Horizon shader pack in `shaderpacks/` (its folder name); empty:
-    /// none, the vanilla picture (docs/shader-packs.md).
-    pub shader_pack: String,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
 }
@@ -224,8 +270,8 @@ impl Default for Graphics {
         Self {
             preset: Preset::Custom,
             lod_distance: 0,
+            far_detail: FarDetail::Full,
             cave_culling: true,
-            cull_leaves: false,
             entity_culling: false,
             chunk_updates: 0,
             upload_budget_kib: 0,
@@ -239,9 +285,7 @@ impl Default for Graphics {
             overlay: Overlay::Off,
             resolution_scale: 100,
             fxaa: false,
-            advanced: false,
             battery: false,
-            shader_pack: String::new(),
             api: GraphicsApi::Auto,
         }
     }
@@ -271,8 +315,8 @@ impl Graphics {
             match key.trim() {
                 "preset" => g.preset = Preset::parse(value),
                 "lodDistance" => g.lod_distance = number(g.lod_distance).min(1024),
+                "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "cullLeaves" => g.cull_leaves = flag(g.cull_leaves),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
@@ -291,9 +335,7 @@ impl Graphics {
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
                 "fxaa" => g.fxaa = flag(g.fxaa),
-                "level" => g.advanced = value == "advanced",
                 "batteryMode" => g.battery = flag(g.battery),
-                "shaderPack" => g.shader_pack = value.to_string(),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "overlay" => {
                     g.overlay = match value {
@@ -310,11 +352,11 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\ncaveCulling:{}\ncullLeaves:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nlevel:{}\nbatteryMode:{}\nshaderPack:{}\ngraphicsApi:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nbatteryMode:{}\ngraphicsApi:{}\n",
             self.preset.name(),
             self.lod_distance,
+            self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.cull_leaves),
             bool_text(self.entity_culling),
             self.chunk_updates,
             self.upload_budget_kib,
@@ -336,9 +378,7 @@ impl Graphics {
             },
             self.resolution_scale,
             bool_text(self.fxaa),
-            if self.advanced { "advanced" } else { "simple" },
             bool_text(self.battery),
-            self.shader_pack,
             self.api.name(),
         )
     }
@@ -350,14 +390,18 @@ impl Graphics {
         if self.workers > 0 {
             return self.workers as usize;
         }
-        // The pool never takes every core. The render thread and the
-        // integrated server thread (single player runs on its own server
-        // thread by default) each need one, and a pool that fills every core
-        // starves them: the frame rate collapses to single digits while the
-        // workers saturate the CPU and its memory bandwidth.
+        // Vanilla's count (Util.maxAllowedExecutorThreads: every core but
+        // one). The pool never takes every core: a pool that fills them all
+        // starves the render and server threads, and the frame rate collapses
+        // while the workers saturate the CPU and its memory bandwidth. One
+        // core left is enough with the workers behind those two threads
+        // (horizon_threads: niced on Linux; on macOS and Windows the server
+        // and render threads are raised above four cores, where vanilla
+        // raises its server thread). Leaving two idled a core of a 4-thread
+        // laptop while a world loaded: a teleport there took ~15% longer.
         let auto = std::thread::available_parallelism()
             .map_or(2, |n| n.get())
-            .saturating_sub(2)
+            .saturating_sub(1)
             .max(1);
         if self.battery { auto.div_ceil(2) } else { auto }
     }
@@ -479,8 +523,8 @@ mod tests {
         let g = Graphics {
             preset: Preset::Balanced,
             lod_distance: 256,
+            far_detail: FarDetail::Reduced,
             cave_culling: false,
-            cull_leaves: true,
             entity_culling: true,
             chunk_updates: 12,
             upload_budget_kib: 4096,
@@ -494,15 +538,20 @@ mod tests {
             overlay: Overlay::Graph,
             resolution_scale: 75,
             fxaa: true,
-            advanced: true,
             battery: true,
-            shader_pack: "horizon-sample".into(),
             api: GraphicsApi::Dx12,
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
         assert_eq!(Graphics::parse(""), Graphics::default());
+        // The old menus' Simple / Advanced choice is ignored, and so is the
+        // shader pack older versions saved.
+        assert_eq!(Graphics::parse("level:advanced\n"), Graphics::default());
         assert_eq!(
-            Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:maybe\nentityCulling:maybe\n"),
+            Graphics::parse("shaderPack:Pack.zip\n"),
+            Graphics::default()
+        );
+        assert_eq!(
+            Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\n"),
             Graphics::default()
         );
     }
@@ -561,11 +610,29 @@ mod tests {
     }
 
     #[test]
-    fn automatic_workers_leave_cores_for_the_render_and_server_threads() {
+    fn far_detail_is_full_unless_reduced_is_picked() {
+        assert_eq!(Graphics::default().far_detail, FarDetail::Full);
+        assert_eq!(
+            Graphics::parse("farDetail:reduced\n").far_detail,
+            FarDetail::Reduced
+        );
+        for text in ["farDetail:full\n", "farDetail:other\n", ""] {
+            assert_eq!(Graphics::parse(text).far_detail, FarDetail::Full);
+        }
+        // No preset changes it.
+        for preset in Preset::ALL {
+            let mut s = crate::settings::Settings::default();
+            apply_preset(preset, &mut s);
+            assert_eq!(s.horizon.far_detail, FarDetail::Full, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn automatic_workers_leave_a_core_as_vanilla_does() {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-        assert_eq!(g.worker_threads(), cores.saturating_sub(2).max(1));
+        assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

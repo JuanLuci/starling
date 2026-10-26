@@ -1,6 +1,7 @@
 //! What a platform does for the game that std cannot: show a folder in its file manager, ask the
-//! player for a file to import, the system clipboard. horizon-android registers Android's (through
-//! the activity); elsewhere nothing is registered and each caller keeps its desktop way.
+//! player for a file to import, the system clipboard, open a page in its browser, seal secrets
+//! with its keystore. horizon-android registers Android's (through the activity); elsewhere
+//! nothing is registered and each caller keeps its desktop way.
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -14,6 +15,13 @@ pub struct Hooks {
     pub clipboard_get: fn() -> Option<String>,
     /// Put text on the system clipboard; false when it could not.
     pub clipboard_set: fn(&str) -> bool,
+    /// Open an https:// page in the system's browser; false when none could.
+    pub open_link: fn(&str) -> bool,
+    /// Seal bytes with a key the platform's keystore holds and never gives out (Android
+    /// Keystore); None when it refused.
+    pub seal: fn(&[u8]) -> Option<Vec<u8>>,
+    /// Open what `seal` sealed on this device; None when it cannot (changed, or another key).
+    pub open: fn(&[u8]) -> Option<Vec<u8>>,
 }
 
 static HOOKS: OnceLock<Hooks> = OnceLock::new();
@@ -46,4 +54,24 @@ pub fn clipboard_get() -> Option<Option<String>> {
 /// The platform's clipboard: None without one registered.
 pub fn clipboard_set(text: &str) -> Option<bool> {
     HOOKS.get().map(|h| (h.clipboard_set)(text))
+}
+
+/// The platform's browser on `url`: None without one registered (the desktop shows the link).
+pub fn open_link(url: &str) -> Option<bool> {
+    HOOKS.get().map(|h| (h.open_link)(url))
+}
+
+/// Whether secrets can be sealed here (a platform keystore is registered).
+pub fn can_seal() -> bool {
+    HOOKS.get().is_some()
+}
+
+/// `data` sealed by the platform's keystore: None without one, or when it refused.
+pub fn seal(data: &[u8]) -> Option<Vec<u8>> {
+    HOOKS.get().and_then(|h| (h.seal)(data))
+}
+
+/// What [`seal`] sealed on this device.
+pub fn open(sealed: &[u8]) -> Option<Vec<u8>> {
+    HOOKS.get().and_then(|h| (h.open)(sealed))
 }

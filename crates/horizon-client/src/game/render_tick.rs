@@ -63,11 +63,11 @@ impl Game<'_> {
         camera: glam::DVec3,
         sky: &horizon_client::environment::Sky,
         biome: u16,
+        water_fog_color: [f32; 3],
     ) -> FogData {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, forward);
-        let water = self.res.biomes().get(biome).water_fog;
         let (rain, thunder) = if self.dim == Dim::Overworld {
             self.world.weather.levels(self.clock.fraction() as f32)
         } else {
@@ -85,11 +85,7 @@ impl Game<'_> {
             &FogInputs {
                 fog_type,
                 sky,
-                water_fog_color: [
-                    (water >> 16 & 255) as f32 / 255.0,
-                    (water >> 8 & 255) as f32 / 255.0,
-                    (water & 255) as f32 / 255.0,
-                ],
+                water_fog_color,
                 biome,
                 render_distance_chunks: self.terrain_distance(),
                 distant_terrain: self.lod.is_some(),
@@ -104,48 +100,12 @@ impl Game<'_> {
                 skybox: self.dim == Dim::Overworld,
                 blindness: None,
                 darkness: self.darkness_fog(),
-                boss_world_fog: self.dragon_bar_shown(),
+                darken_world: self
+                    .boss_overlay
+                    .darken_amount(self.clock.fraction() as f32),
+                boss_world_fog: self.boss_overlay.should_create_world_fog(),
             },
         )
-    }
-    /// What a shader pack's `Frame` uniform reads of the game this frame.
-    pub(super) fn shader_inputs(
-        &self,
-        camera: glam::DVec3,
-        partial_tick: f32,
-    ) -> horizon_client::gfx::ShaderInputs {
-        let (rain, thunder) = if self.dim == Dim::Overworld {
-            self.world.weather.levels(self.clock.fraction() as f32)
-        } else {
-            (0.0, 0.0)
-        };
-        let at = [camera.x, camera.y, camera.z];
-        let day = self.world.day_time;
-        let has_sky_light = self.dim == Dim::Overworld;
-        // CommonUniforms.getEyeBrightness: the camera entity's eye block.
-        let eye = self.eye_position().unwrap_or(at).map(|v| v.floor() as i32);
-        let light = self.world.light(eye[0], eye[1], eye[2]);
-        let eye_light = [light & 15, if has_sky_light { light >> 4 } else { 0 }];
-        horizon_client::gfx::ShaderInputs {
-            rain,
-            thunder,
-            submerged: match fog_type(&self.world, self.res.facts(), at, self.forward()) {
-                FogType::Atmospheric => 0,
-                FogType::Water => 1,
-                FogType::Lava => 2,
-                FogType::PowderSnow => 3,
-            },
-            dimension: match self.dim {
-                Dim::Overworld => 0,
-                Dim::Nether => -1,
-                Dim::End => 1,
-            },
-            has_sky_light,
-            moon_phase: day.div_euclid(24_000).rem_euclid(8) as u8,
-            day_fraction: (day.rem_euclid(24_000) as f32 + partial_tick) / 24_000.0,
-            partial_tick,
-            eye_light,
-        }
     }
     /// `SkyRenderer.shouldRenderDarkDisc`: eye below the horizon and not under water
     /// (`ClientLevelData.getHorizonHeight`: the world's floor in a flat world, else y 63).
@@ -194,7 +154,8 @@ impl Game<'_> {
                 && f.solid_render
                 && f.full_collision
             {
-                block_overlay = self.particle_sprite(state).map(|(name, _)| name);
+                // ScreenEffectRenderer: the block's particle material.
+                block_overlay = Self::block_particle_sprite(&self.pack, state);
                 break;
             }
         }
@@ -231,6 +192,7 @@ impl Game<'_> {
             hud_overlays::camera_overlays(size[0] as i32, size[1] as i32, &overlays, &mut scope);
         self.screen_fx.build(&ScreenInputs {
             sprites: &self.gui.atlas.sprites,
+            flags: &self.gui.atlas.flags,
             aspect: size[0] as f32 / size[1].max(1) as f32,
             partial,
             block_overlay,
@@ -298,11 +260,12 @@ impl Game<'_> {
         };
         let marker = marker_particle_target(self.mode, self.stack_in(self.selected));
         let marker_options = |state| {
-            let (sprite, tint) = Self::block_particle_sprite(&self.pack, self.res.facts(), state)?;
+            // BlockMarker: the particle sprite, untinted.
+            let sprite = Self::block_particle_sprite(&self.pack, state)?;
             Some(ParticleOptions::block(
                 ParticleType::BlockMarker,
                 sprite,
-                tint,
+                0xFFFFFF,
             ))
         };
         let world = &self.world;

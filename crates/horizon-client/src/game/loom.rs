@@ -68,8 +68,9 @@ impl Game<'_> {
         }
         l.last_inputs = inputs;
     }
-    /// A sound the loom menu played: the result's once per tick.
-    pub(super) fn loom_sound(&mut self, sound: &str) {
+    /// A sound the loom or stonecutter menu played: the result's once per
+    /// tick (`lastSoundTime`).
+    pub(super) fn station_sound(&mut self, sound: &str) {
         let ticks = self.ticks;
         let Some(s) = self.station.as_mut() else {
             return;
@@ -98,6 +99,7 @@ impl Game<'_> {
         if taken {
             self.audio
                 .play("minecraft:ui.loom.select_pattern", None, 1.0, 1.0);
+            self.remote_station_button(index as i32);
         }
         taken
     }
@@ -216,7 +218,7 @@ impl Game<'_> {
         oy: f32,
         draws: &[ScreenDraw],
         background: bool,
-    ) -> Option<Vec<(String, u32)>> {
+    ) -> Option<Vec<(horizon_client::text::Text, u32)>> {
         let atlas = &self.gui.atlas;
         let mut tooltip = None;
         let mut sheet: Option<String> = None;
@@ -259,7 +261,10 @@ impl Game<'_> {
                     ..
                 } => self.draw_banner_result(batch, ox + *x0 as f32, oy + *y0 as f32, base, layers),
                 ScreenDraw::Tooltip { key } => {
-                    tooltip = Some(vec![(self.translate(key, key), u32::MAX)]);
+                    tooltip = Some(vec![(
+                        horizon_client::text::Text::literal(self.translate(key, key)),
+                        u32::MAX,
+                    )]);
                 }
                 ScreenDraw::SpriteOf { id } => sheet = Some(id.clone()),
                 ScreenDraw::Fill {
@@ -312,7 +317,7 @@ impl Game<'_> {
         ox: f32,
         oy: f32,
         local: (f32, f32),
-    ) -> Option<Vec<(String, u32)>> {
+    ) -> Option<Vec<(horizon_client::text::Text, u32)>> {
         let s = self.station.as_ref()?;
         let l = &s.loom;
         let dye = s.inputs[1]

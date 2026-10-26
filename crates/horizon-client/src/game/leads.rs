@@ -79,6 +79,8 @@ impl Game<'_> {
         if horizon_client::mobs::leash::remove(m).is_none() {
             return;
         }
+        // Leashable.tickLeash gates a dying entity's lead drop on entity_drops.
+        let drop = drop && (m.alive() || self.ui.rules.bool("entity_drops"));
         let at = [m.position.x, m.position.y, m.position.z];
         if sound {
             self.lead_sound("break", at);
@@ -202,10 +204,10 @@ impl Game<'_> {
                 self.mobs[index].extra.leash = Some(Holder::Player);
                 self.lead_sound("tied", at);
                 // The lead is always used up.
-                if let Some(stack) = self.inventory[self.selected].as_mut() {
+                if let Some(stack) = self.held_mut().as_mut() {
                     stack.count -= 1;
                     if stack.count == 0 {
-                        self.inventory[self.selected] = None;
+                        *self.held_mut() = None;
                     }
                 }
                 return true;

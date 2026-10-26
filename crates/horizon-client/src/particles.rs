@@ -18,7 +18,10 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 macro_rules! particle_types {
     ($($variant:ident = $name:literal),* $(,)?) => {
@@ -73,6 +76,7 @@ particle_types! {
     Splash = "splash",
     Rain = "rain",
     Bubble = "bubble",
+    SulfurBubbles = "sulfur_bubbles",
     BubblePop = "bubble_pop",
     BubbleColumnUp = "bubble_column_up",
     CurrentDown = "current_down",
@@ -194,6 +198,35 @@ impl ParticleType {
                 | Self::VaultConnection
                 | Self::OminousSpawning
         )
+    }
+    /// `SingleQuadParticle.Layer.translucent`: types whose vanilla particle class
+    /// hardcodes the translucent layer, drawn after translucent terrain.
+    /// `TerrainParticle`, `BreakingItemParticle` and `BlockMarker` resolve their
+    /// layer from the sprite instead (`Layer.bySprite`); see the `translucent`
+    /// sprite set on the engine.
+    pub fn translucent_layer(self) -> bool {
+        match self {
+            // CampfireSmokeParticle.
+            Self::CampfireCosySmoke | Self::CampfireSignalSmoke
+            // PlayerCloudParticle.
+            | Self::Cloud | Self::Sneeze
+            // SpellParticle.
+            | Self::Effect | Self::InstantEffect | Self::EntityEffect
+            | Self::Witch | Self::Infested | Self::TrialOmen | Self::RaidOmen
+            // EmissiveRisingParticle.
+            | Self::Soul | Self::SculkSoul
+            // SculkChargeParticle, SculkChargePopParticle, ShriekParticle,
+            // VibrationSignalParticle, FireflyParticle, OverlayParticle.
+            | Self::SculkCharge | Self::SculkChargePop | Self::Shriek
+            | Self::Vibration | Self::Firefly | Self::Flash
+            // SimpleAnimatedParticle and its subclasses: EndRodParticle,
+            // SparkParticle (firework), SquidInkParticle, TotemParticle.
+            | Self::EndRod | Self::Firework | Self::SquidInk | Self::GlowSquidInk
+            | Self::TotemOfUndying
+            // FlyTowardsPositionParticle: its LifetimeAlpha(0, 0.6, 0.25, 1) is not opaque.
+            | Self::VaultConnection => true,
+            _ => false,
+        }
     }
 }
 
@@ -352,6 +385,14 @@ enum Behaviour {
     },
     WaterDrop,
     Bubble,
+    /// `SulfurBubbleParticle`: rises three blocks through still water,
+    /// growing to 0.15.
+    SulfurBubble {
+        y_start: f64,
+        y_end: f64,
+        size_start: f32,
+        y_prev: f64,
+    },
     BubblePop,
     BubbleColumnUp,
     CurrentDown {
@@ -1099,6 +1140,11 @@ impl ParticleLevel<'_> {
         };
         (s.fluid, height)
     }
+    /// The fluid at a block and whether it is a source (`FluidState.isSource`).
+    fn fluid_source(&self, b: [i32; 3]) -> (Fluid, bool) {
+        let s = self.facts.get(self.world.block(b[0], b[1], b[2]));
+        (s.fluid, s.fluid_level == 8 && !s.fluid_falling)
+    }
     /// `getCollisionShape(...).max(Y, x, z)` for cached shapes.
     fn collision_top(&self, b: [i32; 3], fx: f64, fz: f64) -> f64 {
         let state = self.world.block(b[0], b[1], b[2]);
@@ -1133,7 +1179,9 @@ pub struct ParticleEngine {
     pub requested: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     names: Vec<String>,
     rects: Vec<Option<Rect>>,
-    atlas: HashMap<String, Rect>,
+    /// Each named sprite, and whether `SingleQuadParticle.Layer.bySprite` puts
+    /// it on the translucent layer (a texel with 0 < alpha < 255).
+    atlas: HashMap<String, (Rect, bool)>,
     sets: HashMap<ParticleType, u32>,
     set_sprites: Vec<Vec<u32>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
@@ -1144,6 +1192,8 @@ pub struct ParticleEngine {
     starters: Vec<Starter>,
     /// Local sounds requested by particles (dripstone drips): (event, position, volume, pitch).
     pub sounds: Vec<(&'static str, [f64; 3], f32, f32)>,
+    /// How many of each type were made, for `horizon-ctl status`.
+    made: std::collections::BTreeMap<&'static str, u64>,
     /// The item particles' sprites (`BreakingItemParticle`'s slime ball, snowball
     /// and cobweb models, resolved for the ground), one per model layer.
     pub item_sprites: HashMap<ParticleType, Vec<String>>,
@@ -1151,7 +1201,7 @@ pub struct ParticleEngine {
 /// `ParticleGroup.MAX_PARTICLES` (per render group; one group here).
 const MAX_PARTICLES: usize = 16384;
 impl ParticleEngine {
-    pub fn new(root: &Path, atlas: &HashMap<String, Rect>) -> Self {
+    pub fn new(root: &Path, atlas: &HashMap<String, Rect>, translucent: &HashSet<String>) -> Self {
         let mut engine = Self {
             particles: Vec::new(),
             pending: Vec::new(),
@@ -1162,15 +1212,44 @@ impl ParticleEngine {
             requested: None,
             names: Vec::new(),
             rects: Vec::new(),
-            atlas: atlas.clone(),
+            atlas: HashMap::new(),
             sets: HashMap::new(),
             set_sprites: Vec::new(),
             emitters: Vec::new(),
             starters: Vec::new(),
             camera: [0.0; 3],
             sounds: Vec::new(),
+            made: Default::default(),
             item_sprites: HashMap::new(),
         };
+        engine.reload(root, atlas, translucent);
+        engine
+    }
+    /// `onResourceManagerReload`: sprite rects and sets come from the
+    /// reloaded atlas and pack; a live particle keeps drawing its sprite by
+    /// name or index.
+    pub fn reload(
+        &mut self,
+        root: &Path,
+        atlas: &HashMap<String, Rect>,
+        translucent: &HashSet<String>,
+    ) {
+        self.atlas = atlas
+            .iter()
+            .map(|(name, &rect)| (name.clone(), (rect, translucent.contains(name))))
+            .collect();
+        self.rects = self
+            .names
+            .iter()
+            .map(|name| self.atlas.get(name).map(|&(rect, _)| rect))
+            .collect();
+        self.sets.clear();
+        self.set_sprites.clear();
+        self.item_sprites.clear();
+        self.load_sprites(root);
+    }
+    /// The sprite sets of every `particles/*.json` under `root`.
+    fn load_sprites(&mut self, root: &Path) {
         let dir = root.join("assets/minecraft/particles");
         for &ty in ParticleType::ALL {
             let Ok(bytes) = std::fs::read(dir.join(format!("{}.json", ty.name()))) else {
@@ -1185,25 +1264,23 @@ impl ParticleEngine {
                     a.iter()
                         .filter_map(|t| t.as_str())
                         .map(|t| {
-                            engine
-                                .intern(&format!("particle/{}", t.trim_start_matches("minecraft:")))
+                            self.intern(&format!("particle/{}", t.trim_start_matches("minecraft:")))
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             if !sprites.is_empty() {
-                engine.sets.insert(ty, engine.set_sprites.len() as u32);
-                engine.set_sprites.push(sprites);
+                self.sets.insert(ty, self.set_sprites.len() as u32);
+                self.set_sprites.push(sprites);
             }
         }
-        engine
     }
     fn intern(&mut self, name: &str) -> u32 {
         if let Some(i) = self.names.iter().position(|n| n == name) {
             return i as u32;
         }
         self.names.push(name.to_owned());
-        self.rects.push(self.atlas.get(name).copied());
+        self.rects.push(self.atlas.get(name).map(|&(rect, _)| rect));
         (self.names.len() - 1) as u32
     }
     pub fn len(&self) -> usize {
@@ -1319,6 +1396,16 @@ impl ParticleEngine {
             ParticleType::ExplosionEmitter
         };
         self.add(&ParticleOptions::simple(ty), center, [1.0, 0.0, 0.0]);
+        self.explosion_blocks(center, radius, block_count, is_air);
+    }
+    /// `ClientExplosionTracker` with `Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES`.
+    pub fn explosion_blocks(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        block_count: usize,
+        is_air: &dyn Fn([i32; 3]) -> bool,
+    ) {
         for _ in 0..block_count.min(512) {
             let r = &mut self.random;
             let d = Vec3::new(
@@ -1435,8 +1522,13 @@ impl ParticleEngine {
     pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
         let seed = self.seeds.next_long();
         if let Some(particle) = self.make(options, p, v, seed) {
+            *self.made.entry(options.ty.name()).or_default() += 1;
             self.pending.push(particle);
         }
+    }
+    /// How many particles of each type were made so far.
+    pub fn made(&self) -> &std::collections::BTreeMap<&'static str, u64> {
+        &self.made
     }
     /// Parity probes: seed the provider (`ParticleEngine.random`), level and
     /// `SpellParticle.RANDOM` generators.
@@ -1532,7 +1624,10 @@ impl ParticleEngine {
             return;
         }
         if let Some(set) = p.set {
-            let sprites = &self.set_sprites[set as usize];
+            // A sprite set's index can outlive the reload that rebuilt them.
+            let Some(sprites) = self.set_sprites.get(set as usize) else {
+                return;
+            };
             let lifetime = p.lifetime.max(1);
             let index = (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
                 .clamp(0, sprites.len() as i64 - 1);
@@ -1931,6 +2026,27 @@ impl ParticleEngine {
                     q.lifetime = (40.0 / (f64::from(r.next_float()) * 0.8 + 0.2)) as i32;
                     q.behaviour = Behaviour::BubbleColumnUp;
                 }
+                q
+            }
+            T::SulfurBubbles => {
+                let mut q = Particle::at(r, ty, p);
+                q.gravity = -0.04;
+                q.friction = 0.85;
+                q.set_size(0.02, 0.02);
+                q.velocity[0] =
+                    v[0] * f64::from(0.2f32) + f64::from((r.next_float() * 2.0 - 1.0) * 0.02);
+                // The provider passes `yAux` as `za`, so the Z speed comes from Y.
+                q.velocity[2] =
+                    v[1] * f64::from(0.2f32) + f64::from((r.next_float() * 2.0 - 1.0) * 0.02);
+                let size_start = 0.02 + 0.02 * r.next_float();
+                q.size = size_start;
+                q.lifetime = i32::MAX;
+                q.behaviour = Behaviour::SulfurBubble {
+                    y_start: p[1],
+                    y_end: p[1] + 4.0 - 1.0,
+                    size_start,
+                    y_prev: p[1],
+                };
                 q
             }
             T::BubblePop => {
@@ -3172,6 +3288,40 @@ impl ParticleEngine {
                     p.removed = true;
                 }
             }
+            Behaviour::SulfurBubble {
+                y_start,
+                y_end,
+                size_start,
+                y_prev,
+            } => {
+                p.base_tick(level);
+                let (fluid, source) = level.fluid_source(ParticleLevel::block_at(p.position));
+                if !(p.removed || (fluid == Fluid::Water && source)) {
+                    p.removed = true;
+                }
+                if !p.removed && p.position[1] >= y_end {
+                    p.removed = true;
+                }
+                if !p.removed && p.position[1] <= y_prev {
+                    p.removed = true;
+                }
+                // randomHorizontalWiggling, then a second, horizontal move.
+                let wiggle = |r: &mut LegacyRandom| {
+                    let f = r.next_float() * 0.003;
+                    f64::from(if r.next_boolean() { f } else { -f }) * 0.5
+                };
+                p.velocity[0] += wiggle(&mut p.random);
+                p.velocity[2] += wiggle(&mut p.random);
+                p.move_by(level, [p.velocity[0], 0.0, p.velocity[2]]);
+                let progress = ((p.position[1] - y_start) / (y_end - y_start)) as f32;
+                p.size = size_start + progress * (0.15 - size_start);
+                p.behaviour = Behaviour::SulfurBubble {
+                    y_start,
+                    y_end,
+                    size_start,
+                    y_prev: p.position[1],
+                };
+            }
             Behaviour::BubbleColumnUp => {
                 p.base_tick(level);
                 if !p.removed && level.fluid(ParticleLevel::block_at(p.position)).0 != Fluid::Water
@@ -3673,9 +3823,18 @@ impl ParticleEngine {
             {
                 continue;
             }
-            let rect = match &p.sprite {
-                Sprite::Index(i) => self.rects.get(*i as usize).copied().flatten(),
-                Sprite::Named(name) => self.atlas.get(name).copied(),
+            // `SubmitNodeCollection.submitQuadParticleGroup`: the translucent
+            // layer draws after translucent terrain, so a crumb of stained
+            // glass cannot hide the glass behind it (`getLayer`).
+            let (rect, layer) = match &p.sprite {
+                Sprite::Index(i) => (
+                    self.rects.get(*i as usize).copied().flatten(),
+                    p.ty.translucent_layer(),
+                ),
+                Sprite::Named(name) => match self.atlas.get(name) {
+                    Some(&(rect, translucent)) => (Some(rect), translucent),
+                    None => (None, false),
+                },
             };
             let Some(r) = rect else { continue };
             let a = f64::from(partial);
@@ -3780,7 +3939,11 @@ impl ParticleEngine {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        layer: 0,
+                        layer: if layer {
+                            crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
+                        } else {
+                            0
+                        },
                         color,
                         light,
                     });
@@ -3804,7 +3967,7 @@ mod tests {
 
     #[test]
     fn egg_teleport_unpacks_offsets_and_preserves_seeded_draw_order() {
-        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new());
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
         engine.seed_randoms(0, 0, 0);
         // Destination offset (-15, 7, 15); the unused top byte is ignored.
         engine.block_teleportation([4, 12, -5], 0xff01_0f1fu32 as i32, [16, 8, 16], 0);
@@ -3829,7 +3992,7 @@ mod tests {
 
     #[test]
     fn consume_teleport_unpacks_offsets_within_127() {
-        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new());
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
         engine.seed_randoms(0, 0, 0);
         // TeleportRandomlyConsumeEffect: BlockUtil.clampedPackDifferenceInPosition
         // of the move (-7, -3, 9) with radii 127, from (4, 12, -5) to (-3, 9, 4).
@@ -3854,7 +4017,8 @@ mod tests {
             (2, 0, 99_413_408_083_437),
         ] {
             for distant in [false, true] {
-                let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new());
+                let mut engine =
+                    ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
                 engine.seed_randoms(0, 0, 0);
                 if distant {
                     engine.camera = [1000.0; 3];

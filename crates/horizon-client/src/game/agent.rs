@@ -9,6 +9,10 @@ use horizon_client::{
     block_entity_anim::Ticker,
     chunk::{MIN_Y, SECTIONS},
     items::ItemStack,
+    mobs::{
+        Species,
+        render::{PROFESSIONS, VILLAGER_TYPES},
+    },
     widgets,
 };
 use horizon_core::geometry::Vec3;
@@ -335,6 +339,12 @@ impl Game<'_> {
             Some(Ticker::Shulker { .. }) => v["lid"] = json!(self.block_anim(pos, 1.0).shulker.0),
             _ => {}
         }
+        // The lines of a sign, as this client has them.
+        if let Some(horizon_client::containers::BlockEntity::Sign(sign)) =
+            self.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+        {
+            v["sign"] = json!({ "front": sign.front.lines, "back": sign.back.lines });
+        }
         v
     }
     pub(super) fn stack_value(&self, s: &ItemStack) -> Value {
@@ -380,6 +390,9 @@ impl Game<'_> {
         Ok(())
     }
     pub(super) fn screen_label(&self) -> &'static str {
+        if self.dialog_open() {
+            return "dialog";
+        }
         if self.title.is_some() {
             return "title";
         }
@@ -403,7 +416,10 @@ impl Game<'_> {
             Screen::Stats => "stats",
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
+            Screen::Friends => "friends",
             Screen::CommandBlock => "command-block",
+            Screen::Win => "win",
+            Screen::Mod => "mod",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -455,16 +471,24 @@ impl Game<'_> {
                 "velocity": [p.velocity.x, p.velocity.y, p.velocity.z],
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
+                "fall_flying": p.fall_flying,
                 "sneaking": self.keys.contains(&KeyCode::ShiftLeft),
-                "sprinting": self.keys.contains(&KeyCode::ControlLeft),
+                "sprinting": p.sprinting,
+                "fov_modifier": self.view.fov_modifier,
                 "health": p.health.health(),
+                "absorption": p.health.absorption(),
+                // The hurt animation's ticks left (the camera's hurt tilt).
+                "hurt_time": p.health.hurt_animation_time,
+                "air": p.air,
                 "food": p.health.food.food,
                 "saturation": p.health.food.saturation,
+                "shield_cooldown": self.shield_cooldown,
                 "xp": { "level": self.experience.level, "progress": self.experience.progress, "total": self.experience.total },
                 "effects": self.potions.effects.list.iter().map(|e| json!({ "id": e.id, "duration_ticks": e.duration, "amplifier": e.amplifier })).collect::<Vec<_>>(),
             })
         });
         json!({
+            "dialog": self.dialog_status(),
             "screen": self.screen_label(),
             // The sign editor's block and side.
             "sign": self.sign_edit.as_ref().map(|s| json!({ "pos": [s.pos.0, s.pos.1, s.pos.2], "front": s.front })),
@@ -479,6 +503,8 @@ impl Game<'_> {
             "sleeping": self.sleeping,
             // The item in use: its slot and for how many ticks.
             "using": self.using.map(|(slot, ticks)| json!({ "slot": slot, "ticks": ticks })),
+            // The block being dug: how far along, after how many ticks.
+            "mining": self.mining.as_ref().map(|m| json!({ "pos": m.pos, "progress": m.progress, "ticks": m.ticks })),
             // The arm swings started (LivingEntity.swing).
             "swings": self.swings_started,
             "time": { "day_time": self.world.day_time, "day": self.world.day_time.div_euclid(24000), "time_of_day": self.world.day_time.rem_euclid(24000) },
@@ -510,6 +536,7 @@ impl Game<'_> {
         };
         match &title.mode {
             Mode::Main => json!({ "mode": "main", "worlds": worlds() }),
+            Mode::Account => json!({ "mode": "account" }),
             Mode::Select {
                 worlds: list,
                 selected,
@@ -580,10 +607,20 @@ impl Game<'_> {
             }
         };
         for m in self.mobs.iter().filter(|m| m.alive()) {
+            let mut v = json!({ "id": m.id, "kind": "mob", "health": m.health, "baby": m.is_baby(), "hurt_time": m.hurt_time });
+            // VillagerData as this game knows it: on a client, what the
+            // server's synched data says.
+            if matches!(m.species(), Species::Villager | Species::ZombieVillager) {
+                v["villager"] = json!({
+                    "type": VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()],
+                    "profession": PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()],
+                    "level": m.extra.variant3,
+                });
+            }
             push(
                 [m.position.x, m.position.y, m.position.z],
                 m.kind.id.as_ref(),
-                json!({ "id": m.id, "kind": "mob", "health": m.health, "baby": m.is_baby(), "hurt_time": m.hurt_time }),
+                v,
             );
         }
         for item in &self.dropped {
@@ -652,6 +689,18 @@ impl Game<'_> {
             v["craft_size"] = json!(self.craft_size);
             v["station"] = json!(self.station.as_ref().map(|s| format!("{:?}", s.kind)));
             v["container"] = json!(self.container);
+            // The title a server gave the menu, span by span as it is drawn.
+            if let Some(title) = self.remote_menu_title() {
+                let spans = title.spans.iter().map(|s| {
+                    json!({
+                        "text": s.text,
+                        "color": s.style.color.map(|c| format!("#{c:06X}")),
+                        "bold": s.style.is_bold(),
+                        "italic": s.style.is_italic(),
+                    })
+                });
+                v["title"] = json!(spans.collect::<Vec<_>>());
+            }
             // The recipe book's buttons (GUI pixels): the book button, then
             // the recipe buttons of the page, page arrows, filter and tabs.
             let book = self.recipe_book_targets();
@@ -673,6 +722,8 @@ impl Game<'_> {
         json!({
             "chat": self.remote_chat(n).unwrap_or_else(|| self.ui.chat.recent_lines(n)),
             "order": "newest first",
+            // The chat lines as drawn: colours, click and hover events.
+            "styled": self.ui.chat.recent_components(n),
             "title": (titles.time > 0).then(|| titles.title.as_ref().map(|t| t.plain())).flatten(),
             "subtitle": (titles.time > 0).then(|| titles.subtitle.as_ref().map(|t| t.plain())).flatten(),
             "actionbar": (titles.overlay_time > 0).then(|| titles.overlay.as_ref().map(|t| t.plain())).flatten(),
@@ -1568,8 +1619,12 @@ impl Game<'_> {
                 if self.screen != Screen::Dead {
                     return Err("respawn needs the death screen".into());
                 }
-                let label =
-                    horizon_client::text::Text::translate("deathScreen.respawn", &[]).plain();
+                let key = if self.level.hardcore {
+                    "deathScreen.spectate"
+                } else {
+                    "deathScreen.respawn"
+                };
+                let label = horizon_client::text::Text::translate(key, &[]).plain();
                 let w = widgets::find(&widgets::last(), &label)?;
                 if !w.enabled {
                     // DeathScreen enables its buttons after 20 ticks.
@@ -1842,11 +1897,21 @@ impl Game<'_> {
                 if self.ticks < *report_tick && !timed_out {
                     return None;
                 }
-                let after = pos.map(|p| self.block_json(p));
                 let changed = match (*pos, *before) {
                     (Some(p), Some(b)) => self.world.block(p[0], p[1], p[2]) != b,
                     _ => false,
                 };
+                // A client of a server (single player's server thread, a LAN
+                // guest) sees the block once the server's answer comes.
+                if *place
+                    && !changed
+                    && self.remote.is_some()
+                    && self.ticks < *report_tick + 20
+                    && !timed_out
+                {
+                    return None;
+                }
+                let after = pos.map(|p| self.block_json(p));
                 let used = delta(inventory, &self.inventory_counts());
                 let mut v = json!({
                     "ok": !*place || changed,

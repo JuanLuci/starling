@@ -4,7 +4,7 @@ use super::Game;
 use horizon_client::{
     hud::HudAtlas,
     lang,
-    pack_screen::{Compat, PackInfo, Source as PackSource},
+    pack_screen::{self, Compat, PackInfo, Source as PackSource},
     packs::{self, Pack, Position},
     text::{Style, Text},
 };
@@ -36,23 +36,16 @@ pub fn open_folder(dir: &Path) {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
 }
-/// The resource root to load from, given the vanilla root and the selection.
-pub fn startup_root(vanilla: &Path, selected: &[String]) -> std::io::Result<PathBuf> {
-    root_with_server(vanilla, selected, &[])
-}
-/// The same with a server's packs on top (`ServerPackManager`'s, above the player's).
-fn root_with_server(
+/// The resource root to load from, given the vanilla root, the selection and
+/// a server's packs, which go on top (`Pack.Position.TOP`, fixed).
+pub fn startup_root(
     vanilla: &Path,
     selected: &[String],
-    server: &[(u128, PathBuf)],
+    server: &[Pack],
 ) -> std::io::Result<PathBuf> {
     let all = packs::discover(vanilla, &packs_dir());
     let mut enabled = packs::enabled(&all, selected);
-    enabled.extend(
-        server
-            .iter()
-            .filter_map(|(id, zip)| packs::server_pack(zip, *id)),
-    );
+    enabled.extend_from_slice(server);
     packs::resource_root(vanilla, &enabled, &cache_dir())
 }
 fn info(p: &Pack) -> PackInfo {
@@ -68,14 +61,15 @@ fn info(p: &Pack) -> PackInfo {
             PackSource::Default
         },
         compat: p.compatibility,
-        icon: p.icon,
+        icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
         required: false,
         position: Position::Top,
         fixed: false,
     }
 }
-/// The vanilla pack: required, at the bottom (`BuiltInPackSource`).
-fn vanilla_info() -> PackInfo {
+/// The vanilla pack: required, at the bottom (`BuiltInPackSource`), with the
+/// client JAR's `pack.png` that the prepared resources hold.
+fn vanilla_info(vanilla: &Path) -> PackInfo {
     PackInfo {
         id: "vanilla".into(),
         title: Text::translate("resourcePack.vanilla.name", &[]),
@@ -83,7 +77,10 @@ fn vanilla_info() -> PackInfo {
         description_style: Style::default(),
         source: PackSource::BuiltIn,
         compat: Compat::Compatible,
-        icon: true,
+        icon: std::fs::read(vanilla.join("pack.png"))
+            .ok()
+            .as_deref()
+            .and_then(pack_screen::load_icon),
         required: true,
         position: Position::Bottom,
         fixed: false,
@@ -95,7 +92,7 @@ pub(super) fn pack_infos(vanilla: &Path) -> Vec<PackInfo> {
         .iter()
         .map(info)
         .collect();
-    infos.push(vanilla_info());
+    infos.push(vanilla_info(vanilla));
     infos
 }
 impl Game<'_> {
@@ -122,7 +119,13 @@ impl Game<'_> {
     /// particle and font textures), item models, sounds, languages, GUI
     /// metadata and the cloud and world border textures.
     pub(super) fn reload_packs(&mut self) {
-        if let Err(e) = self.try_reload_packs() {
+        // Pack reload updates tail-owned mob metadata. Keep menus responsive
+        // until those resources exist, then apply the latest selection once.
+        if self.rest_loader.is_some() || self.world_loader.is_some() {
+            self.pending_pack_reload = true;
+            return;
+        }
+        if let Err(e) = self.reload_selected_packs() {
             log::warn!("Horizon: resource reload failed: {e}");
             if self.screen != super::Screen::Options {
                 self.open_options_at(
@@ -133,30 +136,21 @@ impl Game<'_> {
             self.ui.options.resource_error = Some(e.to_string());
         }
     }
-    /// `reload_packs`, with the error for the caller (a server's pack failing to load).
-    pub(super) fn try_reload_packs(&mut self) -> horizon_client::Result<()> {
-        // Pack reload updates tail-owned mob metadata. Keep menus responsive
-        // until those resources exist, then apply the latest selection once.
-        if self.rest_loader.is_some() || self.world_loader.is_some() {
-            self.pending_pack_reload = true;
-            return Ok(());
-        }
+    /// Reload from the selected packs and the server's.
+    pub(super) fn reload_selected_packs(&mut self) -> horizon_client::Result<()> {
         let vanilla = self.vanilla_root();
         if self.ui.vanilla_root.as_os_str().is_empty() {
             self.ui.vanilla_root = vanilla.clone();
         }
-        let server = self.server_packs.applied();
-        // The content mods over the packs, as at start: their textures, sounds and languages
-        // stay.
-        let (enabled, dev) = (&self.settings.mods.enabled, &self.mods.dev);
-        root_with_server(&vanilla, &self.settings.resource_packs, &server)
-            .map(|root| super::mods::content_root(&root, enabled, dev))
-            .map_err(Into::into)
-            .and_then(|root| self.reload_resources(&root))
+        let server = &self.server_packs.active;
+        let root = startup_root(&vanilla, &self.settings.resource_packs, server)?;
+        let root =
+            super::mods::content_root(&root, &self.settings.mods.enabled, &self.options.dev_mods);
+        self.reload_resources(&root)
     }
     fn reload_resources(&mut self, root: &Path) -> horizon_client::Result<()> {
         let render = std::sync::Arc::new(self.pack.assets.reload(root)?);
-        let mut atlas = HudAtlas::build(root)?;
+        let mut atlas = HudAtlas::build_over(root, &self.vanilla_root())?;
         atlas.font.uniform = self.settings.force_unicode;
         atlas.font.japanese = self.settings.japanese_glyphs;
         let gui = super::UiResources {
@@ -194,12 +188,18 @@ impl Game<'_> {
             }
         };
         // Everything loaded: switch over.
+        self.waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(root);
+        self.armor_stand_assets.reload_trims(root);
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.to_path_buf();
         let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;
+        // The atlas's sprites moved: the particle engine re-reads every rect
+        // and the packs' sprite sets, or every particle draws a stale region.
+        self.particles
+            .reload(root, &self.gui.atlas.sprites, &self.gui.atlas.translucent);
         horizon_client::ui_theme::reset_atlas();
         // Villager hats come from the pack's texture metadata (shared data, swapped in place).
         *self
@@ -211,6 +211,7 @@ impl Game<'_> {
             horizon_client::mobs::villager_hats::VillagerHats::load(root);
         horizon_client::ui::load_metadata(root);
         lang::set(lang::Language::load(&[&root.to_path_buf()], &lang::code()));
+        self.refresh_remote_language();
         self.audio.reload(root);
         self.clear_lod();
         self.streaming.reload_resources(&mut self.world, context);

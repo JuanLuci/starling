@@ -1,8 +1,8 @@
 //! Loading and calling mods with wasmtime's component model. A Starling mod links
 //! `starling:mods@0.1.0` (starling-mod-sdk/wit); one built for Horizon links its `horizon:mods`
 //! 0.1 interfaces (horizon-mod-sdk/wit, Horizon's own), which this host offers too, and keeps 0.1's
-//! hooks.
-use crate::manifest::{Capability, Manifest, Package, Side};
+//! hooks, with Horizon's `command`, `ui`, `render` and `input`.
+use crate::manifest::{Capability, Manifest, Package, STORAGE_DIR, Side};
 use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
@@ -29,6 +29,36 @@ mod v1 {
         world: "horizon-mod",
     });
 }
+/// Horizon's capability `ui` beyond `horizon-mod` (docs/mods.md): a second world, so Horizon
+/// mods built before it (no `ui-events` export) still instantiate as `horizon-mod` and simply
+/// hear nothing of their widgets.
+mod ui_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "ui-host",
+    });
+}
+/// Horizon's capabilities `render` and `input` (docs/mods.md): the game draws the shapes.
+mod render_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "render-host",
+    });
+}
+use render_bindings::RenderHost;
+/// Horizon's capability `input`'s records (WIT `interface input`).
+pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+/// What Horizon's capability `render` asks the game to draw (WIT `interface render`).
+pub use render_bindings::horizon::mods::render::{
+    Corner as RenderCorner, FillShape, FrameRate, ItemShape, Point as RenderPoint, QuadShape,
+    Rect as RenderRect, Shape, SpriteShape, TextShape,
+};
+use ui_bindings::UiHost;
+/// The widget model a Horizon `ui` screen or settings page shows (WIT `interface ui`), for the
+/// game to draw with its menus' own widgets.
+pub use ui_bindings::horizon::mods::ui::{
+    ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
+};
 // bindgen's type: no derive.
 #[allow(clippy::derivable_impls)]
 impl Default for SpawnSpots {
@@ -64,7 +94,8 @@ pub use starling::starling::mods::{
     slots::{ClickKind, Menu},
     tooltips::ItemGrid,
     types::{BlockPos, Direction, GameMode, Hand, ItemStack},
-    widgets::{Anchor, ScreenButton, Shape, TouchButton, WindowButton, WindowPart},
+    // `Shape` is Horizon's `render` shape: a button's is `ButtonShape`.
+    widgets::{Anchor, ScreenButton, Shape as ButtonShape, TouchButton, WindowButton, WindowPart},
     world_draw::{
         Boxes as WorldBoxes, Facing, Icon as WorldIcon, Label as WorldLabel, Layer as WorldLayer,
         Lines as WorldLines, Point, Texts as WorldTexts,
@@ -152,9 +183,6 @@ const STORAGE_MAX_KEYS: usize = 64;
 /// a cheap-in-fuel loop replacing one key with large payloads needs its own
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
-/// A mod's data, beside its `horizon-mods` folder (`find`'s `path.parent()`
-/// never has a manifest there, so `find` never mistakes it for a mod).
-const STORAGE_DIR: &str = ".horizon-mod-data";
 
 /// What `world-read` mods see of the level: the loaded chunks around the player, taken once a
 /// tick by the game.
@@ -254,6 +282,20 @@ pub struct Snapshot {
     pub keys_down: Vec<String>,
     /// The player plays with a touch screen (`mobile.has-touch`).
     pub touch: bool,
+    /// The screen in GUI pixels (Horizon's capability `render`'s `gui-size`).
+    pub gui_size: (f32, f32),
+    /// The main hand's stack (Horizon's capability `input`'s `held`).
+    pub held: Option<HeldItem>,
+    /// The game's frame counter: fps, min, 1% low (`render.frame-stats`).
+    pub frame: (u32, u32, u32),
+    /// The movement and click mappings Horizon's `input.mapping` answers for:
+    /// (mapping, the bound key's label, held).
+    pub mappings: Vec<(&'static str, String, bool)>,
+    /// Attack and use clicks in the last second.
+    pub cps: (u32, u32),
+    /// The HUD font's advance per character from U+0000
+    /// (`render.text-width`); empty: 6 each.
+    pub font_widths: Arc<[f32]>,
 }
 
 /// The game's controls mods read and hold (`keys.is-control-down`, `keys.presses`,
@@ -282,8 +324,17 @@ pub enum Output {
     Overlay { text: String },
     /// A mod command's feedback, red when `error`.
     Feedback { text: String, error: bool },
+    /// Horizon's `command.run`: a vanilla command line, without its slash, to run as the player.
+    Command { line: String },
     /// The mod was turned off: it trapped, overran or failed to start.
     Stopped { name: String, reason: String },
+    /// Horizon's `ui.open-screen`: the mod's entry in `entries()`; what it shows is
+    /// [`Mods::screen`].
+    OpenUiScreen { owner: usize },
+    /// Horizon's `ui.close-screen`: the mod closed its own screen (no `closed` back).
+    CloseUiScreen { owner: usize },
+    /// Horizon's `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
+    Shake { strength: f32, seconds: f32 },
     /// `chat-send.send`: a chat line or `/command` as the player.
     Send { message: String },
     /// `sound.play`.
@@ -467,6 +518,15 @@ pub struct Entry {
     /// It stopped on the quick compiler's code: it starts again once its full code is kept.
     retry_full: bool,
 }
+impl Entry {
+    /// The running mod has a settings page (Horizon's capability `ui` set widgets with
+    /// `ui.set-settings`): its row in Options > Mods gains a button.
+    pub fn has_ui_settings(&self) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|r| !r.store.data().ui.settings.is_empty())
+    }
+}
 
 /// A mod's buttons (`widgets`): on the game's screens and on the touch controls, and the looks it
 /// gave the game's own touch buttons.
@@ -485,7 +545,7 @@ pub struct ControlStyle {
     pub control: String,
     pub label: String,
     pub icon: String,
-    pub shape: Shape,
+    pub shape: ButtonShape,
 }
 
 /// The hooks a mod asked for, whichever API it was built for.
@@ -548,10 +608,24 @@ enum Guest {
 struct Running {
     store: Store<State>,
     guest: Guest,
+    /// A Horizon mod's `ui-events` export; none for a Starling mod or one built before `ui`.
+    ui: Option<UiHost>,
     hooks: Hooks,
     capabilities: Vec<Capability>,
     /// The render hooks called already (`hud`, `element`, `screen`).
     rendered: Vec<&'static str>,
+}
+
+/// What Horizon's capability `ui` pushed since the hooks last ran.
+#[derive(Default)]
+struct UiState {
+    /// The screen `ui.open-screen` last pushed, until `ui.close-screen`.
+    screen: Option<UiScreen>,
+    /// The widgets `ui.set-settings` last pushed (the mod's page in Options > Mods).
+    settings: Vec<UiWidget>,
+    /// The calls since the last hook ended, for [`Output`].
+    open: bool,
+    close: bool,
 }
 
 struct State {
@@ -584,6 +658,14 @@ struct State {
     channels: Vec<String>,
     /// When `chat-send.send` last sent, within the last second.
     sent: VecDeque<Instant>,
+    /// Horizon's capability `ui`: its screen and settings page.
+    ui: UiState,
+    /// Horizon's capability `render`'s HUD shapes, drawn until replaced.
+    shapes: Vec<Shape>,
+    /// Horizon's capability `render`'s corner panel.
+    corner: Option<CornerPanel>,
+    /// Horizon's capability `input`: claimed items, keys and their events.
+    input: InputState,
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
     /// Bytes `storage::set` may still write before this hook call ends
@@ -656,23 +738,6 @@ const _: fn() = || {
     fn send<T: Send>() {}
     send::<Mods>();
 };
-
-/// The `.hmod` files and mod folders in `dir`, by name.
-pub fn find(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut found: Vec<PathBuf> = read
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().is_some_and(|e| e == "hmod")
-                || p.join(crate::manifest::MANIFEST).is_file()
-        })
-        .collect();
-    found.sort();
-    found
-}
 
 /// What the chat hooks made of a received line.
 #[derive(Clone, Debug, PartialEq)]
@@ -794,6 +859,10 @@ impl Mods {
             starling::StarlingMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             v1::HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -927,6 +996,10 @@ impl Mods {
             icons: Vec::new(),
             channels: Vec::new(),
             sent: VecDeque::new(),
+            ui: UiState::default(),
+            shapes: Vec::new(),
+            corner: None,
+            input: InputState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             limits: Limits {
@@ -940,22 +1013,28 @@ impl Mods {
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-        let (guest, mut hooks): (Guest, Hooks) = if for_starling {
+        let (guest, ui, mut hooks): (Guest, Option<UiHost>, Hooks) = if for_starling {
             let exports = starling::StarlingMod::instantiate(&mut store, &component, linker)
                 .map_err(|e| quick_detail(&m.id, &e))?;
             let hooks = exports
                 .starling_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| quick_detail(&m.id, &e))??;
-            (Guest::Starling(exports), hooks.into())
+            (Guest::Starling(exports), None, hooks.into())
         } else {
-            let exports = v1::HorizonMod::instantiate(&mut store, &component, linker)
+            let instance = linker
+                .instantiate(&mut store, &component)
                 .map_err(|e| quick_detail(&m.id, &e))?;
+            let exports =
+                v1::HorizonMod::new(&mut store, &instance).map_err(|e| quick_detail(&m.id, &e))?;
+            // `ui-events` is a Horizon mod built since `ui`'s; older ones have no export and stay
+            // callable through `events` alone.
+            let ui = UiHost::new(&mut store, &instance).ok();
             let hooks = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| quick_detail(&m.id, &e))??;
-            (Guest::Horizon(exports), hooks.into())
+            (Guest::Horizon(exports), ui, hooks.into())
         };
         hooks.commands.retain(|c| {
             let free = !reserved(c) && !taken.contains(c);
@@ -978,6 +1057,7 @@ impl Mods {
         Ok(Some(Running {
             store,
             guest,
+            ui,
             hooks,
             capabilities: m.capabilities.clone(),
             rendered: Vec::new(),
@@ -1103,7 +1183,18 @@ impl Mods {
             .and_then(|()| f(&run.guest, &mut run.store));
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
-        self.out.append(&mut run.store.data_mut().out);
+        let data = run.store.data_mut();
+        let (open, close) = (
+            std::mem::take(&mut data.ui.open),
+            std::mem::take(&mut data.ui.close),
+        );
+        self.out.append(&mut data.out);
+        if open {
+            self.out.push(Output::OpenUiScreen { owner: i });
+        }
+        if close {
+            self.out.push(Output::CloseUiScreen { owner: i });
+        }
         match result {
             Ok(r) => Some(r),
             Err(e) => {
@@ -1411,8 +1502,9 @@ impl Mods {
             })
             .collect()
     }
-    /// Mod `id`'s keybind `key` pressed or released.
-    pub fn key(&mut self, id: &str, key: &str, pressed: bool) {
+    /// Mod `id`'s keybind `key` pressed or released (Starling's `keybinds`; Horizon's `input`
+    /// keys are [`Mods::key`]).
+    pub fn keybind(&mut self, id: &str, key: &str, pressed: bool) {
         if let Some(i) = self.by_id(id) {
             self.call(i, FUEL_EVENT, |g, s| match g {
                 Guest::Starling(m) => m.starling_mods_events().call_key(s, key, pressed),
@@ -1574,6 +1666,144 @@ impl Mods {
     /// The running mods' HUD panels.
     pub fn panels(&self) -> impl Iterator<Item = &Panel> {
         self.running().filter_map(|r| r.store.data().panel.as_ref())
+    }
+    /// The running mods' corner panels (Horizon's capability `render`), in load order.
+    pub fn corner_panels(&self) -> impl Iterator<Item = &CornerPanel> {
+        self.running()
+            .filter_map(|r| r.store.data().corner.as_ref())
+    }
+    /// Some running mod has a `frame` hook: the game refreshes the snapshot every frame for it.
+    pub fn wants_frames(&self) -> bool {
+        self.wants(|h| h.frame)
+    }
+    /// Some running mod claimed items (Horizon's capability `input`).
+    pub fn claims_any(&self) -> bool {
+        self.inputs().any(|i| !i.claimed.is_empty())
+    }
+    /// Some running mod claimed the item `id`.
+    pub fn claims(&self, id: &str) -> bool {
+        self.inputs().any(|i| i.claimed.iter().any(|c| c == id))
+    }
+    /// Some running mod registered a key (Horizon's `input.register-key`).
+    pub fn has_keys(&self) -> bool {
+        self.inputs().any(|i| !i.keys.is_empty())
+    }
+    /// The Horizon mods' keys: (mod name, key), for Controls.
+    pub fn mod_keys(&self) -> impl Iterator<Item = (&str, &ModKey)> {
+        self.running().flat_map(|r| {
+            let d = r.store.data();
+            d.input.keys.iter().map(move |k| (d.name.as_str(), k))
+        })
+    }
+    /// The use button went down with `item`: `use-start` to each mod that claimed it.
+    pub fn use_start(&mut self, item: &HeldItem) {
+        let event = InputEvent::UseStart(ItemUse {
+            item: item.clone(),
+            ticks: 0,
+        });
+        self.push_input(|i| i.claimed.contains(&item.id), &event);
+    }
+    /// The claimed use ended after `ticks`.
+    pub fn use_stop(&mut self, item: &HeldItem, ticks: u32) {
+        let event = InputEvent::UseStop(ItemUse {
+            item: item.clone(),
+            ticks,
+        });
+        self.push_input(|i| i.claimed.contains(&item.id), &event);
+    }
+    /// The key `key` (`key.keyboard.r`) went down or up: each Horizon mod with a key on it hears
+    /// its own name for it (Starling's keybinds are [`Mods::keybind`]).
+    pub fn key(&mut self, key: &str, down: bool) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            let names: Vec<String> = input
+                .keys
+                .iter()
+                .filter(|k| k.key == key)
+                .map(|k| k.name.clone())
+                .collect();
+            for name in names {
+                input.push(if down {
+                    InputEvent::KeyDown(name)
+                } else {
+                    InputEvent::KeyUp(name)
+                });
+            }
+        }
+    }
+    fn inputs(&self) -> impl Iterator<Item = &InputState> {
+        self.running().map(|r| &r.store.data().input)
+    }
+    fn push_input(&mut self, to: impl Fn(&InputState) -> bool, event: &InputEvent) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            if to(input) {
+                input.push(event.clone());
+            }
+        }
+    }
+    /// The running mods' HUD shapes (Horizon's capability `render`), each mod's in its own
+    /// order, mods in load order.
+    pub fn hud_shapes(&self) -> impl Iterator<Item = &Shape> {
+        self.running().flat_map(|r| &r.store.data().shapes)
+    }
+    /// The screen mod `i` last pushed with Horizon's `ui.open-screen`, while it is up.
+    pub fn screen(&self, i: usize) -> Option<&UiScreen> {
+        self.entries
+            .get(i)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .ui
+            .screen
+            .as_ref()
+    }
+    /// The widgets Horizon's `ui.set-settings` pushed: mod `i`'s page in Options > Mods. Empty
+    /// while it has none.
+    pub fn settings_widgets(&self, i: usize) -> &[UiWidget] {
+        self.entries
+            .get(i)
+            .and_then(|e| e.run.as_ref())
+            .map_or(&[], |r| &r.store.data().ui.settings)
+    }
+    /// A `list` widget's row was picked on a surface of mod `i` (a button is row 0).
+    pub fn ui_select(&mut self, i: usize, id: u32, row: u32) {
+        self.ui_event(i, |ui, s| {
+            ui.horizon_mods_ui_events().call_select(s, id, row)
+        });
+    }
+    /// The player left mod `i`'s screen (Esc or Done).
+    pub fn ui_closed(&mut self, i: usize) {
+        self.ui_event(i, |ui, s| ui.horizon_mods_ui_events().call_closed(s));
+    }
+    /// The player opened mod `i`'s settings page.
+    pub fn ui_settings_opened(&mut self, i: usize) {
+        self.ui_event(i, |ui, s| {
+            ui.horizon_mods_ui_events().call_settings_opened(s)
+        });
+    }
+    /// A `ui-events` call on mod `i`; no export, no call (Starling's mods and Horizon's built
+    /// before `ui` have none).
+    fn ui_event(
+        &mut self,
+        i: usize,
+        f: impl FnOnce(&UiHost, &mut Store<State>) -> wasmtime::Result<()>,
+    ) {
+        // Out of the entry for the call, which hands the closure the guest and store only.
+        let Some(ui) = self
+            .entries
+            .get_mut(i)
+            .and_then(|e| e.run.as_mut())
+            .and_then(|r| r.ui.take())
+        else {
+            return;
+        };
+        self.call(i, FUEL_EVENT, |_, s| f(&ui, s));
+        // A mod the call stopped has no run left to keep it.
+        if let Some(run) = self.entries[i].run.as_mut() {
+            run.ui = Some(ui);
+        }
     }
     /// What mods asked to show since the last call.
     pub fn drain(&mut self) -> Vec<Output> {
@@ -1816,10 +2046,7 @@ pub fn has_js_engine() -> bool {
 /// short call ends it).
 fn draw_batch(state: &mut State, ops: &[u8], texts: &[&str]) {
     use draw::Host;
-    let slots: Vec<[u8; 4]> = ops
-        .chunks_exact(4)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect();
+    let slots: Vec<[u8; 4]> = ops.as_chunks::<4>().0.to_vec();
     let f = |i: usize| slots.get(i).map(|s| f32::from_le_bytes(*s));
     let n = |i: usize| slots.get(i).map(|s| i32::from_le_bytes(*s));
     let text = |i: usize| {
@@ -3162,7 +3389,7 @@ impl widgets::Host for State {
         control: String,
         label: String,
         icon: String,
-        shape: Shape,
+        shape: ButtonShape,
     ) -> bool {
         if !TOUCH_CONTROLS.contains(&control.as_str()) {
             return false;
@@ -3325,9 +3552,257 @@ impl storage::Host for State {
     }
 }
 
-/// API 0.1's interfaces, for mods built with a 0.1 SDK: the same state, older shapes.
+/// Widgets on a Horizon `ui` screen or settings page, and rows on one `list`.
+const WIDGETS: usize = 64;
+const LIST_ROWS: usize = 512;
+
+fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
+    widgets
+        .into_iter()
+        .take(WIDGETS)
+        .map(|w| match w {
+            UiWidget::Text(mut t) => {
+                t.text = clip(t.text);
+                UiWidget::Text(t)
+            }
+            UiWidget::Button(mut b) => {
+                b.label = clip(b.label);
+                UiWidget::Button(b)
+            }
+            UiWidget::Item(mut i) => {
+                i.item = clip(i.item);
+                i.name = clip(i.name);
+                UiWidget::Item(i)
+            }
+            UiWidget::List(mut l) => {
+                l.rows = l.rows.into_iter().take(LIST_ROWS).map(clip).collect();
+                l.selected = l.selected.filter(|&s| (s as usize) < l.rows.len());
+                UiWidget::List(l)
+            }
+        })
+        .collect()
+}
+
+/// A key a Horizon mod registered (capability `input`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModKey {
+    /// The mod's own name for it, echoed in `key-down`.
+    pub name: String,
+    /// What it does, for Controls.
+    pub label: String,
+    /// `key.keyboard.r`.
+    pub key: String,
+}
+
+/// What Horizon's capability `input` holds for one mod.
+#[derive(Default)]
+struct InputState {
+    claimed: Vec<String>,
+    keys: Vec<ModKey>,
+    events: VecDeque<InputEvent>,
+}
+/// Events kept for `poll`, items claimed and keys, per mod.
+const INPUT_EVENTS: usize = 256;
+const CLAIMS: usize = 64;
+const KEYS: usize = 16;
+
+/// `key.keyboard.<name>` or `key.mouse.<name>`, as options.txt writes keys;
+/// the game knows which names exist and ignores a key it has none for.
+fn key_ok(key: &str) -> bool {
+    let rest = key
+        .strip_prefix("key.keyboard.")
+        .or_else(|| key.strip_prefix("key.mouse."));
+    rest.is_some_and(|r| {
+        (1..=32).contains(&r.len())
+            && r.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.')
+    })
+}
+
+impl InputState {
+    fn push(&mut self, event: InputEvent) {
+        if self.events.len() == INPUT_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
+
+/// HUD shapes one mod may keep (Horizon's capability `render`).
+const SHAPES: usize = 1024;
+/// The longest jolt `render.shake` makes, in seconds.
+const SHAKE_SECONDS: f32 = 10.0;
+
+/// A Horizon mod's corner panel: shapes in a `width` × `height` box the game places in
+/// `corner`, stacked with the other overlays.
+#[derive(Clone, Debug)]
+pub struct CornerPanel {
+    pub corner: RenderCorner,
+    pub width: f32,
+    pub height: f32,
+    pub shapes: Vec<Shape>,
+}
+
+fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
+    shapes
+        .into_iter()
+        .take(SHAPES)
+        .map(|shape| match shape {
+            Shape::Sprite(mut s) => {
+                s.sprite = clip(s.sprite);
+                Shape::Sprite(s)
+            }
+            Shape::Item(mut i) => {
+                i.item = clip(i.item);
+                i.scale = if i.scale.is_finite() {
+                    i.scale.clamp(0.0, 16.0)
+                } else {
+                    1.0
+                };
+                Shape::Item(i)
+            }
+            Shape::Text(mut t) => {
+                t.text = clip(t.text);
+                t.color &= 0xFF_FFFF;
+                Shape::Text(t)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+/// Horizon's API (`horizon:mods` 0.1), for mods built with its SDK: the same state, Horizon's
+/// shapes. Its 0.1 interfaces become Starling's; `command`, `ui`, `render` and `input` are
+/// Horizon's own (Starling's API has its own `input`, `screens` and `draw`).
 mod legacy {
-    use super::{Output, Panel, State, v1::horizon::mods as old};
+    use super::{
+        CHAT_PER_CALL, CLAIMS, CornerPanel, FrameRate, HeldItem, InputEvent, KEYS, ModKey, Output,
+        Panel, RenderCorner, SHAKE_SECONDS, Shape, State, clip, clip_shapes, clip_widgets, key_ok,
+        render_bindings::horizon::mods::{input, render},
+        ui_bindings::horizon::mods::ui,
+        v1::horizon::mods as old,
+    };
+    impl old::command::Host for State {
+        fn run(&mut self, line: String) {
+            let queued = self
+                .out
+                .iter()
+                .filter(|o| matches!(o, Output::Command { .. }))
+                .count();
+            if queued < CHAT_PER_CALL {
+                self.out.push(Output::Command { line: clip(line) });
+            }
+        }
+    }
+    impl ui::Host for State {
+        fn open_screen(&mut self, mut screen: ui::Screen) {
+            screen.title = clip(screen.title);
+            screen.widgets = clip_widgets(screen.widgets);
+            self.ui.screen = Some(screen);
+            self.ui.open = true;
+        }
+        fn close_screen(&mut self) {
+            self.ui.screen = None;
+            self.ui.close = true;
+        }
+        fn set_settings(&mut self, widgets: Vec<ui::Widget>) {
+            self.ui.settings = clip_widgets(widgets);
+        }
+    }
+    impl input::Host for State {
+        fn claim_items(&mut self, ids: Vec<String>) {
+            self.input.claimed = ids.into_iter().take(CLAIMS).map(clip).collect();
+        }
+        fn register_key(&mut self, name: String, label: String, key: String) -> Result<(), String> {
+            if !key_ok(&key) {
+                return Err(format!(
+                    "{key:?} is not a key as options.txt writes them (key.keyboard.r)"
+                ));
+            }
+            let (name, label) = (clip(name), clip(label));
+            if let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) {
+                (k.label, k.key) = (label, key);
+                return Ok(());
+            }
+            if self.input.keys.len() == KEYS {
+                return Err(format!("a mod may register {KEYS} keys"));
+            }
+            self.input.keys.push(ModKey { name, label, key });
+            Ok(())
+        }
+        fn held(&mut self) -> Option<HeldItem> {
+            self.snapshot.held.clone()
+        }
+        fn poll(&mut self) -> Vec<InputEvent> {
+            self.input.events.drain(..).collect()
+        }
+        fn mapping(&mut self, name: String) -> Option<input::MappingState> {
+            let (_, label, down) = self.snapshot.mappings.iter().find(|m| m.0 == name)?;
+            Some(input::MappingState {
+                label: label.clone(),
+                down: *down,
+            })
+        }
+        fn clicks_per_second(&mut self) -> (u32, u32) {
+            self.snapshot.cps
+        }
+    }
+    impl render::Host for State {
+        fn set_hud(&mut self, shapes: Vec<Shape>) {
+            self.shapes = clip_shapes(shapes);
+        }
+        fn set_corner(
+            &mut self,
+            corner: RenderCorner,
+            width: f32,
+            height: f32,
+            shapes: Vec<Shape>,
+        ) {
+            let size = |v: f32| {
+                if v.is_finite() {
+                    v.clamp(0.0, 1024.0)
+                } else {
+                    0.0
+                }
+            };
+            self.corner = Some(CornerPanel {
+                corner,
+                width: size(width),
+                height: size(height),
+                shapes: clip_shapes(shapes),
+            });
+        }
+        fn clear_corner(&mut self) {
+            self.corner = None;
+        }
+        fn text_width(&mut self, text: String) -> f32 {
+            let widths = &self.snapshot.font_widths;
+            text.chars()
+                .map(|c| widths.get(c as usize).copied().unwrap_or(6.0))
+                .sum::<f32>()
+                .ceil()
+        }
+        fn frame_stats(&mut self) -> FrameRate {
+            let (fps, min, low) = self.snapshot.frame;
+            FrameRate { fps, min, low }
+        }
+        fn gui_size(&mut self) -> (f32, f32) {
+            self.snapshot.gui_size
+        }
+        fn shake(&mut self, strength: f32, seconds: f32) {
+            let ok = |v: f32, max: f32| {
+                if v.is_finite() {
+                    v.clamp(0.0, max)
+                } else {
+                    0.0
+                }
+            };
+            let (strength, seconds) = (ok(strength, 1.0), ok(seconds, SHAKE_SECONDS));
+            if strength > 0.0 && seconds > 0.0 {
+                self.out.push(Output::Shake { strength, seconds });
+            }
+        }
+    }
     impl old::log::Host for State {
         fn write(&mut self, level: old::log::Level, message: String) {
             use super::mod_log::{Host, Level};

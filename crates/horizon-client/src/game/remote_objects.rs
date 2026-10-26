@@ -24,7 +24,12 @@ impl Game<'_> {
         let at = Vec3::new(position[0], position[1], position[2]);
         let block = position.map(|v| v.floor() as i32);
         self.remove_remote_object(id);
-        if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
+        if kind == "minecraft:text_display" {
+            self.text_displays.insert(
+                id as i32,
+                super::text_displays::RemoteTextDisplay::new(position, yaw),
+            );
+        } else if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
             c.yaw = yaw;
             c.previous_yaw = yaw;
@@ -52,6 +57,8 @@ impl Game<'_> {
                 invisible: false,
                 check_interval: 0,
             });
+        } else if kind == "minecraft:lightning_bolt" {
+            self.spawn_remote_bolt(id, position);
         } else if kind == "minecraft:painting" {
             // The variant comes with the entity data; until then the
             // registry's first one (VariantUtils.getAny).
@@ -91,6 +98,10 @@ impl Game<'_> {
 
     /// `handleSetEntityData` for an object: what changes how it looks.
     pub(super) fn remote_object_data(&mut self, id: i32, values: &[(u8, i32, Value)]) {
+        if let Some(display) = self.text_displays.get_mut(&id) {
+            display.metadata(values);
+            return;
+        }
         let id = id as u32;
         for (index, _, value) in values {
             if self.item_frames.iter().any(|f| f.id == id) {
@@ -123,6 +134,14 @@ impl Game<'_> {
             } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                 match (index, value) {
                     (0, Value::Byte(flags)) => a.invisible = flags & 0x20 != 0,
+                    // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE.
+                    (2, Value::OptText(name)) => {
+                        a.custom_name = name.as_ref().map(horizon_client::entity_nbt::name_text);
+                    }
+                    (2, Value::Text(name)) => {
+                        a.custom_name = Some(horizon_client::entity_nbt::name_text(name));
+                    }
+                    (3, Value::Bool(visible)) => a.name_visible = *visible,
                     (9, Value::Float(health)) => a.health = *health,
                     // ArmorStand.DATA_CLIENT_FLAGS.
                     (15, Value::Byte(flags)) => {
@@ -180,7 +199,12 @@ impl Game<'_> {
     /// A move's rotation and ground state for an object.
     pub(super) fn turn_remote_object(&mut self, id: i32, yaw: Option<f32>, on_ground: bool) {
         let id = id as u32;
+        // The boat the player drives turns here (isLocalInstanceAuthoritative).
+        let driven = self.riding;
         if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+            if Some(id) == driven {
+                return;
+            }
             if let Some(yaw) = yaw {
                 b.yaw = yaw;
             }
@@ -205,7 +229,12 @@ impl Game<'_> {
             c.previous_yaw = c.yaw;
             c.position = step(c.id, c.position);
         }
+        // The boat the player drives moves here, not where the server says.
+        let driven = self.riding;
         for b in &mut self.boats {
+            if Some(b.id) == driven {
+                continue;
+            }
             b.previous = b.position;
             b.previous_yaw = b.yaw;
             b.position = step(b.id, b.position);
@@ -253,6 +282,7 @@ impl Game<'_> {
 
     /// Every object a server sent (a new connection, level or dimension).
     pub(super) fn clear_remote_objects(&mut self) {
+        self.text_displays.clear();
         self.carts.clear();
         self.boats.clear();
         self.armor_stands.clear();
@@ -261,10 +291,12 @@ impl Game<'_> {
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
+        self.text_displays.remove(&(id as i32));
         self.carts.retain(|c| c.id != id);
         self.boats.retain(|b| b.id != id);
         self.armor_stands.retain(|a| a.id != id);
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);
+        self.bolts.retain(|b| b.id != id);
     }
 }

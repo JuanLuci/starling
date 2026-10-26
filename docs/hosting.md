@@ -71,7 +71,7 @@ from there too.
 ## 2. Prepare the game files
 
 Horizon reads Minecraft's data from your own copy of the game. You need Minecraft Java Edition 26.3, played
-once from the official launcher on this computer, Java 25 (a JDK), and the 26.3 `server.jar`: it's the
+once from the official launcher on this computer, a Java 25 runtime, and the 26.3 `server.jar`: it's the
 `downloads.server.url` in your launcher's `versions/26.3/26.3.json`. Then:
 
 ```sh
@@ -165,6 +165,8 @@ hardcore = false
 # Any other server.properties key, spelled as vanilla spells it:
 [properties]
 # spawn-protection = 16
+# resource-pack = "https://example.com/pack.zip"   # offered to players as they join; with
+# resource-pack-sha1, require-resource-pack and resource-pack-prompt, as on vanilla
 
 [engine]
 path = ""                    # the game program; empty: the one beside horizon-server
@@ -216,6 +218,9 @@ horizon-server rollback                  back to the release before
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
 console commands do. While it's stopped, they edit vanilla's files directly. Any console command works through
 `cmd`: `horizon-server cmd ban Griefer`, `horizon-server cmd say Restarting in 5 minutes`.
+To generate the world around spawn ahead of the players, Horizon has its own `pregen` command, off until
+`server.toml` has `horizon-pregen = true` under `[properties]`: `horizon-server cmd pregen start 2500`
+([pregeneration](pregeneration.md)).
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
@@ -240,7 +245,9 @@ If the new game crashes or doesn't come up in time, the server goes back to the 
 and puts the world back as it was just before the switch (the world the new game left is kept in
 `backups/`). `horizon-server rollback` goes back to the release before by hand, keeping the world as it is
 (it backs it up first). `--version vX.Y.Z` installs a given release, and `--archive FILE --version NAME` an
-archive you have, such as your own build. A stopped server is switched and starts on the new release next
+archive you have, such as your own build. A server still on a release from before the last dated one doesn't know
+that 0.2 comes after the dated releases and says it is up to date: run `horizon-server update --version v0.2.0`
+once ([versioning](versioning.md)). A stopped server is switched and starts on the new release next
 time. Set `HORIZON_NO_UPDATE_CHECK=1` in the server's environment to turn the check off.
 
 Coming: `console` (attach to a server running in the background), `ban` and `pardon` as their own

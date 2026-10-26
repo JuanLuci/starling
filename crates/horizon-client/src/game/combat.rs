@@ -25,6 +25,9 @@ pub(super) struct CombatTracker {
     pub(super) last_hurt_mob: Option<(u32, i64)>,
     /// The mob whose projectile is hitting the player now.
     pub(super) projectile_owner: Option<u32>,
+    /// The projectile hitting the player now is another player's that
+    /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
+    pub(super) refuse_player_hit: bool,
     /// The mob exploding now (`ServerExplosion.source`): its team's friendly
     /// fire decides whom the blast may hurt.
     pub(super) explosion_source: Option<u32>,
@@ -188,8 +191,12 @@ impl Game<'_> {
     }
     /// `CombatTracker.getDeathMessage`.
     pub(super) fn combat_death_message(&mut self) -> Text {
+        self.combat_death_message_for(Text::literal(PLAYER_NAME))
+    }
+    /// `CombatTracker.getDeathMessage` for a player whose display name is
+    /// `me`: a server's guest is not `PLAYER_NAME`.
+    pub(super) fn combat_death_message_for(&mut self, me: Text) -> Text {
         self.recheck_combat();
-        let me = Text::literal(PLAYER_NAME);
         let entries = std::mem::take(&mut self.combat.entries);
         self.combat.in_combat = false;
         let Some(killing) = entries.last() else {

@@ -191,6 +191,16 @@ def scenarios():
                                'mob minecraft:wandering_trader 0.5 -60 0.5 0 104 persistent',
                                'mob minecraft:trader_llama 3.5 -60 1.5 0 105 persistent leashto=0 strength=2',
                                'mob minecraft:trader_llama 3.5 -60 -1.5 0 106 persistent leashto=0 strength=4'])
+    # Death must detach immediately and drop exactly one lead throughout the corpse animation.
+    add('leash_death_trader_llama', 10, [
+        'player 14.5 -60 0.5',
+        'mob minecraft:wandering_trader 0.5 -60 0.5 0 104 persistent',
+        'mob minecraft:trader_llama 3.5 -60 1.5 0 105 persistent leashto=0 strength=2 dead',
+    ])
+    add('leash_death_player_llama', 10, [
+        'player 0.5 -60 0.5',
+        'mob minecraft:llama 3.5 -60 0.5 0 101 persistent leashed strength=3 dead',
+    ])
     # Copper golems sorting chests (TransportItemsBetweenContainers): from a copper chest to a chest,
     # skipping a chest without the carried item, queueing at a chest another golem has open, a double
     # chest, a blocked copper chest, a part-full chest, and idling with nothing to carry.
@@ -268,6 +278,39 @@ def scenarios():
                           ('witch', 176), ('vindicator', 177), ('zombie', 178)]:
         add(f'{species}_deep_water', 160, ['fill -4 -64 -4 4 -61 4 minecraft:water',
                                            f'mob minecraft:{species} 0.5 -62 0.5 0 {seed} persistent'])
+    # Axolotls (#64): idle swimming, hunting a cod, and playing dead after hits, in a pool sunk into
+    # the ground so no water flows out of it (the probe doesn't tick fluids).
+    POOL = 'fill -5 -63 -5 5 -61 5 minecraft:water'
+    add('axolotl_hunting', 45, [POOL, 'player 12.5 -60 0.5', 'mob minecraft:axolotl 0.5 -62 0.5 0 12 persistent',
+                                'mob minecraft:cod 2.5 -62 0.5 0 13 persistent noai'])
+    add('axolotl_play_dead', 300, [POOL, 'player 12.5 -60 0.5', 'mob minecraft:axolotl 0.5 -62 0.5 0 28 persistent']
+        + [f'hurt {t} 0' for t in range(4, 160, 12)])
+    # A jobless villager outside a stone box, its composter inside and the doorway on the far
+    # side: the path around needs more than the 256 nodes of the follow range (16 * 16); the
+    # villager's setRequiredPathLength(48) raises PathFinder.maxVisitedNodes to 768.
+    add('villager_job_in_box', 300, [
+        'fill -4 -60 -4 4 -58 4 minecraft:stone',
+        'fill -3 -60 -3 3 -58 3 minecraft:air',
+        'fill -4 -60 0 -4 -59 0 minecraft:air',
+        'block 0 -60 0 minecraft:composter',
+        'mob minecraft:villager 10.5 -60 0.5 90 54 persistent',
+    ])
+    # Villagers that slept today and saw no golem summon an iron golem (Villager.spawnGolemIfNeeded):
+    # five gossiping (TradeWithVillager, at tick 200 here), or three panicking at a zombie in a pen
+    # (VillagerPanicTrigger, at tick 100 by night). They all remember it (GOLEM_DETECTED_RECENTLY).
+    # Under a glass roof three blocks up the golem still fits (IronGolem.checkSpawnObstruction);
+    # on dirt paths it cannot stand. The scenarios stop on the summoning tick: the golem's own AI
+    # (MoveBackToVillageGoal, GolemRandomStrollInVillageGoal) is not ported yet.
+    golem_callers = [f'mob minecraft:villager {x} -60 {z} {r} {seed} persistent slept=1' for x, z, r, seed in
+                     [(0.5, 0.5, 0, 81), (2.5, 0.5, 180, 82), (0.5, 2.5, 90, 83), (2.5, 2.5, 270, 84), (1.5, -1.5, 0, 85)]]
+    add('villager_golem_gossip', 200, ['player 14.5 -60 0.5'] + golem_callers, 'time=100')
+    add('villager_golem_roof', 200, ['fill -10 -57 -12 13 -57 13 minecraft:glass', 'player 14.5 -60 0.5'] + golem_callers,
+        'time=100')
+    add('villager_golem_paths', 400, ['fill -10 -61 -12 13 -61 13 minecraft:dirt_path', 'player 14.5 -60 0.5'] + golem_callers,
+        'time=100')
+    add('villager_golem_panic', 100, ['fill -2 -60 -3 4 -60 4 minecraft:oak_fence', 'fill -1 -60 -2 3 -60 3 minecraft:air',
+                                      'player 14.5 -60 0.5'] + golem_callers[:3]
+        + ['mob minecraft:zombie 6.5 -60 0.5 90 86 persistent noai'], 'time=18000')
     return s
 
 
@@ -324,6 +367,9 @@ def parse(path):
             continue
         if parts[1] == 'hive':
             cur.setdefault('hives', {}).setdefault(t, []).append(parts[2])
+            continue
+        if parts[1] == 'leads':
+            cur.setdefault('leads', {}).setdefault(t, []).append(parts[2])
             continue
         if parts[1] == 'chest':
             cur.setdefault('chests', {}).setdefault(t, []).append(parts[2])
@@ -422,7 +468,7 @@ def compare(vanilla, rust, fields=None):
                 clean = False
                 break
         # Sounds, watched block changes, chest contents and hives: first differing tick.
-        for kind in ('sounds', 'blocks', 'chests', 'hives'):
+        for kind in ('sounds', 'blocks', 'chests', 'hives', 'leads'):
             va, ra = v.get(kind, {}), r.get(kind, {})
             for t in sorted(set(va) | set(ra)):
                 if va.get(t, []) != ra.get(t, []):
@@ -460,7 +506,7 @@ def main():
                                    'dev.horizonlab.parity.VanillaMobAiOracle', inputs, build / 'vanilla.txt', world],
                                   build, 'vanilla', timeout=3600)
     if not args.java_only:
-        command = ['cargo', 'build', '--locked', '--release', '-p', 'horizon-client', '--example', 'mob_ai_probe']
+        command = ['cargo', 'build', '--locked', '--release', '-p', 'horizon-client', '--example', 'client_probe']
         target, env = lab.cargo_target(), None
         if args.trace:
             target = lab.LOCAL / 'mob-ai-trace-target'
@@ -468,8 +514,8 @@ def main():
             env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_PROFILE_RELEASE_DEBUG='line-tables-only',
                        CARGO_PROFILE_RELEASE_LTO='false', CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
         oracle_harness.run_logged(command, build, 'compile-rust', env=env)
-        binary = target / 'release/examples/mob_ai_probe'
-        oracle_harness.run_logged([binary, lab.RESOURCES, inputs, build / 'horizon.txt'], build, 'horizon')
+        binary = target / 'release/examples/client_probe'
+        oracle_harness.run_logged([binary, 'mob_ai_probe', lab.RESOURCES, inputs, build / 'horizon.txt'], build, 'horizon')
     if args.java_only:
         return
     names = {s[0] for _, s in chosen}

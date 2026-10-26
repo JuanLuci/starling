@@ -221,7 +221,7 @@ impl Game<'_> {
     /// holds it (`self.lan` is taken during the network tick).
     pub(super) fn enter_level(&mut self, host: Option<&mut LanHost>, target: Dim) -> Result<()> {
         // The in-frame game keeps its one level (`enter_dimension`).
-        if self.options.dedicated.is_none() {
+        if self.options.execution_role.is_client() {
             return Ok(());
         }
         if target != self.dim {
@@ -232,6 +232,9 @@ impl Game<'_> {
             p.world.game_time = self.world.game_time;
             p.world.day_time = self.world.day_time;
             p.world.weather = self.world.weather;
+            // The game rules and the difficulty are the server's, not a
+            // level's: natural regeneration holds in every dimension.
+            p.world.health_rules = self.world.health_rules;
             // The sculk tables' watched blocks are built once per game.
             p.world.watched = std::mem::take(&mut self.world.watched);
             self.swap_level(&mut p);
@@ -251,6 +254,24 @@ impl Game<'_> {
             h.hub.set_dimension(target.id());
         }
         Ok(())
+    }
+
+    /// Put `dim`'s level in place for a command whose source is there
+    /// (`execute in`, `execute at` a player in another level), opening it if
+    /// nobody is in it; returns the level to put back afterwards. Only a
+    /// server holds other levels.
+    pub(super) fn enter_command_level(&mut self, dim: Dim) -> Option<Dim> {
+        if self.options.execution_role.is_client() || dim == self.dim {
+            return None;
+        }
+        let back = self.dim;
+        match self.enter_level(None, dim) {
+            Ok(()) => Some(back),
+            Err(e) => {
+                log::error!("could not open {}: {e}", dim.id());
+                None
+            }
+        }
     }
 
     /// One server tick (`MinecraftServer.tickServer`): each level with
@@ -275,7 +296,7 @@ impl Game<'_> {
             self.update_dedicated_streaming();
             self.update_world();
             result = if paused {
-                self.tick_lan();
+                self.tick_lan(true);
                 Ok(())
             } else if k == 0 {
                 self.tick()
@@ -312,15 +333,10 @@ impl Game<'_> {
                 .map_or_else(String::new, |(end, start)| {
                     format!(", cpu {:.1} ms", (end - start).as_secs_f32() * 1000.0)
                 });
-            let list: Vec<String> = spans
-                .iter()
-                .filter(|(_, ms)| *ms >= 0.5)
-                .map(|(n, ms)| format!("{n} {ms:.1}"))
-                .collect();
             log::info!(
                 "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}",
                 self.mobs.len(),
-                list.join(", ")
+                horizon_client::spans::describe(&spans)
             );
         }
         result
@@ -349,7 +365,12 @@ impl Game<'_> {
         }
         *next += self.clock.tick_duration();
         if *next > now {
-            std::thread::sleep(*next - now);
+            // A `/pregen` task keeps the workers fed until the next tick.
+            self.pump_pregen(*next);
+            let now = Instant::now();
+            if *next > now {
+                std::thread::sleep(*next - now);
+            }
         } else if now - *next > Duration::from_secs(2) {
             *next = now;
         }
@@ -357,7 +378,7 @@ impl Game<'_> {
 
     /// The levels this server tick runs, in `MinecraftServer.levels` order
     /// (the Overworld, the Nether, the End): every level with a player in
-    /// it, or the Overworld while nobody is online.
+    /// it or a `/pregen` task, or the Overworld while nobody is online.
     pub(super) fn levels_to_tick(&self) -> Vec<Dim> {
         let guests = self
             .lan
@@ -365,7 +386,9 @@ impl Game<'_> {
             .map_or(&[][..], |h| h.hub.guests.as_slice());
         let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
             .into_iter()
-            .filter(|d| guests.iter().any(|g| g.dimension == d.id()))
+            .filter(|d| {
+                guests.iter().any(|g| g.dimension == d.id()) || self.pregen_level() == Some(*d)
+            })
             .collect();
         if dims.is_empty() {
             dims.push(Dim::Overworld);

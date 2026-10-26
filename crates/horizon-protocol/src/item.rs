@@ -7,8 +7,7 @@ use crate::{
 };
 use horizon_world::nbt::Tag;
 
-mod codecs;
-pub(crate) use codecs::{skip_profile, skip_template};
+mod skip;
 
 /// minecraft:data_component_type registry ids (26.3).
 pub mod component {
@@ -42,6 +41,7 @@ pub mod component {
     pub const DAMAGE_RESISTANT: i32 = 27;
     pub const TOOL: i32 = 28;
     pub const WEAPON: i32 = 29;
+    /// `AttackRange`: six floats, in the record's field order.
     pub const ATTACK_RANGE: i32 = 30;
     pub const ENCHANTABLE: i32 = 31;
     pub const EQUIPPABLE: i32 = 32;
@@ -138,6 +138,18 @@ pub mod component {
     pub const COUNT: i32 = 122;
 }
 
+/// A written book's content (`WrittenBookContent.STREAM_CODEC`): the
+/// filtered variants of the title and pages are read and dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrittenBook {
+    pub title: String,
+    pub author: String,
+    pub generation: i32,
+    /// Each page's text component.
+    pub pages: Vec<Tag>,
+    pub resolved: bool,
+}
+
 /// The value of one patched data component. Components Horizon does not model
 /// are kept as `Raw` bytes; only an unknown component type makes the stack
 /// (and packet) undecodable.
@@ -151,6 +163,15 @@ pub enum Component {
     Ident(String),
     Lore(Vec<Tag>),
     Enchantments(Vec<(i32, i32)>),
+    AttackRange([f32; 6]),
+    /// `PotionContents`: the potion's `minecraft:potion` id and the custom
+    /// colour; the custom effects and name stay their encoded bytes.
+    Potion {
+        potion: Option<i32>,
+        color: Option<i32>,
+        rest: Vec<u8>,
+    },
+    Profile(Profile),
     CustomModelData {
         floats: Vec<f32>,
         flags: Vec<bool>,
@@ -161,15 +182,115 @@ pub enum Component {
         hide: bool,
         hidden: Vec<i32>,
     },
-    /// Exactly the bytes the component's stream codec consumed, re-sent as is.
+    /// `WritableBookContent`: the pages (raw text).
+    WritableBook(Vec<String>),
+    WrittenBook(WrittenBook),
+    /// `ChargedProjectiles`: a loaded crossbow's ammunition, as templates.
+    Stacks(Vec<Stack>),
+    /// `Fireworks`: flight duration and its explosions.
+    Fireworks {
+        flight: i32,
+        explosions: Vec<FireworkExplosion>,
+    },
+    /// `FireworkExplosion` (a firework star).
+    FireworkExplosion(FireworkExplosion),
+    /// `ArmorTrim` naming its material and pattern by registry id (`trim_material`,
+    /// `trim_pattern`); a trim with a direct holder stays [`Component::Raw`].
+    Trim {
+        material: i32,
+        pattern: i32,
+    },
+    /// A component Horizon reads past without interpreting it: its encoded
+    /// bytes, written back as they came.
     Raw(Vec<u8>),
+}
+
+/// `FireworkExplosion.STREAM_CODEC`: shape id, colors, fade colors, trail
+/// and twinkle (FireworkExplosion.Shape's BY_ID order).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FireworkExplosion {
+    pub shape: i32,
+    pub colors: Vec<i32>,
+    pub fade: Vec<i32>,
+    pub trail: bool,
+    pub twinkle: bool,
+}
+impl FireworkExplosion {
+    fn read(r: &mut Reader) -> Result<Self> {
+        let ints = |r: &mut Reader| -> Result<Vec<i32>> {
+            let n = r.count(1024)?;
+            (0..n).map(|_| r.i32()).collect()
+        };
+        Ok(Self {
+            shape: r.varint()?,
+            colors: ints(r)?,
+            fade: ints(r)?,
+            trail: r.bool()?,
+            twinkle: r.bool()?,
+        })
+    }
+    fn write(&self, w: &mut Writer) {
+        w.varint(self.shape);
+        w.varint(self.colors.len() as i32);
+        self.colors.iter().for_each(|c| w.i32(*c));
+        w.varint(self.fade.len() as i32);
+        self.fade.iter().for_each(|c| w.i32(*c));
+        w.bool(self.trail);
+        w.bool(self.twinkle);
+    }
+}
+
+/// `Filterable.streamCodec`: the raw value, then an optional filtered one
+/// (dropped).
+fn filterable<T>(r: &mut Reader, value: impl Fn(&mut Reader) -> Result<T>) -> Result<T> {
+    let raw = value(r)?;
+    if r.bool()? {
+        value(r)?;
+    }
+    Ok(raw)
+}
+
+/// `ResolvableProfile`: an optional name and UUID and the profile's property
+/// list, followed by `PlayerSkin.Patch`'s four optional textures.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    pub name: Option<String>,
+    pub id: Option<u128>,
+    pub properties: Vec<(String, String, Option<String>)>,
 }
 impl Component {
     fn read(kind: i32, r: &mut Reader) -> Result<Self> {
         use component::*;
         Ok(match kind {
-            MAX_STACK_SIZE | MAX_DAMAGE | DAMAGE | RARITY | REPAIR_COST | MAP_ID => {
-                Self::Int(r.varint()?)
+            MAX_STACK_SIZE | MAX_DAMAGE | DAMAGE | RARITY | REPAIR_COST | MAP_ID
+            | MAP_POST_PROCESSING => Self::Int(r.varint()?),
+            WRITABLE_BOOK_CONTENT => {
+                let n = r.count(100)?;
+                Self::WritableBook(
+                    (0..n)
+                        .map(|_| filterable(r, |r| r.string(1024)))
+                        .collect::<Result<_>>()?,
+                )
+            }
+            WRITTEN_BOOK_CONTENT => {
+                let title = filterable(r, |r| r.string(32))?;
+                let author = r.string(32767)?;
+                let generation = r.varint()?;
+                let n = r.count(r.remaining())?;
+                let pages = (0..n)
+                    .map(|_| filterable(r, |r| r.nbt()))
+                    .collect::<Result<_>>()?;
+                Self::WrittenBook(WrittenBook {
+                    title,
+                    author,
+                    generation,
+                    pages,
+                    resolved: r.bool()?,
+                })
+            }
+            CHARGED_PROJECTILES => {
+                let n = r.count(1024)?;
+                Self::Stacks((0..n).map(|_| Template::read(r)).collect::<Result<_>>()?)
             }
             DYED_COLOR => Self::Int(r.i32()?),
             UNBREAKABLE | CREATIVE_SLOT_LOCK => Self::Unit,
@@ -188,6 +309,75 @@ impl Component {
                         .map(|_| Ok((r.varint()?, r.varint()?)))
                         .collect::<Result<_>>()?,
                 )
+            }
+            POTION_CONTENTS => {
+                let potion = if r.bool()? { Some(r.varint()?) } else { None };
+                let color = if r.bool()? { Some(r.i32()?) } else { None };
+                let start = r.position();
+                skip::potion_effects_and_name(r)?;
+                // No custom effects and no name: an empty tail.
+                let rest = match r.since(start) {
+                    [0, 0] => Vec::new(),
+                    bytes => bytes.to_vec(),
+                };
+                Self::Potion {
+                    potion,
+                    color,
+                    rest,
+                }
+            }
+            ATTACK_RANGE => {
+                let mut values = [0.0f32; 6];
+                for v in &mut values {
+                    *v = r.f32()?;
+                }
+                Self::AttackRange(values)
+            }
+            PROFILE => {
+                fn properties(r: &mut Reader) -> Result<Vec<(String, String, Option<String>)>> {
+                    let n = r.count(1024)?;
+                    let mut out = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let name = r.string(32767)?;
+                        let value = r.string(32767)?;
+                        let signature = if r.bool()? {
+                            Some(r.string(32767)?)
+                        } else {
+                            None
+                        };
+                        out.push((name, value, signature));
+                    }
+                    Ok(out)
+                }
+                // Either<GameProfile, Partial>: the partial form carries
+                // optional fields, the resolved one a UUID, a name and the
+                // properties.
+                let (name, id, properties) = if r.u8()? == 0 {
+                    let name = if r.bool()? { Some(r.string(64)?) } else { None };
+                    let id = if r.bool()? { Some(r.uuid()?) } else { None };
+                    (name, id, properties(r)?)
+                } else {
+                    let id = Some(r.uuid()?);
+                    let name = Some(r.string(64)?);
+                    (name, id, properties(r)?)
+                };
+                // PlayerSkin.Patch: the body, cape and elytra textures
+                // (ClientAsset.ResourceTexture.STREAM_CODEC: one Identifier),
+                // then PlayerModelType (a bool, slim), each optional and all
+                // absent in the profiles servers send for heads.
+                for _ in 0..3 {
+                    if r.bool()? {
+                        r.string(32767)?;
+                    }
+                }
+                if r.bool()? {
+                    r.bool()?;
+                }
+                Self::Profile(Profile {
+                    name,
+                    id,
+                    properties,
+                })
             }
             CUSTOM_MODEL_DATA => {
                 let n = r.count(r.remaining())?;
@@ -213,15 +403,46 @@ impl Component {
                     hidden: (0..n).map(|_| r.varint()).collect::<Result<_>>()?,
                 }
             }
+            FIREWORKS => {
+                let flight = r.varint()?;
+                let n = r.count(256)?;
+                Self::Fireworks {
+                    flight,
+                    explosions: (0..n)
+                        .map(|_| FireworkExplosion::read(r))
+                        .collect::<Result<_>>()?,
+                }
+            }
+            FIREWORK_EXPLOSION => Self::FireworkExplosion(FireworkExplosion::read(r)?),
+            // ArmorTrim.STREAM_CODEC: two holders, each a reference's id plus
+            // one. A direct material or pattern has no registry name: read past.
+            TRIM => {
+                let start = r.position();
+                skip::component(TRIM, r)?;
+                let bytes = r.since(start);
+                let mut ids = Reader::new(bytes);
+                match (ids.varint(), ids.varint()) {
+                    (Ok(material @ 1..), Ok(pattern @ 1..)) if ids.remaining() == 0 => Self::Trim {
+                        material: material - 1,
+                        pattern: pattern - 1,
+                    },
+                    _ => Self::Raw(bytes.to_vec()),
+                }
+            }
             other => {
                 let start = r.position();
-                codecs::skip(other, r, 0)?;
+                skip::component(other, r)?;
                 Self::Raw(r.since(start).to_vec())
             }
         })
     }
     fn write(&self, kind: i32, w: &mut Writer) {
         match self {
+            Self::Raw(bytes) => w.bytes(bytes),
+            Self::Trim { material, pattern } => {
+                w.varint(material + 1);
+                w.varint(pattern + 1);
+            }
             Self::Int(v) if kind == component::DYED_COLOR => w.i32(*v),
             Self::Int(v) => w.varint(*v),
             Self::Unit => {}
@@ -237,6 +458,51 @@ impl Component {
                 for (e, level) in list {
                     w.varint(*e);
                     w.varint(*level);
+                }
+            }
+            Self::AttackRange(values) => values.iter().for_each(|v| w.f32(*v)),
+            Self::Potion {
+                potion,
+                color,
+                rest,
+            } => {
+                w.bool(potion.is_some());
+                if let Some(id) = potion {
+                    w.varint(*id);
+                }
+                w.bool(color.is_some());
+                if let Some(color) = color {
+                    w.i32(*color);
+                }
+                // An empty tail is no custom effects and no name.
+                if rest.is_empty() {
+                    w.varint(0);
+                    w.bool(false);
+                } else {
+                    w.bytes(rest);
+                }
+            }
+            Self::Profile(p) => {
+                w.u8(0);
+                w.bool(p.name.is_some());
+                if let Some(name) = &p.name {
+                    w.string(name);
+                }
+                w.bool(p.id.is_some());
+                if let Some(id) = p.id {
+                    w.uuid(id);
+                }
+                w.varint(p.properties.len() as i32);
+                for (name, value, signature) in &p.properties {
+                    w.string(name);
+                    w.string(value);
+                    w.bool(signature.is_some());
+                    if let Some(signature) = signature {
+                        w.string(signature);
+                    }
+                }
+                for _ in 0..4 {
+                    w.bool(false);
                 }
             }
             Self::CustomModelData {
@@ -259,91 +525,43 @@ impl Component {
                 w.varint(hidden.len() as i32);
                 hidden.iter().for_each(|h| w.varint(*h));
             }
-            Self::Raw(bytes) => w.bytes(bytes),
+            Self::Stacks(stacks) => {
+                w.varint(stacks.len() as i32);
+                stacks.iter().for_each(|s| Template::write(s, w));
+            }
+            Self::Fireworks { flight, explosions } => {
+                w.varint(*flight);
+                w.varint(explosions.len() as i32);
+                explosions.iter().for_each(|e| e.write(w));
+            }
+            Self::FireworkExplosion(e) => e.write(w),
+            Self::WritableBook(pages) => {
+                w.varint(pages.len() as i32);
+                for page in pages {
+                    w.string(page);
+                    w.bool(false);
+                }
+            }
+            Self::WrittenBook(b) => {
+                w.string(&b.title);
+                w.bool(false);
+                w.string(&b.author);
+                w.varint(b.generation);
+                w.varint(b.pages.len() as i32);
+                for page in &b.pages {
+                    w.nbt(page);
+                    w.bool(false);
+                }
+                w.bool(b.resolved);
+            }
         }
     }
 }
 
-/// The values the client shows of a few components kept as [`Component::Raw`], read from
-/// their bytes. None when the bytes do not read as the component.
-pub mod view {
-    use crate::{Result, buf::Reader};
-
-    /// ResolvableProfile: the full or partial GameProfile (the skin patch is not read).
-    #[derive(Clone, Debug, Default, PartialEq)]
-    pub struct Profile {
-        pub name: Option<String>,
-        pub id: Option<u128>,
-        /// (name, value, signature): `textures` holds the skin.
-        pub properties: Vec<(String, String, Option<String>)>,
-    }
-    pub fn profile(bytes: &[u8]) -> Option<Profile> {
-        let r = &mut Reader::new(bytes);
-        let properties = |r: &mut Reader| -> Result<Vec<(String, String, Option<String>)>> {
-            let n = r.count(16)?;
-            (0..n)
-                .map(|_| {
-                    let name = r.string(64)?;
-                    let value = r.string(32767)?;
-                    let signature = if r.bool()? {
-                        Some(r.string(1024)?)
-                    } else {
-                        None
-                    };
-                    Ok((name, value, signature))
-                })
-                .collect()
-        };
-        let mut read = || -> Result<Profile> {
-            // ByteBufCodecs.either: true for the full GameProfile.
-            if r.bool()? {
-                let id = r.uuid()?;
-                let name = r.string(16)?;
-                Ok(Profile {
-                    name: Some(name),
-                    id: Some(id),
-                    properties: properties(r)?,
-                })
-            } else {
-                let name = if r.bool()? { Some(r.string(16)?) } else { None };
-                let id = if r.bool()? { Some(r.uuid()?) } else { None };
-                Ok(Profile {
-                    name,
-                    id,
-                    properties: properties(r)?,
-                })
-            }
-        };
-        read().ok()
-    }
-
-    /// PotionContents: the potion's registry id and the custom colour.
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
-    pub struct Potion {
-        pub potion: Option<i32>,
-        pub custom_color: Option<i32>,
-    }
-    pub fn potion(bytes: &[u8]) -> Option<Potion> {
-        let r = &mut Reader::new(bytes);
-        let mut read = || -> Result<Potion> {
-            let potion = if r.bool()? { Some(r.varint()?) } else { None };
-            let custom_color = if r.bool()? { Some(r.i32()?) } else { None };
-            Ok(Potion {
-                potion,
-                custom_color,
-            })
-        };
-        read().ok()
-    }
-
-    /// ArmorTrim: the material's and pattern's registry ids, when both are references (an
-    /// inline definition is not read).
-    pub fn trim(bytes: &[u8]) -> Option<(i32, i32)> {
-        let r = &mut Reader::new(bytes);
-        let material = r.varint().ok()?.checked_sub(1).filter(|id| *id >= 0)?;
-        let pattern = r.varint().ok()?.checked_sub(1).filter(|id| *id >= 0)?;
-        Some((material, pattern))
-    }
+/// Consume one ResolvableProfile.STREAM_CODEC value on its own (as in the
+/// RESOLVABLE_PROFILE entity data serializer).
+pub(crate) fn skip_profile(r: &mut Reader) -> Result<()> {
+    Component::read(component::PROFILE, r).map(drop)
 }
 
 /// A non-empty item stack.
@@ -526,6 +744,51 @@ mod tests {
     }
 
     #[test]
+    fn potion_contents_round_trip() {
+        let mut arrow = Stack::new(7, 3);
+        arrow.added.push((
+            component::POTION_CONTENTS,
+            Component::Potion {
+                potion: Some(31),
+                color: None,
+                rest: Vec::new(),
+            },
+        ));
+        round::<Option<Stack>, Slot>(Some(arrow));
+        // A custom colour, one custom effect (speed II for 600 ticks, shown,
+        // no hidden effect) and a custom name survive as they came.
+        let mut w = Writer::new();
+        w.bool(false);
+        w.bool(true);
+        w.i32(0x00FF_8800);
+        w.varint(1);
+        for v in [1, 1, 600] {
+            w.varint(v);
+        }
+        for b in [false, true, true, false] {
+            w.bool(b);
+        }
+        w.bool(true);
+        w.string("Tea");
+        let mut r = Reader::new(&w.data);
+        let read = Component::read(component::POTION_CONTENTS, &mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        let Component::Potion {
+            potion,
+            color,
+            rest,
+        } = &read
+        else {
+            panic!("{read:?}");
+        };
+        assert_eq!((*potion, *color), (None, Some(0x00FF_8800)));
+        assert!(!rest.is_empty());
+        let mut again = Writer::new();
+        read.write(component::POTION_CONTENTS, &mut again);
+        assert_eq!(again.data, w.data);
+    }
+
+    #[test]
     fn stacks_round_trip() {
         round::<Option<Stack>, Slot>(None);
         round::<Option<Stack>, Slot>(Some(Stack::new(42, 64)));
@@ -547,10 +810,94 @@ mod tests {
             Component::Lore(vec![literal("a"), literal("b")]),
         ));
         sword.removed.push(component::REPAIR_COST);
+        let mut book = Stack::new(1100, 1);
+        book.added.push((
+            component::WRITTEN_BOOK_CONTENT,
+            Component::WrittenBook(WrittenBook {
+                title: "Notes".into(),
+                author: "Guest".into(),
+                generation: 1,
+                pages: vec![literal("one"), literal("two")],
+                resolved: true,
+            }),
+        ));
+        book.added
+            .push((component::MAP_POST_PROCESSING, Component::Int(1)));
+        round::<Option<Stack>, Slot>(Some(book));
+        let mut quill = Stack::new(1099, 1);
+        quill.added.push((
+            component::WRITABLE_BOOK_CONTENT,
+            Component::WritableBook(vec!["a".into(), String::new()]),
+        ));
+        round::<Option<Stack>, Slot>(Some(quill));
         assert_eq!(sword.damage(), 17);
         round::<Option<Stack>, Slot>(Some(sword.clone()));
         round::<Option<Hashed>, HashedSlot>(Some(Hashed::of(&sword)));
         round::<Option<Hashed>, HashedSlot>(None);
+    }
+
+    #[test]
+    fn fireworks_components_round_trip() {
+        let mut rocket = Stack::new(42, 1);
+        rocket.added.push((
+            component::FIREWORKS,
+            Component::Fireworks {
+                flight: 3,
+                explosions: vec![
+                    FireworkExplosion {
+                        shape: 4,
+                        colors: vec![0xff0000, 0x00ff00],
+                        fade: vec![0x0000ff],
+                        trail: true,
+                        twinkle: false,
+                    },
+                    FireworkExplosion {
+                        shape: 0,
+                        colors: vec![],
+                        fade: vec![],
+                        trail: false,
+                        twinkle: true,
+                    },
+                ],
+            },
+        ));
+        rocket.added.push((
+            component::FIREWORK_EXPLOSION,
+            Component::FireworkExplosion(FireworkExplosion {
+                shape: 2,
+                colors: vec![7],
+                fade: vec![],
+                trail: false,
+                twinkle: false,
+            }),
+        ));
+        round::<Option<Stack>, Slot>(Some(rocket));
+    }
+
+    #[test]
+    fn charged_projectiles_are_item_stack_templates() {
+        // A crossbow (id 7) loaded with one arrow (id 9): ChargedProjectiles
+        // is a list of ItemStackTemplate, the item before the count.
+        let bytes = [1, 7, 1, 0, 51, 1, 9, 1, 0, 0];
+        let stack = Slot::read(&mut Reader::new(&bytes)).unwrap().unwrap();
+        assert_eq!(
+            stack.component(component::CHARGED_PROJECTILES),
+            Some(&Component::Stacks(vec![Stack::new(9, 1)]))
+        );
+        let mut w = Writer::new();
+        Slot::write(&Some(stack), &mut w);
+        assert_eq!(w.data, bytes);
+    }
+
+    #[test]
+    fn filtered_book_pages_are_read_and_dropped() {
+        // A writable book with one page "hi" and its filtered "**".
+        let bytes = [1, 7, 1, 0, 56, 1, 2, b'h', b'i', 1, 2, b'*', b'*'];
+        let stack = Slot::read(&mut Reader::new(&bytes)).unwrap().unwrap();
+        assert_eq!(
+            stack.component(component::WRITABLE_BOOK_CONTENT),
+            Some(&Component::WritableBook(vec!["hi".into()]))
+        );
     }
 
     #[test]
@@ -561,6 +908,99 @@ mod tests {
         let mut w = Writer::new();
         Slot::write(&Some(Stack::new(1, 2)), &mut w);
         assert_eq!(w.data, [2, 1, 0, 0]);
+    }
+
+    #[test]
+    fn unknown_components_are_errors() {
+        // 122 is past DataComponents' last id (cushion_color, 121).
+        let bytes = [1, 5, 1, 0, 122];
+        assert!(Slot::read(&mut Reader::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn attack_range_and_profiles_round_trip() {
+        let mut sword = Stack::new(900, 1);
+        sword.added.push((
+            component::ATTACK_RANGE,
+            Component::AttackRange([0.0, 3.0, 0.0, 4.0, 0.1, 1.0]),
+        ));
+        sword.added.push((
+            component::PROFILE,
+            Component::Profile(Profile {
+                name: Some("Player53470".into()),
+                id: Some(0x7a5d_6a1a_30d7_4187_88c5_efe9_1201_8922),
+                properties: vec![("textures".into(), "dGV4dHVyZXM=".into(), None)],
+            }),
+        ));
+        round::<Option<Stack>, Slot>(Some(sword));
+    }
+
+    #[test]
+    fn a_partial_profile_decodes_from_the_wire() {
+        // count 1, item 1, one added component of kind 72 (profile): a partial
+        // profile with an empty name, a UUID, one unsigned texture property
+        // and an empty skin patch.
+        let uuid = [
+            0x7a, 0x5d, 0x6a, 0x1a, 0x30, 0xd7, 0x41, 0x87, 0x88, 0xc5, 0xef, 0xe9, 0x12, 0x01,
+            0x89, 0x22,
+        ];
+        let mut bytes = vec![1, 1, 1, 0, 72, 0, 1, 0, 1];
+        bytes.extend_from_slice(&uuid);
+        bytes.extend_from_slice(&[1, 8]);
+        bytes.extend_from_slice(b"textures");
+        bytes.extend_from_slice(&[1, b'x', 0, 0, 0, 0, 0]);
+        let mut r = Reader::new(&bytes);
+        let stack = Slot::read(&mut r).unwrap().unwrap();
+        assert_eq!(r.remaining(), 0);
+        let Some(Component::Profile(profile)) = stack.component(component::PROFILE) else {
+            panic!("the profile component did not decode");
+        };
+        assert_eq!(profile.name.as_deref(), Some(""));
+        assert_eq!(profile.id, Some(0x7a5d_6a1a_30d7_4187_88c5_efe9_1201_8922));
+        assert_eq!(
+            profile.properties,
+            [("textures".to_owned(), "x".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn components_read_past_keep_their_bytes() {
+        // Vanilla 26.3's encoding (tools/test_item_wire_parity.py) of a chestplate's
+        // armour trim (decoded: both holders are references), a banner's patterns
+        // (one direct), a pot's sherds and a stew's effects: one server's
+        // inventory, recipe book and advancements had them.
+        for (hex, kind) in [
+            ("01bd0801003a0502", 58),
+            ("01890b01004a02200e000b6d696e6563726166743a7801790b", 74),
+            ("01880301004c01f60801000001be0c0100000001d30c010000", 76),
+            ("01a408010037020f6412a001", 55),
+        ] {
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let mut r = Reader::new(&bytes);
+            let stack = Slot::read(&mut r).unwrap();
+            assert_eq!(r.remaining(), 0, "component {kind}");
+            let expected = |c: &Component| match kind {
+                58 => {
+                    *c == Component::Trim {
+                        material: 4,
+                        pattern: 1,
+                    }
+                }
+                _ => matches!(c, Component::Raw(_)),
+            };
+            assert!(
+                stack
+                    .as_ref()
+                    .and_then(|s| s.component(kind))
+                    .is_some_and(expected)
+            );
+            let mut w = Writer::new();
+            Slot::write(&stack, &mut w);
+            assert_eq!(w.data, bytes, "component {kind}");
+        }
     }
 
     /// A stack with one `kind` component, hand-encoded after its vanilla codec
@@ -632,23 +1072,9 @@ mod tests {
             w.varint(x);
         }
     }
-    fn explosion(w: &mut Writer) {
-        w.varint(1);
-        w.varint(2);
-        w.i32(0xFF0000);
-        w.i32(0x00FF00);
-        w.varint(0);
-        w.bool(true);
-        w.bool(false);
-    }
 
     #[test]
-    fn attack_range_food_and_simple_values() {
-        raw_round_trip(component::ATTACK_RANGE, |w| {
-            for f in [0.0, 3.0, 0.0, 5.0, 0.3, 1.0] {
-                w.f32(f);
-            }
-        });
+    fn food_and_simple_values() {
         raw_round_trip(component::FOOD, |w| {
             w.varint(4);
             w.f32(2.4);
@@ -682,21 +1108,19 @@ mod tests {
             w.bool(false);
             w.string("minecraft:furnace_speed");
         });
+        raw_round_trip(component::SUSPICIOUS_STEW_EFFECTS, |w| {
+            w.varint(1);
+            w.varint(15);
+            w.varint(160);
+        });
     }
 
     #[test]
-    fn profiles() {
-        // A name only: a dynamic profile, default skin.
-        raw_round_trip(component::PROFILE, |w| {
-            w.bool(false);
-            w.bool(true);
-            w.string("Notch");
-            w.bool(false);
-            w.varint(0);
-            (0..4).for_each(|_| w.bool(false));
-        });
-        // A full GameProfile with a signed textures property and a skin patch.
-        raw_round_trip(component::PROFILE, |w| {
+    fn profiles_read_their_whole_skin_patch() {
+        // A full GameProfile with a signed textures property, then a
+        // PlayerSkin.Patch: a body texture, no cape, an elytra texture (one
+        // Identifier each) and the slim model (a bool).
+        let (_, mut data) = with_component(component::PROFILE, |w| {
             w.bool(true);
             w.uuid(0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5);
             w.string("Notch");
@@ -713,44 +1137,25 @@ mod tests {
             w.bool(true);
             w.bool(true);
         });
-        // A partial profile with an id and an unsigned property.
-        raw_round_trip(component::PROFILE, |w| {
-            w.bool(false);
-            w.bool(false);
-            w.bool(true);
-            w.uuid(7);
-            w.varint(1);
-            w.string("textures");
-            w.string("e30=");
-            w.bool(false);
-            (0..4).for_each(|_| w.bool(false));
-        });
-    }
-
-    #[test]
-    fn potion_contents_with_custom_effects() {
-        raw_round_trip(component::POTION_CONTENTS, |w| {
-            w.bool(true);
-            w.varint(5);
-            w.bool(true);
-            w.i32(0xFF00FF);
-            w.varint(2);
-            effect(w, 1);
-            effect(w, 10);
-            w.bool(true);
-            w.string("custom");
-        });
-        raw_round_trip(component::POTION_CONTENTS, |w| {
-            w.bool(false);
-            w.bool(false);
-            w.varint(0);
-            w.bool(false);
-        });
-        raw_round_trip(component::SUSPICIOUS_STEW_EFFECTS, |w| {
-            w.varint(1);
-            w.varint(15);
-            w.varint(160);
-        });
+        let mut w = Writer::new();
+        Slot::write(&Some(Stack::new(7, 3)), &mut w);
+        data.extend_from_slice(&w.data);
+        let mut r = Reader::new(&data);
+        let stack = Slot::read(&mut r).unwrap().unwrap();
+        assert_eq!(
+            stack.component(component::PROFILE),
+            Some(&Component::Profile(Profile {
+                name: Some("Notch".into()),
+                id: Some(0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5),
+                properties: vec![(
+                    "textures".into(),
+                    "eyJ0ZXh0dXJlcyI6e319".into(),
+                    Some("c2lnbmF0dXJl".into()),
+                )],
+            }))
+        );
+        assert_eq!(Slot::read(&mut r).unwrap(), Some(Stack::new(7, 3)));
+        assert_eq!(r.remaining(), 0);
     }
 
     #[test]
@@ -798,6 +1203,11 @@ mod tests {
         raw_round_trip(component::DEATH_PROTECTION, |w| {
             w.varint(1);
             w.varint(2);
+        });
+        // An unknown consume effect type.
+        refused(component::DEATH_PROTECTION, |w| {
+            w.varint(1);
+            w.varint(5);
         });
     }
 
@@ -899,10 +1309,6 @@ mod tests {
             template(w, 1, 1);
             w.varint(component::REPAIR_COST);
         });
-        raw_round_trip(component::CHARGED_PROJECTILES, |w| {
-            w.varint(1);
-            template(w, 800, 1);
-        });
         raw_round_trip(component::CONTAINER, |w| {
             w.varint(3);
             w.bool(true);
@@ -923,30 +1329,8 @@ mod tests {
     }
 
     #[test]
-    fn books() {
-        raw_round_trip(component::WRITTEN_BOOK_CONTENT, |w| {
-            w.string("Title");
-            w.bool(true);
-            w.string("T");
-            w.string("Steve");
-            w.varint(0);
-            w.varint(2);
-            text(w, "page one");
-            w.bool(false);
-            text(w, "page two");
-            w.bool(true);
-            text(w, "page ***");
-            w.bool(true);
-        });
-        raw_round_trip(component::WRITABLE_BOOK_CONTENT, |w| {
-            w.varint(1);
-            w.string("draft");
-            w.bool(false);
-        });
-    }
-
-    #[test]
-    fn trims_fireworks_and_banners() {
+    fn direct_trims_banners_and_songs() {
+        // A trim with a direct holder keeps its bytes.
         raw_round_trip(component::TRIM, |w| {
             w.varint(3);
             w.varint(0);
@@ -959,13 +1343,6 @@ mod tests {
             w.string("minecraft:amethyst");
             text(w, "Amethyst Material");
             w.varint(1);
-        });
-        raw_round_trip(component::FIREWORK_EXPLOSION, explosion);
-        raw_round_trip(component::FIREWORKS, |w| {
-            w.varint(2);
-            w.varint(2);
-            explosion(w);
-            explosion(w);
         });
         raw_round_trip(component::BANNER_PATTERNS, |w| {
             w.varint(2);
@@ -1080,132 +1457,6 @@ mod tests {
                 "loot_table",
                 literal("minecraft:chests/x"),
             )]));
-        });
-    }
-
-    #[test]
-    fn modelled_components_skip_like_they_encode() {
-        let samples = [
-            (component::DAMAGE, Component::Int(3)),
-            (component::DYED_COLOR, Component::Int(-6265536)),
-            (component::UNBREAKABLE, Component::Unit),
-            (component::ENCHANTMENT_GLINT_OVERRIDE, Component::Bool(true)),
-            (component::CUSTOM_NAME, Component::Text(literal("x"))),
-            (
-                component::CUSTOM_DATA,
-                Component::Nbt(Tag::compound([("a", Tag::Int(1))])),
-            ),
-            (
-                component::ITEM_MODEL,
-                Component::Ident("minecraft:stone".into()),
-            ),
-            (
-                component::LORE,
-                Component::Lore(vec![literal("a"), literal("b")]),
-            ),
-            (
-                component::STORED_ENCHANTMENTS,
-                Component::Enchantments(vec![(1, 2)]),
-            ),
-            (
-                component::CUSTOM_MODEL_DATA,
-                Component::CustomModelData {
-                    floats: vec![1.0],
-                    flags: vec![true, false],
-                    strings: vec!["s".into()],
-                    colors: vec![0xFFFFFF],
-                },
-            ),
-            (
-                component::TOOLTIP_DISPLAY,
-                Component::TooltipDisplay {
-                    hide: false,
-                    hidden: vec![component::DAMAGE, component::LORE],
-                },
-            ),
-        ];
-        for (kind, c) in samples {
-            let mut w = Writer::new();
-            c.write(kind, &mut w);
-            let mut r = Reader::new(&w.data);
-            codecs::skip(kind, &mut r, 0).unwrap();
-            assert_eq!(r.remaining(), 0, "{kind}");
-        }
-    }
-
-    /// `n` bundles, each holding the next.
-    fn nested_bundles(n: usize) -> Vec<u8> {
-        let mut w = Writer::new();
-        for x in [1, 900, 1, 0] {
-            w.varint(x);
-        }
-        for i in 0..n {
-            w.varint(component::BUNDLE_CONTENTS);
-            w.varint(1);
-            if i + 1 < n {
-                [901, 1, 1, 0].into_iter().for_each(|x| w.varint(x));
-            } else {
-                template(&mut w, 901, 1);
-            }
-        }
-        w.data
-    }
-
-    #[test]
-    fn nesting_is_bounded() {
-        let max = codecs::MAX_DEPTH as usize;
-        // The deepest accepted nesting fits a small stack, even unoptimised.
-        let deepest = nested_bundles(max);
-        std::thread::Builder::new()
-            .stack_size(256 * 1024)
-            .spawn(move || Slot::read(&mut Reader::new(&deepest)).map(drop))
-            .unwrap()
-            .join()
-            .unwrap()
-            .unwrap();
-        assert!(Slot::read(&mut Reader::new(&nested_bundles(max + 1))).is_err());
-        // Hidden effects chain the same way.
-        let chain = |n: usize| {
-            move |w: &mut Writer| {
-                w.bool(false);
-                w.bool(false);
-                w.varint(1);
-                w.varint(1);
-                for i in 0..n {
-                    w.varint(0);
-                    w.varint(20);
-                    (0..3).for_each(|_| w.bool(true));
-                    w.bool(i + 1 < n);
-                }
-                w.bool(false);
-            }
-        };
-        raw_round_trip(component::POTION_CONTENTS, chain(max));
-        refused(component::POTION_CONTENTS, chain(max + 1));
-    }
-
-    #[test]
-    fn unknown_components_are_errors() {
-        // Every id below COUNT has a codec; past it there is no type.
-        for kind in [component::COUNT, 999, -1] {
-            refused(kind, |w| w.varint(0));
-        }
-        // A nested template must also remove only real types.
-        refused(component::BUNDLE_CONTENTS, |w| {
-            [1, 901, 1, 0, 1, component::COUNT]
-                .into_iter()
-                .for_each(|x| w.varint(x));
-        });
-        // An unknown consume effect type.
-        refused(component::DEATH_PROTECTION, |w| {
-            w.varint(1);
-            w.varint(5);
-        });
-        // Vanilla's tag codecs refuse End, COMPOUND_TAG anything but a compound.
-        refused(component::LOCK, |w| w.u8(0));
-        refused(component::ENTITY_DATA, |w| {
-            w.varint(1);
-            w.nbt(&Tag::Int(3));
         });
     }
 }

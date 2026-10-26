@@ -730,6 +730,10 @@ pub struct Scene<'a> {
     pub sign: &'a dyn Fn([i32; 3]) -> Option<&'a crate::signs::SignData>,
     /// Banner layers at a position: pattern texture and RGB tint, bottom first.
     pub banner: &'a dyn Fn([i32; 3]) -> Vec<(String, u32)>,
+    /// The skin sprite a `player_head` shows at a position (`SkullBlockRenderer`
+    /// profile → skin): a downloaded `skins/<sha1>` slot or the profile's
+    /// `DefaultPlayerSkin` fallback; None keeps `SKIN_BY_TYPE` (`DefaultPlayerSkin.getDefaultTexture`, slim steve).
+    pub skull: &'a dyn Fn([i32; 3]) -> Option<&'a str>,
     /// Font glyph cell (none for blank glyphs such as the space) and advance.
     pub glyph: &'a dyn Fn(char) -> (Option<Rect>, f32),
 }
@@ -875,13 +879,6 @@ impl BlockEntityRenderer {
             visibility: None,
         }
     }
-    /// The standing banner's pole-and-bar and flag models (`BannerRenderer.submitSpecial`).
-    pub fn banner_models(&self) -> Option<(&ModelPart, &ModelPart)> {
-        Some((
-            self.models.get("standing_banner")?,
-            self.models.get("standing_banner_flag")?,
-        ))
-    }
     fn kind(&self, state: u32) -> &Kind {
         self.kinds.get(state as usize).unwrap_or(&Kind::None)
     }
@@ -939,7 +936,14 @@ impl BlockEntityRenderer {
         !matches!(self.kind(state), Kind::None)
     }
     /// ChestRenderer and BannerRenderer submit their animated models for crumbling.
-    pub fn render_breaking(&self, scene: &Scene, pos: [i32; 3], state: u32, out: &mut Vec<Vertex>) {
+    pub fn render_breaking(
+        &self,
+        scene: &Scene,
+        pos: [i32; 3],
+        state: u32,
+        stage: [f32; 2],
+        out: &mut Vec<Vertex>,
+    ) {
         if !matches!(self.kind(state), Kind::Banner { .. } | Kind::Chest { .. }) {
             return;
         }
@@ -958,7 +962,7 @@ impl BlockEntityRenderer {
             false,
             out,
         );
-        crate::breaking::entity_geometry(&mut out[start..], origin);
+        crate::breaking::entity_geometry(&mut out[start..], origin, stage);
     }
     /// `ChestRenderer.extractRenderState`'s openness for the chest of `state`
     /// at `pos`: `ChestBlock.combine` (`DoubleBlockCombiner.combineWithNeigbour`)
@@ -1278,6 +1282,13 @@ impl BlockEntityRenderer {
                     SkullType::Dragon => ("dragon_skull", "entity/enderdragon/dragon"),
                     SkullType::Piglin => ("piglin_head", "entity/piglin/piglin"),
                     SkullType::Player => ("player_head", "entity/player/slim/steve"),
+                };
+                // SkullBlockRenderer.getRenderType: the profile's skin when it
+                // resolves, `SKIN_BY_TYPE` (steve) otherwise.
+                let texture = if *kind == SkullType::Player {
+                    (scene.skull)(pos).unwrap_or(texture)
+                } else {
+                    texture
                 };
                 let (Some(model), Some(paint)) =
                     (self.models.get(model), paint(texture, 0xFFFFFF, packed))
@@ -1886,6 +1897,7 @@ mod tests {
             lid: &|_| 0.0,
             sign: &|_| None,
             banner: &|_| Vec::new(),
+            skull: &|_| None,
             glyph: &|_| (None, 0.0),
         };
         // Compare the cached world path with the original model renderer,
@@ -1942,7 +1954,7 @@ mod tests {
             let mut base = Vec::new();
             renderer.render_block(&scene, [0; 3], state, Mat4::IDENTITY, 0xff, &mut base);
             let mut cracks = Vec::new();
-            renderer.render_breaking(&scene, [0; 3], state, &mut cracks);
+            renderer.render_breaking(&scene, [0; 3], state, [0.0; 2], &mut cracks);
             assert!(!cracks.is_empty());
             assert_eq!(
                 base.iter().map(|v| v.pos).collect::<Vec<_>>(),
@@ -1956,7 +1968,7 @@ mod tests {
                 scene.lid = &|_| 1.0;
             }
             let mut animated = Vec::new();
-            renderer.render_breaking(&scene, [0; 3], state, &mut animated);
+            renderer.render_breaking(&scene, [0; 3], state, [0.0; 2], &mut animated);
             assert!(cracks.iter().zip(&animated).any(|(a, b)| a.pos != b.pos));
             scene.game_time = 0;
             scene.lid = &|_| 0.0;

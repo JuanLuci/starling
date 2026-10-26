@@ -543,6 +543,33 @@ impl Behaviours {
         self.sim(level, ticks)
             .use_without_item(pos, face, hit, player)
     }
+    /// `DoorBlock.setOpen`: a mob opens or closes the door at `pos` (either half), with its sound
+    /// and game event. False when it is no door or already so.
+    pub fn set_door_open<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        open: bool,
+    ) -> bool {
+        let state = level.block_state(pos);
+        if !self.data(state).is(Class::Door) || self.table.bool(state, self.props.open) == open {
+            return false;
+        }
+        let mut sim = self.sim(level, ticks);
+        let next = self.table.set_bool(state, self.props.open, open);
+        sim.set_block(pos, next, 10);
+        sim.door_sound(pos, next, open);
+        sim.game_event(
+            pos,
+            if open {
+                "minecraft:block_open"
+            } else {
+                "minecraft:block_close"
+            },
+        );
+        true
+    }
     /// `BlockState.useItemOn` with `item` in the main hand, then, when the
     /// block asks to try with an empty hand (the default), `useWithoutItem`.
     /// `SweetBerryBushBlock.useItemOn` passes bone meal on a bush that can
@@ -565,6 +592,37 @@ impl Behaviours {
         {
             return InteractionResult::Pass;
         }
+        if self.data(state).chain.contains(&Class::CopperGolemStatue) {
+            return self.turn_statue(level, ticks, pos, state, item);
+        }
         self.use_without_item(level, ticks, pos, face, hit, player)
+    }
+
+    /// `CopperGolemStatueBlock.useItemOn` (and its weathering subclass's): anything but an axe
+    /// (`#minecraft:axes`, every one named `*_axe`), even an empty hand, turns the statue to its
+    /// next pose; honeycomb waxes a statue that still weathers instead.
+    fn turn_statue<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+        item: Option<&str>,
+    ) -> InteractionResult {
+        let item = item.unwrap_or("minecraft:air");
+        let waxed = self.table.name(state).starts_with("minecraft:waxed_");
+        if item.ends_with("_axe") || (item == "minecraft:honeycomb" && !waxed) {
+            return InteractionResult::Pass;
+        }
+        let mut sim = self.sim(level, ticks);
+        sim.sound(
+            pos,
+            &"minecraft:entity.copper_golem_become_statue".into(),
+            1.0,
+            1.0,
+        );
+        sim.set_block_and_update(pos, self.table.cycle(state, self.props.copper_golem_pose));
+        sim.game_event(pos, "minecraft:block_change");
+        InteractionResult::Success
     }
 }

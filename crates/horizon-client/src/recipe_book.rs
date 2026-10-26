@@ -384,7 +384,7 @@ impl Book {
             order,
         }
     }
-    /// Which book a recipe id belongs to.
+    /// Which book a recipe id belongs to (Starling's recipe placement, game/recipe_book.rs).
     pub fn book_of(&self, id: &str) -> Option<BookType> {
         let e = self.entries.iter().find(|e| e.id == id)?;
         Some(match e.category {
@@ -802,13 +802,15 @@ impl Settings {
         }
         (displays, added)
     }
-    /// `ServerRecipeBook.removeRecipes`: the displays removed.
-    pub fn remove_recipes(&mut self, index: &RecipeIndex, ids: &[String]) -> usize {
-        let mut displays = 0;
+    /// `ServerRecipeBook.removeRecipes`: the display ids removed, which its
+    /// `ClientboundRecipeBookRemovePacket` lists (a transmute recipe has one
+    /// per material count).
+    pub fn remove_recipes(&mut self, index: &RecipeIndex, ids: &[String]) -> Vec<i32> {
+        let mut displays = Vec::new();
         for id in ids {
             if self.recipes.remove(id) {
                 self.to_be_displayed.remove(id);
-                displays += index.displays(id);
+                displays.extend(index.display_ids(id));
             }
         }
         displays

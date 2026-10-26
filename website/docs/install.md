@@ -5,7 +5,7 @@ Download the launcher, let it install Horizon, then prepare the game from your o
 ## What you need
 
 - **Minecraft: Java Edition 26.3, played once.** Install it with the official Minecraft launcher (or Prism Launcher, MultiMC, the Modrinth App, ATLauncher or GDLauncher) and start 26.3 once, so it downloads its files. Horizon reads them from there and never copies them anywhere else.
-- **Java 25, a JDK.** For example [Eclipse Temurin 25](https://adoptium.net/temurin/releases/?version=25). Only the one-time preparation uses it. The game itself needs no Java.
+- **Java 25, a JDK**, for the one-time preparation only (the game itself needs no Java). Nothing to install: the launcher uses the Java the Minecraft launcher downloaded for 26.3, or downloads that same Java from Mojang. A JDK you installed yourself (for example [Eclipse Temurin 25](https://adoptium.net/temurin/releases/?version=25)) works too.
 - **A computer on the [supported list](/docs/#supported-systems).** On Linux and Windows that means a graphics card with Vulkan (or DirectX 12 on Windows).
 
 ## Download the launcher
@@ -24,7 +24,7 @@ Every release also carries `SHA256SUMS` and a signature, `SHA256SUMS.sig`, if yo
 2. Back on **Play**, the launcher says "Not prepared. Horizon needs the files of your own Minecraft 26.3." Choose **Prepare**. It finds your Minecraft folder by itself in the usual places. If it cannot, it lists where it looked, and **Choose…** next to the Minecraft folder lets you point it at yours.
 3. Wait a few minutes. When it says "Prepared for Minecraft 26.3", choose **Play**.
 
-The game opens on Horizon's own title screen. Your worlds, options and logs live in the game folder, which is not inside a version's folder, so updating or removing a version never touches them:
+The game opens on vanilla's title screen. Your worlds, options and logs live in the game folder, which is not inside a version's folder, so updating or removing a version never touches them:
 
 - Linux: `~/.local/share/horizon`
 - macOS: `~/Library/Application Support/horizon`
@@ -34,12 +34,14 @@ The game opens on Horizon's own title screen. Your worlds, options and logs live
 
 ## Updating
 
-- **Horizon.** The launcher looks for a new release when it starts and every four hours while it is open. With **Install new versions automatically** on (the default), it installs one and moves you to it if you were on the newest. New releases come out many times a day, and old versions stay installed until you remove them on the **Versions** page.
-- **The launcher.** It updates itself from its own releases, then shows **Restart** in its footer.
+- **Horizon.** The launcher looks for a new release when it starts and every 30 minutes while it is open. With **Install new versions automatically** on (the default), it installs one and moves you to it if you were on the newest. New releases come out many times a day, and old versions stay installed until you remove them on the **Versions** page.
+- **The launcher.** It updates itself from its own releases, then shows **Restart** in its footer. A launcher from before 0.2 (0.16 or older) updates twice in a row: first to 0.17, then to 0.2. Then it installs Horizon 0.2 like any update.
 
-## Stable and beta builds
+## One version for everyone
 
-The launcher installs **stable** builds by default. In **Settings**, **Beta builds** installs new builds the moment they are released, before they have had time to settle. The **Versions** page shows each version's channel. A new release starts as a beta and becomes stable by itself about six hours later, once its smoke test has passed.
+There is one channel: every release is the version everyone gets. Before a release goes out, the game has to start and draw a world on our test machine, and nothing goes out while a serious problem is open. New releases come out many times a day, and you can install any older version by hand on the **Versions** page.
+
+Launchers from before this change still show an **Updates** choice in Settings. Either option now gets every new release, and the choice goes away once the launcher has updated itself.
 
 ## The Versions page
 

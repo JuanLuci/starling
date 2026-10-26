@@ -9,9 +9,8 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     screen_draw::{self, Draw, Measure},
     touch::{Button, Place, Shape},
-    ui_theme::{self, Kind, Ui},
 };
-use horizon_mods::{Anchor, ScreenButton, Shape as ModShape, WindowButton, WindowPart};
+use horizon_mods::{Anchor, ButtonShape as ModShape, ScreenButton, WindowButton, WindowPart};
 
 /// A mod's button on the touch controls, as it is drawn.
 #[derive(Clone, Debug)]
@@ -139,53 +138,32 @@ impl Game<'_> {
             // The label after the icon, a square as tall as the button lets it be.
             let side = (r[3] - 4.0).clamp(0.0, 16.0);
             let text_left = if icon.is_some() { side + 4.0 } else { 0.0 };
-            if ui_theme::horizon() {
-                let atlas = &self.gui.atlas;
-                let scale = batch.scale;
-                let mut ui = Ui::new(atlas, batch, cursor);
-                // GUI pixels to the Horizon menus' dp.
-                let k = scale / ui.density;
-                let rect = [r[0] * k, r[1] * k, r[2] * k, r[3] * k];
-                let label = rich_text(&b.label).plain();
-                let padded = if icon.is_some() {
-                    format!("    {label}")
-                } else {
-                    label
-                };
-                let kind = if held { Kind::Primary } else { Kind::Secondary };
-                let tag = b.id.bytes().fold(0x5374_6172_u64, |h, c| {
-                    h.wrapping_mul(31).wrapping_add(u64::from(c))
-                });
-                ui.button(tag, rect, &padded, kind, b.active);
-                ui.finish();
-            } else {
-                let atlas = &self.gui.atlas;
-                let m = Measure(&atlas.font);
-                let mut label = rich_text(&b.label);
-                let room = r[2] as i32 - 4 - text_left as i32;
-                if m.width(&label) > room {
-                    label = m.head(&label, room);
-                }
-                let mut draws = Vec::new();
-                screen_draw::button(
-                    &mut draws,
-                    &m,
-                    &label,
-                    r[0] as i32,
-                    r[1] as i32,
-                    r[2] as i32,
-                    r[3] as i32,
-                    b.active,
-                    hovered || held,
-                );
-                // The label in the middle of what the icon leaves.
-                for d in &mut draws {
-                    if let Draw::Text { x, .. } = d {
-                        *x += (text_left / 2.0) as i32;
-                    }
-                }
-                screen_draw::paint(batch, atlas, &draws);
+            let atlas = &self.gui.atlas;
+            let m = Measure(&atlas.font);
+            let mut label = rich_text(&b.label);
+            let room = r[2] as i32 - 4 - text_left as i32;
+            if m.width(&label) > room {
+                label = m.head(&label, room);
             }
+            let mut draws = Vec::new();
+            screen_draw::button(
+                &mut draws,
+                &m,
+                &label,
+                r[0] as i32,
+                r[1] as i32,
+                r[2] as i32,
+                r[3] as i32,
+                b.active,
+                hovered || held,
+            );
+            // The label in the middle of what the icon leaves.
+            for d in &mut draws {
+                if let Draw::Text { x, .. } = d {
+                    *x += (text_left / 2.0) as i32;
+                }
+            }
+            screen_draw::paint(batch, atlas, &draws);
             if let Some(icon) = icon {
                 let tint = if b.active {
                     u32::MAX

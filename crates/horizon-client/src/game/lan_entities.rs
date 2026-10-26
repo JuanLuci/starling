@@ -5,7 +5,7 @@
 //! synched data that differs from the defaults), and who rides what.
 use super::Game;
 use horizon_client::lan::{
-    entity::{EntityState, Riding},
+    entity::{EntityState, Riding, States},
     hub::Hub,
 };
 use horizon_protocol::entity_data::{Value, serializer};
@@ -36,9 +36,12 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         velocity: [0.0; 3],
         data: 0,
         meta: Vec::new(),
+        defaults: Vec::new(),
         equipment: Vec::new(),
         attributes: Vec::new(),
         precise: false,
+        needs_sync: false,
+        leash: None,
     }
 }
 
@@ -89,8 +92,17 @@ fn stand_poses(raw: Option<&Tag>) -> Vec<(u8, i32, Value)> {
 impl Game<'_> {
     /// Who rides what (`Entity.getPassengers`): mobs on mobs, and the
     /// host in its boat or minecart.
-    pub(super) fn lan_riding(&self, host_entity: Option<i32>, riding: &mut Riding) {
+    pub(super) fn lan_riding(
+        &self,
+        host_entity: Option<i32>,
+        guests: &[(u32, i32)],
+        riding: &mut Riding,
+    ) {
         riding.clear();
+        // The server's players in their boats and minecarts.
+        for &(vehicle, guest) in guests {
+            riding.add(vehicle as i32, guest);
+        }
         for m in self.mobs.iter().filter(|m| !m.removed) {
             if let Some(vehicle) = m.extra.mount {
                 riding.add(vehicle as i32, m.id as i32);
@@ -107,7 +119,7 @@ impl Game<'_> {
         &self,
         host_entity: Option<i32>,
         hub: &mut Hub,
-        out: &mut Vec<EntityState>,
+        out: &mut States,
     ) {
         for b in &self.boats {
             let p = b.position;
@@ -264,22 +276,24 @@ impl Game<'_> {
         self.tridents.iter_mut().for_each(|t| give(&mut t.id));
         self.rockets.iter_mut().for_each(|r| give(&mut r.id));
         self.crystals.iter_mut().for_each(|c| give(&mut c.id));
+        self.bolts.iter_mut().for_each(|b| give(&mut b.id));
+        self.potions.thrown_ids().for_each(&mut give);
+        self.end.eye_ids().for_each(&mut give);
     }
 
     /// Primed TNT, falling blocks, projectiles, tridents, firework rockets and
     /// end crystals, as guests track them.
-    fn lan_projectile_states(
-        &self,
-        host_entity: Option<i32>,
-        hub: &mut Hub,
-        out: &mut Vec<EntityState>,
-    ) {
+    fn lan_projectile_states(&self, host_entity: Option<i32>, hub: &mut Hub, out: &mut States) {
         let owner = |who: Option<horizon_client::mobs::Who>| match who {
             Some(horizon_client::mobs::Who::Mob(id)) => id as i32,
             Some(horizon_client::mobs::Who::Player) => host_entity.unwrap_or(0),
             None => 0,
         };
         let at = |p: horizon_core::geometry::Vec3| [p.x, p.y, p.z];
+        // LightningBolt: each client draws and flashes its own.
+        for b in self.bolts.iter().filter(|b| b.id != 0) {
+            out.push(state(b.id, "minecraft:lightning_bolt", b.at, 0.0, false));
+        }
         for t in self.tnts.iter().filter(|t| t.id != 0) {
             let mut e = state(t.id, "minecraft:tnt", at(t.position), 0.0, t.on_ground);
             e.velocity = at(t.velocity);
@@ -307,20 +321,7 @@ impl Game<'_> {
         }
         for p in self.creatures.projectiles.iter().filter(|p| p.id != 0) {
             use horizon_client::projectiles::ProjectileKind as K;
-            let kind = match &p.kind {
-                K::Arrow { .. } => "minecraft:arrow",
-                K::Snowball => "minecraft:snowball",
-                K::Egg => "minecraft:egg",
-                K::EnderPearl => "minecraft:ender_pearl",
-                K::SmallFireball => "minecraft:small_fireball",
-                K::LargeFireball { .. } => "minecraft:fireball",
-                K::LlamaSpit => "minecraft:llama_spit",
-                K::WindCharge => "minecraft:wind_charge",
-                K::BreezeWindCharge => "minecraft:breeze_wind_charge",
-                K::ShulkerBullet { .. } => "minecraft:shulker_bullet",
-                K::WitherSkull { .. } => "minecraft:wither_skull",
-                K::Potion { .. } => "minecraft:splash_potion",
-            };
+            let kind = p.kind.id();
             let mut e = state(p.id, kind, at(p.position), p.yaw, false);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
@@ -345,6 +346,26 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            out.push(e);
+        }
+        // Thrown potions and bottles: ThrowableItemProjectile.DATA_ITEM_STACK
+        // (the potion's colour), which a plain bottle's type already has.
+        for (id, kind, stack, position, velocity) in self.potions.thrown_tracked() {
+            let mut e = state(id, kind, at(position), 0.0, false);
+            e.velocity = at(velocity);
+            if stack.extra.is_some() || stack.count != 1 {
+                e.meta.push((
+                    8,
+                    serializer::ITEM_STACK,
+                    Value::Item(hub.stack(&Some(stack.clone()))),
+                ));
+            }
+            out.push(e);
+        }
+        // EyeOfEnder: its item is the plain eye (DATA_ITEM_STACK's default).
+        for (id, position, velocity) in self.end.eyes_tracked() {
+            let mut e = state(id, "minecraft:eye_of_ender", position, 0.0, false);
+            e.velocity = velocity;
             out.push(e);
         }
         for t in self.tridents.iter().filter(|t| t.id != 0) {
@@ -383,11 +404,19 @@ impl Game<'_> {
                     Value::Item(hub.stack(&Some(r.item.clone()))),
                 ));
             }
+            let boosted = match r.guest {
+                Some(conn) => hub
+                    .guests
+                    .iter()
+                    .find(|g| g.conn == conn)
+                    .map(|g| g.entity_id),
+                None => host_entity,
+            };
             if r.attached
-                && let Some(host) = host_entity
+                && let Some(player) = boosted
             {
                 e.meta
-                    .push((9, serializer::OPTIONAL_UNSIGNED_INT, Value::Id(host + 1)));
+                    .push((9, serializer::OPTIONAL_UNSIGNED_INT, Value::Id(player + 1)));
             }
             if r.angled {
                 e.meta.push((10, serializer::BOOLEAN, Value::Bool(true)));
@@ -406,6 +435,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
+        out.extend(self.lan_dragon_state());
     }
 }
 

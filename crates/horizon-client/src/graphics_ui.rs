@@ -2,7 +2,7 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{GraphicsApi, Overlay, Pacing, PresentMode, Preset},
+    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset},
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     options_ui::Opt,
@@ -22,8 +22,8 @@ pub enum Level {
 pub enum H {
     Preset,
     LodDistance,
+    FarDetail,
     CaveCulling,
-    CullLeaves,
     EntityCulling,
     ChunkUpdates,
     UploadBudget,
@@ -38,7 +38,6 @@ pub enum H {
     ResolutionScale,
     Antialiasing,
     BatteryMode,
-    ShaderPack,
     GraphicsApi,
 }
 
@@ -85,6 +84,16 @@ pub fn rows(level: Level) -> Vec<Row> {
         Medium,
         "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
     );
+    // Suggested, never switched on, where far terrain costs the GPU most.
+    let far = h(
+        H::FarDetail,
+        Medium,
+        if crate::graphics::reduced_far_detail_suggested() {
+            "Reduced draws far terrain coarser: faster on this integrated GPU."
+        } else {
+            "Reduced draws far terrain coarser, for GPUs it slows down."
+        },
+    );
     let fov = v(
         Opt::Fov,
         Low,
@@ -107,11 +116,12 @@ pub fn rows(level: Level) -> Vec<Row> {
         "Sets the options below together. Changing one makes it Custom.",
     );
     let mut rows = match level {
-        Level::Simple => vec![preset, render, lod, fov, fps, vsync, gui],
+        Level::Simple => vec![preset, render, lod, far, fov, fps, vsync, gui],
         Level::Advanced => vec![
             Row::Header("Rendering"),
             render,
             lod,
+            far,
             v(
                 Opt::SimulationDistance,
                 Medium,
@@ -126,11 +136,6 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::CaveCulling,
                 Saves,
                 "Skips terrain hidden behind closed sections. Off costs a lot.",
-            ),
-            h(
-                H::CullLeaves,
-                None,
-                "Hides shared leaf and mangrove root faces; foliage can look less dense.",
             ),
             h(
                 H::EntityCulling,
@@ -234,11 +239,6 @@ pub fn rows(level: Level) -> Vec<Row> {
                 None,
                 "Lowers the frame rate when minimised, or idle too.",
             ),
-            h(
-                H::ShaderPack,
-                High,
-                "Redraws the world with a pack from shaderpacks/. Off is vanilla.",
-            ),
             Row::Header("Preferences"),
             v(Opt::ViewBobbing, None, "Sways the view while walking."),
             v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
@@ -285,7 +285,7 @@ pub fn rows(level: Level) -> Vec<Row> {
 
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 
-/// Classic's submenus supplement the vanilla options on their parent screens.
+/// Horizon's graphics screens supplement the vanilla options on Video Settings.
 fn extra_rows(level: Level) -> Vec<Row> {
     let mut rows = rows(level);
     rows.retain(|row| !matches!(row, Row::Setting(s) if matches!(s.item, Item::Vanilla(_))));
@@ -335,8 +335,8 @@ impl H {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", format!("{n} chunks")),
             },
+            H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
-            H::CullLeaves => labelled("Cull Leaves", on_off(g.cull_leaves)),
             H::EntityCulling => labelled("Entity Culling", on_off(g.entity_culling)),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
@@ -367,10 +367,6 @@ impl H {
             H::Antialiasing => labelled("Anti-aliasing", if g.fxaa { "FXAA" } else { "Off" }),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
-            H::ShaderPack => match g.shader_pack.as_str() {
-                "" => labelled("Shader Pack", "Off"),
-                id => labelled("Shader Pack", id),
-            },
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -412,8 +408,10 @@ impl H {
             H::LodDistance => {
                 g.lod_distance = step(&[0, 64, 128, 256, 512, 1024], g.lod_distance, back)
             }
+            H::FarDetail => {
+                g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
+            }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
-            H::CullLeaves => g.cull_leaves = !g.cull_leaves,
             H::EntityCulling => g.entity_culling = !g.entity_culling,
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
@@ -423,17 +421,6 @@ impl H {
             H::Antialiasing => g.fxaa = !g.fxaa,
             H::BatteryMode => g.battery = !g.battery,
             H::GraphicsApi => g.api = step(&GraphicsApi::ALL, g.api, back),
-            H::ShaderPack => {
-                // Off, then every pack in shaderpacks/ by folder name.
-                let dir = std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(crate::shader_pack::DIR);
-                let mut all = vec![String::new()];
-                all.extend(crate::shader_pack::list(&dir).into_iter().map(|(id, _)| id));
-                let i = all.iter().position(|x| *x == g.shader_pack).unwrap_or(0);
-                let n = all.len();
-                g.shader_pack = all[if back { (i + n - 1) % n } else { (i + 1) % n }].clone();
-            }
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -456,12 +443,11 @@ fn max_workers() -> u32 {
 }
 
 impl Item {
-    /// On/off settings, drawn as switches by the Horizon menus.
+    /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::CullLeaves) => g.cull_leaves,
             Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
@@ -480,14 +466,6 @@ impl Item {
             Item::Vanilla(Opt::ImprovedTransparency) => s.improved_transparency,
             _ => return None,
         })
-    }
-    /// Caption and value text, split from the label ("Caption: Value").
-    pub fn caption_value(self, s: &Settings) -> (String, String) {
-        let label = self.label(s).plain();
-        match label.split_once(": ") {
-            Some((c, v)) => (c.to_owned(), v.to_owned()),
-            None => (label, String::new()),
-        }
     }
     pub fn slider(self, s: &Settings) -> Option<f32> {
         match self {
@@ -530,7 +508,6 @@ impl Item {
                     | H::PresentMode
                     | H::Workers
                     | H::BatteryMode
-                    | H::ShaderPack
                     | H::GraphicsApi
             ) | Item::Vanilla(
                 Opt::GuiScale
@@ -993,25 +970,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shader_pack_row_is_off_by_default_and_outside_presets() {
-        let mut s = Settings::default();
-        let row = Item::Horizon(H::ShaderPack);
-        assert_eq!(row.label(&s).plain(), "Shader Pack: Off");
-        assert!(
-            rows(Level::Advanced)
-                .iter()
-                .any(|r| matches!(r, Row::Setting(x) if x.item == row))
-        );
-        s.horizon.shader_pack = "horizon-sample".into();
-        assert_eq!(row.label(&s).plain(), "Shader Pack: horizon-sample");
-        // Picking a pack keeps the preset.
-        Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480]);
-        let preset = s.horizon.preset;
-        row.cycle(&mut s, false, [854, 480]);
-        assert_eq!(s.horizon.preset, preset);
-    }
-
-    #[test]
     fn presets_set_vanilla_and_horizon_options() {
         let mut s = Settings::default();
         Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480]);
@@ -1035,48 +993,6 @@ mod tests {
         assert_eq!(H::UploadBudget.slider(&s), Some(1.0));
         H::UploadBudget.set_slider(&mut s, 0.0);
         assert_eq!(s.horizon.upload_budget_kib, 0);
-    }
-
-    #[test]
-    fn cull_leaves_is_opt_in_and_toggles_from_advanced_graphics() {
-        let mut s = Settings::default();
-        let item = Item::Horizon(H::CullLeaves);
-        assert_eq!(item.switch(&s), Some(false));
-        assert_eq!(item.label(&s).plain(), "Cull Leaves: Off");
-        for enabled in [false, true] {
-            s.horizon.cull_leaves = enabled;
-            for preset in Preset::ALL {
-                crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.cull_leaves, enabled);
-            }
-        }
-
-        let mut ui = GraphicsUi::default();
-        let size = (480.0, 4000.0);
-        let (widgets, _, _) = ui.layout(Level::Advanced, size.0, size.1);
-        let switch = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(i) if i == item))
-            .unwrap();
-        let point = (switch.x + 1.0, switch.y + 1.0);
-        for enabled in [false, true] {
-            s.horizon.preset = Preset::Balanced;
-            assert_eq!(
-                ui.click(
-                    Level::Advanced,
-                    &mut s,
-                    point,
-                    size,
-                    [854, 480],
-                    false,
-                    false
-                ),
-                vec![Action::ButtonClick, Action::Changed]
-            );
-            assert_eq!(item.switch(&s), Some(enabled));
-            assert_eq!(s.horizon.preset, Preset::Custom);
-        }
-        assert_eq!(item.label(&s).plain(), "Cull Leaves: On");
     }
 
     #[test]

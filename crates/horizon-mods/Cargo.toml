@@ -3,7 +3,7 @@ name = "horizon-mods"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.86"
+rust-version = "1.95"
 description = "Horizon's mod runtime: sandboxed WebAssembly components (docs/mods.md)"
 
 [dependencies]
@@ -12,33 +12,46 @@ serde_json = "1"
 toml = "1.1.6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
-# 50: its Winch runs the JavaScript engine on ARM (36 LTS crashed it on phones).
+# 50: its Winch runs the JavaScript engine on ARM (36 LTS crashed it on phones). Upstream Horizon
+# is on the 48 LTS line; 50 reads WebAssembly with wasm-tools 0.261, packing below stays on 0.254.
 wasmtime = { version = "50.0.0", default-features = false, features = ["runtime", "cranelift", "winch", "parallel-compilation", "component-model", "std"], optional = true }
-# Names a mod's compiled code in the cache by its WebAssembly.
-sha2 = { version = "0.10.9", optional = true }
 # Unpacks the shared JavaScript engine the build embeds (build.rs).
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"], optional = true }
 # Turns a mod's core module into a component (cargo horizon-mod build, the tests).
-wit-component = { version = "0.239", optional = true }
-wit-parser = { version = "0.239", optional = true }
+wit-component = { version = "0.254", optional = true }
+wit-parser = { version = "0.254", optional = true }
+# SHA-256: names a mod's compiled code in the cache by its WebAssembly (feature `runtime`), and
+# the registry index's checks (feature `index`) with minisign signatures (no dependencies of its own).
+sha2 = { version = "0.10.9", optional = true }
+minisign-verify = { version = "0.3", optional = true }
 
 # Lowers the background compile's priority on phones (Linux and Android threads have their own).
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 libc = "0.2"
 
 [features]
-default = ["runtime"]
-# Loads and runs mods; without it only manifests and packaging (cargo horizon-mod).
+# Loads and runs mods (the game's `mods` feature); without it only manifests,
+# content and packaging. Off by default so builds that don't run mods (the
+# game's tests and probes) skip wasmtime and cranelift.
 runtime = ["dep:wasmtime", "dep:sha2", "dep:flate2"]
 pack = ["dep:wit-component", "dep:wit-parser"]
+# The mod registry's index (docs/api/mod-index.md): the launcher, the registry server and its CI.
+index = ["dep:sha2", "dep:minisign-verify"]
 
 [build-dependencies]
 # build.rs packs the shared JavaScript engine and names it by its digest.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 sha2 = "0.10.9"
 
-[dev-dependencies]
-horizon-mods = { path = ".", features = ["pack"] }
+# Runs real mods: `cargo test -p horizon-mods --features runtime,pack`.
+[[test]]
+name = "sandbox"
+required-features = ["runtime", "pack"]
+
+# docs/api/mods-reference.md from the WIT contract (HORIZON_WRITE_DOCS=1 rewrites it).
+[[test]]
+name = "api_reference"
+required-features = ["pack"]
 
 [lints]
 workspace = true

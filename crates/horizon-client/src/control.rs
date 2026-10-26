@@ -16,7 +16,11 @@ use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -205,6 +209,12 @@ pub struct Server {
     path: PathBuf,
     requests: mpsc::Receiver<Request>,
     sender: mpsc::Sender<Request>,
+    /// Clients connected now (an MCP server keeps one open; horizon-ctl one per command).
+    clients: Arc<AtomicUsize>,
+    /// Set when the server is dropped: the listener stops accepting and exits.
+    closed: Arc<AtomicBool>,
+    /// The TCP port, to wake the listener when closing.
+    port: Option<u16>,
 }
 
 /// `$HORIZON_CONTROL`, else `horizon-control.sock` in the user's runtime
@@ -232,6 +242,10 @@ impl Server {
         }
         let (sender, requests) = mpsc::channel();
         let local = sender.clone();
+        let clients = Arc::new(AtomicUsize::new(0));
+        let counted = clients.clone();
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut tcp_port = None;
         if uses_tcp(path) {
             let port = std::env::var("HORIZON_CONTROL_PORT")
                 .ok()
@@ -240,6 +254,7 @@ impl Server {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
             let token = random_token();
             let port = listener.local_addr()?.port();
+            tcp_port = Some(port);
             write_private(
                 path,
                 &serde_json::json!({ "transport": "tcp", "port": port, "token": token })
@@ -248,6 +263,8 @@ impl Server {
             spawn_listener(
                 move || listener.accept().map(|(s, _)| s),
                 sender,
+                counted,
+                closed.clone(),
                 move |stream: TcpStream| {
                     let _ = stream.set_nodelay(true);
                     let mut stream = Stream::Tcp(stream);
@@ -261,6 +278,8 @@ impl Server {
                 spawn_listener(
                     move || listener.accept().map(|(s, _)| s),
                     sender,
+                    counted,
+                    closed.clone(),
                     |s| Some(Stream::Unix(s)),
                 )?;
             }
@@ -269,6 +288,9 @@ impl Server {
             path: path.to_owned(),
             requests,
             sender: local,
+            clients,
+            closed,
+            port: tcp_port,
         })
     }
     /// Commands from inside the process only (`--benchmark` without `--control`).
@@ -278,7 +300,14 @@ impl Server {
             path: PathBuf::new(),
             requests,
             sender,
+            clients: Arc::default(),
+            closed: Arc::default(),
+            port: None,
         }
+    }
+    /// How many clients are connected.
+    pub fn clients(&self) -> usize {
+        self.clients.load(Ordering::Relaxed)
     }
     /// Sends commands as a socket client would, from another thread.
     pub fn sender(&self) -> mpsc::Sender<Request> {
@@ -296,6 +325,8 @@ impl Server {
 fn spawn_listener<S: Send + 'static>(
     mut accept_next: impl FnMut() -> io::Result<S> + Send + 'static,
     sender: mpsc::Sender<Request>,
+    clients: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
     accept: impl Fn(S) -> Option<Stream> + Send + Sync + 'static,
 ) -> io::Result<()> {
     let accept = std::sync::Arc::new(accept);
@@ -303,17 +334,24 @@ fn spawn_listener<S: Send + 'static>(
         .name("horizon-control".into())
         .spawn(move || {
             loop {
-                let Ok(stream) = accept_next() else {
+                let next = accept_next();
+                if closed.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(stream) = next else {
                     thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 };
                 let sender = sender.clone();
                 let accept = accept.clone();
+                let clients = clients.clone();
                 let _ = thread::Builder::new()
                     .name("horizon-control-client".into())
                     .spawn(move || {
                         if let Some(stream) = accept(stream) {
+                            clients.fetch_add(1, Ordering::Relaxed);
                             serve(stream, &sender);
+                            clients.fetch_sub(1, Ordering::Relaxed);
                         }
                     });
             }
@@ -349,6 +387,18 @@ fn authenticate(stream: &mut Stream, token: &str) -> bool {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        // Wake the listener so it sees `closed` and exits (agent control turned off in-game).
+        self.closed.store(true, Ordering::Relaxed);
+        match self.port {
+            Some(port) => drop(TcpStream::connect((Ipv4Addr::LOCALHOST, port))),
+            #[cfg(unix)]
+            None => drop(UnixStream::connect(&self.path)),
+            #[cfg(not(unix))]
+            None => {}
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }

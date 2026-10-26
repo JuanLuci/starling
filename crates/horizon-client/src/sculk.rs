@@ -78,7 +78,6 @@ pub const RESONANCE: [&str; 15] = [
 ];
 pub const SHRIEK: &str = "minecraft:shriek";
 pub const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
-pub const NO_VIBRATION_FREQUENCY: i32 = 0;
 
 /// `VibrationSystem.getGameEventFrequency`.
 pub fn frequency(event: &str) -> i32 {
@@ -414,6 +413,13 @@ impl SculkEntity {
             spreader: SculkSpreader::default(),
         }
     }
+    /// Whether its block entity tick does nothing: no vibration chosen
+    /// or on its way, none waiting to be chosen, and no charge to spread.
+    pub fn idle(&self) -> bool {
+        self.vibration.current.is_none()
+            && self.vibration.selector.current().is_none()
+            && self.spreader.cursors.is_empty()
+    }
     pub fn for_block(name: &str) -> Option<Self> {
         Some(Self::new(match name {
             "minecraft:sculk_sensor" => SculkKind::Sensor,
@@ -567,10 +573,6 @@ pub struct WardenSpawnTracker {
 }
 impl WardenSpawnTracker {
     pub const MAX_WARNING_LEVEL: i32 = 4;
-    /// Blocks around a shrieker within which players are warned.
-    pub const PLAYER_SEARCH_RADIUS: f64 = 16.0;
-    /// `AABB.ofSize(centre, 48, 48, 48)` for an existing warden.
-    pub const WARNING_CHECK_DIAMETER: f64 = 48.0;
     const DECREASE_EVERY: i32 = 12000;
     const INCREASE_COOLDOWN: i32 = 200;
     pub fn tick(&mut self) {

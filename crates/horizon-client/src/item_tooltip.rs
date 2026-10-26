@@ -486,13 +486,75 @@ pub fn lines(
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let mut lines = vec![name_line(stack, translate)];
+    if TooltipDisplay::for_stack(stack).shows("minecraft:lore") {
+        lines.extend(lore_texts(stack).into_iter().map(|t| t.plain()));
+    }
     lines.extend(detail_lines(stack, info, translate));
     lines
+}
+
+/// `ItemLore.addToTooltip`: each lore component under dark purple italic, with
+/// the component's own styles (including explicit `false`) winning on children.
+pub fn lore_texts(stack: &ItemStack) -> Vec<crate::text::Text> {
+    let Some(Tag::List(entries)) = stack.data().and_then(|d| d.other("minecraft:lore")) else {
+        return Vec::new();
+    };
+    let base = crate::text::Style {
+        color: Some(crate::text::DARK_PURPLE),
+        italic: Some(true),
+        ..Default::default()
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let mut text = crate::entity_nbt::name_text(entry).resolve_legacy();
+            for span in &mut text.spans {
+                span.style.inherit(&base);
+            }
+            text
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lore_keeps_component_colours_under_dark_purple_italic() {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        stack.data_mut().set_other(
+            "minecraft:lore",
+            Some(Tag::List(vec![
+                Tag::compound([
+                    ("text", Tag::String("Gold line".into())),
+                    ("color", Tag::String("gold".into())),
+                    ("italic", Tag::Byte(0)),
+                ]),
+                Tag::String("Plain lore".into()),
+            ])),
+        );
+        let lines = lore_texts(&stack);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].plain(), "Gold line");
+        assert_eq!(lines[0].spans[0].style.color, Some(crate::text::GOLD));
+        assert!(!lines[0].spans[0].style.is_italic());
+        assert_eq!(lines[1].plain(), "Plain lore");
+        assert_eq!(
+            lines[1].spans[0].style.color,
+            Some(crate::text::DARK_PURPLE)
+        );
+        assert!(lines[1].spans[0].style.is_italic());
+        assert!(TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
+        stack.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([(
+                "hidden_components",
+                Tag::List(vec![Tag::String("minecraft:lore".into())]),
+            )])),
+        );
+        assert!(!TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
+    }
 
     #[test]
     fn tooltip_display_controls_name_and_component_visibility() {
@@ -589,6 +651,65 @@ mod tests {
             ]
         );
         assert!(container_lines(&ItemStack::new("minecraft:chest", 1), &name, &lang).is_empty());
+    }
+
+    #[test]
+    fn fireworks_use_loaded_tooltip_translations() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-firework-tooltip-language-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let dir = root.join("assets/minecraft/lang");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("en_us.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "item.minecraft.firework_rocket.flight_duration": "Flight Duration: %s",
+                "item.minecraft.firework_rocket.multiple_stars": "%s x %s",
+                "item.minecraft.firework_star.shape.small_ball": "Small Ball",
+                "item.minecraft.firework_star.red": "Red",
+                "item.minecraft.firework_star.custom_color": "Custom",
+                "item.minecraft.firework_star.fade_to": "Fade to",
+                "item.minecraft.firework_star.trail": "Trail",
+                "item.minecraft.firework_star.flicker": "Twinkle",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let enchantments = crate::enchant::Enchantments::load(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        let translate = |key: &str| enchantments.translate(key).map(str::to_owned);
+        let mut rocket = ItemStack::new("minecraft:firework_rocket", 1);
+        assert_eq!(firework_lines(&rocket, &translate), ["Flight Duration: 1"]);
+        let explosion = crate::particles::FireworkExplosion {
+            colors: vec![0xB3312C],
+            fade: vec![0x123456],
+            trail: true,
+            twinkle: true,
+            ..Default::default()
+        };
+        rocket.data_mut().fireworks = Some((3, vec![explosion.clone(), explosion.clone()]));
+        assert_eq!(
+            firework_lines(&rocket, &translate),
+            [
+                "Flight Duration: 3",
+                "2 x Small Ball",
+                "  Red",
+                "  Fade to Custom",
+                "  Trail",
+                "  Twinkle",
+            ]
+        );
+        let mut star = ItemStack::new("minecraft:firework_star", 1);
+        star.data_mut().firework_explosion = Some(explosion);
+        assert_eq!(
+            firework_lines(&star, &translate),
+            ["Small Ball", "Red", "Fade to Custom", "Trail", "Twinkle"]
+        );
     }
 
     #[test]

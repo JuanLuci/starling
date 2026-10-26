@@ -3,6 +3,7 @@
 //! box each, and Done sending the changed ones (ServerboundSetGameRulePacket).
 //! Leaving with changes asks first (ConfirmScreen).
 use horizon_client::{
+    confirm_screen::Confirm,
     font::Font,
     gamerules::{self, GameRules, RULES, Rule, Value},
     hud::{HudAtlas, HudBatch},
@@ -44,7 +45,8 @@ pub(super) struct RulesScreen {
     initial: GameRules,
     /// IntegerRuleEntry's boxes, by rule.
     numbers: Vec<(&'static str, EditBox)>,
-    scroll: f32,
+    /// RuleList's scrolling: the wheel and the held scrollbar.
+    scroll: ui::Scroll,
     /// ConfirmScreen "Game Rule Changes" in its place.
     confirm: bool,
 }
@@ -65,9 +67,6 @@ fn parse(r: &Rule, s: &str) -> Option<i32> {
         .then(|| s.parse::<i32>().ok())
         .flatten()
         .filter(|v| (r.min..=r.max).contains(v))
-}
-fn widest(font: &Font, lines: &[Text]) -> f32 {
-    lines.iter().map(|l| font.width_text(l)).fold(0.0, f32::max)
 }
 fn lines(font: &Font, t: &Text, width: f32) -> Vec<Text> {
     font.split_lines(t, width)
@@ -95,38 +94,11 @@ fn yellow() -> u32 {
     named_color("yellow").unwrap_or(0xFFFF55)
 }
 
-/// ConfirmScreen: the title, the message (at most `width - 50` wide), and
-/// Yes / No 16 below, 4 apart, all centred.
-struct Confirm {
-    lines: Vec<(Text, f32, f32)>,
-    buttons: [(f32, f32); 2],
-}
-impl Confirm {
-    fn new(font: &Font, (w, h): (f32, f32)) -> Self {
-        let title = Text::translate("editGamerule.inGame.discardChanges.title", &[]);
-        let message = Text::translate("editGamerule.inGame.discardChanges.message", &[]);
-        let message: Vec<Text> = lines(font, &message, w - 50.0)
-            .into_iter()
-            .take(15)
-            .collect();
-        let (tw, mw) = (font.width_text(&title), widest(font, &message));
-        let mh = 9.0 * message.len() as f32;
-        let col = tw.max(mw).max(304.0);
-        let total = 9.0 + 8.0 + mh + 8.0 + 36.0;
-        let (lx, ly) = (((w - col) / 2.0).trunc(), ((h - total) / 2.0).trunc());
-        let cell = |cw: f32| lx + ((col - cw) / 2.0).trunc();
-        let mid = cell(mw) + (mw / 2.0).trunc();
-        let mut out = vec![(title, cell(tw), ly)];
-        for (i, line) in message.into_iter().enumerate() {
-            let x = mid - (font.width_text(&line) / 2.0).trunc();
-            out.push((line, x, ly + 17.0 + 9.0 * i as f32));
-        }
-        let (bx, by) = (cell(304.0), ly + 9.0 + 8.0 + mh + 8.0 + 16.0);
-        Self {
-            lines: out,
-            buttons: [(bx, by), (bx + 154.0, by)],
-        }
-    }
+/// ConfirmScreen "Game Rule Changes".
+fn confirm(font: &Font, size: (f32, f32)) -> Confirm {
+    let title = Text::translate("editGamerule.inGame.discardChanges.title", &[]);
+    let message = Text::translate("editGamerule.inGame.discardChanges.message", &[]);
+    Confirm::new(font, size, &title, &message)
 }
 
 impl RulesScreen {
@@ -149,7 +121,7 @@ impl RulesScreen {
             values: rules.clone(),
             initial: rules.clone(),
             numbers,
-            scroll: 0.0,
+            scroll: ui::Scroll::default(),
             confirm: false,
         }
     }
@@ -185,12 +157,17 @@ impl RulesScreen {
             })
             .collect()
     }
-    fn max_scroll(rows: usize, h: f32) -> f32 {
-        (ROW * rows as f32 + 4.0 - (h - HEADER - FOOTER)).max(0.0)
-    }
     /// Entry `i`'s top: 2 under the list's top, less the scroll.
     fn row_top(&self, i: usize) -> f32 {
-        HEADER + 2.0 - self.scroll.trunc() + ROW * i as f32
+        HEADER + 2.0 - self.scroll.amount.trunc() + ROW * i as f32
+    }
+    /// The list's scrollbar column (AbstractSelectionList: 6 pixels right of
+    /// the entries) and the pixels it scrolls.
+    fn bar(w: f32) -> f32 {
+        row_left(w) + ROW_WIDTH + 6.0 + 2.0
+    }
+    fn content(&self) -> f32 {
+        ROW * self.rows().len() as f32 + 4.0
     }
     /// getEntryAtPosition: the row under the pointer, inside the list.
     fn hovered(&self, rows: usize, (x, y): (f32, f32), (w, h): (f32, f32)) -> Option<usize> {
@@ -241,9 +218,27 @@ impl RulesScreen {
     /// The mouse wheel (AbstractSelectionList: half an entry a step).
     pub(super) fn wheel(&mut self, delta: f32, h: f32) {
         if !self.confirm {
-            let max = Self::max_scroll(self.rows().len(), h);
-            self.scroll = (self.scroll - delta * ROW / 2.0).clamp(0.0, max);
+            let content = self.content();
+            self.scroll
+                .wheel(delta, ROW / 2.0, HEADER, h - FOOTER, content);
         }
+    }
+    /// A press on the scrollbar holds it (AbstractSelectionList.updateScrolling).
+    pub(super) fn press_scrollbar(&mut self, cursor: (f32, f32), (w, h): (f32, f32)) -> bool {
+        let content = self.content();
+        self.scroll
+            .press(cursor, Self::bar(w), HEADER, h - FOOTER, content)
+    }
+    /// The pointer moved while the scrollbar is held.
+    pub(super) fn drag(&mut self, y: f32, h: f32) {
+        if self.scroll.held() {
+            let content = self.content();
+            self.scroll.drag(y, HEADER, h - FOOTER, content);
+        }
+    }
+    /// The button came up: the scrollbar lets go.
+    pub(super) fn release(&mut self) {
+        self.scroll.release();
     }
     fn focused(&mut self) -> Option<(Option<&'static str>, &mut EditBox)> {
         if self.search.focused {
@@ -258,7 +253,7 @@ impl RulesScreen {
     /// number sets its rule when valid (IntegerRuleEntry's responder).
     fn edited(&mut self, rule: Option<&'static str>) {
         let Some(name) = rule else {
-            self.scroll = 0.0;
+            self.scroll.amount = 0.0;
             return;
         };
         let Some(r) = gamerules::rule(name) else {
@@ -301,13 +296,10 @@ impl RulesScreen {
         let (w, h) = size;
         let on = |x: f32, y: f32, bw: f32, bh: f32| ui::hovered(cursor, x, y, bw, bh);
         if self.confirm {
-            let c = Confirm::new(&atlas.font, size);
-            let [(yx, yy), (nx, ny)] = c.buttons;
-            if on(yx, yy, 150.0, 20.0) {
-                return Some(Exit::Discard);
-            }
-            if on(nx, ny, 150.0, 20.0) {
-                self.confirm = false;
+            match confirm(&atlas.font, size).answer_at(cursor) {
+                Some(true) => return Some(Exit::Discard),
+                Some(false) => self.confirm = false,
+                None => {}
             }
             return None;
         }
@@ -317,6 +309,11 @@ impl RulesScreen {
         }
         if on(cx, cy, 150.0, 20.0) {
             return self.close();
+        }
+        // A press on the scrollbar holds it and clicks nothing else.
+        if self.press_scrollbar(cursor, size) {
+            self.unfocus();
+            return None;
         }
         // A click moves the focus to the widget under it.
         let (sx, sy) = search_at(w);
@@ -367,7 +364,7 @@ impl RulesScreen {
         let (w, h) = size;
         let on = |(x, y): (f32, f32)| ui::hovered(cursor, x, y, 150.0, 20.0);
         if self.confirm {
-            return Confirm::new(&atlas.font, size).buttons.into_iter().any(on);
+            return confirm(&atlas.font, size).answer_at(cursor).is_some();
         }
         let [done, cancel] = footer(w, h);
         if (on(done) && !self.invalid()) || on(cancel) {
@@ -384,19 +381,16 @@ impl RulesScreen {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         if self.confirm {
-            let c = Confirm::new(&atlas.font, (w, h));
-            for (line, x, y) in &c.lines {
-                batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
-            }
-            for ((bx, by), key) in c.buttons.into_iter().zip(["gui.yes", "gui.no"]) {
-                let hover = ui::hovered(cursor, bx, by, 150.0, 20.0);
-                let label = Text::translate(key, &[]);
-                ui::button(batch, atlas, bx, by, 150.0, 20.0, &label, true, hover);
-            }
+            let labels = [
+                Text::translate("gui.yes", &[]),
+                Text::translate("gui.no", &[]),
+            ];
+            confirm(&atlas.font, (w, h)).draw(batch, atlas, cursor, [&labels[0], &labels[1]]);
             return;
         }
         let rows = self.rows();
-        self.scroll = self.scroll.clamp(0.0, Self::max_scroll(rows.len(), h));
+        let content = ROW * rows.len() as f32 + 4.0;
+        self.scroll.clamp(HEADER, h - FOOTER, content);
         // RuleList: the in-world list background, its entries clipped to it,
         // then the separators and scrollbar.
         ui::list_background(batch, atlas, HEADER, h - FOOTER, true);
@@ -457,16 +451,14 @@ impl RulesScreen {
         }
         batch.clip_since(first, 0.0, HEADER, w, h - FOOTER);
         ui::separators(batch, atlas, HEADER, h - FOOTER, true);
-        let content = ROW * rows.len() as f32 + 4.0;
-        let bar_x = left + ROW_WIDTH + 6.0 + 2.0;
         ui::scrollbar(
             batch,
             atlas,
-            bar_x,
+            Self::bar(w),
             HEADER,
             h - FOOTER,
             content,
-            self.scroll.trunc(),
+            self.scroll.amount.trunc(),
         );
         // The header: the title centred over the search box.
         let title = Text::translate("editGamerule.title", &[]);
@@ -570,6 +562,29 @@ mod tests {
                 "chat", "drops", "misc", "mobs", "player", "spawning", "updates"
             ]
         );
+    }
+
+    /// AbstractScrollArea: a press on the bar holds it, a drag moves the
+    /// list (to the ends past them), a release lets go.
+    #[test]
+    fn the_scroll_bar_can_be_held_dragged_and_let_go() {
+        let mut s = RulesScreen::new(&GameRules::default());
+        let (w, h) = (427.0, 240.0);
+        let (top, bottom, content) = (HEADER, h - FOOTER, s.content());
+        assert!(
+            content > bottom - top,
+            "the rules overflow a 240-high screen"
+        );
+        let bar = RulesScreen::bar(w);
+        assert!(!s.press_scrollbar((bar - 4.0, top + 5.0), (w, h)));
+        assert!(s.press_scrollbar((bar + 3.0, top + 5.0), (w, h)));
+        s.drag(top + 40.0, h);
+        assert!(s.scroll.amount > 0.0);
+        s.drag(bottom + 10.0, h);
+        assert_eq!(s.scroll.amount, content - (bottom - top));
+        s.release();
+        s.drag(top, h);
+        assert_eq!(s.scroll.amount, content - (bottom - top));
     }
 
     #[test]

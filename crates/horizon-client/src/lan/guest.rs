@@ -15,8 +15,32 @@ use std::{
 /// GameType ids.
 pub const SURVIVAL: i32 = 0;
 pub const CREATIVE: i32 = 1;
-pub const ADVENTURE: i32 = 2;
 pub const SPECTATOR: i32 = 3;
+
+/// The body state a player's file keeps that lives on `PlayerMotion`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SavedBody {
+    pub fire_ticks: i32,
+    pub air: i32,
+    pub fall_distance: f64,
+}
+
+impl SavedBody {
+    /// The body state of `motion`, to save.
+    pub fn of(motion: &PlayerMotion) -> Self {
+        Self {
+            fire_ticks: motion.fire_ticks,
+            air: motion.air,
+            fall_distance: motion.fall_distance,
+        }
+    }
+    /// Put it on a new body.
+    pub fn apply(self, motion: &mut PlayerMotion) {
+        motion.fire_ticks = self.fire_ticks;
+        motion.air = self.air;
+        motion.fall_distance = self.fall_distance;
+    }
+}
 
 /// An effect as last sent in ClientboundUpdateMobEffectPacket.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +95,13 @@ pub struct Guest {
     /// The permission level (0 none, 2 game masters, 4 owners).
     pub permission: u8,
     pub sneaking: bool,
+    /// The last `ServerboundPlayerInputPacket` flags (forward 1, backward 2,
+    /// left 4, right 8, jump 16, shift 32, sprint 64).
+    pub input: u8,
+    /// The boat or minecart the player rides (`Entity.getVehicle`).
+    pub vehicle: Option<u32>,
+    /// `ServerGamePacketListenerImpl.lastGoodX/Y/Z` of the vehicle it controls.
+    pub vehicle_good: Option<[f64; 3]>,
     pub sprinting: bool,
     pub fall_flying: bool,
     pub flying: bool,
@@ -86,6 +117,10 @@ pub struct Guest {
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
     /// None for the world spawn.
     pub spawn: Option<[f64; 3]>,
+    /// A respawn point outside the Overworld (a respawn anchor, or one
+    /// `spawnpoint` set there): its dimension, block, yaw and whether it is
+    /// forced, as the player's save keeps it (`respawn`).
+    pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
@@ -122,6 +157,16 @@ pub struct Guest {
     pub tracker: Tracker,
     // Player state the gameplay code reads and writes.
     pub motion: Option<Box<PlayerMotion>>,
+    /// What the player's file says of the body (`Entity.load`: the fire
+    /// and air ticks and the fall distance), for the first body it gets.
+    pub loaded_body: Option<SavedBody>,
+    /// The hurt and attack logs of the body it had before it respawned,
+    /// until the new body takes them over (the control socket's `hurtlog`
+    /// reads across a death).
+    pub logs_kept: Option<(
+        Vec<crate::health::HurtRecord>,
+        Vec<crate::health::AttackRecord>,
+    )>,
     /// The 36 inventory slots (hotbar first), armor (head..feet) and off hand.
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
@@ -135,11 +180,16 @@ pub struct Guest {
     /// The ender chest inventory (`PlayerEnderChestContainer`, 27 slots).
     pub ender_items: Vec<Option<ItemStack>>,
     pub health: f32,
+    /// The saved `AbsorptionAmount`, until the player's first body on the
+    /// server takes it (the body holds the live amount).
+    pub saved_absorption: Option<f32>,
     pub food: i32,
     pub saturation: f32,
     pub xp_level: i32,
     pub xp_progress: f32,
     pub xp_total: i32,
+    /// `Player.enchantmentSeed` (the enchanting table's offers).
+    pub xp_seed: i32,
     /// Active status effects (`LivingEntity.activeEffects`).
     pub effects: crate::effects::PlayerEffects,
     /// What the client was told of each effect: id, amplifier, flags, and
@@ -152,6 +202,13 @@ pub struct Guest {
     /// `lastSentHealth`, `lastSentFood` and `lastFoodSaturationZero`.
     pub sent_health: Option<(f32, i32, bool)>,
     pub sent_xp: Option<(f32, i32, i32)>,
+    /// The air supply and absorption the player's client was last sent
+    /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
+    /// defaults until either changes.
+    pub sent_air: (i32, f32),
+    /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
+    /// last sent about itself.
+    pub sent_shared: i8,
     /// Where the player last died (Player.lastDeathLocation), sent with the respawn.
     pub last_death: Option<[i32; 3]>,
     /// The last action sequence to acknowledge at the next tick (-1: none).
@@ -166,6 +223,8 @@ pub struct Guest {
     /// Whether the guest was on the ground before the first of `moves`.
     pub moves_from_ground: bool,
     pub dead: bool,
+    /// `LivingEntity.deathTime`: ticks since the guest died.
+    pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
@@ -188,6 +247,8 @@ pub struct Guest {
     pub advancements_loaded: bool,
     pub advancements_visible: Vec<bool>,
     pub advancements_changed: std::collections::BTreeSet<usize>,
+    /// The server's scoreboard as this player's client has it (lan/scoreboard.rs).
+    pub scoreboard: super::scoreboard::View,
     /// Recipes unlocked since the client was last told
     /// (`ServerRecipeBook.addRecipes` sends them).
     pub recipes_unlocked: Vec<String>,
@@ -224,6 +285,9 @@ impl Guest {
             game_mode: SURVIVAL,
             permission: 0,
             sneaking: false,
+            input: 0,
+            vehicle: None,
+            vehicle_good: None,
             sprinting: false,
             fall_flying: false,
             flying: false,
@@ -233,6 +297,7 @@ impl Guest {
             sleep_timer: 0,
             sent_bed: None,
             spawn: None,
+            respawn_elsewhere: None,
             awaiting_teleport: None,
             teleport_counter: 0,
             teleport_tick: 0,
@@ -251,6 +316,8 @@ impl Guest {
             batch_quota: 0.0,
             tracker: Tracker::default(),
             motion: None,
+            loaded_body: None,
+            logs_kept: None,
             inventory: vec![None; 36],
             armor: [None, None, None, None],
             offhand: None,
@@ -260,17 +327,21 @@ impl Guest {
             craft_result: None,
             ender_items: vec![None; 27],
             health: 20.0,
+            saved_absorption: None,
             food: 20,
             saturation: 5.0,
             xp_level: 0,
             xp_progress: 0.0,
             xp_total: 0,
+            xp_seed: 0,
             effects: Default::default(),
             sent_effects: Vec::new(),
             menu_sent: vec![None; 46],
             menu_state: 0,
             sent_health: None,
             sent_xp: None,
+            sent_air: (300, 0.0),
+            sent_shared: 0,
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
             sent_selected: 0,
@@ -280,6 +351,7 @@ impl Guest {
             moves: Vec::new(),
             moves_from_ground: false,
             dead: false,
+            death_time: 0,
             placed: false,
             dimension: "minecraft:overworld".into(),
             menu: None,
@@ -291,6 +363,7 @@ impl Guest {
             advancements_loaded: false,
             advancements_visible: Vec::new(),
             advancements_changed: Default::default(),
+            scoreboard: Default::default(),
             recipes_unlocked: Vec::new(),
         }
     }
@@ -334,6 +407,17 @@ impl Guest {
     pub fn eye_height(&self) -> f64 {
         if self.sneaking { 1.27 } else { 1.62 }
     }
+    /// `Player.isWithinBlockInteractionRange(pos, buffer)` for the guest:
+    /// its block interaction range is 4.5, 5 in creative.
+    pub fn within_block_range(&self, pos: [i32; 3], buffer: f64) -> bool {
+        let eye = [
+            self.position[0],
+            self.position[1] + self.eye_height(),
+            self.position[2],
+        ];
+        let range = if self.creative() { 5.0 } else { 4.5 };
+        within_block_range(eye, range + buffer, pos)
+    }
     /// The inventory menu's 46 slots (ServerPlayer.inventoryMenu): 0 crafting
     /// result, 1..=4 crafting grid, 5..=8 armor, 9..=35 main, 36..=44 hotbar,
     /// 45 off hand.
@@ -361,12 +445,59 @@ impl Guest {
     }
 }
 
+/// `FireworkExplosion.STREAM_CODEC`'s fields (`Shape` by its BY_ID order).
+fn network_explosion(
+    e: &crate::particles::FireworkExplosion,
+) -> horizon_protocol::item::FireworkExplosion {
+    horizon_protocol::item::FireworkExplosion {
+        shape: e.shape as i32,
+        colors: e.colors.iter().map(|c| *c as i32).collect(),
+        fade: e.fade.iter().map(|c| *c as i32).collect(),
+        trail: e.trail,
+        twinkle: e.twinkle,
+    }
+}
+
+/// A rocket's `minecraft:fireworks` and a star's `minecraft:firework_explosion`.
+pub fn firework_components(
+    d: &crate::item_data::StackData,
+) -> Vec<(i32, horizon_protocol::item::Component)> {
+    use horizon_protocol::item::{Component, component};
+    let mut out = Vec::new();
+    if let Some((flight, explosions)) = &d.fireworks {
+        out.push((
+            component::FIREWORKS,
+            Component::Fireworks {
+                flight: i32::from(*flight),
+                explosions: explosions.iter().map(network_explosion).collect(),
+            },
+        ));
+    }
+    if let Some(e) = &d.firework_explosion {
+        out.push((
+            component::FIREWORK_EXPLOSION,
+            Component::FireworkExplosion(network_explosion(e)),
+        ));
+    }
+    out
+}
+
 /// The off hand slot is conventionally 40 in saves and 45 in the menu.
+/// `synced_id` names an entry of a synced registry (enchantments, trim
+/// materials and patterns) by its id on this connection.
 pub fn stack_to_network(
     item_id: impl Fn(&str) -> i32,
-    enchantment_id: impl Fn(&str) -> Option<i32>,
+    synced_id: impl Fn(&str, &str) -> Option<i32>,
     s: &Option<ItemStack>,
 ) -> Option<Stack> {
+    network_stack(&item_id, &synced_id, s)
+}
+fn network_stack(
+    item_id: &dyn Fn(&str) -> i32,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+    s: &Option<ItemStack>,
+) -> Option<Stack> {
+    let enchantment_id = |name: &str| synced_id("minecraft:enchantment", name);
     let s = s.as_ref()?;
     let mut stack = Stack::new(item_id(&s.item), s.count as i32);
     if s.damage > 0 {
@@ -404,10 +535,95 @@ pub fn stack_to_network(
                 horizon_protocol::item::Component::Int(rgb),
             ));
         }
+        // ArmorTrim: both holders as references into the synced registries.
+        if let Some((material, pattern)) = &d.trim {
+            let id = |registry: &str, name: &str| {
+                if name.contains(':') {
+                    synced_id(registry, name)
+                } else {
+                    synced_id(registry, &format!("minecraft:{name}"))
+                }
+            };
+            if let (Some(material), Some(pattern)) = (
+                id("minecraft:trim_material", material),
+                id("minecraft:trim_pattern", pattern),
+            ) {
+                stack.added.push((
+                    horizon_protocol::item::component::TRIM,
+                    horizon_protocol::item::Component::Trim { material, pattern },
+                ));
+            }
+        }
         if let Some(id) = d.map_id {
             stack.added.push((
                 horizon_protocol::item::component::MAP_ID,
                 horizon_protocol::item::Component::Int(id),
+            ));
+        }
+        if d.repair_cost > 0 {
+            stack.added.push((
+                horizon_protocol::item::component::REPAIR_COST,
+                horizon_protocol::item::Component::Int(d.repair_cost as i32),
+            ));
+        }
+        if let Some(mode) = d.map_post_processing {
+            stack.added.push((
+                horizon_protocol::item::component::MAP_POST_PROCESSING,
+                horizon_protocol::item::Component::Int(i32::from(mode)),
+            ));
+        }
+        stack.added.extend(firework_components(d));
+        // PotionContents: the potion by its `minecraft:potion` id.
+        if let Some(id) = (d.potion.as_deref()).and_then(|potion| {
+            synced_id(
+                "minecraft:potion",
+                &horizon_world::datafix::dynamic::namespaced(potion),
+            )
+        }) {
+            stack.added.push((
+                horizon_protocol::item::component::POTION_CONTENTS,
+                horizon_protocol::item::Component::Potion {
+                    potion: Some(id),
+                    color: None,
+                    rest: Vec::new(),
+                },
+            ));
+        }
+        // A loaded crossbow's ammunition.
+        if !d.charged.is_empty() {
+            let charged = d
+                .charged
+                .iter()
+                .filter_map(|c| network_stack(item_id, synced_id, &Some(c.clone())))
+                .collect();
+            stack.added.push((
+                horizon_protocol::item::component::CHARGED_PROJECTILES,
+                horizon_protocol::item::Component::Stacks(charged),
+            ));
+        }
+        // The books a lectern shows and a guest reads.
+        if !d.writable_pages.is_empty() {
+            stack.added.push((
+                horizon_protocol::item::component::WRITABLE_BOOK_CONTENT,
+                horizon_protocol::item::Component::WritableBook(d.writable_pages.clone()),
+            ));
+        }
+        if let Some(w) = &d.written {
+            stack.added.push((
+                horizon_protocol::item::component::WRITTEN_BOOK_CONTENT,
+                horizon_protocol::item::Component::WrittenBook(
+                    horizon_protocol::item::WrittenBook {
+                        title: w.title.clone(),
+                        author: w.author.clone(),
+                        generation: i32::from(w.generation),
+                        pages: w
+                            .pages
+                            .iter()
+                            .map(|p| horizon_protocol::text::literal(p))
+                            .collect(),
+                        resolved: true,
+                    },
+                ),
             ));
         }
     }
@@ -418,4 +634,63 @@ pub fn stack_to_network(
         ));
     }
     Some(stack)
+}
+
+/// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the
+/// box of the block at `pos` (`AABB.distanceToSqr`).
+pub fn within_block_range(eye: [f64; 3], range: f64, pos: [i32; 3]) -> bool {
+    (0..3)
+        .map(|k| {
+            let lo = f64::from(pos[k]);
+            (lo - eye[k]).max(eye[k] - lo - 1.0).max(0.0).powi(2)
+        })
+        .sum::<f64>()
+        < range * range
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_protocol::item::{Component, component};
+
+    #[test]
+    fn potions_go_as_potion_registry_ids() {
+        let synced_id = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:potion", "minecraft:swiftness") => Some(14),
+            _ => None,
+        };
+        let potion = ItemStack::new("minecraft:splash_potion", 1).with_potion("swiftness");
+        let stack = stack_to_network(|_| 7, synced_id, &Some(potion)).unwrap();
+        assert_eq!(
+            stack.component(component::POTION_CONTENTS),
+            Some(&Component::Potion {
+                potion: Some(14),
+                color: None,
+                rest: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn trims_go_as_synced_registry_references() {
+        let mut chestplate = ItemStack::new("minecraft:diamond_chestplate", 1);
+        chestplate.data_mut().trim = Some(("minecraft:gold".into(), "coast".into()));
+        let synced_id = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:trim_material", "minecraft:gold") => Some(4),
+            ("minecraft:trim_pattern", "minecraft:coast") => Some(1),
+            _ => None,
+        };
+        let stack = stack_to_network(|_| 7, synced_id, &Some(chestplate.clone())).unwrap();
+        assert_eq!(
+            stack.component(component::TRIM),
+            Some(&Component::Trim {
+                material: 4,
+                pattern: 1
+            })
+        );
+        // A name the connection's registry lacks sends no trim.
+        chestplate.data_mut().trim = Some(("minecraft:x".into(), "coast".into()));
+        let stack = stack_to_network(|_| 7, synced_id, &Some(chestplate)).unwrap();
+        assert_eq!(stack.component(component::TRIM), None);
+    }
 }

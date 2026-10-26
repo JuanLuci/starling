@@ -140,11 +140,28 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         driver: text(&renderer["driver"]),
         backend: text(&renderer["backend"]).to_lowercase(),
         kind: text(&renderer["device_type"]),
+        vram_mb: None,
     });
+    if let Some(gpu) = report.hardware.gpu.as_mut() {
+        let vendor = horizon_telemetry::system::gpu_vendor(&gpu.name, 0);
+        let vendor = if gpu.vendor.is_empty() {
+            vendor
+        } else {
+            gpu.vendor.as_str()
+        }
+        .to_owned();
+        if gpu.kind.contains("iscrete") {
+            gpu.vram_mb = horizon_telemetry::system::vram_mb(&vendor);
+        }
+    }
+    report.hardware.storage =
+        horizon_telemetry::system::storage(&setup.game_dir).map(str::to_owned);
     report.hardware.display = serde_json::from_value(title["display"].clone()).ok();
 
     replace_world(&setup.game_dir)?;
     control.call(&format!("open {WORLD} {SEED} creative"))?;
+    // The world opens on a worker: its folder may not exist yet when `open` replies.
+    std::fs::create_dir_all(setup.game_dir.join("saves").join(WORLD)).map_err(|e| e.to_string())?;
     std::fs::write(
         setup.game_dir.join("saves").join(WORLD).join(MARKER),
         "Created by horizon-client --benchmark; replaced by the next run.\n",
@@ -222,6 +239,10 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
 
     let status = control.status();
     let renderer = &status["renderer"];
+    // On Wayland the window is on a screen only once it has been shown: ask again.
+    if report.hardware.display.is_none() {
+        report.hardware.display = serde_json::from_value(status["display"].clone()).ok();
+    }
     let c = &mut report.conditions;
     c.scenario = Some(setup.scenario.clone());
     c.seed = Some(SEED.to_string());

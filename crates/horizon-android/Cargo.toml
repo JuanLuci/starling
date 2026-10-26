@@ -15,14 +15,14 @@ path = "../horizon-client/src/android_lib.rs"
 # Everything is Android-only: on other targets the library is empty, so workspace builds and
 # lints don't compile the game module a second time.
 [target.'cfg(target_os = "android")'.dependencies]
-horizon-client = { path = "../horizon-client", default-features = false }
+horizon-client = { path = "../horizon-client", default-features = false, features = ["mods"] }
 horizon-assets = { path = "../horizon-assets" }
 horizon-bench = { path = "../horizon-bench" }
 horizon-core = { path = "../horizon-core" }
 horizon-friends = { path = "../horizon-friends" }
-horizon-mods = { path = "../horizon-mods" }
+horizon-mods = { path = "../horizon-mods", features = ["runtime"] }
 horizon-protocol = { path = "../horizon-protocol" }
-horizon-shaderpack = { path = "../horizon-shaderpack" }
+horizon-shaders = { path = "../horizon-shaders" }
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }

@@ -44,6 +44,10 @@ pub struct Furnace {
     pub cooking_timer: i32,
     pub cooking_total: i32,
     pub speed: f32,
+    /// `AbstractFurnaceBlockEntity.recipesUsed`: how many of each recipe this furnace has
+    /// made since a player last took from its output. The experience is owed per recipe
+    /// rather than per item, and a save keeps it as the `RecipesUsed` compound.
+    pub recipes_used: HashMap<String, u32>,
 }
 /// A hopper's slots: the only plain container with five.
 pub const HOPPER_SLOTS: usize = 5;
@@ -79,6 +83,60 @@ pub enum BlockEntity {
     Beehive(Box<crate::beehive::Beehive>),
     /// `CommandBlockEntity` of the three command blocks (`crate::command_block`).
     CommandBlock(Box<crate::command_block::CommandBlock>),
+    /// `SkullBlockEntity` of every skull and head block.
+    Skull(Skull),
+}
+/// `SkullBlockEntity`: the player profile the head shows (kept as loaded:
+/// a compound, or a string when it names a player only), the note block
+/// sound and `custom_name`.
+#[derive(Clone, Debug, Default)]
+pub struct Skull {
+    pub profile: Option<horizon_world::nbt::Tag>,
+    pub note_block_sound: Option<String>,
+    pub custom_name: Option<horizon_world::nbt::Tag>,
+    /// What `profile` draws, read from it once rather than every frame.
+    pub skin: Option<SkullSkin>,
+}
+impl Skull {
+    pub fn new(
+        profile: Option<horizon_world::nbt::Tag>,
+        note_block_sound: Option<String>,
+        custom_name: Option<horizon_world::nbt::Tag>,
+    ) -> Self {
+        let skin = profile.as_ref().map(SkullSkin::of);
+        Self {
+            profile,
+            note_block_sound,
+            custom_name,
+            skin,
+        }
+    }
+}
+/// `SkullBlockRenderer.getPlayerSkin` of a head's profile: its skin's URL
+/// with the `skins/<sha1>` sprite it downloads to, and the
+/// `DefaultPlayerSkin` drawn until that sprite is there (steve for a
+/// profile with no id).
+#[derive(Clone, Debug)]
+pub struct SkullSkin {
+    pub download: Option<(String, String)>,
+    pub fallback: &'static str,
+}
+impl SkullSkin {
+    pub fn of(profile: &horizon_world::nbt::Tag) -> Self {
+        let download = crate::skins::profile_skin_url_nbt(profile).and_then(|url| {
+            let location = crate::skins::skin_location(&crate::skins::texture_hash(&url)?);
+            Some((url, location))
+        });
+        // DefaultPlayerSkin.get(id), or getDefaultSkin (slim steve) without an id.
+        let fallback = crate::skins::profile_uuid_nbt(profile)
+            .map_or("entity/player/slim/steve", crate::tab_list::default_skin);
+        Self { download, fallback }
+    }
+}
+/// The skull and head blocks (`SkullBlock`, `WallSkullBlock`): every
+/// `*_skull` and `*_head` but the piston's head.
+fn is_skull(name: &str) -> bool {
+    name.ends_with("_skull") || (name.ends_with("_head") && name != "minecraft:piston_head")
 }
 /// `CrafterBlockEntity`: nine slots that can be disabled, the powered flag
 /// and the ticks left in the crafting animation.
@@ -190,6 +248,7 @@ impl BlockEntity {
                 cooking_timer: 0,
                 cooking_total: 0,
                 speed: 1.0,
+                recipes_used: HashMap::new(),
             }));
         }
         if name == "minecraft:creaking_heart" {
@@ -233,6 +292,9 @@ impl BlockEntity {
         if name.ends_with("_banner") {
             return Some(Self::Banner(Banner::default()));
         }
+        if is_skull(name) {
+            return Some(Self::Skull(Skull::default()));
+        }
         if name == "minecraft:beacon" {
             return Some(Self::Beacon(Box::new(Beacon {
                 last_check_y: i32::MIN / 2,
@@ -251,24 +313,6 @@ impl BlockEntity {
             _ => return None,
         };
         Some(Self::Chest(vec![None; size]))
-    }
-    /// The vanilla block entity type id of a container block.
-    pub fn id_for_block(name: &str) -> Option<&'static str> {
-        Some(match name {
-            "minecraft:chest" => "minecraft:chest",
-            n if n.ends_with("copper_chest") => "minecraft:chest",
-            "minecraft:trapped_chest" => "minecraft:trapped_chest",
-            "minecraft:barrel" => "minecraft:barrel",
-            "minecraft:hopper" => "minecraft:hopper",
-            "minecraft:dispenser" => "minecraft:dispenser",
-            "minecraft:dropper" => "minecraft:dropper",
-            "minecraft:furnace" => "minecraft:furnace",
-            "minecraft:blast_furnace" => "minecraft:blast_furnace",
-            "minecraft:smoker" => "minecraft:smoker",
-            n if n.ends_with("shulker_box") => "minecraft:shulker_box",
-            "minecraft:crafter" => "minecraft:crafter",
-            _ => return None,
-        })
     }
     pub fn id(&self) -> &'static str {
         match self {
@@ -296,6 +340,7 @@ impl BlockEntity {
             Self::Vault(_) => "minecraft:vault",
             Self::Beehive(_) => "minecraft:beehive",
             Self::CommandBlock(_) => "minecraft:command_block",
+            Self::Skull(_) => "minecraft:skull",
         }
     }
     pub fn contents(&self) -> Vec<ItemStack> {
@@ -311,7 +356,8 @@ impl BlockEntity {
             | Self::TrialSpawner(_)
             | Self::Vault(_)
             | Self::Beehive(_)
-            | Self::CommandBlock(_) => Vec::new(),
+            | Self::CommandBlock(_)
+            | Self::Skull(_) => Vec::new(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
             Self::Banner(_) => Vec::new(),
@@ -328,7 +374,8 @@ impl BlockEntity {
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
-            | Self::Banner(_) => &[],
+            | Self::Banner(_)
+            | Self::Skull(_) => &[],
             Self::Crafter(c) => &c.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
@@ -348,7 +395,8 @@ impl BlockEntity {
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
-            | Self::Banner(_) => &mut [],
+            | Self::Banner(_)
+            | Self::Skull(_) => &mut [],
             Self::Crafter(c) => &mut c.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
@@ -400,7 +448,7 @@ impl Providers {
         );
         Self { ints, floats }
     }
-    fn eval(&self, v: &Value, fast: bool, table: &HashMap<String, Value>, depth: u32) -> f64 {
+    fn eval(v: &Value, fast: bool, table: &HashMap<String, Value>, depth: u32) -> f64 {
         if depth > 16 {
             return 0.0;
         }
@@ -408,10 +456,10 @@ impl Providers {
             Value::Number(n) => n.as_f64().unwrap_or(0.0),
             Value::String(name) => table
                 .get(name)
-                .map_or(0.0, |v| self.eval(v, fast, table, depth + 1)),
+                .map_or(0.0, |v| Self::eval(v, fast, table, depth + 1)),
             Value::Object(o) => {
                 let f =
-                    |k: &str| self.eval(o.get(k).unwrap_or(&Value::Null), fast, table, depth + 1);
+                    |k: &str| Self::eval(o.get(k).unwrap_or(&Value::Null), fast, table, depth + 1);
                 match o.get("type").and_then(Value::as_str).unwrap_or("") {
                     "minecraft:div" => {
                         let r = f("right");
@@ -443,14 +491,14 @@ impl Providers {
     }
     /// A plain `context_int_provider` value or reference (no context conditions).
     pub fn int_value(&self, v: &Value) -> i32 {
-        self.eval(v, false, &self.ints, 0) as i32
+        Self::eval(v, false, &self.ints, 0) as i32
     }
     /// A plain `context_float_provider` value or reference; `default` when absent.
     pub fn float_value(&self, v: &Value, default: f32) -> f32 {
         if v.is_null() {
             default
         } else {
-            self.eval(v, false, &self.floats, 0) as f32
+            Self::eval(v, false, &self.floats, 0) as f32
         }
     }
     #[cfg(test)]
@@ -464,14 +512,14 @@ impl Providers {
         items
             .get(&stack.item)
             .and_then(|i| i.fuel.as_ref())
-            .map_or(0, |(time, _)| self.eval(time, fast, &self.ints, 0) as i32)
+            .map_or(0, |(time, _)| Self::eval(time, fast, &self.ints, 0) as i32)
     }
     pub fn speed(&self, items: &Items, stack: &ItemStack, fast: bool) -> f32 {
         items
             .get(&stack.item)
             .and_then(|i| i.fuel.as_ref())
             .map_or(1.0, |(_, speed)| {
-                self.eval(speed, fast, &self.floats, 0) as f32
+                Self::eval(speed, fast, &self.floats, 0) as f32
             })
     }
 }
@@ -501,6 +549,14 @@ impl Furnace {
             self.cooking_timer = 0;
         }
     }
+    /// `recipesUsed`, each recipe with its `experience` (0 for one this data pack does
+    /// not have), in the order `getRecipesToAwardAndPopExperience` pays them.
+    pub fn recipe_experience(&self, recipes: &Recipes) -> Vec<(u32, f32)> {
+        self.recipes_used
+            .iter()
+            .map(|(id, count)| (*count, recipes.cooking_experience(id)))
+            .collect()
+    }
     /// A menu click wrote its slots into `items`, and `before` was the input
     /// slot until then: the menu called `setItem` on it only if it changed
     /// (`Slot.setByPlayer`; partial takes and merges keep the stack).
@@ -528,7 +584,7 @@ impl Furnace {
         let has_fuel = self.items[1].is_some();
         if lit || has_fuel && has_ingredient {
             if let Some(ingredient) = self.items[0].clone() {
-                if let Some(recipe) = recipes.cook(self.kind.recipe_type(), &ingredient).cloned() {
+                if let Some(recipe) = recipes.cook(self.kind.recipe_type(), &ingredient) {
                     if self.cooking_timer == 0 {
                         self.cooking_total = total_time(recipe.time, self.speed);
                     }
@@ -582,6 +638,7 @@ impl Furnace {
                                     Some(out) => out.count += recipe.result.count,
                                     None => self.items[2] = Some(recipe.result.clone()),
                                 }
+                                *self.recipes_used.entry(recipe.id.clone()).or_insert(0) += 1;
                                 if let Some(i) = self.items[0].as_mut() {
                                     i.count -= 1;
                                     if i.count == 0 {
@@ -610,5 +667,43 @@ fn total_time(time: u32, speed: f32) -> i32 {
         (time as f32 / speed).ceil() as i32
     } else {
         time as i32
+    }
+}
+
+/// `AbstractFurnaceBlockEntity.createExperience`: `count * experience`, floored, and one
+/// more with the chance of what is left over (a level random draw only when there is some).
+pub fn create_experience(
+    count: u32,
+    experience: f32,
+    random: &mut impl horizon_core::random::RandomSource,
+) -> u32 {
+    let total = count as f32 * experience;
+    let whole = total.floor();
+    let fraction = total - whole;
+    let mut xp = whole.max(0.0) as u32;
+    if fraction != 0.0 && random.next_float() < fraction {
+        xp += 1;
+    }
+    xp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// A whole amount pays itself without a draw; a fraction is a chance of one more.
+    #[test]
+    fn create_experience_rounds_the_fraction_by_chance() {
+        let mut random = LegacyRandom::new(7);
+        let mut untouched = LegacyRandom::new(7);
+        assert_eq!(create_experience(4, 0.5, &mut random), 2);
+        assert_eq!(create_experience(3, 0.0, &mut random), 0);
+        assert_eq!(random.next_long(), untouched.next_long());
+        let paid: u32 = (0..1000)
+            .map(|_| create_experience(1, 0.35, &mut random))
+            .sum();
+        assert!((250..450).contains(&paid), "{paid}");
+        assert!((0..100).all(|_| (1..=2).contains(&create_experience(1, 1.7, &mut random))));
     }
 }

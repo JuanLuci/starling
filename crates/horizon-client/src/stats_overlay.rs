@@ -151,7 +151,7 @@ impl StatsView {
         let (size, step, pad) = (10.0, 13.0, 6.0);
         let width = lines
             .iter()
-            .map(|(l, _)| ui.measure(Face::Mono, size, l))
+            .map(|(l, _)| ui.measure(Face::Regular, size, l))
             .fold(0.0, f32::max)
             + 2.0 * pad;
         let height = lines.len() as f32 * step + 2.0 * pad - 3.0;
@@ -165,7 +165,7 @@ impl StatsView {
         );
         for (i, (line, tint)) in lines.iter().enumerate() {
             ui.text(
-                Face::Mono,
+                Face::Regular,
                 size,
                 6.0 + pad,
                 6.0 + pad + i as f32 * step,

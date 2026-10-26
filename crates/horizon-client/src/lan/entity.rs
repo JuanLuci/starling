@@ -12,8 +12,8 @@ use horizon_protocol::{
     item::Stack,
     packets::play::{
         self, AddEntity, AttributeSnapshot, EntityPositionSync, MoveEntity, MoveEntityPos,
-        MoveEntityPosRot, MoveEntityRot, PositionPath, RotateHead, SetEntityData, SetEntityMotion,
-        SetEquipment, SetPassengers, UpdateAttributes, VecDelta,
+        MoveEntityPosRot, MoveEntityRot, PositionPath, RotateHead, SetEntityData, SetEntityLink,
+        SetEntityMotion, SetEquipment, SetPassengers, UpdateAttributes, VecDelta,
     },
 };
 
@@ -34,7 +34,7 @@ pub fn changed_attributes(
 }
 
 /// What the game says about one entity this tick.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityState {
     pub id: i32,
     pub uuid: u128,
@@ -50,6 +50,10 @@ pub struct EntityState {
     pub data: i32,
     /// SynchedEntityData entries that differ from the defaults.
     pub meta: Vec<(u8, i32, Value)>,
+    /// The defaults of entries `meta` leaves out while they are at them,
+    /// sent when one goes back to its default (a calf grown up, a mob healed
+    /// back to 1, wool grown back white) beyond Entity's own below.
+    pub defaults: Vec<(u8, i32, Value)>,
     /// EquipmentSlot ordinals (0 main hand, 1 off hand, 2 feet, 3 legs,
     /// 4 chest, 5 head, 6 body, 7 saddle) and their stacks.
     pub equipment: Vec<(u8, Option<Stack>)>,
@@ -59,6 +63,79 @@ pub struct EntityState {
     /// `Entity.getRequiresPrecisePosition` (primed TNT and falling blocks
     /// touching a block): moves are sent as full position syncs.
     pub precise: bool,
+    /// `Entity.needsSync`: send its changes this tick, due or not.
+    pub needs_sync: bool,
+    /// `Leashable.getLeashHolder`: the entity holding its lead.
+    pub leash: Option<i32>,
+}
+
+impl EntityState {
+    /// The entity `id` of type `kind` as a fresh state has it: at the origin,
+    /// at rest, with no data, equipment or attributes. Keeps the allocations
+    /// of the strings and vectors it held.
+    pub fn reset(&mut self, id: i32, uuid: u128, kind: &str) {
+        self.id = id;
+        self.uuid = uuid;
+        self.kind.clear();
+        self.kind.push_str(kind);
+        self.position = [0.0; 3];
+        (self.yaw, self.pitch, self.head_yaw) = (0.0, 0.0, 0.0);
+        self.on_ground = false;
+        self.velocity = [0.0; 3];
+        self.data = 0;
+        self.meta.clear();
+        self.defaults.clear();
+        self.equipment.clear();
+        self.attributes.clear();
+        self.precise = false;
+        self.needs_sync = false;
+        self.leash = None;
+    }
+}
+
+/// The states a level describes its entities with, kept from tick to tick:
+/// each tick's are written over the last tick's in place, so the strings and
+/// vectors in them are reused instead of being made and freed again for every
+/// entity on every tick.
+#[derive(Default)]
+pub struct States {
+    list: Vec<EntityState>,
+    len: usize,
+}
+
+impl States {
+    /// Start a new tick's states.
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+    /// The next entity's state, reset (`EntityState::reset`).
+    pub fn add(&mut self, id: i32, uuid: u128, kind: &str) -> &mut EntityState {
+        if self.len == self.list.len() {
+            self.list.push(EntityState::default());
+        }
+        let e = &mut self.list[self.len];
+        self.len += 1;
+        e.reset(id, uuid, kind);
+        e
+    }
+    pub fn push(&mut self, e: EntityState) {
+        match self.list.get_mut(self.len) {
+            Some(slot) => *slot = e,
+            None => self.list.push(e),
+        }
+        self.len += 1;
+    }
+    pub fn as_slice(&self) -> &[EntityState] {
+        &self.list[..self.len]
+    }
+}
+
+impl Extend<EntityState> for States {
+    fn extend<I: IntoIterator<Item = EntityState>>(&mut self, states: I) {
+        for e in states {
+            self.push(e);
+        }
+    }
 }
 
 /// `AbstractArrow`: every update sends its position and rotation.
@@ -145,6 +222,8 @@ struct ServerEntity {
     /// and the first update after it dismounts is a full position sync.
     passengers: Vec<i32>,
     was_riding: bool,
+    /// The lead's holder the clients were told of.
+    leash: Option<i32>,
     /// The level tick it was last seen in, its place in that tick's list, and
     /// whether it was added in it (its first update is the next tick's).
     seen: u32,
@@ -188,6 +267,7 @@ impl ServerEntity {
             teleport_delay: 0,
             passengers: riding.passengers(e.id).to_vec(),
             was_riding: false,
+            leash: e.leash,
             seen: 0,
             index: 0,
             added: true,
@@ -240,6 +320,13 @@ impl ServerEntity {
         if let Some(&vehicle) = riding.vehicle.get(&e.id) {
             out.push(riding.set_passengers(vehicle));
         }
+        // A leashed entity: who holds its lead.
+        if let Some(dest) = e.leash {
+            out.push(play::Clientbound::SetEntityLink(SetEntityLink {
+                source: e.id,
+                dest,
+            }));
+        }
     }
 
     /// Changes since the last update (ServerEntity.sendChanges): movement and
@@ -253,10 +340,18 @@ impl ServerEntity {
             self.passengers.clear();
             self.passengers.extend_from_slice(passengers);
         }
+        // Leashable.setLeashedTo / dropLeash: sendToTrackingPlayers at once.
+        if e.leash != self.leash {
+            out.push(play::Clientbound::SetEntityLink(SetEntityLink {
+                source: e.id,
+                dest: e.leash.unwrap_or(0),
+            }));
+            self.leash = e.leash;
+        }
         // SynchedEntityData.isDirty: once for every client.
         let dirty = e.meta != self.meta;
         let due = self.interval != 0 && self.tick.is_multiple_of(self.interval);
-        if due || dirty {
+        if due || dirty || e.needs_sync {
             let rotation = (pack_degrees(e.pitch), pack_degrees(e.yaw));
             let turned = |a: i8, b: i8| (i32::from(a) - i32::from(b)).abs() >= 1;
             let rotate = self.arrow
@@ -332,7 +427,7 @@ impl ServerEntity {
             } else {
                 None
             };
-            if self.track_deltas {
+            if self.track_deltas || e.needs_sync {
                 let diff: f64 = (0..3)
                     .map(|k| (e.velocity[k] - self.velocity[k]).powi(2))
                     .sum();
@@ -393,12 +488,21 @@ impl ServerEntity {
                 .collect();
             // A value back at its default is left out of the state, but the
             // clients still hold the old one: Entity's shared flags and pose go
-            // back to 0 (a player standing up again, a mob no longer on fire).
+            // back to 0 (a player standing up again, a mob no longer on fire),
+            // a sleeper's bed to none, an item frame's item to empty and its
+            // rotation to 0 (ItemFrame.DATA_ITEM and DATA_ROTATION).
+            let frame = e.kind.ends_with("item_frame");
             for (index, kind, _) in &self.meta {
                 let default = match (*index, *kind) {
                     (0, serializer::BYTE) => Value::Byte(0),
                     (6, serializer::POSE) => Value::Id(0),
-                    _ => continue,
+                    (14, serializer::OPTIONAL_BLOCK_POS) => Value::OptPos(None),
+                    (9, serializer::ITEM_STACK) if frame => Value::Item(None),
+                    (10, serializer::INT) if frame => Value::Int(0),
+                    _ => match e.defaults.iter().find(|d| (d.0, d.1) == (*index, *kind)) {
+                        Some(d) => d.2.clone(),
+                        None => continue,
+                    },
                 };
                 if !e.meta.iter().any(|m| m.0 == *index) {
                     changed.push((*index, *kind, default));
@@ -784,10 +888,38 @@ mod tests {
             velocity: [0.0; 3],
             data: 0,
             meta: Vec::new(),
+            defaults: Vec::new(),
             equipment: Vec::new(),
             attributes: Vec::new(),
             precise: false,
+            needs_sync: false,
+            leash: None,
         }
+    }
+
+    #[test]
+    fn states_are_written_over_last_ticks_in_place() {
+        let mut states = States::default();
+        let e = states.add(1, 1, "minecraft:zombie");
+        e.position = [1.0, 2.0, 3.0];
+        e.meta.push((9, serializer::FLOAT, Value::Float(20.0)));
+        e.equipment.push((0, None));
+        let (kind, meta) = (e.kind.as_ptr(), e.meta.as_ptr());
+        states.push(state(2.0));
+        states.clear();
+        let e = states.add(3, 3, "minecraft:husk");
+        // Nothing of the last tick's state is left, but its allocations are.
+        let fresh = EntityState {
+            id: 3,
+            uuid: 3,
+            kind: "minecraft:husk".into(),
+            ..EntityState::default()
+        };
+        assert_eq!(*e, fresh);
+        assert_eq!((e.kind.as_ptr(), e.meta.as_ptr()), (kind, meta));
+        assert_eq!(states.as_slice(), std::slice::from_ref(&fresh));
+        states.extend([state(5.0), state(6.0)]);
+        assert_eq!(states.as_slice(), [fresh, state(5.0), state(6.0)]);
     }
 
     /// The entity as added this tick, then its updates (one a tick).
@@ -823,6 +955,37 @@ mod tests {
         }
         let jump = changes(&mut s, &state(40.0));
         assert!(matches!(jump[0], play::Clientbound::EntityPositionSync(_)));
+    }
+
+    #[test]
+    fn a_knocked_back_mob_is_sent_at_once() {
+        let mut s = added(&state(0.0));
+        changes(&mut s, &state(0.0));
+        // Not due (tick 1 of 3), but LivingEntity.knockback set needsSync:
+        // its move and its new motion go out now.
+        let mut knocked = state(0.3);
+        knocked.velocity = [0.2, 0.3, 0.0];
+        knocked.needs_sync = true;
+        let out = changes(&mut s, &knocked);
+        assert!(
+            matches!(
+                out[..],
+                [
+                    play::Clientbound::SetEntityMotion(_),
+                    play::Clientbound::MoveEntityPos(_)
+                ]
+            ),
+            "{out:?}"
+        );
+        // Then every third tick again.
+        assert!(changes(&mut s, &state(0.5)).is_empty());
+        assert!(matches!(
+            changes(&mut s, &state(0.6))[..],
+            [
+                play::Clientbound::SetEntityMotion(_),
+                play::Clientbound::MoveEntityPos(_)
+            ]
+        ));
     }
 
     #[test]
@@ -948,6 +1111,62 @@ mod tests {
     }
 
     #[test]
+    fn an_emptied_item_frame_sends_its_empty_item_and_rotation() {
+        let mut e = state(0.0);
+        e.kind = "minecraft:item_frame".into();
+        let mut s = added(&e);
+        changes(&mut s, &e);
+        e.meta = vec![
+            (
+                9,
+                serializer::ITEM_STACK,
+                Value::Item(Some(Stack::new(5, 1))),
+            ),
+            (10, serializer::INT, Value::Int(3)),
+        ];
+        changes(&mut s, &e);
+        // Punched out (ItemFrame.removeFramedMap, setItem(EMPTY)): both back to the default.
+        e.meta.clear();
+        let data = changes(&mut s, &e)
+            .into_iter()
+            .find_map(|p| match p {
+                play::Clientbound::SetEntityData(d) => Some(d),
+                _ => None,
+            })
+            .expect("the empty frame is sent");
+        assert_eq!(
+            data.values,
+            vec![
+                (9, serializer::ITEM_STACK, Value::Item(None)),
+                (10, serializer::INT, Value::Int(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_value_back_at_a_listed_default_is_sent() {
+        let mut e = state(0.0);
+        e.defaults = vec![(16, serializer::BOOLEAN, Value::Bool(false))];
+        // A calf: paired with its baby flag, then grown up.
+        e.meta = vec![(16, serializer::BOOLEAN, Value::Bool(true))];
+        let mut s = added(&e);
+        changes(&mut s, &e);
+        e.meta.clear();
+        let data = changes(&mut s, &e)
+            .into_iter()
+            .find_map(|p| match p {
+                play::Clientbound::SetEntityData(d) => Some(d),
+                _ => None,
+            })
+            .expect("growing up is sent");
+        assert_eq!(
+            data.values,
+            vec![(16, serializer::BOOLEAN, Value::Bool(false))]
+        );
+        assert!(changes(&mut s, &e).is_empty());
+    }
+
+    #[test]
     fn metadata_and_equipment_send_only_the_changes() {
         let mut e = state(0.0);
         let mut s = added(&e);
@@ -970,6 +1189,24 @@ mod tests {
             panic!("expected equipment");
         };
         assert_eq!(eq.slots, vec![(0, None)]);
+    }
+
+    #[test]
+    fn a_lead_tied_and_untied_reaches_the_clients() {
+        let link = |out: &[play::Clientbound]| {
+            out.iter().find_map(|p| match p {
+                play::Clientbound::SetEntityLink(l) => Some((l.source, l.dest)),
+                _ => None,
+            })
+        };
+        let mut e = state(0.0);
+        let mut s = added(&e);
+        changes(&mut s, &e);
+        e.leash = Some(7);
+        assert_eq!(link(&changes(&mut s, &e)), Some((e.id, 7)));
+        assert_eq!(link(&changes(&mut s, &e)), None);
+        e.leash = None;
+        assert_eq!(link(&changes(&mut s, &e)), Some((e.id, 0)));
     }
 
     /// Two clients at the origin; the chunks they hold.

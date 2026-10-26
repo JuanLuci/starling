@@ -19,7 +19,15 @@ import android.view.WindowInsetsController;
 import android.view.ViewTreeObserver;
 import android.view.inputmethod.InputMethodManager;
 import android.view.WindowManager;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import java.io.File;
+import java.security.Key;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 
 /**
  * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
@@ -28,7 +36,7 @@ import java.io.File;
  * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
  * process with the activity, since the game's event loop cannot start twice in one process.
  * The game calls the public methods from its own thread (android_lib.rs): the file manager, the
- * file picker and the clipboard.
+ * file picker, the clipboard, the browser and the keystore.
  */
 public final class StarlingActivity extends NativeActivity {
     static {
@@ -257,6 +265,21 @@ public final class StarlingActivity extends NativeActivity {
         return false;
     }
 
+    /** The system's browser on an https:// page (the Microsoft sign-in); false where none can. */
+    public boolean openLink(String url) {
+        if (!url.startsWith("https://")) {
+            return false;
+        }
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(intent);
+            return true;
+        } catch (ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
+    }
+
     /** The clipboard's text, or null when it holds none. */
     public String clipboardText() {
         ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
@@ -273,6 +296,59 @@ public final class StarlingActivity extends NativeActivity {
         }
         clipboard.setPrimaryClip(ClipData.newPlainText("Starling", text));
         return true;
+    }
+
+    /** The Android Keystore key the account's tokens are sealed with; it never leaves the
+     * Keystore. */
+    private static final String SECRET_KEY = "starling-account";
+
+    private static SecretKey secretKey() throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        Key key = store.getKey(SECRET_KEY, null);
+        if (key instanceof SecretKey) {
+            return (SecretKey) key;
+        }
+        KeyGenerator generator =
+                KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(SECRET_KEY,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build());
+        return generator.generateKey();
+    }
+
+    /** `data` sealed with the Keystore key (AES-GCM): the IV's length, the IV, then the
+     * ciphertext and its tag. Null when the Keystore refused. */
+    public byte[] sealSecret(byte[] data) {
+        try {
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey());
+            byte[] iv = cipher.getIV();
+            byte[] sealed = cipher.doFinal(data);
+            byte[] out = new byte[1 + iv.length + sealed.length];
+            out[0] = (byte) iv.length;
+            System.arraycopy(iv, 0, out, 1, iv.length);
+            System.arraycopy(sealed, 0, out, 1 + iv.length, sealed.length);
+            return out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** What sealSecret sealed, or null when it was not sealed here (or was changed). */
+    public byte[] openSecret(byte[] sealed) {
+        try {
+            int ivLength = sealed[0] & 0xFF;
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, secretKey(),
+                    new GCMParameterSpec(128, sealed, 1, ivLength));
+            return cipher.doFinal(sealed, 1 + ivLength, sealed.length - 1 - ivLength);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @SuppressWarnings("deprecation")

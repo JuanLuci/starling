@@ -10,6 +10,9 @@ mod http;
 mod init;
 mod lists;
 mod panel;
+mod process;
+#[cfg(test)]
+mod reference;
 mod service;
 mod settings;
 mod signals;
@@ -17,6 +20,13 @@ mod supervisor;
 mod update;
 
 use std::{path::PathBuf, process::ExitCode};
+
+/// This release's version: release.yml builds it with `HORIZON_VERSION` from the tag
+/// (docs/versioning.md); a build from source says Cargo.toml's.
+const VERSION: &str = match option_env!("HORIZON_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
 
 const HELP: &str = "\
 horizon-server: host a Horizon (Minecraft Java Edition 26.3) server
@@ -86,7 +96,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("version" | "-V" | "--version") => {
-            println!("horizon-server {}", env!("CARGO_PKG_VERSION"));
+            println!("horizon-server {VERSION}");
             Ok(())
         }
         Some("init") => init_answers(&args[1..]).and_then(|a| init::run(&dir, a)),

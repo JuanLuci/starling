@@ -1,418 +1,565 @@
-//! A server's resource packs (`ServerPackManager`, `DownloadedPackSource`): the prompt the
-//! server's choice in the server list leaves to the player, the download (checked against the
-//! SHA-1 the server gives, kept for the next visit), the packs over the player's own, and each
-//! step answered to the server, which waits for them.
-use super::{Game, Screen, mods::rich_text};
+//! A server's resource packs bound to the game (`ClientCommonPacketListenerImpl.
+//! handleResourcePackPush` and `handleResourcePackPop`, its `PackConfirmScreen`,
+//! and `DownloadedPackSource` as `Minecraft` drives it): the prompt, the
+//! server list's setting, downloads into `downloads/`, and a resource reload
+//! with the server's packs on top of the player's own.
+use super::Game;
 use horizon_client::{
-    hud::{HudBatch, rgba},
-    screen_draw::{self, Measure},
-    text::Text,
+    Result,
+    confirm_screen::Confirm,
+    hud::{HudAtlas, HudBatch},
+    java_text, multiplayer, packs,
+    scoreboard::{comp_text, tag_to_json},
+    server_packs::{Prompt, ServerPacks, action, download, parse_sha1, valid_url},
+    text::{Text, named_color},
+    toasts::SystemToast,
+    ui,
 };
-use horizon_protocol::packets::configuration::ResourcePackPush;
+use horizon_core::jmath;
+use horizon_protocol::{packets::configuration::ResourcePackPush, servers};
 use std::{
-    collections::VecDeque,
-    io::Read,
     path::PathBuf,
-    sync::mpsc::{Receiver, channel},
-};
-use winit::{
-    event::{ElementState, MouseButton, WindowEvent},
-    keyboard::{KeyCode, PhysicalKey},
+    sync::mpsc::{Receiver, TryRecvError},
 };
 
-/// ServerboundResourcePackPacket.Action.
-const LOADED: i32 = 0;
-const DECLINED: i32 = 1;
-const FAILED_DOWNLOAD: i32 = 2;
-const ACCEPTED: i32 = 3;
-const DOWNLOADED: i32 = 4;
-const INVALID_URL: i32 = 5;
-const FAILED_RELOAD: i32 = 6;
-/// `DownloadQueue`'s limit on a pack's size.
-const MAX_BYTES: u64 = 250 << 20;
+/// `ClientCommonPacketListenerImpl.PackConfirmScreen`: the packs it asks
+/// about, whether the last one is required, and the server's message.
+pub(super) struct PackPrompt {
+    requests: Vec<(u128, String, String)>,
+    required: bool,
+    prompt: Option<Text>,
+}
+impl PackPrompt {
+    fn texts(&self) -> (Text, Text, [Text; 2]) {
+        let t = |key: &str| Text::translate(key, &[]);
+        let (title, line2) = if self.required {
+            let yellow = named_color("yellow").unwrap_or(0xFFFF55);
+            (
+                t("multiplayer.requiredTexturePrompt.line1"),
+                t("multiplayer.requiredTexturePrompt.line2")
+                    .with_color(yellow)
+                    .bold(),
+            )
+        } else {
+            (
+                t("multiplayer.texturePrompt.line1"),
+                t("multiplayer.texturePrompt.line2"),
+            )
+        };
+        // preparePackPrompt.
+        let message = match &self.prompt {
+            Some(prompt) => Text::translate(
+                "multiplayer.texturePrompt.serverPrompt",
+                &[line2, prompt.clone()],
+            ),
+            None => line2,
+        };
+        let buttons = if self.required {
+            [t("gui.proceed"), t("menu.disconnect")]
+        } else {
+            [t("gui.yes"), t("gui.no")]
+        };
+        (title, message, buttons)
+    }
+    fn layout(&self, atlas: &HudAtlas, size: (f32, f32)) -> Confirm {
+        let (title, message, _) = self.texts();
+        Confirm::new(&atlas.font, size, &title, &message)
+    }
+}
 
-/// A download's end: the pack's file, or the answer for the server and why.
-type Downloaded = Result<PathBuf, (i32, String)>;
-
+/// The game's `DownloadedPackSource`.
 #[derive(Default)]
-pub(super) struct ServerPacks {
-    /// The packs in use, bottom to top.
-    applied: Vec<(u128, PathBuf)>,
-    /// Pushes waiting for the player's answer; the prompt shows the first.
-    prompts: VecDeque<ResourcePackPush>,
-    /// Downloads under way: the pack, whether the server requires it, and the result.
-    downloads: Vec<(u128, bool, Receiver<Downloaded>)>,
-    /// Packs downloaded since the last reload, to answer once it is done.
-    loading: Vec<(u128, bool)>,
+pub(super) struct ServerPackState {
+    packs: ServerPacks,
+    /// `downloads/` in the game folder, opened at the first download.
+    queue: Option<download::Queue>,
+    pub(super) prompt: Option<PackPrompt>,
+    /// The server list entry the setting is saved to (none: a direct join).
+    address: Option<String>,
+    /// The account the downloads are made for (the download headers).
+    user: (String, u128),
+    /// The packs loaded on top of the player's own, bottom first.
+    pub(super) active: Vec<packs::Pack>,
+    /// The download batches' notifiers, oldest first.
+    notifiers: Vec<PackNotifier>,
 }
-impl ServerPacks {
-    pub(super) fn applied(&self) -> Vec<(u128, PathBuf)> {
-        self.applied.clone()
-    }
+impl ServerPackState {
+    /// The prompt shows: it takes the back key and the touch controls' screen state.
     pub(super) fn prompting(&self) -> bool {
-        !self.prompts.is_empty()
+        self.prompt.is_some()
     }
 }
-
-/// Where downloaded packs are kept, by their SHA-1 (the private folder on Android).
-fn downloads_dir() -> PathBuf {
-    horizon_client::logging::cache_dir().join("server-packs")
+/// `DownloadedPackSource.createDownloadNotifier`: one batch's progress in its
+/// own `SystemToast`.
+struct PackNotifier {
+    progress: Receiver<download::Progress>,
+    total: usize,
+    /// `count`: the requests started.
+    count: usize,
+    /// `failCount`.
+    failed: usize,
+    /// `totalBytes`: the Content-Length of the request in flight.
+    size: Option<u64>,
+    /// The bytes it has written so far: none before the first response.
+    bytes: Option<u64>,
+    /// The last request has finished.
+    done: bool,
+    toast: Option<SystemToast>,
 }
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// `DownloadQueue.runDownload`: the pack at `url`, checked against `hash` when there is one.
-fn download(url: &str, hash: &str, player: &str, uuid: &str) -> Downloaded {
-    let hash = hash.to_ascii_lowercase();
-    let well_formed = hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-    let dir = downloads_dir();
-    if well_formed {
-        let kept = dir.join(format!("{hash}.zip"));
-        if let Ok(bytes) = std::fs::read(&kept)
-            && hex(&horizon_client::skins::sha1(&bytes)) == hash
-        {
-            return Ok(kept);
+impl PackNotifier {
+    fn new(progress: Receiver<download::Progress>, total: usize) -> Self {
+        Self {
+            progress,
+            total,
+            count: 0,
+            failed: 0,
+            size: None,
+            bytes: None,
+            done: false,
+            toast: None,
         }
     }
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err((INVALID_URL, format!("not a web address: {url}")));
+    /// The batch's events since the last call, with the toast updated once
+    /// for all of them. False once the batch has ended and its toast is gone.
+    fn poll(&mut self) -> bool {
+        let (mut changed, mut hide) = (false, false);
+        let ended = loop {
+            let event = match self.progress.try_recv() {
+                Ok(event) => event,
+                Err(e) => break e == TryRecvError::Disconnected,
+            };
+            changed |= match event {
+                download::Progress::RequestStart => {
+                    self.count += 1;
+                    true
+                }
+                download::Progress::DownloadStart(size) => {
+                    self.size = size;
+                    self.bytes = Some(0);
+                    true
+                }
+                download::Progress::Bytes(bytes) => {
+                    self.bytes = Some(bytes);
+                    true
+                }
+                download::Progress::RequestFinished(ok) => {
+                    self.failed += usize::from(!ok);
+                    self.done = self.count == self.total;
+                    // Every pack came: forceHide; else the failure title.
+                    hide |= self.done && self.failed == 0;
+                    self.done && self.failed > 0
+                }
+            };
+        };
+        if changed {
+            let (title, message) = self.text();
+            let (title, message) = (title.plain(), message.map(|m| m.plain()));
+            // SystemToast.addOrUpdate.
+            match &mut self.toast {
+                Some(toast) => toast.reset(title, message),
+                None => self.toast = Some(SystemToast::new(title, message)),
+            }
+        }
+        if hide && let Some(toast) = &mut self.toast {
+            toast.force_hide();
+        }
+        !ended || self.toast.is_some()
     }
-    let version = horizon_core::version::VERSION_ID;
-    let response = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(15))
-        .timeout_read(std::time::Duration::from_secs(30))
-        .user_agent(&format!("Minecraft Java/{version}"))
-        .build()
-        .get(url)
-        // HttpUtil.downloadFile's headers: some pack hosts check them.
-        .set("X-Minecraft-Username", player)
-        .set("X-Minecraft-UUID", uuid)
-        .set("X-Minecraft-Version", version)
-        .set("X-Minecraft-Version-ID", version)
-        .set(
-            "X-Minecraft-Pack-Format",
-            &horizon_client::packs::RESOURCE_FORMAT.0.to_string(),
-        )
-        .call()
-        .map_err(|e| (FAILED_DOWNLOAD, e.to_string()))?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| (FAILED_DOWNLOAD, e.to_string()))?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err((FAILED_DOWNLOAD, format!("over {} MiB", MAX_BYTES >> 20)));
+    /// The toast's title and message.
+    fn text(&self) -> (Text, Option<Text>) {
+        if self.done && self.failed > 0 {
+            let failed = Text::tr("download.pack.failed", &[&self.failed, &self.total]);
+            return (failed, None);
+        }
+        let title = Text::tr("download.pack.title", &[&self.count, &self.total]);
+        let message = self.bytes.map(|bytes| match self.size {
+            Some(size) if size > 0 => {
+                Text::tr("download.pack.progress.percent", &[&(bytes * 100 / size)])
+            }
+            _ => Text::tr("download.pack.progress.bytes", &[&human_readable(bytes)]),
+        });
+        (title, message)
     }
-    let got = hex(&horizon_client::skins::sha1(&bytes));
-    if well_formed && got != hash {
-        return Err((
-            FAILED_DOWNLOAD,
-            format!("its SHA-1 is {got}, the server said {hash}"),
-        ));
+}
+/// `com.mojang.realmsclient.Unit.humanReadable`, for
+/// `download.pack.progress.bytes`.
+fn human_readable(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
-    std::fs::create_dir_all(&dir).map_err(|e| (FAILED_DOWNLOAD, e.to_string()))?;
-    let path = dir.join(format!("{got}.zip"));
-    let part = dir.join(format!("{got}.part"));
-    std::fs::write(&part, &bytes)
-        .and_then(|()| std::fs::rename(&part, &path))
-        .map_err(|e| (FAILED_DOWNLOAD, e.to_string()))?;
-    Ok(path)
+    let exp = (jmath::log(bytes as f64) / jmath::log(1024.0)) as i32;
+    let prefix = &"KMGTPE"[exp as usize - 1..exp as usize];
+    let value = bytes as f64 / 1024f64.powi(exp);
+    format!("{} {prefix}B", java_text::format_fixed(value, 1))
+}
+
+fn saves() -> PathBuf {
+    std::env::current_dir().unwrap_or_default().join("saves")
 }
 
 impl Game<'_> {
-    fn pack_response(&self, id: u128, action: i32) {
+    /// `ConnectScreen`: the server's setting decides what its packs do
+    /// (`configureForServerControl`); single player's own server takes them
+    /// all, quietly (`configureForLocalWorld`).
+    pub(super) fn server_packs_connect(&mut self, address: Option<&str>, user: (String, u128)) {
+        let state = &mut self.server_packs;
+        state.user = user;
+        state.prompt = None;
+        state.notifiers.clear();
+        let Some(address) = address else {
+            state.address = None;
+            state.packs.local_world();
+            return;
+        };
+        let file = multiplayer::servers_file(&saves());
+        let entry = servers::load(&file).into_iter().find(|s| s.ip == address);
+        let setting = entry.as_ref().and_then(|e| e.accept_textures);
+        state.address = entry.map(|e| e.ip);
+        state.packs.connect(Prompt::for_server(setting));
+    }
+    /// `Minecraft.clearDownloadedResourcePacks`: every server pack goes at once.
+    pub(super) fn server_packs_disconnect(&mut self) {
+        self.server_packs.prompt = None;
+        self.server_packs.notifiers.clear();
+        self.server_packs.packs.disconnect();
+        self.tick_server_packs();
+    }
+
+    /// `handleResourcePackPush`.
+    pub(super) fn handle_pack_push(&mut self, p: ResourcePackPush) {
+        if !valid_url(&p.url) {
+            self.send_pack_status(p.id, action::INVALID_URL);
+            return;
+        }
+        let setting = self.server_setting();
+        let prompt = Prompt::for_server(setting);
+        if prompt != Prompt::Pending && (!p.required || prompt != Prompt::Declined) {
+            self.server_packs
+                .packs
+                .push(p.id, &p.url, parse_sha1(&p.hash));
+            return;
+        }
+        // addOrUpdatePackPrompt: one prompt for every pack pushed before it is answered.
+        let text = p.prompt.as_ref().map(|t| comp_text(&tag_to_json(t)));
+        let state = &mut self.server_packs;
+        let open = state.prompt.get_or_insert(PackPrompt {
+            requests: Vec::new(),
+            required: p.required,
+            prompt: None,
+        });
+        open.requests.push((p.id, p.url, p.hash));
+        open.required = p.required;
+        open.prompt = text;
+        self.capture(false);
+    }
+    /// `handleResourcePackPop`: one pack, or all of them.
+    pub(super) fn handle_pack_pop(&mut self, id: Option<u128>) {
+        match id {
+            Some(id) => self.server_packs.packs.pop(id),
+            None => self.server_packs.packs.pop_all(),
+        }
+    }
+    /// The joined server's entry in the server list: its `acceptTextures`.
+    fn server_setting(&self) -> Option<bool> {
+        let address = self.server_packs.address.as_deref()?;
+        servers::load(&multiplayer::servers_file(&saves()))
+            .into_iter()
+            .find(|s| s.ip == address)?
+            .accept_textures
+    }
+    fn send_pack_status(&self, id: u128, status: i32) {
         if let Some(r) = &self.remote {
-            r.session.pack_response(id, action);
+            r.session.send_pack_status(id, status);
         }
     }
-    /// The server's choice in the server list (`ServerData.ResourcePackStatus`): Some(true)
-    /// enabled, Some(false) disabled, None prompt.
-    fn pack_policy(&self) -> Option<bool> {
-        let address = &self.remote.as_ref()?.session.address;
-        let list =
-            horizon_protocol::servers::load(&std::env::current_dir().ok()?.join("servers.dat"));
-        list.iter()
-            .find(|s| &s.ip == address)
-            .and_then(|s| s.accept_textures)
-    }
-    /// Remembers the player's answer for this server (`ServerData.setResourcePackStatus`).
-    fn remember_pack_policy(&self, accept: bool) {
-        let Some(address) = self.remote.as_ref().map(|r| r.session.address.clone()) else {
-            return;
+
+    /// The prompt's answer (`PackConfirmScreen`'s callback): the server's
+    /// setting follows it, declining a required pack disconnects, and every
+    /// pack it asked about is pushed.
+    pub(super) fn answer_pack_prompt(&mut self, yes: bool) -> Result<()> {
+        let Some(prompt) = self.server_packs.prompt.take() else {
+            return Ok(());
         };
-        let Ok(path) = std::env::current_dir().map(|d| d.join("servers.dat")) else {
-            return;
-        };
-        let mut list = horizon_protocol::servers::load(&path);
-        if let Some(entry) = list.iter_mut().find(|s| s.ip == address) {
-            entry.accept_textures = Some(accept);
-            if let Err(e) = horizon_protocol::servers::save(&path, &list) {
-                log::warn!("Horizon: could not save servers.dat: {e}");
-            }
-        }
-    }
-    /// ClientCommonPacketListenerImpl.handleResourcePackPush.
-    pub(super) fn server_pack_push(&mut self, push: ResourcePackPush) {
-        log::info!(
-            "Horizon: the server {} a resource pack: {}",
-            if push.required { "requires" } else { "offers" },
-            push.url
-        );
-        match self.pack_policy() {
-            Some(true) => self.start_pack_download(push),
-            Some(false) => self.decline_pack(&push),
-            None => {
-                self.server_packs.prompts.retain(|p| p.id != push.id);
-                self.server_packs.prompts.push_back(push);
-                self.capture(false);
-            }
-        }
-    }
-    /// The prompt's answer for the first push waiting.
-    pub(super) fn answer_pack_prompt(&mut self, accept: bool) {
-        let Some(push) = self.server_packs.prompts.pop_front() else {
-            return;
-        };
-        self.remember_pack_policy(accept);
-        if accept {
-            self.start_pack_download(push);
-        } else {
-            self.decline_pack(&push);
-        }
-        if self.server_packs.prompts.is_empty()
-            && self.screen == Screen::Playing
-            && self.title.is_none()
-            && self.player.is_some()
-        {
+        if self.player.is_some() && self.screen == super::Screen::Playing {
             self.capture(true);
         }
-    }
-    fn decline_pack(&mut self, push: &ResourcePackPush) {
-        self.pack_response(push.id, DECLINED);
-        if push.required {
-            // ServerPackManager: a required pack declined leaves the server.
-            let reason = self.translate(
-                "multiplayer.requiredTexturePrompt.disconnect",
-                "Server requires a custom resource pack",
-            );
-            if let Err(e) = self.leave_server(Some(reason)) {
-                log::warn!("Horizon: {e}");
+        let setting = if yes {
+            self.server_packs.packs.allow();
+            Some(true)
+        } else {
+            self.server_packs.packs.reject();
+            if prompt.required {
+                let reason = Text::translate("multiplayer.requiredTexturePrompt.disconnect", &[]);
+                return self.leave_server(Some(reason.plain()));
+            }
+            Some(false)
+        };
+        for (id, url, hash) in prompt.requests {
+            self.server_packs.packs.push(id, &url, parse_sha1(&hash));
+        }
+        // ServerList.saveSingleServer.
+        if let Some(address) = &self.server_packs.address {
+            let file = multiplayer::servers_file(&saves());
+            let mut list = servers::load(&file);
+            for entry in list.iter_mut().filter(|s| &s.ip == address) {
+                entry.accept_textures = setting;
+            }
+            if let Err(e) = servers::save(&file, &list) {
+                log::warn!("Horizon: could not save {}: {e}", file.display());
             }
         }
+        Ok(())
     }
-    fn start_pack_download(&mut self, push: ResourcePackPush) {
-        self.pack_response(push.id, ACCEPTED);
-        let (player, uuid) = self.remote.as_ref().map_or_else(Default::default, |r| {
-            let h = format!("{:032x}", r.profile);
-            (r.session.name.clone(), h)
-        });
-        let (tx, rx) = channel();
-        let (url, hash) = (push.url.clone(), push.hash.clone());
-        let started = std::thread::Builder::new()
-            .name("horizon-server-pack".into())
-            .spawn(move || {
-                let _ = tx.send(download(&url, &hash, &player, &uuid));
-            });
-        if started.is_err() {
-            self.pack_response(push.id, FAILED_DOWNLOAD);
+
+    /// Runs what the packs need (`createUpdateScheduler`): the downloads
+    /// that finished, the ones to start, a resource reload when the active
+    /// packs change, and the statuses for the server.
+    pub(super) fn tick_server_packs(&mut self) {
+        self.server_packs.notifiers.retain_mut(PackNotifier::poll);
+        // A reload waits for the world's resources (`reload_packs`).
+        if self.rest_loader.is_some() || self.world_loader.is_some() {
             return;
         }
-        self.server_packs
-            .downloads
-            .retain(|(id, _, _)| *id != push.id);
-        self.server_packs
-            .downloads
-            .push((push.id, push.required, rx));
-    }
-    /// ClientboundResourcePackPopPacket: one pack, or every one.
-    pub(super) fn server_pack_pop(&mut self, id: Option<u128>) {
-        let packs = &mut self.server_packs;
-        let before = packs.applied.len();
-        packs.applied.retain(|(p, _)| id.is_some_and(|id| id != *p));
-        packs.prompts.retain(|p| id.is_some_and(|id| id != p.id));
-        packs
-            .downloads
-            .retain(|(p, _, _)| id.is_some_and(|id| id != *p));
-        if packs.applied.len() != before {
-            self.reload_packs();
+        let finished = self
+            .server_packs
+            .queue
+            .as_ref()
+            .map(download::Queue::finished)
+            .unwrap_or_default();
+        for batch in finished {
+            self.server_packs.packs.downloaded(batch);
         }
-    }
-    /// Leaving the server: its packs go, and the player's own come back.
-    pub(super) fn drop_server_packs(&mut self) {
-        let had = !self.server_packs.applied.is_empty();
-        self.server_packs = Default::default();
-        if had {
-            self.reload_packs();
-        }
-    }
-    /// Once a frame: finished downloads, then one reload for the packs they brought.
-    pub(super) fn poll_server_packs(&mut self) {
-        if self.server_packs.downloads.is_empty() && self.server_packs.loading.is_empty() {
-            return;
-        }
-        let mut done = Vec::new();
-        self.server_packs
-            .downloads
-            .retain(|(id, required, rx)| match rx.try_recv() {
-                Ok(result) => {
-                    done.push((*id, *required, result));
-                    false
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => true,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done.push((*id, *required, Err((FAILED_DOWNLOAD, "stopped".into()))));
-                    false
-                }
-            });
-        for (id, required, result) in done {
-            match result {
-                Ok(path) => {
-                    self.pack_response(id, DOWNLOADED);
-                    let packs = &mut self.server_packs;
-                    packs.applied.retain(|(p, _)| *p != id);
-                    packs.applied.push((id, path));
-                    packs.loading.push((id, required));
-                }
-                Err((action, why)) => {
-                    log::warn!("Horizon: the server's resource pack failed: {why}");
-                    self.pack_response(id, action);
-                    if required {
-                        let reason = self.translate(
-                            "multiplayer.requiredTexturePrompt.disconnect",
-                            "Server requires a custom resource pack",
-                        );
-                        if let Err(e) = self.leave_server(Some(reason)) {
-                            log::warn!("Horizon: {e}");
-                        }
-                        return;
-                    }
+        while self.server_packs.packs.wants_tick() {
+            let tick = self.server_packs.packs.tick();
+            if !tick.download.is_empty() {
+                self.start_pack_downloads(tick.download);
+            }
+            if let Some(mut load) = tick.reload {
+                while let Some(recovery) = {
+                    let ok = self.reload_server_packs(&load);
+                    self.server_packs.packs.reloaded(ok)
+                } {
+                    load = recovery;
                 }
             }
         }
-        // Every pack of this push in hand: one reload for them all.
-        if self.server_packs.downloads.is_empty() && !self.server_packs.loading.is_empty() {
-            let loading = std::mem::take(&mut self.server_packs.loading);
-            let result = self.try_reload_packs();
-            for (id, required) in loading {
-                match &result {
-                    Ok(()) => self.pack_response(id, LOADED),
-                    Err(e) => {
-                        log::warn!("Horizon: the server's resource pack did not load: {e}");
-                        self.pack_response(id, FAILED_RELOAD);
-                        if required {
-                            self.server_packs.applied.retain(|(p, _)| *p != id);
-                        }
+        for (id, status) in self.server_packs.packs.take_replies() {
+            self.send_pack_status(id, status);
+        }
+    }
+    fn start_pack_downloads(&mut self, requests: Vec<horizon_client::server_packs::Request>) {
+        let state = &mut self.server_packs;
+        if state.queue.is_none() {
+            let dir = std::env::current_dir()
+                .unwrap_or_default()
+                .join("downloads");
+            match download::Queue::open(dir) {
+                Ok(queue) => state.queue = Some(queue),
+                Err(e) => {
+                    log::error!("Horizon: failed to open the download queue: {e}");
+                    // Every request failed, as the notifier would hear it.
+                    let (progress, events) = std::sync::mpsc::channel();
+                    for _ in &requests {
+                        let _ = progress.send(download::Progress::RequestStart);
+                        let _ = progress.send(download::Progress::RequestFinished(false));
                     }
+                    state
+                        .notifiers
+                        .push(PackNotifier::new(events, requests.len()));
+                    let failed = requests.iter().map(|r| r.id).collect();
+                    state.packs.downloaded(horizon_client::server_packs::Batch {
+                        downloaded: Vec::new(),
+                        failed,
+                    });
+                    return;
                 }
             }
         }
+        let headers = download::headers(&state.user.0, state.user.1);
+        let (progress, events) = std::sync::mpsc::channel();
+        state
+            .notifiers
+            .push(PackNotifier::new(events, requests.len()));
+        if let Some(queue) = &state.queue {
+            queue.download(requests, headers, progress);
+        }
     }
-    /// The prompt's two buttons: (x, y, w, h).
-    fn pack_prompt_buttons(batch: &HudBatch) -> [[f32; 4]; 2] {
-        let (cx, y) = (
-            (batch.width / 2.0).floor(),
-            (batch.height / 6.0 + 96.0).floor(),
-        );
-        [[cx - 155.0, y, 150.0, 20.0], [cx + 5.0, y, 150.0, 20.0]]
+    /// `DownloadedPackSource.startReload`: the packs on top of the player's
+    /// own, then `Minecraft.reloadResourcePacks`. False when a pack has no
+    /// readable `pack.mcmeta` or the reload failed.
+    fn reload_server_packs(&mut self, load: &[(u128, PathBuf)]) -> bool {
+        let packs: Option<Vec<_>> = load
+            .iter()
+            .map(|(id, path)| packs::server_pack(*id, path))
+            .collect();
+        let Some(packs) = packs else {
+            log::warn!("Horizon: invalid pack metadata in a server pack, ignoring all");
+            return false;
+        };
+        self.server_packs.active = packs;
+        match self.reload_selected_packs() {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("Horizon: server resource pack reload failed: {e}");
+                false
+            }
+        }
     }
-    /// ConfirmScreen of `ServerPackManager`'s prompt, over everything.
-    pub(super) fn draw_pack_prompt(&mut self, batch: &mut HudBatch) {
-        let Some(push) = self.server_packs.prompts.front() else {
+
+    pub(super) fn draw_pack_prompt(&self, batch: &mut HudBatch) {
+        let Some(prompt) = &self.server_packs.prompt else {
             return;
         };
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
-        batch.fill_gradient(
-            atlas,
-            (0.0, 0.0, w, h),
-            rgba(16, 16, 16, 220),
-            rgba(16, 16, 16, 235),
-        );
-        let (title, line2, yes, no) = if push.required {
-            (
-                Text::translate("multiplayer.requiredTexturePrompt.line1", &[]),
-                Text::translate("multiplayer.requiredTexturePrompt.line2", &[]),
-                Text::translate("gui.proceed", &[]),
-                Text::translate("menu.disconnect", &[]),
-            )
-        } else {
-            (
-                Text::translate("multiplayer.texturePrompt.line1", &[]),
-                Text::translate("multiplayer.texturePrompt.line2", &[]),
-                Text::translate("gui.yes", &[]),
-                Text::translate("gui.no", &[]),
-            )
-        };
-        let mut lines = vec![title, line2];
-        if let Some(prompt) = &push.prompt {
-            let json = horizon_client::scoreboard::tag_to_json(prompt);
-            lines.push(rich_text(&json.to_string()));
-        }
-        let m = Measure(&atlas.font);
-        let mut y = 70.0;
-        for line in &lines {
-            let tw = m.width(line) as f32;
-            batch.text_styled(atlas, line, ((w - tw) / 2.0).floor(), y, u32::MAX, true);
-            y += 12.0;
-        }
-        let mut draws = Vec::new();
-        for (b, label) in Self::pack_prompt_buttons(batch).iter().zip([yes, no]) {
-            let hovered = self.cursor.0 >= b[0]
-                && self.cursor.0 < b[0] + b[2]
-                && self.cursor.1 >= b[1]
-                && self.cursor.1 < b[1] + b[3];
-            screen_draw::button(
-                &mut draws,
-                &m,
-                &label,
-                b[0] as i32,
-                b[1] as i32,
-                b[2] as i32,
-                b[3] as i32,
-                true,
-                hovered,
+        if self.player.is_none() {
+            // In place of the connecting screen, on its background.
+            batch.fill(
+                atlas,
+                0.0,
+                0.0,
+                w,
+                h,
+                horizon_client::hud::rgba(20, 20, 20, 255),
             );
         }
-        screen_draw::paint(batch, atlas, &draws);
+        ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.player.is_some());
+        let (_, _, [yes, no]) = prompt.texts();
+        prompt
+            .layout(atlas, (w, h))
+            .draw(batch, atlas, self.cursor, [&yes, &no]);
     }
-    /// The prompt takes the mouse and Escape while it shows. True when it used the event.
-    pub(super) fn pack_prompt_window_event(&mut self, event: &WindowEvent) -> bool {
-        if !self.server_packs.prompting() {
-            return false;
+    /// The download notifiers' toasts, each in the next 32-pixel slot
+    /// below an advancement or recipe toast (`ToastManager`).
+    pub(super) fn draw_pack_toasts(&mut self, batch: &mut HudBatch) {
+        let multiplier = f64::from(self.settings.notification_display_time);
+        let mut slot = usize::from(!self.adv.toasts.is_empty());
+        for notifier in &mut self.server_packs.notifiers {
+            let Some(toast) = &mut notifier.toast else {
+                continue;
+            };
+            let (sound, finished) = toast.update(multiplier);
+            if let Some(show) = sound {
+                let event = if show { "ui.toast.in" } else { "ui.toast.out" };
+                self.audio
+                    .play(&format!("minecraft:{event}"), None, 1.0, 1.0);
+            }
+            if finished {
+                notifier.toast = None;
+                continue;
+            }
+            toast.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
+            slot += 1;
         }
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let Some(r) = &self.renderer else {
-                    return true;
-                };
-                let batch = HudBatch::new([r.config.width, r.config.height]);
-                let (x, y) = self.cursor;
-                let hit = Self::pack_prompt_buttons(&batch)
-                    .iter()
-                    .position(|b| x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]);
-                if let Some(i) = hit {
-                    self.audio.play_button_click();
-                    self.answer_pack_prompt(i == 0);
-                }
-                true
+    }
+    /// A left click on the prompt: its answer when it hit a button.
+    pub(super) fn pack_prompt_click(&mut self) -> Result<()> {
+        let Some(prompt) = &self.server_packs.prompt else {
+            return Ok(());
+        };
+        let answer = prompt
+            .layout(&self.gui.atlas, self.gui_size())
+            .answer_at(self.cursor);
+        match answer {
+            Some(yes) => {
+                self.audio.play_button_click();
+                self.answer_pack_prompt(yes)
             }
-            WindowEvent::KeyboardInput { event: k, .. } => {
-                if k.state == ElementState::Pressed
-                    && k.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                {
-                    self.answer_pack_prompt(false);
-                }
-                true
-            }
-            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
-            _ => false,
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use download::Progress::*;
+
+    fn notifier(total: usize, events: &[download::Progress]) -> PackNotifier {
+        let (send, receive) = std::sync::mpsc::channel();
+        for event in events {
+            send.send(*event).unwrap();
+        }
+        let mut notifier = PackNotifier::new(receive, total);
+        assert!(notifier.poll());
+        notifier
+    }
+    fn texts(n: &PackNotifier) -> (serde_json::Value, Option<serde_json::Value>) {
+        let (title, message) = n.text();
+        (title.component(), message.map(|m| m.component()))
+    }
+
+    #[test]
+    fn the_toast_counts_requests_and_shows_progress() {
+        let n = notifier(2, &[RequestStart]);
+        let (title, message) = texts(&n);
+        assert_eq!(title["translate"], "download.pack.title");
+        assert_eq!(title["with"], serde_json::json!([1, 2]));
+        assert_eq!(message, None);
+        let n = notifier(2, &[RequestStart, DownloadStart(Some(400)), Bytes(100)]);
+        assert_eq!(
+            texts(&n).1.unwrap(),
+            serde_json::json!({"translate": "download.pack.progress.percent", "with": [25]})
+        );
+        let n = notifier(1, &[RequestStart, DownloadStart(None), Bytes(1280)]);
+        assert_eq!(
+            texts(&n).1.unwrap()["with"],
+            serde_json::json!([{"text": "1.3 KB"}])
+        );
+    }
+
+    #[test]
+    fn a_failed_pack_turns_the_toast_into_the_failure_count() {
+        let events = [
+            RequestStart,
+            RequestFinished(false),
+            RequestStart,
+            DownloadStart(Some(3)),
+            Bytes(3),
+        ];
+        let (send, receive) = std::sync::mpsc::channel();
+        for event in events {
+            send.send(event).unwrap();
+        }
+        let mut n = PackNotifier::new(receive, 2);
+        assert!(n.poll());
+        // Not the last request yet: still downloading.
+        assert_eq!(texts(&n).0["translate"], "download.pack.title");
+        send.send(RequestFinished(true)).unwrap();
+        drop(send);
+        assert!(n.poll(), "the failure toast stays until it slides out");
+        let (title, message) = texts(&n);
+        assert_eq!(
+            title,
+            serde_json::json!({"translate": "download.pack.failed", "with": [1, 2]})
+        );
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn a_finished_batch_without_a_toast_is_dropped() {
+        let (send, receive) = std::sync::mpsc::channel::<download::Progress>();
+        drop(send);
+        assert!(!PackNotifier::new(receive, 1).poll());
+    }
+
+    #[test]
+    fn sizes_read_as_realms_unit_human_readable() {
+        // com.mojang.realmsclient.Unit.humanReadable, run on the 26.3 jar.
+        for (bytes, text) in [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KB"),
+            (1280, "1.3 KB"),
+            (1535, "1.5 KB"),
+            (10_000, "9.8 KB"),
+            (1_048_575, "1024.0 KB"),
+            (1_048_576, "1.0 MB"),
+            (52_428_800, "50.0 MB"),
+            (262_144_000, "250.0 MB"),
+            (1_073_741_824, "1.0 GB"),
+        ] {
+            assert_eq!(human_readable(bytes), text, "{bytes}");
         }
     }
 }

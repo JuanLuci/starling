@@ -231,6 +231,10 @@ impl PlayerHealth {
             .get(self.ids.absorption)
             .expect("validated absorption field")
     }
+    /// The game time the damage clock has counted.
+    pub fn game_time(&self) -> i64 {
+        self.game_time
+    }
     pub fn dead_or_dying(&self) -> bool {
         self.health() <= 0.0 || self.dead
     }
@@ -247,6 +251,28 @@ impl PlayerHealth {
         }
         if self.hurt_animation_time > 0 {
             self.hurt_animation_time -= 1;
+        }
+    }
+    /// `LivingEntity.animateHurt` / `handleDamageEvent` on a client: the hurt
+    /// tilt and red flash restart.
+    pub fn animate_hurt(&mut self) {
+        self.hurt.hurt_duration = 10;
+        self.hurt.hurt_time = 10;
+        self.hurt_animation_time = 10;
+    }
+    /// `LocalPlayer.hurtTo` with `flashOnSetHealth`: a drop below the current
+    /// health starts the hurt animation; `damageCooldownTime` (20 on a drop,
+    /// 10 on a gain) is what lets `Hud.extractPlayerHealth` blink the hearts.
+    pub fn flash_health_change(&mut self, health: f32) {
+        let damage = self.health() - health;
+        if damage <= 0.0 {
+            if damage < 0.0 {
+                self.hurt.cooldown = 10;
+            }
+        } else {
+            self.hurt.last_hurt = damage;
+            self.hurt.cooldown = 20;
+            self.animate_hurt();
         }
     }
 }
@@ -270,10 +296,18 @@ impl PlayerMotion {
         amount: f32,
         blocking: Option<Blocking>,
     ) -> Result<BlockOutcome> {
+        if self.client_side {
+            return Ok(BlockOutcome::default());
+        }
         let source = resources
             .damage
             .source::<()>(source, None, None, None)
             .ok_or("unknown resident damage source")?;
+        let armor = self.attribute("minecraft:armor").unwrap_or(0.0) as f32;
+        let toughness = self.attribute("minecraft:armor_toughness").unwrap_or(0.0) as f32;
+        let before = self.health.health() + self.health.absorption();
+        let fire_ticks = self.fire_ticks;
+        let source_name = source.definition().name.clone();
         let totem_ready = self.health.totem_ready;
         let invulnerable = self.invulnerable;
         let h = &mut self.health;
@@ -289,6 +323,7 @@ impl PlayerMotion {
             blocking,
             blocked: 0.0,
             block_sound: false,
+            knocked: false,
             totem: totem_ready,
             totem_fired: false,
         };
@@ -304,6 +339,7 @@ impl PlayerMotion {
             hurt,
             blocked: environment.blocked,
             sound: environment.block_sound,
+            knockback: environment.knocked,
         };
         if environment.totem_fired {
             h.totem_used = true;
@@ -312,6 +348,23 @@ impl PlayerMotion {
         if outcome.hurt {
             h.hurt_animation_time = h.hurt.hurt_time;
         }
+        let after = h.health() + h.absorption();
+        if self.hurt_log.len() >= HURT_LOG {
+            self.hurt_log.remove(0);
+        }
+        self.hurt_log.push(HurtRecord {
+            game_time: h.game_time,
+            source: source_name,
+            amount,
+            blocked: outcome.blocked,
+            taken: before - after,
+            hurt: outcome.hurt,
+            armor,
+            toughness,
+            health: after,
+            fire_ticks,
+            knockback: None,
+        });
         Ok(outcome)
     }
     pub fn set_health(&mut self, value: f32, absorption: bool) -> Result<()> {
@@ -347,6 +400,8 @@ pub(crate) struct Environment<'a> {
     pub(crate) blocking: Option<Blocking>,
     pub(crate) blocked: f32,
     pub(crate) block_sound: bool,
+    /// `dealDefaultKnockback` ran: a fresh hit, not fully blocked.
+    pub(crate) knocked: bool,
     /// LivingEntity.checkTotemDeathProtection: a totem is held / was used.
     pub(crate) totem: bool,
     pub(crate) totem_fired: bool,
@@ -363,6 +418,45 @@ pub struct Blocking {
     /// Angle between the head's view and the source position (pi without one).
     pub angle: f64,
 }
+/// How many hurts `PlayerMotion::hurt_log` keeps.
+const HURT_LOG: usize = 64;
+/// One hurt as it was taken: what came in, what a raised blocking item
+/// stopped, the armour it met and what health it left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HurtRecord {
+    pub game_time: i64,
+    /// The damage type.
+    pub source: String,
+    /// The damage before blocking, armour and effects.
+    pub amount: f32,
+    pub blocked: f32,
+    /// Health and absorption lost.
+    pub taken: f32,
+    pub hurt: bool,
+    /// `minecraft:armor` and `minecraft:armor_toughness` when it came.
+    pub armor: f32,
+    pub toughness: f32,
+    pub health: f32,
+    /// The fire ticks before the hurt.
+    pub fire_ticks: i32,
+    /// The push the hurt gave, if the caller applied one.
+    pub knockback: Option<[f64; 3]>,
+}
+/// One melee attack on a mob: the damage after the attack strength, the
+/// strength (`getAttackStrengthScale`), and the health it took.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttackRecord {
+    pub game_time: i64,
+    pub target: String,
+    /// The mob's entity id, and whether the blow killed it.
+    pub id: u32,
+    pub killed: bool,
+    pub amount: f32,
+    pub scale: f32,
+    pub crit: bool,
+    pub landed: bool,
+    pub dealt: f32,
+}
 /// The outcome of a hurt with a raised blocking item.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockOutcome {
@@ -370,6 +464,9 @@ pub struct BlockOutcome {
     pub blocked: f32,
     /// `BlocksAttacks.onBlocked` ran (the block sound plays).
     pub sound: bool,
+    /// The hit knocks the player back (`dealDefaultKnockback`): not one in
+    /// the hurt cooldown, nor one the shield took whole.
+    pub knockback: bool,
 }
 struct MatchedSets;
 impl horizon_world::blocking_rules::TypeMatchWorld for MatchedSets {
@@ -602,9 +699,11 @@ impl HurtWorld for Environment<'_> {
         *self.sync_velocity = true;
         Ok(())
     }
+    /// The caller applies it: these sources carry no entity or position.
     fn knockback(&mut self, _: &mut State, _: f32, _: bool) -> io::Result<()> {
+        self.knocked = true;
         Ok(())
-    } // no entity or position on these sources
+    }
     fn death_protection(&mut self, _: &mut State) -> io::Result<bool> {
         if !self.totem
             || self
@@ -696,6 +795,37 @@ impl ServerPlayerHurtWorld for Environment<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hit_in_the_hurt_cooldown_knocks_nobody_back() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let (health, rules) = (&resources.health, super::HealthRules::default());
+        let id = health.damage.id("minecraft:mob_attack").unwrap();
+        let mut hit = |amount| {
+            player
+                .hurt_blocking(health, rules, id, amount, None)
+                .unwrap()
+        };
+        let first = hit(1.0);
+        assert!(first.hurt && first.knockback);
+        // A stronger hit inside the cooldown hurts by the difference only
+        // (LivingEntity.hurtServer), with no dealDefaultKnockback.
+        let second = hit(2.0);
+        assert!(second.hurt && !second.knockback);
+        // A weaker one doesn't hurt at all.
+        let third = hit(1.5);
+        assert!(!third.hurt && !third.knockback);
+    }
+
     #[test]
     fn hurt_sounds_follow_damage_effects() {
         // DamageEffects: HURT, THORNS, DROWNING, BURNING, POKING, FREEZING.

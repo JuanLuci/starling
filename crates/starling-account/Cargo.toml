@@ -1,0 +1,14 @@
+[package]
+name = "starling-account"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Starling's Microsoft sign-in for the game itself (no launcher): the device-code flow, Xbox Live, XSTS, the Minecraft services, the ownership check, and the official game files an owner may fetch"
+publish = false
+
+[dependencies]
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"

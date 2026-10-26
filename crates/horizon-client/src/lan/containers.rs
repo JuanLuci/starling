@@ -78,6 +78,17 @@ impl Hub {
         );
     }
 
+    /// `ServerLevel.globalLevelEvent`: the packet with its global flag, for
+    /// every player on the server (`PlayerList.broadcastAll`).
+    pub fn global_level_event(&self, kind: i32, pos: [i32; 3], data: i32) {
+        self.broadcast(&C::LevelEvent(play::LevelEvent {
+            kind,
+            pos,
+            data,
+            global: true,
+        }));
+    }
+
     /// ClientboundBlockEventPacket (`PlayerList.broadcast` within 64 blocks).
     pub fn block_event(&self, pos: [i32; 3], b0: i32, b1: i32, state: u32) {
         let block = self
@@ -234,6 +245,23 @@ impl Hub {
         Some(window)
     }
 
+    /// ServerPlayer.openHorseInventory: the open container closes, a new
+    /// window id opens mount `entity`'s inventory with its chest's columns
+    /// (ClientboundMountScreenOpenPacket).
+    pub fn open_mount_window(&mut self, conn: u32, columns: i32, entity: i32) -> Option<i32> {
+        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        self.close_container_at(i);
+        let g = &mut self.guests[i];
+        g.next_window = g.next_window % 100 + 1;
+        let window = g.next_window;
+        g.send(&C::MountScreenOpen(play::MountScreenOpen {
+            container: window,
+            columns,
+            entity,
+        }));
+        Some(window)
+    }
+
     fn send_menu_content(&mut self, i: usize, mut items: Vec<Option<ItemStack>>) {
         for j in 0..36 {
             items.push(self.guests[i].inventory[player_slot(j)].clone());
@@ -326,7 +354,21 @@ impl Hub {
         if !window_ok || self.guests[i].spectator() {
             return Vec::new();
         }
+        // A menu that is no longer valid takes no clicks.
+        if let Some(m) = self.guests[i].menu.as_ref().filter(|_| in_menu)
+            && !m.slots.still_valid(world, &self.guests[i], m.pos)
+        {
+            return Vec::new();
+        }
         let source = self.guests[i].menu.as_ref().map(|m| m.slots);
+        let shulker_box = self
+            .sync
+            .builtin
+            .get("minecraft:menu")
+            .and_then(|m| m.id("minecraft:shulker_box"));
+        let shulker = in_menu
+            && shulker_box.is_some()
+            && self.guests[i].menu.as_ref().map(|m| m.kind) == shulker_box;
         let mut drag = if in_menu {
             self.guests[i].menu.as_mut().and_then(|m| m.drag.take())
         } else {
@@ -340,6 +382,7 @@ impl Hub {
         let mut view = View {
             guest,
             container: items.as_deref_mut(),
+            shulker,
         };
         let (drops, changed) = menu::click(
             &mut view,
@@ -455,18 +498,30 @@ impl Hub {
         let Slots::Block(pos) = m.slots else {
             return;
         };
-        // AbstractFurnaceBlockEntity.dataAccess, BrewingStandBlockEntity.dataAccess.
+        // AbstractFurnaceBlockEntity.dataAccess, BrewingStandBlockEntity.dataAccess,
+        // CrafterBlockEntity.containerData.
         let data = match world.block_entities.get(&pos) {
-            Some(BlockEntity::Furnace(f)) => [
+            Some(BlockEntity::Furnace(f)) => vec![
                 f.lit_remaining,
                 f.lit_total,
                 f.cooking_timer,
                 f.cooking_total,
             ],
-            Some(BlockEntity::Brewing(b)) => [b.brew_time, b.fuel, b.total_brew_time, b.total_fuel],
+            Some(BlockEntity::Brewing(b)) => {
+                vec![b.brew_time, b.fuel, b.total_brew_time, b.total_fuel]
+            }
+            // CrafterBlockEntity.containerData: the disabled slots, then triggered.
+            Some(BlockEntity::Crafter(c)) => c
+                .disabled
+                .iter()
+                .chain([&c.triggered])
+                .map(|&d| i32::from(d))
+                .collect(),
             _ => return,
         }
-        .map(|v| v as i16);
+        .into_iter()
+        .map(|v| v as i16)
+        .collect::<Vec<i16>>();
         m.sent_data.resize(data.len(), i16::MIN);
         let window = m.window;
         let changed: Vec<(usize, i16)> = data

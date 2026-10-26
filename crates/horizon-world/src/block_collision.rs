@@ -6,6 +6,7 @@ use crate::{
     collision_context::CollisionContext,
     dynamic_support::{DynamicSupport, DynamicSupportError, DynamicSupportWorld},
     liquid_collision::{LiquidCollision, LiquidCollisionWorld},
+    piston_shape::PistonBlockBindings,
     powder_snow_collision::{PowderSnowWorld, powder_snow_collision_shape},
     registry::{BlockRegistry, BlockStateId},
 };
@@ -79,6 +80,9 @@ pub struct BlockCollisionRegistry<'r> {
     dynamic: HashMap<BlockStateId, DynamicSupport>,
     contextual: HashMap<BlockStateId, ContextualRule>,
     scan_flags: Vec<u8>,
+    /// Piston and piston-head states for moving-piston collision; None in
+    /// registries without pistons.
+    pistons: Option<PistonBlockBindings<'r>>,
 }
 enum ContextualRule {
     Scaffolding(ScaffoldingCollision),
@@ -126,15 +130,21 @@ impl<'r> BlockCollisionRegistry<'r> {
                 }
             }
         }
+        let pistons = PistonBlockBindings::new(cached.registry()).ok();
         Ok(Self {
             cached,
             dynamic,
             contextual,
             scan_flags,
+            pistons,
         })
     }
     pub fn registry(&self) -> &'r BlockRegistry {
         self.cached.registry()
+    }
+    /// The piston states behind `PistonMovingBlockEntity.getCollisionShape`.
+    pub fn pistons(&self) -> Option<&PistonBlockBindings<'r>> {
+        self.pistons.as_ref()
     }
     pub fn cached_shapes(&self) -> &CachedCollisionRegistry<'r> {
         &self.cached
@@ -168,6 +178,13 @@ impl<'r> BlockCollisionRegistry<'r> {
             empty_shape: flags & 4 != 0,
             full_block: flags & 16 != 0,
         })
+    }
+    /// Whether a scan keeps `state` in the cells around its box: a large
+    /// collision shape or a moving piston. States outside the registry count.
+    pub fn reaches_out(&self, state: BlockStateId) -> bool {
+        self.scan_flags
+            .get(state.0 as usize)
+            .is_none_or(|flags| flags & 3 != 0)
     }
     pub fn collision_shape<W: DynamicCollisionWorld>(
         &self,

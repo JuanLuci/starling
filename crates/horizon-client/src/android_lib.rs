@@ -92,6 +92,37 @@ fn clipboard_get() -> Option<String> {
     .flatten()
 }
 
+/// `data` sealed by StarlingActivity.sealSecret (the Android Keystore's key).
+fn seal_secret(data: &[u8]) -> Option<Vec<u8>> {
+    secret_call("sealSecret", data)
+}
+
+/// What [`seal_secret`] sealed, by StarlingActivity.openSecret.
+fn open_secret(sealed: &[u8]) -> Option<Vec<u8>> {
+    secret_call("openSecret", sealed)
+}
+
+fn secret_call(method: &str, data: &[u8]) -> Option<Vec<u8>> {
+    with_activity(|env, activity| {
+        let input = env.byte_array_from_slice(data)?;
+        let out = env
+            .call_method(
+                activity,
+                method,
+                "([B)[B",
+                &[jni::objects::JValue::Object(&input)],
+            )?
+            .l()?;
+        if out.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(
+            env.convert_byte_array(jni::objects::JByteArray::from(out))?,
+        ))
+    })
+    .flatten()
+}
+
 fn clipboard_set(text: &str) -> bool {
     with_activity(|env, activity| {
         let text = env.new_string(text)?;
@@ -100,6 +131,21 @@ fn clipboard_set(text: &str) -> bool {
             "setClipboardText",
             "(Ljava/lang/String;)Z",
             &[jni::objects::JValue::Object(&text)],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
+/// The system's browser on an https:// page, by StarlingActivity.openLink.
+fn open_link(url: &str) -> bool {
+    with_activity(|env, activity| {
+        let url = env.new_string(url)?;
+        env.call_method(
+            activity,
+            "openLink",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::Object(&url)],
         )?
         .z()
     })
@@ -598,6 +644,9 @@ fn android_main(app: AndroidApp) {
         pick_file,
         clipboard_get,
         clipboard_set,
+        open_link,
+        seal: seal_secret,
+        open: open_secret,
     });
     logging::init(&home, "Render thread");
     crash::install(home.clone(), "client");
@@ -611,6 +660,8 @@ fn android_main(app: AndroidApp) {
     }
     let _ = ARGS.set(args);
     let _ = APP.set(app);
+    // The saved Microsoft sign-in renews while the game loads.
+    horizon_client::accounts::resume();
     if let Err(error) = game::run() {
         log::error!("Horizon: {error}");
         crash::report_error(&home, "client", &*error);

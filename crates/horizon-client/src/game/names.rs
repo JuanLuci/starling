@@ -124,7 +124,7 @@ impl Game<'_> {
                 team,
                 viewer,
                 self.spectator(),
-                m.has_effect("minecraft:invisibility"),
+                m.invisible || m.has_effect("minecraft:invisibility"),
             );
             // Entity.isDiscrete: a crouching player.
             let discrete = player && m.extra.crouching;
@@ -144,10 +144,20 @@ impl Game<'_> {
                 continue;
             }
             // getDisplayName: the name in the team's prefix, suffix and colour.
-            let shown = match team {
-                Some(t) => t.formatted_name(Text::literal(&name)),
-                None => Text::literal(&name),
+            let member = if player {
+                Text::literal(&name)
+            } else {
+                m.custom_name_text
+                    .clone()
+                    .unwrap_or_else(|| Text::literal(&name))
             };
+            // StringDecomposer.iterateFormatted: `§` codes a server leaves
+            // inside the team prefix or the name itself apply at draw time.
+            let shown = match team {
+                Some(t) => t.formatted_name(member),
+                None => member,
+            }
+            .resolve_legacy();
             let mut lines = Vec::new();
             // EntityRenderer.extractNameTags: the score shows within the
             // below-name distance (10), under the name.
@@ -155,7 +165,7 @@ impl Game<'_> {
             if distance_sqr < 10.0 * 10.0
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
-                lines.push((score, 0.0));
+                lines.push((score.resolve_legacy(), 0.0));
                 lift = f64::from(9.0f32 * 1.15 * 0.025);
             }
             lines.push((shown, lift));
@@ -169,41 +179,124 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete,
-                through: true,
             });
         }
-        self.remote_name_tags(camera, alpha, &mut tags);
+        // Armor stands name themselves: an invisible one with a visible name
+        // is a hologram (its model is skipped, its name tag is not).
+        for a in &self.armor_stands {
+            let Some(name) = &a.custom_name else {
+                continue;
+            };
+            if !a.name_visible {
+                continue;
+            }
+            let height = match (a.marker, a.small) {
+                (true, _) => 0.0,
+                (false, true) => 0.9875,
+                (false, false) => 1.975,
+            };
+            let distance_sqr =
+                glam::DVec3::new(a.position.x, a.position.y, a.position.z).distance_squared(camera);
+            if distance_sqr >= 64.0 * 64.0 {
+                continue;
+            }
+            let team = self.mob_team(a.id);
+            let invisible = sb::invisible_to(team, viewer, self.spectator(), false);
+            let view = sb::NameView {
+                discrete: false,
+                distance_sqr,
+                invisible_to_viewer: invisible,
+                hud_hidden: self.ui.hide_gui,
+                is_camera: false,
+                is_vehicle: false,
+            };
+            if !sb::name_shown(team, viewer, view) {
+                continue;
+            }
+            let shown = match team {
+                Some(t) => t.formatted_name(name.clone()),
+                None => name.clone(),
+            }
+            .resolve_legacy();
+            let mut lines = Vec::new();
+            let mut lift = 0.0;
+            let holder = self.persist.uuids.get(&a.id).map(|u| uuid_text(*u));
+            if distance_sqr < 10.0 * 10.0
+                && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
+            {
+                lines.push((score.resolve_legacy(), 0.0));
+                lift = f64::from(9.0f32 * 1.15 * 0.025);
+            }
+            lines.push((shown, lift));
+            let l = self.world.light(
+                a.position.x.floor() as i32,
+                (a.position.y + height).floor() as i32,
+                a.position.z.floor() as i32,
+            );
+            tags.push(NameTag {
+                at: glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z),
+                lines,
+                light: l,
+                discrete: false,
+            });
+        }
+        // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
+        // frame's custom-named item, with the HUD visible (also glow frames).
+        if !self.ui.hide_gui
+            && let Some((i, distance)) = self.frame_hit()
+            && self.before_block(distance)
+            && self.mob_hit().is_none_or(|(_, d)| d > distance)
+            && let Some(name) = self.item_frames[i]
+                .item
+                .as_ref()
+                .and_then(|item| item.custom_name())
+        {
+            let frame = &self.item_frames[i];
+            let (lo, hi) = frame.bounds();
+            let center = glam::DVec3::from_array(std::array::from_fn(|a| (lo[a] + hi[a]) / 2.0));
+            if center.distance_squared(camera) < 64.0 * 64.0 {
+                // NAME_TAG is at the entity height (0.5), then the name
+                // submitter lifts it 0.5. ItemFrameRenderer offsets rendering
+                // 0.3 toward its facing and -0.25 vertically.
+                let step = frame.step();
+                tags.push(NameTag {
+                    at: center
+                        + glam::DVec3::new(
+                            f64::from(step[0] as f32 * 0.3),
+                            0.75,
+                            f64::from(step[2] as f32 * 0.3),
+                        ),
+                    lines: vec![(Text::literal(name).resolve_legacy(), 0.0)],
+                    light: self.world.light(
+                        center.x.floor() as i32,
+                        center.y.floor() as i32,
+                        center.z.floor() as i32,
+                    ),
+                    discrete: false,
+                });
+            }
+        }
+        self.remote_name_tags(camera, &mut tags);
         tags
     }
-    /// On a server: the visible custom names of objects and mobs (holograms are armor stands
-    /// with one) and the text displays, styled as the server sent them.
-    fn remote_name_tags(&self, camera: glam::DVec3, alpha: f64, tags: &mut Vec<NameTag>) {
+    /// On a server: the visible custom names of the other objects, styled as the server sent
+    /// them. Armor stands (the holograms) and mobs name themselves above, from the same entity
+    /// data; text displays draw their own text (`text_displays.rs`).
+    fn remote_name_tags(&self, camera: glam::DVec3, tags: &mut Vec<NameTag>) {
         let Some(r) = &self.remote else {
             return;
         };
-        let lerp = |a: f64, b: f64| a + (b - a) * alpha;
         for (id, (name, visible)) in &r.names {
             let (Some(name), true) = (name, *visible) else {
                 continue;
             };
             let id = *id as u32;
+            if self.armor_stands.iter().any(|a| a.id == id) || self.mobs.iter().any(|m| m.id == id)
+            {
+                continue;
+            }
             // EntityAttachment.NAME_TAG: the entity's height, then 0.5 up.
-            let at = if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
-                let height = if a.marker {
-                    0.0
-                } else if a.small {
-                    0.9875
-                } else {
-                    1.975
-                };
-                glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z)
-            } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
-                glam::DVec3::new(
-                    lerp(m.previous.x, m.position.x),
-                    lerp(m.previous.y, m.position.y) + f64::from(m.height()) + 0.5,
-                    lerp(m.previous.z, m.position.z),
-                )
-            } else if let Some(t) = r.entities.get(&(id as i32))
+            let at = if let Some(t) = r.entities.get(&(id as i32))
                 && t.kind != "minecraft:text_display"
             {
                 glam::DVec3::new(t.position[0], t.position[1] + 0.5, t.position[2])
@@ -223,54 +316,6 @@ impl Game<'_> {
                 lines: vec![(name.resolve_legacy(), 0.0)],
                 light,
                 discrete: false,
-                through: true,
-            });
-        }
-        // TextDisplayRenderer, facing the camera (most holograms' billboard): the lines wrapped
-        // at the display's width, the last at its position.
-        let m = horizon_client::screen_draw::Measure(&self.gui.atlas.font);
-        for (id, d) in &r.text_displays {
-            let Some(t) = r.entities.get(id) else {
-                continue;
-            };
-            let base = glam::DVec3::new(
-                t.position[0] + f64::from(d.translation[0]),
-                t.position[1] + f64::from(d.translation[1]),
-                t.position[2] + f64::from(d.translation[2]),
-            );
-            if base.distance_squared(camera) >= 64.0 * 64.0 || d.text.is_empty() {
-                continue;
-            }
-            let text = d.text.resolve_legacy();
-            let mut lines: Vec<Text> = Vec::new();
-            // Split on new lines first (keeping styles), then wrap each.
-            let mut start = 0;
-            let count = text.char_count();
-            let chars: Vec<char> = text.chars().map(|(c, _)| c).collect();
-            for (i, c) in chars.iter().enumerate() {
-                if *c == '\n' {
-                    lines.extend(m.split(&text.slice(start, i), d.line_width));
-                    start = i + 1;
-                }
-            }
-            lines.extend(m.split(&text.slice(start, count), d.line_width));
-            let n = lines.len();
-            let step = 0.25;
-            let light = self.world.light(
-                base.x.floor() as i32,
-                base.y.floor() as i32,
-                base.z.floor() as i32,
-            );
-            tags.push(NameTag {
-                at: base + glam::DVec3::new(0.0, 0.2, 0.0),
-                lines: lines
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, l)| (l, (n - 1 - i) as f64 * step))
-                    .collect(),
-                light,
-                discrete: false,
-                through: d.flags & 2 != 0,
             });
         }
     }
@@ -289,19 +334,19 @@ impl Game<'_> {
         const FADED: u32 = 0x7F;
         for tag in self.name_tags(camera, alpha) {
             let o = tag.at - camera;
+            // `gbuffers_entities` draws name tag text (2.3); a sneaking player's faded tag, on its
+            // background, blends.
             if tag.discrete {
+                self.mark_translucent_entity(out.len(), "minecraft:name_tag");
                 self.name_tag_quads(o, &tag.lines, FADED, true, 0, vertex_light(tag.light), out);
                 continue;
             }
             // LightCoordsUtil.lightCoordsWithEmission(lightCoords, 2).
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
-            // A text display that does not show through walls has its background here
-            // (TextDisplay's default, 0x40000000), as a name tag has it in the see-through copy.
-            self.name_tag_quads(o, &tag.lines, 0xFF, !tag.through, 0, vertex_light(lit), out);
+            self.mark_entity(out.len(), "minecraft:name_tag");
+            self.name_tag_quads(o, &tag.lines, 0xFF, false, 0, vertex_light(lit), out);
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            if tag.through {
-                self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through);
-            }
+            self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through);
         }
     }
     /// The lines of one name tag, `o` from the camera: the text at
@@ -465,6 +510,4 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
-    /// Its faded copy shows through walls (a text display only when it says so).
-    through: bool,
 }

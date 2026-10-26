@@ -271,23 +271,15 @@ fn read_levels(t: Option<&Tag>) -> Levels {
         return Vec::new();
     };
     // Pre-1.21.5 worlds wrap the map in {levels: {...}}.
-    if let Some(Tag::Compound(inner)) = map.get(&JavaString::from("levels")) {
-        return inner
-            .iter()
-            .filter_map(|(k, v)| {
-                Some((
-                    Arc::from(k.to_string_lossy().as_str()),
-                    int(v)?.clamp(1, 255) as u32,
-                ))
-            })
-            .collect();
-    }
+    let map = match map.get(&JavaString::from("levels")) {
+        Some(Tag::Compound(inner)) => inner,
+        _ => map,
+    };
+    // The keys are enchantment Identifiers: `knockback` is `minecraft:knockback`.
     map.iter()
         .filter_map(|(k, v)| {
-            Some((
-                Arc::from(k.to_string_lossy().as_str()),
-                int(v)?.clamp(1, 255) as u32,
-            ))
+            let id = horizon_world::datafix::dynamic::namespaced(&k.to_string_lossy());
+            Some((Arc::from(id), int(v)?.clamp(1, 255) as u32))
         })
         .collect()
 }
@@ -302,7 +294,10 @@ fn filterable_text(t: &Tag) -> Option<String> {
 fn read_text(t: &Tag) -> Option<String> {
     match t {
         Tag::String(s) => Some(s.to_string_lossy()),
-        Tag::Compound(_) => t.get("text").and_then(string),
+        // A component's root `text` may be empty with the visible words in
+        // `extra` (every legacy display name ViaVersion produces looks like
+        // this), so flatten the whole component instead of reading one key.
+        Tag::Compound(_) => Some(crate::entity_nbt::name_text(t).plain()),
         _ => None,
     }
 }
@@ -594,12 +589,8 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
                 ),
             ));
         }
-        if let Some(mode) = d.map_post_processing {
-            entries.push((
-                "minecraft:map_post_processing",
-                Tag::String(if mode == 0 { "lock" } else { "scale" }.into()),
-            ));
-        }
+        // minecraft:map_post_processing is transient: ItemStack.CODEC never
+        // saves it (only the network carries it).
         if !d.charged.is_empty() {
             entries.push((
                 "minecraft:charged_projectiles",
@@ -862,6 +853,42 @@ mod tests {
         assert_eq!(back.enchantment_level("minecraft:unbreaking"), 2);
         assert_eq!(back.repair_cost(), 3);
         assert_eq!(back.custom_name(), Some("Blade"));
+    }
+
+    #[test]
+    fn enchantment_ids_without_a_namespace_are_minecraft_ones() {
+        let levels = Tag::compound([
+            ("knockback", Tag::Int(2)),
+            ("minecraft:sharpness", Tag::Int(1)),
+        ]);
+        let components = Tag::compound([("minecraft:enchantments", levels)]);
+        let (_, extra) = decode_components(Some(&components));
+        let stack = ItemStack {
+            extra,
+            ..ItemStack::new("minecraft:wooden_sword", 1)
+        };
+        assert_eq!(stack.enchantment_level("minecraft:knockback"), 2);
+        assert_eq!(stack.enchantment_level("minecraft:sharpness"), 1);
+    }
+
+    #[test]
+    fn custom_name_reads_the_extra_spans() {
+        let name = Tag::compound([
+            (
+                "extra",
+                Tag::List(vec![
+                    Tag::compound([("text", Tag::String("Games ".into()))]),
+                    Tag::compound([("text", Tag::String("Right click".into()))]),
+                ]),
+            ),
+            ("text", Tag::String("".into())),
+        ]);
+        let components = Tag::compound([("minecraft:custom_name", name)]);
+        let (_, extra) = decode_components(Some(&components));
+        assert_eq!(
+            extra.and_then(|d| d.custom_name.clone()).as_deref(),
+            Some("Games Right click")
+        );
     }
 
     #[test]
