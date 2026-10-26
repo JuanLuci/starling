@@ -274,7 +274,17 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
         .create(true)
         .truncate(false)
         .open(lock_path(out))?;
-    lock.lock()?;
+    // A filesystem without file locks (Android's shared storage, where one game runs at a
+    // time): the overlay builds unlocked, as a world opens there (`save::SessionLock`).
+    if let Err(e) = lock.lock() {
+        if e.kind() != io::ErrorKind::Unsupported {
+            return Err(e);
+        }
+        log::warn!(
+            "Horizon: {} cannot be locked ({e}); building unlocked",
+            lock_path(out).display()
+        );
+    }
     let vanilla_key = absolute(vanilla)?;
     let marker_path = marker_path(out);
     let signature = pack_signature(packs);
