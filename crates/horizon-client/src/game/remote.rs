@@ -163,6 +163,9 @@ pub(super) struct Remote {
     moved_at: Option<Instant>,
     /// When the play phase began (login or the end of a reconfiguration).
     play_began: Option<Instant>,
+    /// This second's movement packets and ticks ended, from when: a second over 20 of
+    /// either is logged (an old server's anticheat counts them against the time passed).
+    rate: (Option<Instant>, u32, u32),
     last_input: u8,
     was_sprinting: bool,
     carried: Option<usize>,
@@ -285,6 +288,25 @@ const GAP_LOGGED: Duration = Duration::from_millis(1100);
 const MOUNT_MENU: &str = "horizon:mount";
 
 impl Remote {
+    /// Count movement packets and ticks ended; a second with more than 20 of either is logged.
+    fn count_rate(&mut self, moves: u32, ticks: u32) {
+        let now = Instant::now();
+        let (since, m, t) = &mut self.rate;
+        let start = *since.get_or_insert(now);
+        if now - start >= Duration::from_secs(1) {
+            if *m > 21 || *t > 21 {
+                log::info!(
+                    "Horizon: {m} movement packets and {t} ticks ended in {} ms",
+                    (now - start).as_millis()
+                );
+            }
+            *since = Some(now);
+            *m = 0;
+            *t = 0;
+        }
+        *m += moves;
+        *t += ticks;
+    }
     /// A new ClientPacketListener after a reconfiguration: what the last one tracked is gone.
     fn reset_listener(&mut self) {
         self.joined = false;
@@ -294,6 +316,7 @@ impl Remote {
         self.tick_end_at = None;
         self.moved_at = None;
         self.play_began = None;
+        self.rate = (None, 0, 0);
         self.last_input = 0;
         self.was_sprinting = false;
         self.carried = None;
@@ -541,6 +564,7 @@ impl Game<'_> {
             tick_end_at: None,
             moved_at: None,
             play_began: None,
+            rate: (None, 0, 0),
             last_input: 0,
             was_sprinting: false,
             carried: None,
@@ -3335,6 +3359,12 @@ impl Game<'_> {
             Some(player) => {
                 // A short teleport back is a correction: the server would not take the move.
                 let back = player.position.distance(position);
+                let state = format!(
+                    "sprinting {}, on ground {}, input {:#04x}",
+                    player.sprinting,
+                    player.ground.on_ground,
+                    self.remote.as_ref().map_or(0, |r| r.last_input)
+                );
                 if back > 0.0
                     && back < 8.0
                     && let Some(r) = self.remote.as_mut()
@@ -3347,7 +3377,7 @@ impl Game<'_> {
                         log::info!(
                             "Horizon: the server moved the player back {back:.2} blocks to \
                              {:.2} {:.2} {:.2} ({} times; teleport {}, relatives {:#x}; last \
-                             sent {sx:.2} {sy:.2} {sz:.2}, {} ms ago)",
+                             sent {sx:.2} {sy:.2} {sz:.2}, {} ms ago; {state})",
                             position.x,
                             position.y,
                             position.z,
@@ -3407,6 +3437,7 @@ impl Game<'_> {
         if self.remote.as_ref().is_some_and(|r| r.joined) {
             self.send(S::ClientTickEnd(Empty));
             if let Some(r) = self.remote.as_mut() {
+                r.count_rate(0, 1);
                 let now = Instant::now();
                 if let Some(gap) = r.tick_end_at.replace(now).map(|at| now - at)
                     && gap >= GAP_LOGGED
@@ -3998,6 +4029,7 @@ impl Game<'_> {
             r.position_sender
                 .update(pos, (yaw, pitch), on_ground, collision)
         {
+            r.count_rate(1, 0);
             let now = Instant::now();
             match r.moved_at.replace(now).map(|at| now - at) {
                 Some(gap) if gap >= GAP_LOGGED => log::info!(

@@ -11864,6 +11864,13 @@ impl ApplicationHandler for Game<'_> {
                     horizon_client::heartbeat::set_lan(self.is_published());
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
+                    if steps >= 4 && self.remote.is_some() {
+                        // Each tick sends its movement: a server's anticheat sees them at once.
+                        log::info!(
+                            "Horizon: {steps} ticks in one frame ({} ms since the last)",
+                            elapsed.as_millis()
+                        );
+                    }
                     // The world ticking in the frame: once its ticks took a
                     // tick's length, the rest are dropped (`FixedStep::tick_fits`).
                     let in_frame = self.remote.is_none();
