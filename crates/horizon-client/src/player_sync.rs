@@ -11,6 +11,8 @@ pub struct PositionSender {
     on_ground: bool,
     collision: bool,
     reminder: u32,
+    /// A look the server was told outside the updates, when it may not be the baseline's.
+    told: Option<(f32, f32)>,
 }
 
 impl PositionSender {
@@ -18,9 +20,16 @@ impl PositionSender {
     pub fn last_sent(&self) -> [f64; 3] {
         self.position
     }
-    /// The rotation the server was last told.
+    /// The rotation the server was last told by an update.
     pub fn last_rotation(&self) -> (f32, f32) {
         self.rotation
+    }
+    /// The server took a look from another packet (a teleport's acknowledgement, the view's look
+    /// before a hit): the next update sends its own look if it is not that one, even when the
+    /// baseline has it. With Free Direction steering the look sent is not the view's, and an
+    /// acknowledgement with the view's look would otherwise stand for every move after it.
+    pub fn told_rotation(&mut self, rotation: (f32, f32)) {
+        self.told = Some(rotation);
     }
     pub fn update(
         &mut self,
@@ -33,7 +42,9 @@ impl PositionSender {
         let d: [f64; 3] = std::array::from_fn(|i| position[i] - self.position[i]);
         let moved =
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 2.0e-4 * 2.0e-4 || self.reminder >= 20;
-        let rotated = rotation.0 - self.rotation.0 != 0.0 || rotation.1 - self.rotation.1 != 0.0;
+        let rotated = rotation.0 - self.rotation.0 != 0.0
+            || rotation.1 - self.rotation.1 != 0.0
+            || self.told.take().is_some_and(|told| told != rotation);
         let flags = u8::from(on_ground) | u8::from(collision) << 1;
         let [x, y, z] = position;
         let (yaw, pitch) = rotation;
@@ -65,6 +76,36 @@ impl PositionSender {
         self.on_ground = on_ground;
         self.collision = collision;
         packet
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_look_told_elsewhere_is_sent_again_when_the_move_has_another() {
+        let mut sender = PositionSender::default();
+        sender.update([0.0; 3], (30.0, 0.0), true, false);
+        // A teleport acknowledged with the view's look (0) while the moves steer at 30.
+        sender.told_rotation((0.0, 0.0));
+        assert!(matches!(
+            sender.update([0.2, 0.0, 0.0], (30.0, 0.0), true, false),
+            Some(S::MovePlayerPosRot(play::MovePlayerPosRot {
+                yaw: 30.0,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            sender.update([0.4, 0.0, 0.0], (30.0, 0.0), true, false),
+            Some(S::MovePlayerPos(_))
+        ));
+        // Told the look the move has: nothing more to send than vanilla would.
+        sender.told_rotation((30.0, 0.0));
+        assert!(matches!(
+            sender.update([0.6, 0.0, 0.0], (30.0, 0.0), true, false),
+            Some(S::MovePlayerPos(_))
+        ));
     }
 }
 

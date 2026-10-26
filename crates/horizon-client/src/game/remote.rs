@@ -174,15 +174,23 @@ pub(super) struct Remote {
     /// in place of the view's, and when the player last hit, used or dropped something.
     steer_yaw: Option<f32>,
     interacted_at: std::cell::Cell<Option<Instant>>,
+    /// The look a teleport's acknowledgement told, for `PositionSender::told_rotation`.
+    told_rotation: std::cell::Cell<Option<(f32, f32)>>,
+    /// Hits and uses waiting for a move with the view's look (`send`).
+    held_back: std::cell::RefCell<Vec<S>>,
     /// The stick's mode here this tick ([`ServerStick`]): this session's choice, else the one
     /// remembered for the server (read once), else the setting.
     stick_mode: horizon_client::gamepad::ServerStick,
     stick_choice: Option<horizon_client::gamepad::ServerStick>,
     stick_remembered: Option<Option<horizon_client::gamepad::ServerStick>>,
+    /// The setting as last seen here: changed while playing, it becomes the mode here.
+    stick_setting: Option<horizon_client::gamepad::ServerStick>,
     /// Setbacks while the stick moved the player, for asking once a session how it should.
     stick_setbacks: std::collections::VecDeque<Instant>,
     stick_used_at: Option<Instant>,
     stick_asked: bool,
+    /// key.swapOffhand presses since the last tick, which sends them (`remote_handle_input`).
+    swap_presses: u32,
     last_input: u8,
     was_sprinting: bool,
     carried: Option<usize>,
@@ -592,12 +600,16 @@ impl Game<'_> {
             trail: Default::default(),
             steer_yaw: None,
             interacted_at: Default::default(),
+            told_rotation: Default::default(),
+            held_back: Default::default(),
             stick_mode: Default::default(),
             stick_choice: None,
             stick_remembered: None,
+            stick_setting: None,
             stick_setbacks: Default::default(),
             stick_used_at: None,
             stick_asked: false,
+            swap_presses: 0,
             last_input: 0,
             was_sprinting: false,
             carried: None,
@@ -738,27 +750,40 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
-            if matches!(
+            let interaction = matches!(
                 packet,
-                S::PlayerAction(_) | S::Interact(_) | S::UseItemOn(_) | S::UseItem(_)
-            ) && r.stick_mode == ServerStick::Free
-            {
+                S::PlayerAction(_)
+                    | S::Attack(_)
+                    | S::Interact(_)
+                    | S::UseItemOn(_)
+                    | S::UseItem(_)
+            );
+            if (interaction || matches!(packet, S::Punch(_))) && r.stick_mode == ServerStick::Free {
                 // A hit, a use, a block placed or an item dropped goes where the player looks:
-                // a server places stairs, throws and aims by the rotation it was last sent.
-                r.interacted_at.set(Some(Instant::now()));
-                let (yaw, pitch) = r.position_sender.last_rotation();
-                if yaw != self.yaw || pitch != self.pitch {
-                    let flags = self.player.as_ref().map_or(0, |p| {
-                        u8::from(p.ground.on_ground) | u8::from(p.collision.horizontal) << 1
-                    });
-                    r.session.send(S::MovePlayerRot(play::MovePlayerRot {
-                        yaw: self.yaw,
-                        pitch: self.pitch,
-                        flags,
-                    }));
+                // a server places stairs, throws and aims by the rotation it was last sent. While
+                // that is the stick's steering (last tick's move), it waits for the next tick,
+                // after this tick's move with the view's look (`stick_steer` rests after it): a
+                // look of its own would be a tick more to an anticheat (Grim's TickTimer), the
+                // move after it the same look twice (AimDuplicateLook). The swings after it wait
+                // too.
+                if interaction {
+                    r.interacted_at.set(Some(Instant::now()));
+                }
+                let mut held = r.held_back.borrow_mut();
+                if (interaction && r.steer_yaw.is_some()) || !held.is_empty() {
+                    held.push(packet);
+                    return;
                 }
             }
             r.session.send(packet);
+        }
+    }
+    /// The hits and uses held back while the stick steered (`send`), the tick after.
+    fn send_held_back(&self) {
+        if let Some(r) = &self.remote {
+            for packet in r.held_back.take() {
+                r.session.send(packet);
+            }
         }
     }
     /// The stick's mode on this connection: Analog in single player and for a LAN host.
@@ -775,9 +800,26 @@ impl Game<'_> {
             r.stick_mode = ServerStick::Analog;
             return r.stick_mode;
         }
-        let remembered = *r
+        let mut remembered = *r
             .stick_remembered
             .get_or_insert_with(|| horizon_client::stick_memory::get(&dir, &r.session.address));
+        // The setting changed while playing here: it is this server's mode now, the one
+        // remembered for it included.
+        if r.stick_setting
+            .replace(setting)
+            .is_some_and(|seen| seen != setting)
+        {
+            r.stick_choice = Some(setting);
+            if remembered.is_some() {
+                horizon_client::stick_memory::set(&dir, &r.session.address, setting);
+                remembered = Some(setting);
+                r.stick_remembered = Some(remembered);
+            }
+            log::info!(
+                "Horizon: the stick moves as {} on this server, from the setting",
+                setting.name()
+            );
+        }
         r.stick_mode = r.stick_choice.or(remembered).unwrap_or(setting);
         r.stick_mode
     }
@@ -3669,6 +3711,9 @@ impl Game<'_> {
             yaw,
             pitch,
         }));
+        if let Some(r) = self.remote.as_ref() {
+            r.told_rotation.set(Some((yaw, pitch)));
+        }
         Ok(())
     }
 
@@ -3699,6 +3744,10 @@ impl Game<'_> {
 
     fn tick_remote_level(&mut self) -> Result<()> {
         self.ticks += 1;
+        // Last tick's hits and uses held back for its move (Free Direction): first in this one,
+        // before its move, as a hit one tick later would be (an anticheat's Post check wants no
+        // hit after the move of its tick).
+        self.send_held_back();
         self.track_experience_display();
         // Options.broadcastOptions: a changed render distance is sent again.
         let view = client_view_distance(self.settings.render_distance);
@@ -4303,10 +4352,13 @@ impl Game<'_> {
                 flags: u8::from(on_ground) | u8::from(collision) << 1,
             }));
             out.extend(vehicle);
-        } else if let Some(packet) =
+        } else if let Some(packet) = {
+            if let Some(told) = r.told_rotation.take() {
+                r.position_sender.told_rotation(told);
+            }
             r.position_sender
                 .update(pos, (yaw, pitch), on_ground, collision)
-        {
+        } {
             r.count_rate(1, 0);
             if r.trail.len() == TRAIL {
                 r.trail.pop_front();
@@ -5133,6 +5185,17 @@ impl Game<'_> {
                 slot: self.selected as i16,
             }));
         }
+        // handleKeybinds: keySwapOffhand.consumeClick, before attacking and using (an
+        // anticheat's Post check wants it before the tick's move, not whenever the key went down).
+        let swaps = self
+            .remote
+            .as_mut()
+            .map_or(0, |r| std::mem::take(&mut r.swap_presses));
+        if !self.spectator() {
+            for _ in 0..swaps {
+                self.remote_swap_hands();
+            }
+        }
         let (attack, use_item) = (self.left, self.right);
         input.tick(&mut RemoteInputWorld(self), attack, use_item);
         if self.clicks.miss_time > 0 {
@@ -5318,10 +5381,16 @@ impl Game<'_> {
             }));
         }
     }
+    /// key.swapOffhand pressed: the next tick sends it (`remote_swap_hands`).
+    pub(super) fn remote_swap_pressed(&mut self) {
+        if let Some(r) = self.remote.as_mut() {
+            r.swap_presses += 1;
+        }
+    }
     /// Minecraft.handleKeybinds, key.swapOffhand: the server swaps the hands
     /// (ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND at BlockPos.ZERO, facing down) and
     /// sends both slots back; nothing is predicted.
-    pub(super) fn remote_swap_hands(&mut self) {
+    fn remote_swap_hands(&mut self) {
         self.send(S::PlayerAction(play::PlayerAction {
             action: 7,
             pos: [0; 3],

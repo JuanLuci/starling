@@ -1,6 +1,6 @@
 {
   "horizon.options.server_stick": "Joystick em servidores",
-  "horizon.options.server_stick.tooltip": "Como o joystick anda num servidor. O Java só anda pelas teclas, então o anticheat de um servidor pode te puxar de volta pela velocidade e o ângulo do joystick. Analógico: do jeito que você empurra (servidores que não conferem). Direção livre: qualquer ângulo, na velocidade cheia, girando a rotação que o servidor vê (os outros veem sua cabeça acompanhar; ela volta pra sua visão a cada golpe, uso e bloco). Teclado: a mais próxima de oito direções, na velocidade cheia.",
+  "horizon.options.server_stick.tooltip": "Como o joystick anda num servidor. O Java só anda pelas teclas, então o anticheat de um servidor pode te puxar de volta pela velocidade e o ângulo do joystick. Analógico: do jeito que você empurra (servidores que não conferem). Direção livre: qualquer ângulo, na velocidade cheia, girando a rotação que o servidor vê (os outros veem sua cabeça acompanhar; ela volta pra sua visão a cada golpe, uso e bloco). Teclado: a mais próxima de oito direções, na velocidade cheia. Um servidor em que você escolheu um modo ao ser puxado fica com ele; mude isto jogando nele para trocar.",
   "horizon.options.stick_prompt": "Perguntar ao ser puxado",
   "horizon.options.stick_prompt.tooltip": "Quando um servidor te puxa de volta seguidas vezes enquanto o joystick te move, pergunta como o joystick deve andar ali.",
   "horizon.server_stick.analog": "Analógico",

@@ -124,13 +124,14 @@ impl Game<'_> {
     }
 
     /// A screen drawn over the world without leaving the playing screen: the sign editor, a
-    /// book, a command block. Fingers are a pointer there, as on any other screen.
+    /// book, a command block, a dialog. Fingers are a pointer there, as on any other screen.
     fn over_world_screen(&self) -> bool {
         self.sign_edit.is_some()
             || self.book.is_some()
             || self.command_block_screen.is_some()
             || self.mods.screen.is_some()
             || self.server_packs.prompting()
+            || self.dialog_open()
     }
 
     /// A screen opened in a world that the back key or the close button leaves.
