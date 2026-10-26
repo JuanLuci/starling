@@ -1348,6 +1348,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            armor_atlases: Default::default(),
             pois: Default::default(),
         };
         let atlas = |name: &str| {

@@ -79,6 +79,31 @@ impl PositionSender {
     }
 }
 
+/// Rotate the old velocity before adding the relative delta components.
+/// Angles deliberately use Java's double toRadians followed by a float cast.
+pub fn teleport_velocity(
+    mut velocity: Vec3,
+    old_rotation: (f32, f32),
+    new_rotation: (f32, f32),
+    packet: &PlayerPosition,
+) -> Vec3 {
+    if packet.relatives & relative::ROTATE_DELTA != 0 {
+        let pitch = f64::from(old_rotation.1 - new_rotation.1).to_radians() as f32;
+        let yaw = f64::from(old_rotation.0 - new_rotation.0).to_radians() as f32;
+        velocity = velocity.rotate_x(pitch).rotate_y(yaw);
+    }
+    let old = [velocity.x, velocity.y, velocity.z];
+    let flags = [relative::DELTA_X, relative::DELTA_Y, relative::DELTA_Z];
+    let result: [f64; 3] = std::array::from_fn(|i| {
+        if packet.relatives & flags[i] != 0 {
+            old[i] + packet.delta[i]
+        } else {
+            packet.delta[i]
+        }
+    });
+    Vec3::new(result[0], result[1], result[2])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,29 +132,4 @@ mod tests {
             Some(S::MovePlayerPos(_))
         ));
     }
-}
-
-/// Rotate the old velocity before adding the relative delta components.
-/// Angles deliberately use Java's double toRadians followed by a float cast.
-pub fn teleport_velocity(
-    mut velocity: Vec3,
-    old_rotation: (f32, f32),
-    new_rotation: (f32, f32),
-    packet: &PlayerPosition,
-) -> Vec3 {
-    if packet.relatives & relative::ROTATE_DELTA != 0 {
-        let pitch = f64::from(old_rotation.1 - new_rotation.1).to_radians() as f32;
-        let yaw = f64::from(old_rotation.0 - new_rotation.0).to_radians() as f32;
-        velocity = velocity.rotate_x(pitch).rotate_y(yaw);
-    }
-    let old = [velocity.x, velocity.y, velocity.z];
-    let flags = [relative::DELTA_X, relative::DELTA_Y, relative::DELTA_Z];
-    let result: [f64; 3] = std::array::from_fn(|i| {
-        if packet.relatives & flags[i] != 0 {
-            old[i] + packet.delta[i]
-        } else {
-            packet.delta[i]
-        }
-    });
-    Vec3::new(result[0], result[1], result[2])
 }
