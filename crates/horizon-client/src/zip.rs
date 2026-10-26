@@ -16,6 +16,10 @@ pub struct Zip {
     archive: ZipArchive<Cursor<Arc<[u8]>>>,
     entries: BTreeMap<String, usize>,
 }
+/// The most one entry inflates to. Java's `ZipFile` does not hold an entry to the size its
+/// directory records, and protected packs record wrong ones (a server's pack opened in the
+/// official client and failed here): only this cap, against a hostile archive, bounds it.
+const MAX_ENTRY: usize = 128 << 20;
 fn invalid(e: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
 }
@@ -46,16 +50,19 @@ impl Zip {
         // A clone shares the bytes and the central directory: reading needs `&mut`.
         let mut archive = self.archive.clone();
         let mut entry = archive.by_index_raw(index).map_err(invalid)?;
-        let (method, size) = (entry.compression(), entry.size() as usize);
+        let method = entry.compression();
         let mut raw = Vec::with_capacity(entry.compressed_size() as usize);
         entry.read_to_end(&mut raw)?;
         match method {
             CompressionMethod::Stored => Ok(raw),
             CompressionMethod::Deflated => {
-                miniz_oxide::inflate::decompress_to_vec_with_limit(&raw, size.max(1) * 2 + 1024)
-                    .map_err(|_| invalid("corrupt deflate stream"))
+                miniz_oxide::inflate::decompress_to_vec_with_limit(&raw, MAX_ENTRY).map_err(|e| {
+                    invalid(format!("{name}: corrupt deflate stream ({:?})", e.status))
+                })
             }
-            _ => Err(invalid("unsupported zip compression")),
+            other => Err(invalid(format!(
+                "{name}: unsupported zip compression {other:?}"
+            ))),
         }
     }
 }
@@ -251,6 +258,46 @@ mod tests {
             zip.read("Pack-main/pack.mcmeta").unwrap(),
             b"{\"pack\":{\"pack_format\":64}}"
         );
+    }
+
+    /// A protected pack's directory records a wrong uncompressed size (here 1 byte for a
+    /// 40 KiB file): Java's `ZipFile` inflates the whole entry anyway.
+    #[test]
+    fn an_entry_inflates_whatever_size_the_directory_records() {
+        let body = "a texture's bytes ".repeat(2300);
+        let data = miniz_oxide::deflate::compress_to_vec(body.as_bytes(), 6);
+        let name = "pack.png";
+        let mut out = Vec::new();
+        out.extend(0x0403_4b50u32.to_le_bytes());
+        out.extend([20, 0, 0, 0, 8, 0]);
+        out.extend([0; 8]);
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend(1u32.to_le_bytes());
+        out.extend((name.len() as u16).to_le_bytes());
+        out.extend(0u16.to_le_bytes());
+        out.extend(name.as_bytes());
+        out.extend(&data);
+        let start = out.len() as u32;
+        let mut central = Vec::new();
+        central.extend(0x0201_4b50u32.to_le_bytes());
+        central.extend([20, 0, 20, 0, 0, 0, 8, 0]);
+        central.extend([0; 8]);
+        central.extend((data.len() as u32).to_le_bytes());
+        central.extend(1u32.to_le_bytes());
+        central.extend((name.len() as u16).to_le_bytes());
+        central.extend([0; 12]);
+        central.extend(0u32.to_le_bytes());
+        central.extend(name.as_bytes());
+        out.extend(&central);
+        out.extend(0x0605_4b50u32.to_le_bytes());
+        out.extend([0; 4]);
+        out.extend(1u16.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend((central.len() as u32).to_le_bytes());
+        out.extend(start.to_le_bytes());
+        out.extend([0; 2]);
+        let zip = Zip::from_bytes(out).unwrap();
+        assert_eq!(zip.read(name).unwrap(), body.as_bytes());
     }
 
     #[test]
