@@ -8,7 +8,8 @@
 //! A scenario is `{"player": {...}, "gui": {"width": 427, "height": 240}, "steps": [...]}` (the
 //! GUI's size in GUI pixels, the HUD and screens drawn at it), and what the crosshair is on
 //! (`"target"`), the block being broken (`"mining"`) and blocks around (`"blocks"`): see
-//! `world::world`. A step is one of:
+//! `world::world`; `"player": {"inventory": {"39": {"id": "minecraft:diamond_helmet", "damage":
+//! 120}}}` fills the player's slots. A step is one of:
 //! `{"tick": 20}`, `{"frame": 0.05}`, `{"command": "hello world"}`, `{"chat": "text"}`,
 //! `{"send": "text"}`, `{"hud": {}}`, `{"tooltip": "minecraft:stick"}` (with `"components"`, SNBT),
 //! `{"key": "<keybind id>", "pressed": true}`, `{"screen": "<mod id>:<name>"}` (opens and draws

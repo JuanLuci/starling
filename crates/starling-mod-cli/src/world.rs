@@ -325,13 +325,24 @@ pub fn world(scenario: &Value, data: Arc<Data>) -> Snapshot {
         let info = data.info(&id);
         Some(ItemStack {
             count: v["count"].as_u64().unwrap_or(1) as u32,
-            damage: 0,
+            damage: v["damage"].as_u64().unwrap_or(0) as u32,
             max_damage: info.as_ref().map_or(0, |i| i.max_damage),
             name: info.map_or_else(|| short(&id), |i| i.name),
             components: String::new(),
             id,
         })
     };
+    // The player's own slots (`inventory.get-slot`): `"inventory": {"39": {"id":
+    // "minecraft:diamond_helmet", "damage": 120}}`, 0 to 8 the hotbar, 36 to 39 the armour (feet
+    // to head), 40 the offhand.
+    if let Some(slots) = over["inventory"].as_object() {
+        world.inventory.resize(world.inventory.len().max(41), None);
+        for (i, v) in slots {
+            if let (Ok(i @ 0..=40), Some(s)) = (i.parse::<usize>(), stack(v)) {
+                world.inventory[i] = Some(s);
+            }
+        }
+    }
     let menu = &scenario["menu"];
     let size = menu["size"].as_u64().unwrap_or(46) as usize;
     let mut slots = vec![None; size.min(128)];
