@@ -60,6 +60,8 @@ fn colormap(root: &Path, name: &str) -> Result<Vec<u32>> {
     let path = root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
     let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path)?));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    // A protected pack's wrong checksums, which Minecraft's STB never checks.
+    decoder.ignore_checksums(true);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
     let info = reader.next_frame(&mut bytes)?;

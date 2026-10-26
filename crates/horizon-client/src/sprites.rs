@@ -194,6 +194,8 @@ impl Sprites {
             .transpose()?;
         let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        // A protected pack's wrong checksums, which Minecraft's STB never checks.
+        decoder.ignore_checksums(true);
         let mut reader = decoder.read_info()?;
         let mut bytes = vec![
             0;

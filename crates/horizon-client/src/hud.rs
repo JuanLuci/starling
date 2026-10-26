@@ -103,6 +103,9 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    // As Minecraft's NativeImage (STB) reads them: a protected pack's PNGs carry wrong
+    // checksums on purpose (PikaNetwork's ItemsAdder icons and font sheets).
+    decoder.ignore_checksums(true);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut bytes)?;
@@ -1482,6 +1485,28 @@ impl HudRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_png_with_wrong_checksums_still_reads() {
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[255, 0, 0, 255, 0, 0, 255, 128])
+                .unwrap();
+        }
+        // Every chunk's CRC broken, as a protected pack ships its icons.
+        let mut pos = 8;
+        while pos + 12 <= png.len() {
+            let len = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
+            png[pos + 8 + len] ^= 0xFF;
+            pos += 12 + len;
+        }
+        let (w, h, rgba) = decode_bytes(&png).unwrap();
+        assert_eq!((w, h, rgba), (2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]));
+    }
 
     /// `count` images of `w x h`; layout reads only their sizes.
     fn sized(count: usize, w: u32, h: u32) -> Vec<PackedImage> {
