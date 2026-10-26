@@ -399,9 +399,12 @@ impl Graphics {
         // and render threads are raised above four cores, where vanilla
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer.
+        // A phone leaves two, as Starling was measured with: half its cores are small ones, and
+        // a hot phone slows every core down.
+        let spare = if cfg!(target_os = "android") { 2 } else { 1 };
         let auto = std::thread::available_parallelism()
             .map_or(2, |n| n.get())
-            .saturating_sub(1)
+            .saturating_sub(spare)
             .max(1);
         if self.battery { auto.div_ceil(2) } else { auto }
     }
@@ -489,6 +492,12 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
         Tier::Low => 70,
     };
     g.animated_textures = tier != Tier::Low;
+    // A phone's GPU is an integrated one, which far terrain slows most.
+    g.far_detail = if high {
+        FarDetail::Full
+    } else {
+        FarDetail::Reduced
+    };
 }
 
 #[cfg(test)]

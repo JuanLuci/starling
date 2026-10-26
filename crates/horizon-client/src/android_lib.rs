@@ -626,6 +626,16 @@ fn android_main(app: AndroidApp) {
         for (name, value) in &env {
             std::env::set_var(name, value);
         }
+        // Starling is not Horizon: no live count ping to Horizon's telemetry server (and no
+        // other sending) unless the test arguments ask; a phone has no Discord to show to.
+        for (name, value) in [
+            ("HORIZON_TELEMETRY_URL", "off"),
+            ("HORIZON_NO_DISCORD", "1"),
+        ] {
+            if std::env::var_os(name).is_none() {
+                std::env::set_var(name, value);
+            }
+        }
     }
     if let Err(e) = std::env::set_current_dir(&home) {
         logcat(
