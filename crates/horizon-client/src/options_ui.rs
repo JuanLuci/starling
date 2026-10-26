@@ -95,6 +95,8 @@ pub enum Opt {
     PadInvertX,
     PadInvertY,
     PadToggleSneak,
+    PadServerStick,
+    PadStickPrompt,
     PadMoveDeadzone,
     PadLookDeadzone,
     PadGlyphs,
@@ -285,6 +287,8 @@ impl Opt {
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
+            Opt::PadServerStick => "horizon.options.server_stick",
+            Opt::PadStickPrompt => "horizon.options.stick_prompt",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
@@ -593,6 +597,8 @@ impl Opt {
             Opt::PadAdaptiveTriggers => on_off(s.controller.adaptive_triggers),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
+            Opt::PadServerStick => tr(&s.controller.server_stick.lang_key()),
+            Opt::PadStickPrompt => on_off(s.controller.stick_prompt),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
                 "options.key.toggle"
             } else {
@@ -765,6 +771,8 @@ impl Opt {
             Opt::PadInvertX => s.controller.invert_x = !s.controller.invert_x,
             Opt::PadInvertY => s.controller.invert_y = !s.controller.invert_y,
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,
+            Opt::PadServerStick => s.controller.server_stick = s.controller.server_stick.next(),
+            Opt::PadStickPrompt => s.controller.stick_prompt = !s.controller.stick_prompt,
             Opt::PadLightbar => {
                 let all = gamepad::Lightbar::ALL;
                 let i = all
@@ -1513,6 +1521,8 @@ impl OptionsUi {
                     Opt::PadLightbar,
                     Opt::PadLookSensitivity,
                     Opt::PadToggleSneak,
+                    Opt::PadServerStick,
+                    Opt::PadStickPrompt,
                     Opt::PadInvertX,
                     Opt::PadInvertY,
                     Opt::PadMoveDeadzone,

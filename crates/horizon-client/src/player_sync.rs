@@ -18,6 +18,10 @@ impl PositionSender {
     pub fn last_sent(&self) -> [f64; 3] {
         self.position
     }
+    /// The rotation the server was last told.
+    pub fn last_rotation(&self) -> (f32, f32) {
+        self.rotation
+    }
     pub fn update(
         &mut self,
         position: [f64; 3],

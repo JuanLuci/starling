@@ -8,6 +8,7 @@
 //! everything else.
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::first_person::{Hand, SwingAnimation};
+use horizon_client::gamepad::ServerStick;
 use horizon_client::{
     Result,
     chunk::{BIOME_STRATEGY, Chunk, Light, MIN_Y, SECTIONS, Section, block_strategy},
@@ -169,6 +170,19 @@ pub(super) struct Remote {
     /// The last movement packets sent: position, on ground, input flags and when. The
     /// first setback logs them, the path an anticheat refused.
     trail: std::collections::VecDeque<([f64; 3], bool, u8, Instant)>,
+    /// Free stick direction (experimental, `stick_steer`): this tick's rotation the server sees
+    /// in place of the view's, and when the player last hit, used or dropped something.
+    steer_yaw: Option<f32>,
+    interacted_at: std::cell::Cell<Option<Instant>>,
+    /// The stick's mode here this tick ([`ServerStick`]): this session's choice, else the one
+    /// remembered for the server (read once), else the setting.
+    stick_mode: horizon_client::gamepad::ServerStick,
+    stick_choice: Option<horizon_client::gamepad::ServerStick>,
+    stick_remembered: Option<Option<horizon_client::gamepad::ServerStick>>,
+    /// Setbacks while the stick moved the player, for asking once a session how it should.
+    stick_setbacks: std::collections::VecDeque<Instant>,
+    stick_used_at: Option<Instant>,
+    stick_asked: bool,
     last_input: u8,
     was_sprinting: bool,
     carried: Option<usize>,
@@ -288,6 +302,9 @@ const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 const GAP_LOGGED: Duration = Duration::from_millis(1100);
 /// How many movement packets the first setback's log line shows.
 const TRAIL: usize = 12;
+/// Free stick direction rests this long after a hit, a use or a drop: those go with the view's
+/// rotation, and turning away at once after a hit looks like an aimbot to an anticheat.
+const STEER_REST: Duration = Duration::from_secs(1);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -323,6 +340,7 @@ impl Remote {
         self.play_began = None;
         self.rate = (None, 0, 0);
         self.trail.clear();
+        self.steer_yaw = None;
         self.last_input = 0;
         self.was_sprinting = false;
         self.carried = None;
@@ -572,6 +590,14 @@ impl Game<'_> {
             play_began: None,
             rate: (None, 0, 0),
             trail: Default::default(),
+            steer_yaw: None,
+            interacted_at: Default::default(),
+            stick_mode: Default::default(),
+            stick_choice: None,
+            stick_remembered: None,
+            stick_setbacks: Default::default(),
+            stick_used_at: None,
+            stick_asked: false,
             last_input: 0,
             was_sprinting: false,
             carried: None,
@@ -712,8 +738,200 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
+            if matches!(
+                packet,
+                S::PlayerAction(_) | S::Interact(_) | S::UseItemOn(_) | S::UseItem(_)
+            ) && r.stick_mode == ServerStick::Free
+            {
+                // A hit, a use, a block placed or an item dropped goes where the player looks:
+                // a server places stairs, throws and aims by the rotation it was last sent.
+                r.interacted_at.set(Some(Instant::now()));
+                let (yaw, pitch) = r.position_sender.last_rotation();
+                if yaw != self.yaw || pitch != self.pitch {
+                    let flags = self.player.as_ref().map_or(0, |p| {
+                        u8::from(p.ground.on_ground) | u8::from(p.collision.horizontal) << 1
+                    });
+                    r.session.send(S::MovePlayerRot(play::MovePlayerRot {
+                        yaw: self.yaw,
+                        pitch: self.pitch,
+                        flags,
+                    }));
+                }
+            }
             r.session.send(packet);
         }
+    }
+    /// The stick's mode on this connection: Analog in single player and for a LAN host.
+    fn update_stick_mode(&mut self) -> ServerStick {
+        let setting = self.settings.controller.server_stick;
+        let dir = Self::options_path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let Some(r) = self.remote.as_mut() else {
+            return ServerStick::Analog;
+        };
+        if r.session.address == "local" {
+            r.stick_mode = ServerStick::Analog;
+            return r.stick_mode;
+        }
+        let remembered = *r
+            .stick_remembered
+            .get_or_insert_with(|| horizon_client::stick_memory::get(&dir, &r.session.address));
+        r.stick_mode = r.stick_choice.or(remembered).unwrap_or(setting);
+        r.stick_mode
+    }
+    /// A setback while the stick moved the player: four in six seconds, in a mode the server
+    /// may refuse, and the player is asked once a session how the stick should move here.
+    fn stick_setback(&mut self) {
+        let now = Instant::now();
+        let ask = self.settings.controller.stick_prompt;
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if !r
+            .stick_used_at
+            .is_some_and(|at| now - at < Duration::from_secs(1))
+        {
+            return;
+        }
+        r.stick_setbacks.push_back(now);
+        while r
+            .stick_setbacks
+            .front()
+            .is_some_and(|at| now - *at > Duration::from_secs(6))
+        {
+            r.stick_setbacks.pop_front();
+        }
+        if r.stick_setbacks.len() < 4
+            || r.stick_asked
+            || !ask
+            || r.stick_mode == ServerStick::Keys
+            || r.stick_choice.is_some()
+            || r.stick_remembered.flatten().is_some()
+        {
+            return;
+        }
+        r.stick_asked = true;
+        log::info!("Horizon: the server keeps pulling the stick's moves back; asking the player");
+        self.ask_stick_mode();
+    }
+    /// The question: which mode, remembered for this server or not, asked again or not.
+    fn ask_stick_mode(&mut self) {
+        let t = |key: &str| Tag::String(horizon_client::lang::get_or(key, key).as_str().into());
+        let choice = |key: &str, mode: ServerStick| {
+            Tag::compound([
+                ("label", t(key)),
+                ("width", Tag::Int(300)),
+                (
+                    "action",
+                    Tag::compound([
+                        ("type", Tag::String("minecraft:dynamic/custom".into())),
+                        ("id", Tag::String("starling:server_stick".into())),
+                        (
+                            "additions",
+                            Tag::compound([("mode", Tag::String(mode.name().into()))]),
+                        ),
+                    ]),
+                ),
+            ])
+        };
+        let toggle = |key: &str, label: &str, initial: bool| {
+            Tag::compound([
+                ("type", Tag::String("minecraft:boolean".into())),
+                ("key", Tag::String(key.into())),
+                ("label", t(label)),
+                ("initial", Tag::Byte(i8::from(initial))),
+            ])
+        };
+        let dialog = Tag::compound([
+            ("type", Tag::String("minecraft:multi_action".into())),
+            ("title", t("starling.stick_prompt.title")),
+            ("pause", Tag::Byte(0)),
+            ("columns", Tag::Int(1)),
+            (
+                "body",
+                Tag::compound([
+                    ("type", Tag::String("minecraft:plain_message".into())),
+                    ("contents", t("starling.stick_prompt.body")),
+                    ("width", Tag::Int(300)),
+                ]),
+            ),
+            (
+                "inputs",
+                Tag::List(vec![
+                    toggle("remember", "starling.stick_prompt.remember", true),
+                    toggle("dont_ask", "starling.stick_prompt.dont_ask", false),
+                ]),
+            ),
+            (
+                "actions",
+                Tag::List(vec![
+                    choice("starling.stick_prompt.free", ServerStick::Free),
+                    choice("starling.stick_prompt.keys", ServerStick::Keys),
+                    choice("starling.stick_prompt.analog", ServerStick::Analog),
+                ]),
+            ),
+        ]);
+        self.show_local_dialog(&dialog);
+    }
+    /// A click in one of the game's own dialogs (`starling:` actions).
+    pub(super) fn starling_dialog_click(&mut self, id: &str, payload: Option<&Tag>) {
+        if id != "starling:server_stick" {
+            log::warn!("Horizon: no such dialog action {id}");
+            return;
+        }
+        let field = |key: &str| payload.and_then(|p| p.get(key));
+        let mode = match field("mode") {
+            Some(Tag::String(s)) => ServerStick::parse(&s.to_string_lossy()),
+            _ => return,
+        };
+        let on = |key: &str| matches!(field(key), Some(Tag::Byte(b)) if *b != 0);
+        let path = Self::options_path();
+        let dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        if let Some(r) = self.remote.as_mut() {
+            r.stick_choice = Some(mode);
+            if on("remember") {
+                horizon_client::stick_memory::set(&dir, &r.session.address, mode);
+                r.stick_remembered = Some(Some(mode));
+            }
+        }
+        if on("dont_ask") {
+            self.settings.controller.stick_prompt = false;
+            self.settings.save(&path);
+        }
+        log::info!(
+            "Horizon: the stick moves as {} on this server{}",
+            mode.name(),
+            if on("remember") { ", remembered" } else { "" }
+        );
+    }
+    /// Free stick direction (the controller setting, experimental): on a server the stick
+    /// moves where it points by turning the rotation the server sees toward it and holding
+    /// forward, a move the keys make. Not with keys held, nor while mining, using, riding or
+    /// gliding, nor right after a hit or a use, which go with the view's rotation.
+    fn stick_steer(&self, stick: Option<[f32; 2]>) -> Option<f32> {
+        let r = self.remote.as_ref()?;
+        let [left, forward] = stick?;
+        let keys = [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD];
+        let p = self.player.as_ref()?;
+        if left.hypot(forward) <= 0.3
+            || keys.iter().any(|k| self.keys.contains(k))
+            || self.mining.is_some()
+            || self.using.is_some()
+            || self.riding.is_some()
+            || p.fall_flying
+            || r.interacted_at
+                .get()
+                .is_some_and(|at| at.elapsed() < STEER_REST)
+        {
+            return None;
+        }
+        // Moving forward at yaw - a is moving at angle a (to the left) of yaw: Entity.moveRelative.
+        Some(self.yaw - left.atan2(forward).to_degrees())
     }
     fn next_sequence(&mut self) -> i32 {
         let r = self.remote.as_mut().expect("remote");
@@ -3362,6 +3580,7 @@ impl Game<'_> {
             (yaw, pitch),
             p,
         );
+        let mut setback = false;
         match self.player.as_mut() {
             Some(player) => {
                 // A short teleport back is a correction: the server would not take the move.
@@ -3377,6 +3596,7 @@ impl Game<'_> {
                     && let Some(r) = self.remote.as_mut()
                 {
                     r.setbacks += 1;
+                    setback = true;
                     if r.setbacks <= 5 || r.setbacks % 50 == 0 {
                         // What tells the causes apart: whether the server took any move (the
                         // last one sent, and when), and which teleport this is.
@@ -3428,6 +3648,9 @@ impl Game<'_> {
                 self.clock.reset();
                 self.apply_remote_health();
             }
+        }
+        if setback {
+            self.stick_setback();
         }
         self.previous_position = position;
         self.yaw = yaw;
@@ -3597,14 +3820,29 @@ impl Game<'_> {
         .with_stick(stick.filter(|_| playing));
         // A server's anticheat simulates Java's keys: eight directions at full speed. A stick's
         // own angle and tilt (the touch stick's, a pad's) it refuses move after move
-        // (PikaNetwork's game servers), so on a server the stick presses the keys it points
-        // at. Single player and a LAN host keep it analog.
-        if self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.session.address != "local")
-        {
+        // (PikaNetwork's game servers): there the stick presses the keys it points at, or
+        // steers (`stick_steer`), as the player picked. Single player and a LAN host keep it.
+        let mode = self.update_stick_mode();
+        if mode != ServerStick::Analog {
             keys.analog = None;
+        }
+        if stick.is_some()
+            && playing
+            && let Some(r) = self.remote.as_mut()
+        {
+            r.stick_used_at = Some(Instant::now());
+        }
+        let steer = if mode == ServerStick::Free {
+            self.stick_steer(stick.filter(|_| playing))
+        } else {
+            None
+        };
+        if steer.is_some() {
+            (keys.forward, keys.backward, keys.left, keys.right) = (true, false, false, false);
+            keys.analog = None;
+        }
+        if let Some(r) = self.remote.as_mut() {
+            r.steer_yaw = steer;
         }
         let input = u8::from(keys.forward)
             | u8::from(keys.backward) << 1
@@ -3647,6 +3885,9 @@ impl Game<'_> {
         } else if !dead && !riding {
             player.client_side = true;
             player.velocity = player.velocity.add_vector(pushed);
+            if let Some(yaw) = steer {
+                player.yaw = yaw;
+            }
             MotionWorld {
                 entities: &entity_collisions,
                 player,
@@ -4027,7 +4268,8 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
+        let steer = self.remote.as_ref().and_then(|r| r.steer_yaw);
+        let (yaw, pitch, selected) = (steer.unwrap_or(self.yaw), self.pitch, self.selected);
         let riding = self.riding.is_some();
         let vehicle = self.remote_vehicle_packets();
         let Some(r) = self.remote.as_mut() else {

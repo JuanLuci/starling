@@ -380,6 +380,44 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
     }
 }
 
+/// How the stick moves on a server (Starling's). Java moves only by its keys, eight directions
+/// at full speed, and a server's anticheat may refuse any other move; single player and a LAN
+/// host always take the stick as it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ServerStick {
+    /// Its own speed and angle: for servers that do not check moves.
+    #[default]
+    Analog,
+    /// Any angle at full speed, by turning the rotation the server sees toward it.
+    Free,
+    /// The keys of its nearest of the eight directions, at full speed.
+    Keys,
+}
+impl ServerStick {
+    pub const ALL: [ServerStick; 3] = [ServerStick::Analog, ServerStick::Free, ServerStick::Keys];
+    pub fn name(self) -> &'static str {
+        match self {
+            ServerStick::Analog => "analog",
+            ServerStick::Free => "free",
+            ServerStick::Keys => "keys",
+        }
+    }
+    pub fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.name() == s.trim())
+            .unwrap_or_default()
+    }
+    /// The lang key of its name (`horizon.server_stick.*`).
+    pub fn lang_key(self) -> String {
+        format!("horizon.server_stick.{}", self.name())
+    }
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
 /// The controller settings (`horizon-controller.txt`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PadSettings {
@@ -398,6 +436,12 @@ pub struct PadSettings {
     /// The sneak button flips sneaking (Bedrock's default) instead of
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
+    /// Starling's: how the stick moves on a server (`game/remote.rs`); a server may also have
+    /// one of its own (`stick_memory`).
+    pub server_stick: ServerStick,
+    /// Starling's: ask which [`ServerStick`] to use when a server keeps pulling the player
+    /// back while the stick moves it.
+    pub stick_prompt: bool,
     pub glyphs: GlyphStyle,
     /// How the pad drives menus: a focus highlight or a virtual pointer.
     pub menu_nav: MenuNav,
@@ -419,6 +463,8 @@ impl Default for PadSettings {
             look_deadzone: 0.12,
             trigger_threshold: 0.4,
             toggle_sneak: true,
+            server_stick: ServerStick::Analog,
+            stick_prompt: true,
             glyphs: GlyphStyle::Auto,
             menu_nav: MenuNav::Focus,
             keyboard: TextKeyboard::Auto,
@@ -476,6 +522,8 @@ impl PadSettings {
                     s.trigger_threshold = unit(s.trigger_threshold).clamp(0.1, 0.9)
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
+                "serverStick" => s.server_stick = ServerStick::parse(value),
+                "stickPrompt" => s.stick_prompt = flag(s.stick_prompt),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "menuNavigation" => s.menu_nav = MenuNav::parse(value),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
@@ -497,7 +545,7 @@ impl PadSettings {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nmenuNavigation:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nserverStick:{}\nstickPrompt:{}\nglyphs:{}\nmenuNavigation:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
@@ -509,6 +557,8 @@ impl PadSettings {
             self.look_deadzone,
             self.trigger_threshold,
             bool_text(self.toggle_sneak),
+            self.server_stick.name(),
+            bool_text(self.stick_prompt),
             self.glyphs.name(),
             self.menu_nav.name(),
             self.keyboard.name(),

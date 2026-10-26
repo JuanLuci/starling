@@ -1,0 +1,16 @@
+{
+  "horizon.options.server_stick": "Joystick em servidores",
+  "horizon.options.server_stick.tooltip": "Como o joystick anda num servidor. O Java só anda pelas teclas, então o anticheat de um servidor pode te puxar de volta pela velocidade e o ângulo do joystick. Analógico: do jeito que você empurra (servidores que não conferem). Direção livre: qualquer ângulo, na velocidade cheia, girando a rotação que o servidor vê (os outros veem sua cabeça acompanhar; ela volta pra sua visão a cada golpe, uso e bloco). Teclado: a mais próxima de oito direções, na velocidade cheia.",
+  "horizon.options.stick_prompt": "Perguntar ao ser puxado",
+  "horizon.options.stick_prompt.tooltip": "Quando um servidor te puxa de volta seguidas vezes enquanto o joystick te move, pergunta como o joystick deve andar ali.",
+  "horizon.server_stick.analog": "Analógico",
+  "horizon.server_stick.free": "Direção livre",
+  "horizon.server_stick.keys": "Teclado (8 direções)",
+  "starling.stick_prompt.title": "Este servidor te puxa de volta",
+  "starling.stick_prompt.body": "O anticheat dele (Grim ou parecido) só aceita os movimentos das teclas do Java, e a velocidade e o ângulo do joystick não são um deles. Escolha como o joystick anda aqui; dá pra mudar quando quiser em Opções > Controles > Configurações do controle.",
+  "starling.stick_prompt.free": "Direção livre (qualquer ângulo, velocidade cheia)",
+  "starling.stick_prompt.keys": "Teclado (8 direções, velocidade cheia)",
+  "starling.stick_prompt.analog": "Manter analógico",
+  "starling.stick_prompt.remember": "Lembrar para este servidor",
+  "starling.stick_prompt.dont_ask": "Não perguntar de novo"
+}

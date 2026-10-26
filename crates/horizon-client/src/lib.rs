@@ -180,6 +180,7 @@ pub mod sprint;
 pub mod sprites;
 pub mod stations;
 pub mod stats_overlay;
+pub mod stick_memory;
 pub mod stopwatches;
 pub mod streaming;
 pub mod structure_blocks;

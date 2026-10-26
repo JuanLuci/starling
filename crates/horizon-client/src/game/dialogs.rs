@@ -26,6 +26,9 @@ struct Open {
     fields: Vec<Option<ui::EditBox>>,
     focus: Option<usize>,
     scroll: ui::Scroll,
+    /// The game's own (`show_local_dialog`): no "sent by the server" warning, and its
+    /// `starling:` actions stay in the game.
+    local: bool,
 }
 
 /// The dialog screens a server can open.
@@ -87,9 +90,18 @@ impl Game<'_> {
             fields,
             focus: None,
             scroll: ui::Scroll::default(),
+            local: false,
         });
         self.dialogs.waiting = None;
         self.capture(false);
+    }
+
+    /// A dialog the game itself shows, in the server dialogs' look.
+    pub(super) fn show_local_dialog(&mut self, tag: &Tag) {
+        self.show_dialog(tag);
+        if let Some(open) = self.dialogs.open.as_mut() {
+            open.local = true;
+        }
     }
 
     /// `clearDialog`: the dialog closes (under the warning screen, Back then
@@ -132,6 +144,9 @@ impl Game<'_> {
             }
         }
         match click {
+            Some(Click::Custom { id, payload }) if id.starts_with("starling:") => {
+                self.starling_dialog_click(&id, payload.as_ref());
+            }
             Some(Click::Custom { id, payload }) => {
                 if let Some(r) = &self.remote {
                     r.session.send_custom_click(&id, payload);
@@ -277,17 +292,19 @@ impl Game<'_> {
             true,
         );
         let [wx, wy, ww, wh] = layout.warning;
-        let warn_hover = ui::hovered(cursor, wx, wy, ww, wh);
-        horizon_client::widgets::record("warning", layout.warning, true);
-        batch.sprite_scaled(
-            atlas,
-            WARNING_SPRITES[if warn_hover { 2 } else { 0 }],
-            wx,
-            wy,
-            ww,
-            wh,
-            u32::MAX,
-        );
+        let warn_hover = !open.local && ui::hovered(cursor, wx, wy, ww, wh);
+        if !open.local {
+            horizon_client::widgets::record("warning", layout.warning, true);
+            batch.sprite_scaled(
+                atlas,
+                WARNING_SPRITES[if warn_hover { 2 } else { 0 }],
+                wx,
+                wy,
+                ww,
+                wh,
+                u32::MAX,
+            );
+        }
         let buttons = open.dialog.buttons();
         let in_area = |y: f32| y >= ay && y < ay + ah;
         let mut tooltip = None;
@@ -415,7 +432,8 @@ impl Game<'_> {
             return Ok(());
         };
         let [wx, wy, ww, wh] = layout.warning;
-        if ui::hovered(cursor, wx, wy, ww, wh) {
+        let local = self.dialogs.open.as_ref().is_some_and(|o| o.local);
+        if !local && ui::hovered(cursor, wx, wy, ww, wh) {
             self.audio.play_button_click();
             self.dialogs.warning = true;
             return Ok(());

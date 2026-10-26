@@ -44,6 +44,7 @@ impl ResourceSource for Bundled {
         let body = match path {
             "assets/horizon/lang/en_us.json" => include_str!("../assets/horizon/lang/en_us.json"),
             "assets/horizon/lang/ru_ru.json" => include_str!("../assets/horizon/lang/ru_ru.json"),
+            "assets/horizon/lang/pt_br.json" => include_str!("../assets/horizon/lang/pt_br.json"),
             _ => return None,
         };
         Some(body.as_bytes().to_vec())
