@@ -316,8 +316,9 @@ impl Game<'_> {
     /// packs change, and the statuses for the server.
     pub(super) fn tick_server_packs(&mut self) {
         self.server_packs.notifiers.retain_mut(PackNotifier::poll);
-        // A reload waits for the world's resources (`reload_packs`).
-        if self.rest_loader.is_some() || self.world_loader.is_some() {
+        self.poll_pack_reload();
+        // A reload waits for the world's resources (`reload_packs`) and for the one preparing.
+        if self.rest_loader.is_some() || self.world_loader.is_some() || self.pack_reload.is_some() {
             return;
         }
         let finished = self
@@ -334,12 +335,10 @@ impl Game<'_> {
             if !tick.download.is_empty() {
                 self.start_pack_downloads(tick.download);
             }
-            if let Some(mut load) = tick.reload {
-                while let Some(recovery) = {
-                    let ok = self.reload_server_packs(&load);
-                    self.server_packs.packs.reloaded(ok)
-                } {
-                    load = recovery;
+            if let Some(load) = tick.reload {
+                self.reload_server_packs(load);
+                if self.pack_reload.is_some() {
+                    break;
                 }
             }
         }
@@ -384,24 +383,30 @@ impl Game<'_> {
             queue.download(requests, headers, progress);
         }
     }
+    /// The server packs' reload is done: their statuses, and the recovery reload when it failed.
+    pub(super) fn server_packs_reloaded(&mut self, ok: bool) {
+        if let Some(recovery) = self.server_packs.packs.reloaded(ok) {
+            self.reload_server_packs(recovery);
+        }
+    }
     /// `DownloadedPackSource.startReload`: the packs on top of the player's
-    /// own, then `Minecraft.reloadResourcePacks`. False when a pack has no
-    /// readable `pack.mcmeta` or the reload failed.
-    fn reload_server_packs(&mut self, load: &[(u128, PathBuf)]) -> bool {
-        let packs: Option<Vec<_>> = load
-            .iter()
-            .map(|(id, path)| packs::server_pack(*id, path))
-            .collect();
-        let Some(packs) = packs else {
+    /// own, then `Minecraft.reloadResourcePacks` (`ServerPacks::reloaded` hears how it went,
+    /// at once when a pack has no readable `pack.mcmeta`, else once the reload is done).
+    fn reload_server_packs(&mut self, mut load: Vec<(u128, PathBuf)>) {
+        loop {
+            let packs: Option<Vec<_>> = load
+                .iter()
+                .map(|(id, path)| packs::server_pack(*id, path))
+                .collect();
+            if let Some(packs) = packs {
+                self.server_packs.active = packs;
+                self.reload_selected_packs(true);
+                return;
+            }
             log::warn!("Horizon: invalid pack metadata in a server pack, ignoring all");
-            return false;
-        };
-        self.server_packs.active = packs;
-        match self.reload_selected_packs() {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("Horizon: server resource pack reload failed: {e}");
-                false
+            match self.server_packs.packs.reloaded(false) {
+                Some(recovery) => load = recovery,
+                None => return,
             }
         }
     }

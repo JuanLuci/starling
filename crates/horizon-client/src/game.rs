@@ -1175,6 +1175,8 @@ struct Game<'a> {
     pending_entry: Option<PendingWorldEntry>,
     world_loader: Option<world_loading::WorldLoader>,
     pending_pack_reload: bool,
+    /// A resource reload preparing on a worker (`reload_selected_packs`).
+    pack_reload: Option<packs::PackReload>,
     /// A server's resource packs (game/server_packs.rs).
     server_packs: server_packs::ServerPackState,
     dialogs: dialogs::DialogState,
@@ -12208,6 +12210,7 @@ impl<'a> Game<'a> {
             pending_entry: None,
             world_loader: None,
             pending_pack_reload: false,
+            pack_reload: None,
             server_packs: Default::default(),
             dialogs: Default::default(),
             world_renderer_ready: false,

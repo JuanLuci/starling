@@ -8,7 +8,11 @@ use horizon_client::{
     packs::{self, Pack, Position},
     text::{Style, Text},
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 /// Where overlay roots are built (beside options.txt, or in the private folder: `logging::cache_dir`).
 pub fn cache_dir() -> PathBuf {
@@ -95,6 +99,26 @@ pub(super) fn pack_infos(vanilla: &Path) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// A resource reload preparing on a worker (`Game::reload_selected_packs`).
+pub(super) struct PackReload {
+    handle: std::thread::JoinHandle<Result<PreparedPacks, String>>,
+    /// For the server's packs, which hear how it went.
+    server: bool,
+    started: Instant,
+}
+/// What a reload reads from the new resource root, off the main thread.
+pub(super) struct PreparedPacks {
+    root: PathBuf,
+    gui: super::UiResources,
+    pack: super::PackResources,
+    textures: horizon_client::gfx::PreparedTextures,
+    sounds: horizon_client::sound_events::SoundRegistry,
+    armor: super::armor_stands::ArmorStandAssets,
+    villager_hats: horizon_client::mobs::villager_hats::VillagerHats,
+    waypoint_styles: horizon_client::locator_bar::WaypointStyles,
+    language: lang::Language,
+}
+
 impl Game<'_> {
     fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -125,7 +149,107 @@ impl Game<'_> {
             self.pending_pack_reload = true;
             return;
         }
-        if let Err(e) = self.reload_selected_packs() {
+        self.reload_selected_packs(false);
+    }
+    /// Reload from the selected packs and the server's (`server`: for the server's packs, which
+    /// hear how it went), prepared on a worker while the game goes on (`poll_pack_reload` switches
+    /// over): Android calls an app that does not take a touch for five seconds not responding,
+    /// and a server's pack took about that long to load or to drop. One already preparing
+    /// finishes first; this one follows it.
+    pub(super) fn reload_selected_packs(&mut self, server: bool) {
+        if self.pack_reload.is_some() {
+            self.pending_pack_reload = true;
+            return;
+        }
+        let vanilla = self.vanilla_root();
+        if self.ui.vanilla_root.as_os_str().is_empty() {
+            self.ui.vanilla_root = vanilla.clone();
+        }
+        let selected = self.settings.resource_packs.clone();
+        let server_packs = self.server_packs.active.clone();
+        let mods = self.settings.mods.enabled.clone();
+        let dev_mods = self.options.dev_mods.clone();
+        let assets = self.pack.assets.clone();
+        let res = self.res.clone();
+        let biomes = self.pack.context.biomes.clone();
+        let light = self.pack.context.light.clone();
+        let prepare = move || -> horizon_client::Result<PreparedPacks> {
+            let root = startup_root(&vanilla, &selected, &server_packs)?;
+            let root = super::mods::content_root(&root, &mods, &dev_mods);
+            let render = Arc::new(assets.reload(&root)?);
+            let gui = super::UiResources {
+                atlas: HudAtlas::build_over(&root, &vanilla)?,
+                panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(&root)),
+            };
+            let pack =
+                super::PackResources::load(&root, assets, render, res.facts(), biomes, light)?;
+            Ok(PreparedPacks {
+                textures: super::prepare_renderer_textures(&pack),
+                sounds: horizon_client::sound_events::SoundRegistry::load(&root),
+                armor: super::armor_stands::ArmorStandAssets::load(&root, None),
+                villager_hats: horizon_client::mobs::villager_hats::VillagerHats::load(&root),
+                waypoint_styles: horizon_client::locator_bar::WaypointStyles::load(&root),
+                language: lang::Language::load(&[&root], &lang::code()),
+                gui,
+                pack,
+                root,
+            })
+        };
+        let spawned = std::thread::Builder::new()
+            .name("pack-reload".into())
+            .spawn(move || prepare().map_err(|e| e.to_string()));
+        match spawned {
+            Ok(handle) => {
+                self.pack_reload = Some(PackReload {
+                    handle,
+                    server,
+                    started: Instant::now(),
+                });
+            }
+            Err(e) => self.pack_reload_done(server, Err(e.to_string())),
+        }
+    }
+    /// The worker's reload, once prepared: the switch-over, then what waited for it.
+    pub(super) fn poll_pack_reload(&mut self) {
+        if !self
+            .pack_reload
+            .as_ref()
+            .is_some_and(|r| r.handle.is_finished())
+        {
+            return;
+        }
+        let Some(PackReload {
+            handle,
+            server,
+            started,
+        }) = self.pack_reload.take()
+        else {
+            return;
+        };
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err("the resource reload panicked".to_owned()))
+            .and_then(|prepared| self.reload_resources(prepared).map_err(|e| e.to_string()));
+        if result.is_ok() {
+            log::info!(
+                "Horizon: resources reloaded in {} ms",
+                started.elapsed().as_millis()
+            );
+        }
+        self.pack_reload_done(server, result);
+        if std::mem::take(&mut self.pending_pack_reload) {
+            self.reload_packs();
+        }
+    }
+    fn pack_reload_done(&mut self, server: bool, result: Result<(), String>) {
+        if server {
+            if let Err(e) = &result {
+                log::warn!("Horizon: server resource pack reload failed: {e}");
+            }
+            self.server_packs_reloaded(result.is_ok());
+            return;
+        }
+        if let Err(e) = result {
             log::warn!("Horizon: resource reload failed: {e}");
             if self.screen != super::Screen::Options {
                 self.open_options_at(
@@ -133,38 +257,24 @@ impl Game<'_> {
                     horizon_client::options_ui::Page::Packs,
                 );
             }
-            self.ui.options.resource_error = Some(e.to_string());
+            self.ui.options.resource_error = Some(e);
         }
     }
-    /// Reload from the selected packs and the server's.
-    pub(super) fn reload_selected_packs(&mut self) -> horizon_client::Result<()> {
-        let vanilla = self.vanilla_root();
-        if self.ui.vanilla_root.as_os_str().is_empty() {
-            self.ui.vanilla_root = vanilla.clone();
-        }
-        let server = &self.server_packs.active;
-        let root = startup_root(&vanilla, &self.settings.resource_packs, server)?;
-        let root =
-            super::mods::content_root(&root, &self.settings.mods.enabled, &self.options.dev_mods);
-        self.reload_resources(&root)
-    }
-    fn reload_resources(&mut self, root: &Path) -> horizon_client::Result<()> {
-        let render = std::sync::Arc::new(self.pack.assets.reload(root)?);
-        let mut atlas = HudAtlas::build_over(root, &self.vanilla_root())?;
-        atlas.font.uniform = self.settings.force_unicode;
-        atlas.font.japanese = self.settings.japanese_glyphs;
-        let gui = super::UiResources {
-            atlas,
-            panorama: std::sync::Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
-        };
-        let pack = super::PackResources::load(
+    fn reload_resources(&mut self, prepared: PreparedPacks) -> horizon_client::Result<()> {
+        let PreparedPacks {
             root,
-            self.pack.assets.clone(),
-            render,
-            self.res.facts(),
-            self.pack.context.biomes.clone(),
-            self.pack.context.light.clone(),
-        )?;
+            mut gui,
+            pack,
+            textures,
+            sounds,
+            armor,
+            villager_hats,
+            waypoint_styles,
+            language,
+        } = prepared;
+        let root = root.as_path();
+        gui.atlas.font.uniform = self.settings.force_unicode;
+        gui.atlas.font.japanese = self.settings.japanese_glyphs;
         // Keep the working GPU resources, but release its exclusive window surface.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
@@ -172,7 +282,17 @@ impl Game<'_> {
         let renderer = match self
             .window
             .clone()
-            .map(|window| self.renderer_for(window, &pack, &gui))
+            .map(|window| {
+                super::build_renderer(
+                    window,
+                    self.options.offscreen,
+                    &pack,
+                    &gui,
+                    self.renderer.as_ref(),
+                    Some(textures),
+                    self.settings.horizon.api,
+                )
+            })
             .transpose()
         {
             Ok(renderer) => renderer,
@@ -188,8 +308,8 @@ impl Game<'_> {
             }
         };
         // Everything loaded: switch over.
-        self.waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(root);
-        self.armor_stand_assets.reload_trims(root);
+        self.waypoint_styles = waypoint_styles;
+        self.armor_stand_assets.take_reloaded(armor);
         *self
             .res
             .mob_data()
@@ -214,12 +334,11 @@ impl Game<'_> {
             .mob_data()
             .villager_hats
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            horizon_client::mobs::villager_hats::VillagerHats::load(root);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = villager_hats;
         horizon_client::ui::load_metadata(root);
-        lang::set(lang::Language::load(&[&root.to_path_buf()], &lang::code()));
+        lang::set(language);
         self.refresh_remote_language();
-        self.audio.reload(root);
+        self.audio.reload_with(root, sounds);
         self.clear_lod();
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();

@@ -102,9 +102,9 @@ impl ArmorStandAssets {
             root: root.to_owned(),
         }
     }
-    /// Trim data and custom armour of reloaded resources (the models stay).
-    pub fn reload_trims(&mut self, root: &std::path::Path) {
-        let fresh = Self::load(root, None);
+    /// Trim data and custom armour of reloaded resources (`fresh`, loaded from them without the
+    /// models: these stay).
+    pub fn take_reloaded(&mut self, fresh: Self) {
         self.trim_overrides = fresh.trim_overrides;
         self.atlases = fresh.atlases;
         self.trims = fresh.trims;
