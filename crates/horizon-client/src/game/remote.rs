@@ -786,6 +786,10 @@ impl Game<'_> {
             }
         }
     }
+    /// The stick's mode on the server this tick, when on one.
+    pub(super) fn remote_stick_mode(&self) -> Option<ServerStick> {
+        self.remote.as_ref().map(|r| r.stick_mode)
+    }
     /// The stick's mode on this connection: Analog in single player and for a LAN host.
     fn update_stick_mode(&mut self) -> ServerStick {
         let setting = self.settings.controller.server_stick;

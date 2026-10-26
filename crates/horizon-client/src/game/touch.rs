@@ -8,6 +8,7 @@
 mod slots;
 
 use super::{Game, Screen, mod_widgets::ModFace};
+use horizon_client::gamepad::ServerStick;
 use horizon_client::{
     Result,
     gamepad::Button as Pad,
@@ -156,10 +157,13 @@ impl Game<'_> {
         let [w, h] = self.touch_size();
         // The scale the HUD is drawn at, which the GUI Scale option only caps.
         let scale = HudBatch::new([w, h]).scale;
-        match &self.touch.config {
+        let mut layout = match &self.touch.config {
             Some(config) => Layout::from_config(config, w as f32, h as f32, scale),
             None => Layout::new(w as f32, h as f32, scale),
-        }
+        };
+        // The stick moving as the keys on this server: their eight directions on screen.
+        layout.dpad |= self.remote_stick_mode() == Some(ServerStick::Keys);
+        layout
     }
 
     fn touch_layout_path() -> Result<std::path::PathBuf> {
@@ -639,6 +643,7 @@ impl Game<'_> {
                 let shape = match target {
                     Target::Extra(i) => config.extra[i].shape,
                     Target::Button(b) => self.control_face(b).shape,
+                    Target::Stick if config.dpad => Shape::Square,
                     Target::Stick => Shape::Round,
                 };
                 match place.show {
@@ -651,6 +656,7 @@ impl Game<'_> {
                 }
                 let name;
                 let text = match target {
+                    Target::Stick if config.dpad => "D-pad",
                     Target::Stick => "Move",
                     Target::Button(b) => {
                         name = self.control_face(b).label;
@@ -754,9 +760,9 @@ impl Game<'_> {
                 let text = match action {
                     EditorAction::Done => "Done",
                     EditorAction::Reset => "Reset",
-                    // What a press switches to.
-                    EditorAction::Movement if dpad => "Stick",
-                    EditorAction::Movement => "D-pad",
+                    // What moves the player now (a press switches it).
+                    EditorAction::Movement if dpad => "D-pad",
+                    EditorAction::Movement => "Stick",
                 };
                 label(&mut ui, c, r, text, ink(1.0));
             }
