@@ -1,7 +1,8 @@
 name: android
 # The Starling APK, on GitHub's runners: every push to the android branch and every pull request builds it and keeps
-# it as an artifact (signed with a throwaway debug key). A tag v* signs it with the release key held in the
-# repository's secrets (STARLING_KEYSTORE_BASE64, STARLING_KEY_ALIAS, STARLING_STORE_PASSWORD, STARLING_KEY_PASSWORD)
+# it as an artifact, signed with the debug key in STARLING_DEBUG_KEYSTORE_BASE64 so one installs over another (a
+# throwaway key where that secret is missing, as in a fork's pull request). A tag v* signs it with the release key held
+# in the repository's secrets (STARLING_KEYSTORE_BASE64, STARLING_KEY_ALIAS, STARLING_STORE_PASSWORD, STARLING_KEY_PASSWORD)
 # and publishes it as a pre-release. The APK holds no game files: players prepare those from their own copy.
 on:
   push:
@@ -57,6 +58,15 @@ jobs:
           test -n "$KEYSTORE" || { echo "STARLING_KEYSTORE_BASE64 is not set"; exit 1; }
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/starling-release.jks"
           echo "HORIZON_ANDROID_KEYSTORE=$RUNNER_TEMP/starling-release.jks" >> "$GITHUB_ENV"
+      # Where build_apk.py keeps its debug key (alias horizon-debug, password android).
+      - name: Unpack the debug key
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          KEYSTORE: ${{ secrets.STARLING_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE" || exit 0
+          mkdir -p target/android
+          echo "$KEYSTORE" | base64 -d > target/android/debug.keystore
       - name: Build the APK
         env:
           HORIZON_ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
