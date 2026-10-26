@@ -41,8 +41,10 @@ jni = "0.21.1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [features]
-default = ["audio"]
+default = ["audio", "mods"]
 audio = ["horizon-client/audio"]
+# Named by the game module's cfgs too (the code mods' input, render and frame hooks): always on.
+mods = ["horizon-client/mods"]
 # Named by the game module's cfgs. Never on here: gilrs has no Android backend and hidapi does not
 # build for it, so phones get the touch controls and `horizon-ctl pad`'s virtual pad.
 controllers = []
