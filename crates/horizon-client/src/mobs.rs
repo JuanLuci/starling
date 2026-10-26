@@ -686,6 +686,8 @@ pub struct Extra {
     pub chest: Option<Arc<str>>,
     pub legs: Option<Arc<str>>,
     pub feet: Option<Arc<str>>,
+    /// The worn pieces' dye colours (`minecraft:dyed_color`), head to feet.
+    pub armor_dyes: [Option<i32>; 4],
     pub using_item: i32,
     pub using_off_hand: bool,
     pub blocking: bool,

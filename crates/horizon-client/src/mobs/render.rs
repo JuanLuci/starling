@@ -689,7 +689,7 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
         (&m.extra.legs, "leggings"),
         (&m.extra.feet, "boots"),
     ];
-    for (item, layer) in slots {
+    for ((item, layer), dye) in slots.into_iter().zip(m.extra.armor_dyes) {
         let Some(name) = item.as_deref().and_then(|i| i.strip_prefix("minecraft:")) else {
             continue;
         };
@@ -707,8 +707,9 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
             "humanoid"
         };
         let model = format!("{base}#{layer}");
+        // Leather in its dye colour (DyedItemColor), else the undyed one.
         let tint = if asset == "leather" {
-            abgr(0xA06540)
+            abgr(dye.map_or(0xA06540, |d| d as u32 & 0xFF_FFFF))
         } else {
             0xFFFF_FFFF
         };
@@ -1089,13 +1090,27 @@ fn render_visible(
             }
         }
     }
-    for layer in all_layers {
+    let armor_atlases = data
+        .armor_atlases
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for mut layer in all_layers {
         let Some(part) = m.kind.layer(&layer.model).cloned() else {
             continue;
         };
-        let Some(uv) = atlas(&layer.texture) else {
+        let Some(mut uv) = atlas(&layer.texture) else {
             continue;
         };
+        // A pack's custom armour in the leather texture (`custom_armor`), picked by the dye
+        // colour the layer carries; its animation runs on the mob's age.
+        if armor_slot(&layer.model).is_some()
+            && let Some(custom) = armor_atlases.get(&layer.texture)
+        {
+            let c = layer.color;
+            let rgb = (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF;
+            let day = (m.age as f32 + alpha).rem_euclid(24000.0) / 24000.0;
+            (uv, layer.color) = crate::custom_armor::layer_look(Some(custom), Some(rgb), uv, day);
+        }
         let mut poses = Poses::new(&part);
         anim::setup(m, &s, &mut poses, &data.animations);
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)

@@ -50,6 +50,7 @@ pub mod control;
 pub mod crafting;
 pub mod crash;
 pub mod creative;
+pub mod custom_armor;
 pub mod data_cmd;
 pub mod datapack;
 pub mod debug_chart;

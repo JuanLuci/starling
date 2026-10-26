@@ -190,6 +190,13 @@ impl Game<'_> {
         // Everything loaded: switch over.
         self.waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(root);
         self.armor_stand_assets.reload_trims(root);
+        *self
+            .res
+            .mob_data()
+            .armor_atlases
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            self.armor_stand_assets.atlases.clone();
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.to_path_buf();

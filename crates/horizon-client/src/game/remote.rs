@@ -2589,21 +2589,26 @@ impl Game<'_> {
             // player holds and wears (EquipmentSlot ordinals).
             C::SetEquipment(p) => {
                 self.remote_object_equipment(p.id, &p.slots);
-                let items: Vec<(u8, Option<Arc<str>>)> = p
+                let items: Vec<(u8, Option<Arc<str>>, Option<i32>)> = p
                     .slots
                     .iter()
-                    .map(|(slot, stack)| (*slot, stack.as_ref().map(|s| self.item_name(s.item))))
+                    .map(|(slot, stack)| {
+                        let dye = self
+                            .to_stack(stack)
+                            .and_then(|s| s.data().and_then(|d| d.dyed_color));
+                        (*slot, stack.as_ref().map(|s| self.item_name(s.item)), dye)
+                    })
                     .collect();
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
-                    for (slot, item) in items {
+                    for (slot, item, dye) in items {
                         let e = &mut m.extra;
                         match slot {
                             0 => e.main_hand = item,
                             1 => e.off_hand = item,
-                            2 => e.feet = item,
-                            3 => e.legs = item,
-                            4 => e.chest = item,
-                            5 => e.head = item,
+                            2 => (e.feet, e.armor_dyes[3]) = (item, dye),
+                            3 => (e.legs, e.armor_dyes[2]) = (item, dye),
+                            4 => (e.chest, e.armor_dyes[1]) = (item, dye),
+                            5 => (e.head, e.armor_dyes[0]) = (item, dye),
                             _ => {}
                         }
                     }

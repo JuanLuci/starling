@@ -4,6 +4,7 @@
 //! the default pose, the hit wobble and humanoid armor layers.
 use super::{Game, view_vector};
 use horizon_client::{
+    custom_armor::{ArmorAtlas, layer_look},
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
@@ -28,6 +29,8 @@ pub(super) struct ArmorStandAssets {
     pub equipment: HashMap<String, HashMap<String, (String, Option<u32>)>>,
     /// asset id -> `trim_overrides`.
     pub trim_overrides: HashMap<String, Vec<TrimOverride>>,
+    /// Layer textures a pack's shader makes custom armour of (`custom_armor`).
+    pub atlases: HashMap<String, ArmorAtlas>,
     pub trims: TrimRegistry,
     /// The resources the trim textures are made from.
     pub root: PathBuf,
@@ -92,16 +95,18 @@ impl ArmorStandAssets {
             small: load("minecraft:armor_stand_small#main"),
             layers,
             player,
+            atlases: horizon_client::custom_armor::load(root),
             equipment,
             trim_overrides,
             trims: TrimRegistry::load(root),
             root: root.to_owned(),
         }
     }
-    /// Trim data of reloaded resources (the models stay).
+    /// Trim data and custom armour of reloaded resources (the models stay).
     pub fn reload_trims(&mut self, root: &std::path::Path) {
         let fresh = Self::load(root, None);
         self.trim_overrides = fresh.trim_overrides;
+        self.atlases = fresh.atlases;
         self.trims = fresh.trims;
         self.root = fresh.root;
     }
@@ -127,33 +132,35 @@ impl Game<'_> {
         &self,
         armor: &[Option<ItemStack>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
-        self.armor_layers(
-            armor
-                .each_ref()
-                .map(|s| s.as_ref().map(|s| (&*s.item, Some(s)))),
-        )
+        self.armor_layers(armor.each_ref().map(|s| {
+            s.as_ref()
+                .map(|s| (&*s.item, Some(s), s.data().and_then(|d| d.dyed_color)))
+        }))
     }
     /// `HumanoidArmorLayer` for another player's model: the armour it wears
     /// (`extra.head` .. `extra.feet`).
     pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<(&Part, [f32; 4], u32)> {
         let e = &m.extra;
-        self.armor_layers(
-            [&e.head, &e.chest, &e.legs, &e.feet].map(|s| s.as_deref().map(|i| (i, None))),
-        )
+        let worn = [&e.head, &e.chest, &e.legs, &e.feet];
+        self.armor_layers(std::array::from_fn(|i| {
+            worn[i].as_deref().map(|item| (item, None, e.armor_dyes[i]))
+        }))
     }
     /// The layers of the armour items `worn` (with their stacks when known,
-    /// for trims), head to feet.
+    /// for trims, and their dye colours), head to feet.
     fn armor_layers(
         &self,
-        worn: [Option<(&str, Option<&ItemStack>)>; 4],
+        worn: [Option<(&str, Option<&ItemStack>, Option<i32>)>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
         let assets = &self.armor_stand_assets;
+        // The shaders' GameTime: the part of the day gone.
+        let day = self.world.game_time.rem_euclid(24000) as f32 / 24000.0;
         let mut out = Vec::new();
         for (item, layer) in worn
             .into_iter()
             .zip(["helmet", "chestplate", "leggings", "boots"])
         {
-            let Some((item, stack)) = item else {
+            let Some((item, stack, dye)) = item else {
                 continue;
             };
             let Some(asset) = self
@@ -179,10 +186,16 @@ impl Game<'_> {
             ) else {
                 continue;
             };
-            let color = undyed.map_or(0xFFFF_FFFF, |c| {
-                0xFF00_0000 | (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF
-            });
-            out.push((part, [r.u0, r.v0, r.u1, r.v1], color));
+            // EquipmentLayerRenderer.getColorForLayer: a dyeable layer in its dye colour, else
+            // as undyed.
+            let rgb = undyed.map(|c| dye.map_or(c, |d| d as u32 & 0xFF_FFFF));
+            let (uv, color) = layer_look(
+                assets.atlases.get(texture),
+                rgb,
+                [r.u0, r.v0, r.u1, r.v1],
+                day,
+            );
+            out.push((part, uv, color));
             // EquipmentLayerRenderer: the trim layer over the armour.
             if let Some(r) = stack
                 .and_then(|s| assets.trim_texture(&asset, kind, s))
@@ -671,6 +684,7 @@ impl Game<'_> {
                 out,
             );
             self.armor_stand_items(a, model, base, &posed, packed, out);
+            let day = self.world.game_time.rem_euclid(24000) as f32 / 24000.0;
             // HumanoidArmorLayer: head, chest, legs, feet.
             for (slot, layer) in [
                 (5usize, "helmet"),
@@ -703,9 +717,9 @@ impl Game<'_> {
                 else {
                     continue;
                 };
-                let color = undyed.map_or(0xFFFF_FFFF, |c| {
-                    0xFF00_0000 | (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF
-                });
+                let dye = stack.data().and_then(|d| d.dyed_color);
+                let rgb = undyed.map(|c| dye.map_or(c, |d| d as u32 & 0xFF_FFFF));
+                let (uv, color) = layer_look(assets.atlases.get(texture.as_str()), rgb, uv, day);
                 let layer_poses = Poses::new(part);
                 horizon_client::mobs::render::draw(
                     part,
