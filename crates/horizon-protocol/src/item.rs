@@ -634,10 +634,39 @@ impl Codec<Option<Stack>> for Slot {
     }
 }
 
+/// How deep stacks may nest in stacks (a bundle in a shulker box in a bundle...): deeper, the
+/// packet is refused before a hostile server's nesting can overflow the reading thread's stack.
+const MAX_NESTING: u32 = 64;
+thread_local! {
+    static NESTING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// One level of stacks inside a stack, left when dropped.
+struct Nested;
+impl Nested {
+    fn enter() -> Result<Self> {
+        NESTING.with(|n| {
+            if n.get() >= MAX_NESTING {
+                return Err(crate::Error::new(format!(
+                    "item stacks nested over {MAX_NESTING} deep"
+                )));
+            }
+            n.set(n.get() + 1);
+            Ok(Nested)
+        })
+    }
+}
+impl Drop for Nested {
+    fn drop(&mut self) {
+        NESTING.with(|n| n.set(n.get().saturating_sub(1)));
+    }
+}
+
 /// ItemStackTemplate.STREAM_CODEC: the item, the count, then the patch.
 pub struct Template;
 impl Codec<Stack> for Template {
     fn read(r: &mut Reader) -> Result<Stack> {
+        // Every stack inside a stack is a template: the one place nesting recurses.
+        let _nested = Nested::enter()?;
         let item = r.varint()?;
         let count = r.varint()?;
         let positive = r.count(65536)?;
@@ -1292,6 +1321,33 @@ mod tests {
             w.bool(true);
             sound_id(w, 4);
         });
+    }
+
+    #[test]
+    fn nesting_past_the_limit_is_refused() {
+        // Charged projectiles, each holding the next: a crossbow in a crossbow, 65 deep.
+        fn crossbows(w: &mut Writer, depth: u32) {
+            w.varint(1); // item
+            w.varint(1); // count
+            if depth == 0 {
+                w.varint(0);
+                w.varint(0);
+                return;
+            }
+            w.varint(1);
+            w.varint(0);
+            w.varint(component::CHARGED_PROJECTILES);
+            w.varint(1);
+            crossbows(w, depth - 1);
+        }
+        for (depth, ok) in [(MAX_NESTING - 1, true), (MAX_NESTING, false)] {
+            let mut w = Writer::new();
+            crossbows(&mut w, depth);
+            let read = Template::read(&mut Reader::new(&w.data));
+            assert_eq!(read.is_ok(), ok, "depth {depth}: {read:?}");
+        }
+        // A refusal leaves nothing behind for the next packet.
+        NESTING.with(|n| assert_eq!(n.get(), 0));
     }
 
     #[test]
