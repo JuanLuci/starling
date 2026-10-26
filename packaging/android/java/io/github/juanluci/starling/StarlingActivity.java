@@ -8,6 +8,9 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,6 +25,8 @@ import android.view.WindowManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import java.io.File;
+import java.net.InetAddress;
+import java.util.List;
 import java.security.Key;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
@@ -278,6 +283,24 @@ public final class StarlingActivity extends NativeActivity {
         } catch (ActivityNotFoundException | SecurityException e) {
             return false;
         }
+    }
+
+    /** The active network's DNS servers, for the SRV records that name most big servers
+     * (Android has no resolv.conf to read them from); empty when there is no network. */
+    public String[] dnsServers() {
+        ConnectivityManager connectivity =
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        Network network = connectivity == null ? null : connectivity.getActiveNetwork();
+        LinkProperties link = network == null ? null : connectivity.getLinkProperties(network);
+        if (link == null) {
+            return new String[0];
+        }
+        List<InetAddress> servers = link.getDnsServers();
+        String[] out = new String[servers.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = servers.get(i).getHostAddress();
+        }
+        return out;
     }
 
     /** The clipboard's text, or null when it holds none. */

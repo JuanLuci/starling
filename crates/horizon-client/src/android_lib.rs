@@ -137,6 +137,27 @@ fn clipboard_set(text: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// The active network's DNS servers (StarlingActivity.dnsServers), for SRV lookups.
+fn dns_servers() -> Vec<std::net::SocketAddr> {
+    with_activity(|env, activity| {
+        let list = env
+            .call_method(activity, "dnsServers", "()[Ljava/lang/String;", &[])?
+            .l()?;
+        let list = jni::objects::JObjectArray::from(list);
+        let mut servers = Vec::new();
+        for i in 0..env.get_array_length(&list)? {
+            let ip = env.get_object_array_element(&list, i)?;
+            let ip = String::from(env.get_string(&ip.into())?);
+            // An IPv6 server may carry its interface (`fe80::1%wlan0`).
+            if let Ok(ip) = ip.split('%').next().unwrap_or_default().parse() {
+                servers.push(std::net::SocketAddr::new(ip, 53));
+            }
+        }
+        Ok(servers)
+    })
+    .unwrap_or_default()
+}
+
 /// The system's browser on an https:// page, by StarlingActivity.openLink.
 fn open_link(url: &str) -> bool {
     with_activity(|env, activity| {
@@ -658,6 +679,7 @@ fn android_main(app: AndroidApp) {
         seal: seal_secret,
         open: open_secret,
     });
+    horizon_protocol::set_name_servers(dns_servers);
     logging::init(&home, "Render thread");
     crash::install(home.clone(), "client");
     log::info!(

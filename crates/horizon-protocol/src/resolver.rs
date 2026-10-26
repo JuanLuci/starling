@@ -4,6 +4,17 @@
 //! still uses that original address.
 use crate::{Error, Result};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::OnceLock;
+
+/// Where the name servers come from where the system has no resolv.conf to read: Android's
+/// active network, through its activity (horizon-android). Asked at each lookup, since the
+/// network changes (Wi-Fi, mobile data).
+static NAME_SERVERS: OnceLock<fn() -> Vec<SocketAddr>> = OnceLock::new();
+
+/// Sets, once, where the SRV lookups find their name servers.
+pub fn set_name_servers(source: fn() -> Vec<SocketAddr>) {
+    let _ = NAME_SERVERS.set(source);
+}
 
 mod dns;
 
@@ -38,7 +49,10 @@ fn resolve_with(
 }
 
 fn srv_redirect(name: &str) -> Option<(String, u16)> {
-    dns::query_srv(name, &dns::system_name_servers(), dns::SERVER_TIMEOUT)
+    let servers = NAME_SERVERS
+        .get()
+        .map_or_else(dns::system_name_servers, |source| source());
+    dns::query_srv(name, &servers, dns::SERVER_TIMEOUT)
 }
 
 #[cfg(test)]

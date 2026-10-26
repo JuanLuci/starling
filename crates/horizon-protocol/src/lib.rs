@@ -13,6 +13,7 @@ pub mod item;
 pub mod packets;
 pub mod registry;
 mod resolver;
+pub use resolver::set_name_servers;
 pub mod rsa;
 pub mod secure_chat;
 pub mod servers;

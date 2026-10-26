@@ -7,6 +7,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="@APPLICATION_ID@">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The active network's DNS servers, for servers named by an SRV record. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- The Starling folder in shared storage (Android 11 and up; before, the two below). -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
