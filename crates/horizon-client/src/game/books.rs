@@ -3,7 +3,7 @@
 //! pixels, 1024 characters, 100 pages), signing it into a written book,
 //! reading written books, and lecterns (placing a book, turning its pages
 //! with a redstone pulse, the comparator output and taking the book).
-use super::{Game, lan::LanHost};
+use super::{Game, Screen, lan::LanHost};
 use horizon_client::{
     containers::{BlockEntity, Lectern},
     first_person::Hand,
@@ -124,6 +124,22 @@ impl Game<'_> {
             g.book_screen(&stack.clone())
         });
         if let Some(screen) = screen {
+            // ClientboundOpenBookPacket: setScreen(BookViewScreen) replaces the screen the
+            // player had open (PikaNetwork shows its notices this way over an inventory),
+            // which leaves the inventory or the creative tabs as Escape does.
+            match self.screen {
+                Screen::Inventory => {
+                    self.close_container();
+                    self.screen = Screen::Playing;
+                }
+                Screen::Creative => {
+                    if let Some(c) = self.carried.take() {
+                        let _ = self.give(c);
+                    }
+                    self.screen = Screen::Playing;
+                }
+                _ => {}
+            }
             self.open_book(screen);
         }
     }

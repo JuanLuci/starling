@@ -3710,7 +3710,10 @@ impl Game<'_> {
                 data: 0,
             }));
         }
-        self.remote_send_state(input);
+        // LocalPlayer.tick sends the input after aiStep, where an auto-jump pressed jump
+        // (input.makeJump): a server's anticheat refuses a jump its input never showed.
+        let auto_jumped = self.player.as_ref().is_some_and(|p| p.was_auto_jump);
+        self.remote_send_state(if auto_jumped { input | 1 << 4 } else { input });
         Ok(())
     }
     /// The local player's share of every touching entity's
