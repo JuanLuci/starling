@@ -157,6 +157,12 @@ pub(super) struct Remote {
     view_distance: i32,
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
+    /// When the last tick ended to the server, and the last movement packet went: an old
+    /// server behind ViaVersion (its anticheat) wants one every tick, so gaps are logged.
+    tick_end_at: Option<Instant>,
+    moved_at: Option<Instant>,
+    /// When the play phase began (login or the end of a reconfiguration).
+    play_began: Option<Instant>,
     last_input: u8,
     was_sprinting: bool,
     carried: Option<usize>,
@@ -271,6 +277,9 @@ const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
 /// whatever their cost: the packets after a slow machine's chunks never
 /// wait more than a tick.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+/// A gap in the ticks or movement sent to the server worth a log line (an old server's
+/// anticheat behind ViaVersion counts on one each tick, and a reminder every 20).
+const GAP_LOGGED: Duration = Duration::from_millis(1100);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -282,6 +291,9 @@ impl Remote {
         self.entity_id = 0;
         self.sequence = 0;
         self.position_sender = Default::default();
+        self.tick_end_at = None;
+        self.moved_at = None;
+        self.play_began = None;
         self.last_input = 0;
         self.was_sprinting = false;
         self.carried = None;
@@ -526,6 +538,9 @@ impl Game<'_> {
             view_distance: self.settings.render_distance,
             sequence: 0,
             position_sender: Default::default(),
+            tick_end_at: None,
+            moved_at: None,
+            play_began: None,
             last_input: 0,
             was_sprinting: false,
             carried: None,
@@ -861,6 +876,7 @@ impl Game<'_> {
                     self.close_dialogs();
                     if let Some(r) = self.remote.as_mut() {
                         r.joined = true;
+                        r.play_began = Some(Instant::now());
                         r.profile = uuid;
                         r.profile_name = name.clone();
                         // LevelLoadingScreen's line: no player name.
@@ -895,6 +911,7 @@ impl Game<'_> {
                     self.set_registries(registries);
                     if let Some(r) = self.remote.as_mut() {
                         r.joined = true;
+                        r.play_began = Some(Instant::now());
                         r.status = horizon_client::lang::get_or(
                             "multiplayer.downloadingTerrain",
                             "Loading terrain...",
@@ -3324,13 +3341,20 @@ impl Game<'_> {
                 {
                     r.setbacks += 1;
                     if r.setbacks <= 5 || r.setbacks % 50 == 0 {
+                        // What tells the causes apart: whether the server took any move (the
+                        // last one sent, and when), and which teleport this is.
+                        let [sx, sy, sz] = r.position_sender.last_sent();
                         log::info!(
                             "Horizon: the server moved the player back {back:.2} blocks to \
-                             {:.2} {:.2} {:.2} ({} times)",
+                             {:.2} {:.2} {:.2} ({} times; teleport {}, relatives {:#x}; last \
+                             sent {sx:.2} {sy:.2} {sz:.2}, {} ms ago)",
                             position.x,
                             position.y,
                             position.z,
-                            r.setbacks
+                            r.setbacks,
+                            p.teleport,
+                            p.relatives,
+                            r.moved_at.map_or(-1, |at| at.elapsed().as_millis() as i64)
                         );
                     }
                 }
@@ -3382,6 +3406,17 @@ impl Game<'_> {
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {
             self.send(S::ClientTickEnd(Empty));
+            if let Some(r) = self.remote.as_mut() {
+                let now = Instant::now();
+                if let Some(gap) = r.tick_end_at.replace(now).map(|at| now - at)
+                    && gap >= GAP_LOGGED
+                {
+                    log::info!(
+                        "Horizon: {} ms between two ticks ended to the server",
+                        gap.as_millis()
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -3482,6 +3517,11 @@ impl Game<'_> {
             self.send(S::PlayerLoaded(Empty));
             if let Some(r) = self.remote.as_mut() {
                 r.loaded_sent = true;
+                log::info!(
+                    "Horizon: the level around the player was ready {} ms after the play phase \
+                     began",
+                    r.play_began.map_or(0, |at| at.elapsed().as_millis())
+                );
             }
             self.capture_loaded_world();
         }
@@ -3958,6 +3998,18 @@ impl Game<'_> {
             r.position_sender
                 .update(pos, (yaw, pitch), on_ground, collision)
         {
+            let now = Instant::now();
+            match r.moved_at.replace(now).map(|at| now - at) {
+                Some(gap) if gap >= GAP_LOGGED => log::info!(
+                    "Horizon: {} ms between two movement packets",
+                    gap.as_millis()
+                ),
+                Some(_) => {}
+                None => log::info!(
+                    "Horizon: the first movement packet {} ms after the play phase began",
+                    r.play_began.map_or(0, |at| (now - at).as_millis())
+                ),
+            }
             out.push(packet);
         }
         // Creative inventory edits are sent slot by slot (SetCreativeModeSlot).

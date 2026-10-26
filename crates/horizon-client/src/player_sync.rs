@@ -14,6 +14,10 @@ pub struct PositionSender {
 }
 
 impl PositionSender {
+    /// The position the server was last told (the baseline of the next move).
+    pub fn last_sent(&self) -> [f64; 3] {
+        self.position
+    }
     pub fn update(
         &mut self,
         position: [f64; 3],
