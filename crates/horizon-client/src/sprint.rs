@@ -22,18 +22,70 @@ impl Keys {
             None => input::keyboard_direction(self.forward, self.backward, self.left, self.right),
         }
     }
-    /// Add a stick's move vector: the direction flags code reading keys
-    /// (sprint, vehicles, the server's input packet) see are set past a
-    /// third of the travel.
+    /// Add a stick's move vector: past a third of its travel it presses the keys of the
+    /// nearest of their eight directions, which the code reading keys sees (sprint, vehicles,
+    /// the server's input packet, and a server's movement: `analog` cleared).
     pub fn with_stick(mut self, stick: Option<[f32; 2]>) -> Self {
         if let Some([left, forward]) = stick {
-            self.forward |= forward > 0.3;
-            self.backward |= forward < -0.3;
-            self.left |= left > 0.3;
-            self.right |= left < -0.3;
+            if left.hypot(forward) > 0.3 {
+                // 0 straight ahead, a quarter turn to the left.
+                let eighth = (left.atan2(forward) / std::f32::consts::FRAC_PI_4).round() as i32;
+                let (f, l) = [
+                    (1, 0),
+                    (1, 1),
+                    (0, 1),
+                    (-1, 1),
+                    (-1, 0),
+                    (-1, -1),
+                    (0, -1),
+                    (1, -1),
+                ][eighth.rem_euclid(8) as usize];
+                self.forward |= f > 0;
+                self.backward |= f < 0;
+                self.left |= l > 0;
+                self.right |= l < 0;
+            }
             self.analog = Some([left, forward]);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod stick_tests {
+    use super::Keys;
+
+    fn pressed(stick: [f32; 2]) -> (bool, bool, bool, bool) {
+        let k = Keys::default().with_stick(Some(stick));
+        (k.forward, k.backward, k.left, k.right)
+    }
+
+    #[test]
+    fn a_stick_presses_the_keys_of_the_nearest_of_eight_directions() {
+        // [left, forward]: a half-tilt diagonal is a diagonal, however far it is pushed.
+        assert_eq!(pressed([0.0, 0.6]), (true, false, false, false));
+        assert_eq!(pressed([-0.3, 0.34]), (true, false, false, true));
+        assert_eq!(pressed([0.5, 0.1]), (false, false, true, false));
+        assert_eq!(pressed([0.4, -0.45]), (false, true, true, false));
+        assert_eq!(pressed([0.0, -1.0]), (false, true, false, false));
+        // Within a third of its travel it presses nothing.
+        assert_eq!(pressed([0.15, 0.2]), (false, false, false, false));
+        // 20 degrees off ahead is still ahead; 25 degrees is the diagonal.
+        let at = |deg: f32| [deg.to_radians().sin(), deg.to_radians().cos()];
+        assert_eq!(pressed(at(20.0)), (true, false, false, false));
+        assert_eq!(pressed(at(25.0)), (true, false, true, false));
+    }
+
+    #[test]
+    fn keys_move_the_eight_ways_at_full_speed_once_the_analog_vector_is_gone() {
+        let mut k = Keys::default().with_stick(Some([-0.3, 0.34]));
+        assert_eq!(k.direction(), [-0.3, 0.34]);
+        k.analog = None;
+        let [l, f] = k.direction();
+        assert!(
+            (l.hypot(f) - 1.0).abs() < 1e-4 && (l + f).abs() < 1e-4,
+            "{l} {f}"
+        );
     }
 }
 #[derive(Clone, Copy, Debug, Default)]

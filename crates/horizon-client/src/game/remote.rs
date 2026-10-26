@@ -3584,7 +3584,7 @@ impl Game<'_> {
         }
         let playing = self.screen == Screen::Playing;
         let held = |k| playing && self.keys.contains(&k);
-        let keys = Keys {
+        let mut keys = Keys {
             forward: held(KeyCode::KeyW),
             backward: held(KeyCode::KeyS),
             left: held(KeyCode::KeyA),
@@ -3595,6 +3595,17 @@ impl Game<'_> {
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
+        // A server's anticheat simulates Java's keys: eight directions at full speed. A stick's
+        // own angle and tilt (the touch stick's, a pad's) it refuses move after move
+        // (PikaNetwork's game servers), so on a server the stick presses the keys it points
+        // at. Single player and a LAN host keep it analog.
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.session.address != "local")
+        {
+            keys.analog = None;
+        }
         let input = u8::from(keys.forward)
             | u8::from(keys.backward) << 1
             | u8::from(keys.left) << 2
