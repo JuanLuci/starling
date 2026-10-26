@@ -166,6 +166,9 @@ pub(super) struct Remote {
     /// This second's movement packets and ticks ended, from when: a second over 20 of
     /// either is logged (an old server's anticheat counts them against the time passed).
     rate: (Option<Instant>, u32, u32),
+    /// The last movement packets sent: position, on ground, input flags and when. The
+    /// first setback logs them, the path an anticheat refused.
+    trail: std::collections::VecDeque<([f64; 3], bool, u8, Instant)>,
     last_input: u8,
     was_sprinting: bool,
     carried: Option<usize>,
@@ -283,6 +286,8 @@ const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 /// A gap in the ticks or movement sent to the server worth a log line (an old server's
 /// anticheat behind ViaVersion counts on one each tick, and a reminder every 20).
 const GAP_LOGGED: Duration = Duration::from_millis(1100);
+/// How many movement packets the first setback's log line shows.
+const TRAIL: usize = 12;
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -317,6 +322,7 @@ impl Remote {
         self.moved_at = None;
         self.play_began = None;
         self.rate = (None, 0, 0);
+        self.trail.clear();
         self.last_input = 0;
         self.was_sprinting = false;
         self.carried = None;
@@ -565,6 +571,7 @@ impl Game<'_> {
             moved_at: None,
             play_began: None,
             rate: (None, 0, 0),
+            trail: Default::default(),
             last_input: 0,
             was_sprinting: false,
             carried: None,
@@ -3386,6 +3393,21 @@ impl Game<'_> {
                             p.relatives,
                             r.moved_at.map_or(-1, |at| at.elapsed().as_millis() as i64)
                         );
+                        if r.setbacks == 1 || r.setbacks % 50 == 0 {
+                            let now = Instant::now();
+                            let trail: Vec<String> = r
+                                .trail
+                                .iter()
+                                .map(|([x, y, z], ground, input, at)| {
+                                    format!(
+                                        "-{}ms {x:.3} {y:.3} {z:.3} {}{input:#04x}",
+                                        (now - *at).as_millis(),
+                                        if *ground { "ground " } else { "air " }
+                                    )
+                                })
+                                .collect();
+                            log::info!("Horizon: the moves before it: {}", trail.join(" | "));
+                        }
                     }
                 }
                 player.position = position;
@@ -4030,6 +4052,11 @@ impl Game<'_> {
                 .update(pos, (yaw, pitch), on_ground, collision)
         {
             r.count_rate(1, 0);
+            if r.trail.len() == TRAIL {
+                r.trail.pop_front();
+            }
+            r.trail
+                .push_back((pos, on_ground, r.last_input, Instant::now()));
             let now = Instant::now();
             match r.moved_at.replace(now).map(|at| now - at) {
                 Some(gap) if gap >= GAP_LOGGED => log::info!(
