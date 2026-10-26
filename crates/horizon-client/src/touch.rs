@@ -202,8 +202,9 @@ pub struct Extra {
 pub struct LayoutConfig {
     pub stick: Place,
     /// Bedrock's D-pad in the stick's place (four arrows, the corners between them diagonals,
-    /// up tapped twice to sprint) instead of the stick. Its middle holds nothing yet.
-    pub dpad: bool,
+    /// up tapped twice to sprint) instead of the stick: always, never, or when none was picked
+    /// (`None`) on a server where the stick moves as the keys. Its middle holds nothing yet.
+    pub dpad: Option<bool>,
     pub buttons: Vec<(Button, Place)>,
     pub extra: Vec<Extra>,
     pub opacity: f32,
@@ -215,7 +216,7 @@ impl Default for LayoutConfig {
     fn default() -> Self {
         LayoutConfig {
             stick: place(0.12, 0.733, 1.3),
-            dpad: false,
+            dpad: None,
             buttons: vec![
                 (Button::Jump, place(0.905, 0.7556, 0.8)),
                 (Button::Sneak, place(0.805, 0.8556, 0.6)),
@@ -264,7 +265,12 @@ impl LayoutConfig {
         if let Some(opacity) = value["opacity"].as_f64() {
             config.opacity = (opacity as f32).clamp(MIN_OPACITY, 1.0);
         }
-        config.dpad = value["movement"].as_str() == Some("dpad");
+        // "stick" was what an unpicked layout saved before "auto".
+        config.dpad = match value["movement"].as_str() {
+            Some("dpad") => Some(true),
+            Some("analog") => Some(false),
+            _ => None,
+        };
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
@@ -307,7 +313,11 @@ impl LayoutConfig {
         let value = json!({
             "version": 2,
             "opacity": self.opacity,
-            "movement": if self.dpad { "dpad" } else { "stick" },
+            "movement": match self.dpad {
+                Some(true) => "dpad",
+                Some(false) => "analog",
+                None => "auto",
+            },
             "stick": entry(&self.stick),
             "buttons": buttons,
             "mods": mods,
@@ -444,7 +454,7 @@ impl Layout {
             stick_home: [config.stick.x * w, config.stick.y * h],
             stick_radius: config.stick.size * u,
             stick_alpha: config.alpha(&config.stick),
-            dpad: config.dpad,
+            dpad: config.dpad == Some(true),
             buttons: config
                 .buttons
                 .iter()
@@ -1018,7 +1028,11 @@ impl LayoutEditor {
                         *config = LayoutConfig::default();
                     }
                     if action == EditorAction::Movement {
-                        config.dpad = !config.dpad;
+                        config.dpad = match config.dpad {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
                     }
                     return Some(action);
                 }
@@ -1559,10 +1573,15 @@ mod tests {
     fn the_dpad_walks_stands_still_in_the_middle_and_sprints_on_up_tapped_twice() {
         let (w, h) = (3200.0, 1440.0);
         let config = LayoutConfig {
-            dpad: true,
+            dpad: Some(true),
             ..LayoutConfig::default()
         };
-        assert!(LayoutConfig::from_json(&config.to_json()).dpad);
+        assert_eq!(LayoutConfig::from_json(&config.to_json()).dpad, Some(true));
+        // A layout saved before the choice had "auto": the old unpicked "stick" reads as it.
+        assert_eq!(
+            LayoutConfig::from_json(r#"{"movement": "stick"}"#).dpad,
+            None
+        );
         let layout = Layout::from_config(&config, w, h, 4.0);
         let [x, y] = layout.stick_home;
         let third = layout.stick_radius * 2.0 / 3.0;

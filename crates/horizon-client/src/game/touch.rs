@@ -161,9 +161,15 @@ impl Game<'_> {
             Some(config) => Layout::from_config(config, w as f32, h as f32, scale),
             None => Layout::new(w as f32, h as f32, scale),
         };
-        // The stick moving as the keys on this server: their eight directions on screen.
-        layout.dpad |= self.remote_stick_mode() == Some(ServerStick::Keys);
+        layout.dpad = self.touch_dpad();
         layout
+    }
+
+    /// Whether the D-pad moves the player: as the layout picked, else when the stick moves as the
+    /// keys on this server (their eight directions on screen).
+    fn touch_dpad(&self) -> bool {
+        let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
+        picked.unwrap_or(self.remote_stick_mode() == Some(ServerStick::Keys))
     }
 
     fn touch_layout_path() -> Result<std::path::PathBuf> {
@@ -636,6 +642,8 @@ impl Game<'_> {
             label(&mut ui, c, r, "X", ink(1.0));
         } else if let (Some(editor), Some(config)) = (&self.touch.editor, &self.touch.config) {
             let (w, h) = (layout.width, layout.height);
+            // The movement control as it moves the player now.
+            let dpad = layout.dpad;
             ui.fill(0.0, 0.0, w / d, h / d, color::with_alpha(color::BG, 0.45));
             for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
                 // As it will look (at least faintly, to be found again), outlined if a ghost.
@@ -643,7 +651,7 @@ impl Game<'_> {
                 let shape = match target {
                     Target::Extra(i) => config.extra[i].shape,
                     Target::Button(b) => self.control_face(b).shape,
-                    Target::Stick if config.dpad => Shape::Square,
+                    Target::Stick if dpad => Shape::Square,
                     Target::Stick => Shape::Round,
                 };
                 match place.show {
@@ -656,7 +664,7 @@ impl Game<'_> {
                 }
                 let name;
                 let text = match target {
-                    Target::Stick if config.dpad => "D-pad",
+                    Target::Stick if dpad => "D-pad",
                     Target::Stick => "Move",
                     Target::Button(b) => {
                         name = self.control_face(b).label;
@@ -756,13 +764,17 @@ impl Game<'_> {
                     }
                 };
                 circle(&mut ui, c, r, fill);
-                let dpad = self.touch.config.as_ref().is_some_and(|c| c.dpad);
+                let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
                 let text = match action {
                     EditorAction::Done => "Done",
                     EditorAction::Reset => "Reset",
-                    // What moves the player now (a press switches it).
-                    EditorAction::Movement if dpad => "D-pad",
-                    EditorAction::Movement => "Stick",
+                    // The movement control picked (a press switches it): auto is the D-pad
+                    // where the stick moves as the keys.
+                    EditorAction::Movement => match picked {
+                        Some(true) => "D-pad",
+                        Some(false) => "Stick",
+                        None => "Auto",
+                    },
                 };
                 label(&mut ui, c, r, text, ink(1.0));
             }
