@@ -600,19 +600,14 @@ impl Title {
                         true,
                         4,
                     ),
-                    // Realms (never enabled) is Starling's account where the game signs in itself.
-                    if crate::accounts::in_game() {
-                        b(cx - 100.0, y + 48.0, 200.0, &account::main_label(), true, 8)
-                    } else {
-                        b(
-                            cx - 100.0,
-                            y + 48.0,
-                            200.0,
-                            &lang::get_or("menu.online", "Minecraft Realms"),
-                            false,
-                            0,
-                        )
-                    },
+                    b(
+                        cx - 100.0,
+                        y + 48.0,
+                        200.0,
+                        &lang::get_or("menu.online", "Minecraft Realms"),
+                        false,
+                        0,
+                    ),
                     b(
                         cx - 100.0,
                         y + 96.0,
@@ -655,6 +650,11 @@ impl Title {
                     );
                     button.icon = Some((icon, 15.0));
                     buttons.push(button);
+                }
+                // Starling's account, where the game signs in itself: in the top left corner,
+                // clear of the logo, so vanilla's buttons stay as they are.
+                if crate::accounts::in_game() {
+                    buttons.push(b(4.0, 4.0, 120.0, &account::main_label(), true, 8));
                 }
                 buttons
             }

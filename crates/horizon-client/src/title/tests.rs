@@ -824,3 +824,20 @@ fn world_fields_edit_at_their_cursor() {
     f.title.field_key(KeyCode::Backspace, false, false);
     assert_eq!(f.title.search, "world");
 }
+
+#[test]
+fn the_account_screen_offers_signing_in_and_goes_back() {
+    let mut f = Fixture::new();
+    // Only where the game signs in itself (Android): the title keeps vanilla's buttons here.
+    assert!(f.title.buttons(480.0, 262.0).iter().all(|b| b.id != 8));
+    f.title.mode = Mode::Account;
+    let labels: Vec<String> = f
+        .title
+        .buttons(480.0, 262.0)
+        .into_iter()
+        .map(|b| b.label)
+        .collect();
+    assert_eq!(labels, ["Sign in", "Done"]);
+    assert_eq!(f.click_with_sound("Done"), (Action::None, true));
+    assert!(matches!(f.title.mode, Mode::Main));
+}

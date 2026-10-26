@@ -54,8 +54,8 @@ What the Android port covers so far. The game itself is Horizon's: its parity au
 | Shader packs | <img src="docs/media/progress/20.svg" alt="20%"> | Built in, not tried on Android yet |
 | Open to LAN and invites | <img src="docs/media/progress/10.svg" alt="10%"> | Not tried on Android yet |
 | Physical controllers | <img src="docs/media/progress/0.svg" alt="0%"> | No Android backend yet |
-| Preparing the game files on the phone | <img src="docs/media/progress/0.svg" alt="0%"> | Needs a computer today |
-| Microsoft account sign-in | <img src="docs/media/progress/0.svg" alt="0%"> | Not yet: online-mode servers can't be joined |
+| Preparing the game files on the phone | <img src="docs/media/progress/20.svg" alt="20%"> | The official files download on the phone for an owner; preparing them still needs Java and a computer |
+| Microsoft account sign-in | <img src="docs/media/progress/50.svg" alt="50%"> | In the game (the title screen's corner), for online-mode servers; not tried on a phone yet |
 
 ## Mods
 
