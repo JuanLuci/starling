@@ -201,6 +201,9 @@ pub struct Extra {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutConfig {
     pub stick: Place,
+    /// Bedrock's D-pad in the stick's place (four arrows, the corners between them diagonals,
+    /// up tapped twice to sprint) instead of the stick. Its middle holds nothing yet.
+    pub dpad: bool,
     pub buttons: Vec<(Button, Place)>,
     pub extra: Vec<Extra>,
     pub opacity: f32,
@@ -212,6 +215,7 @@ impl Default for LayoutConfig {
     fn default() -> Self {
         LayoutConfig {
             stick: place(0.12, 0.733, 1.3),
+            dpad: false,
             buttons: vec![
                 (Button::Jump, place(0.905, 0.7556, 0.8)),
                 (Button::Sneak, place(0.805, 0.8556, 0.6)),
@@ -260,6 +264,7 @@ impl LayoutConfig {
         if let Some(opacity) = value["opacity"].as_f64() {
             config.opacity = (opacity as f32).clamp(MIN_OPACITY, 1.0);
         }
+        config.dpad = value["movement"].as_str() == Some("dpad");
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
@@ -302,6 +307,7 @@ impl LayoutConfig {
         let value = json!({
             "version": 2,
             "opacity": self.opacity,
+            "movement": if self.dpad { "dpad" } else { "stick" },
             "stick": entry(&self.stick),
             "buttons": buttons,
             "mods": mods,
@@ -401,6 +407,9 @@ pub struct Layout {
     pub stick_home: [f32; 2],
     pub stick_radius: f32,
     pub stick_alpha: f32,
+    /// The D-pad instead of the stick: centred on `stick_home`, `stick_radius` from its middle
+    /// to an edge.
+    pub dpad: bool,
     /// The buttons that work: centre, radius, and how opaque they are drawn (0 for a ghost).
     pub buttons: Vec<(Button, [f32; 2], f32, f32)>,
     /// The mods' buttons that work, the same way: their index in [`LayoutConfig::extra`], and
@@ -435,6 +444,7 @@ impl Layout {
             stick_home: [config.stick.x * w, config.stick.y * h],
             stick_radius: config.stick.size * u,
             stick_alpha: config.alpha(&config.stick),
+            dpad: config.dpad,
             buttons: config
                 .buttons
                 .iter()
@@ -454,6 +464,38 @@ impl Layout {
             hotbar: [hotbar_left, (gui_h - 22.0) * s, 20.0 * s],
             close: ([w - 0.8 * u, 0.8 * u], 0.5 * u),
         }
+    }
+    /// The D-pad's cell under `p`: its column and row, -1..1 from the middle (`[0, -1]` the up
+    /// arrow, the corners diagonals); None off the pad.
+    pub fn dpad_cell(&self, p: [f32; 2]) -> Option<[i8; 2]> {
+        if !self.dpad {
+            return None;
+        }
+        let half = self.stick_radius;
+        let (dx, dy) = (p[0] - self.stick_home[0], p[1] - self.stick_home[1]);
+        if dx.abs() > half * 1.1 || dy.abs() > half * 1.1 {
+            return None;
+        }
+        let cell = |d: f32| {
+            if d < -half / 3.0 {
+                -1
+            } else if d > half / 3.0 {
+                1
+            } else {
+                0
+            }
+        };
+        Some([cell(dx), cell(dy)])
+    }
+    /// The D-pad's arrows as drawn: each one's cell, centre and half size.
+    pub fn dpad_buttons(&self) -> [([i8; 2], [f32; 2], f32); 4] {
+        let third = self.stick_radius * 2.0 / 3.0;
+        let [x, y] = self.stick_home;
+        let at = |c: [i8; 2]| {
+            let centre = [x + f32::from(c[0]) * third, y + f32::from(c[1]) * third];
+            (c, centre, third * 0.46)
+        };
+        [at([0, -1]), at([-1, 0]), at([1, 0]), at([0, 1])]
     }
     /// Whether `p` presses the close button.
     pub fn close_at(&self, p: [f32; 2]) -> bool {
@@ -514,8 +556,37 @@ enum Role {
         attacking: bool,
     },
     Button(Button, Instant),
+    /// A finger on the D-pad: the cell it is on (None off the pad) and whether it sprints.
+    DPad {
+        cell: Option<[i8; 2]>,
+        sprinting: bool,
+    },
     /// A finger on the hotbar, or one that landed on nothing that takes it.
     Spent,
+}
+
+/// Up tapped twice this quickly sprints (Bedrock's D-pad).
+const DOUBLE_TAP: Duration = Duration::from_millis(300);
+
+/// The D-pad finger going from one cell to another: an arrow (a corner, two) moves as the stick
+/// would at full tilt; the middle stands still.
+fn dpad_step(from: Option<[i8; 2]>, to: Option<[i8; 2]>) -> Vec<Action> {
+    let mut out = Vec::new();
+    if from == to {
+        return out;
+    }
+    let vector = |c: Option<[i8; 2]>| match c {
+        Some([x, y]) if [x, y] != [0, 0] => {
+            let v = [f32::from(x), -f32::from(y)];
+            let len = v[0].hypot(v[1]);
+            [v[0] / len, v[1] / len]
+        }
+        _ => [0.0, 0.0],
+    };
+    if vector(from) != vector(to) {
+        out.push(Action::Stick(vector(to)));
+    }
+    out
 }
 
 #[derive(Default)]
@@ -525,6 +596,9 @@ pub struct TouchControls {
     landed: Vec<Instant>,
     /// Where the stick is drawn and how far it is pushed.
     pub stick: Option<([f32; 2], [f32; 2])>,
+    /// The D-pad cell held now, and when up was last let go (twice quickly sprints).
+    pub dpad: Option<[i8; 2]>,
+    dpad_up_at: Option<Instant>,
 }
 
 impl TouchControls {
@@ -548,7 +622,27 @@ impl TouchControls {
                 } else if let Some(slot) = layout.slot_at(p) {
                     out.push(Action::Slot(slot));
                     Role::Spent
-                } else if p[0] < layout.stick_right
+                } else if let Some(cell) = layout.dpad_cell(p).filter(|_| {
+                    !self
+                        .fingers
+                        .iter()
+                        .any(|(_, r)| matches!(r, Role::DPad { .. }))
+                }) {
+                    out.extend(dpad_step(None, Some(cell)));
+                    self.dpad = Some(cell);
+                    let sprinting = cell[1] == -1
+                        && self
+                            .dpad_up_at
+                            .is_some_and(|at| now.duration_since(at) < DOUBLE_TAP);
+                    if sprinting {
+                        out.push(Action::Sprint(true));
+                    }
+                    Role::DPad {
+                        cell: Some(cell),
+                        sprinting,
+                    }
+                } else if !layout.dpad
+                    && p[0] < layout.stick_right
                     && p[1] > layout.stick_top
                     && !self
                         .fingers
@@ -626,6 +720,17 @@ impl TouchControls {
                         }
                         *last = p;
                     }
+                    Role::DPad { cell, sprinting } => {
+                        let to = layout.dpad_cell(p);
+                        out.extend(dpad_step(*cell, to));
+                        *cell = to;
+                        self.dpad = to;
+                        // Sprint lasts while the finger stays on the forward row.
+                        if *sprinting && to.is_none_or(|c| c[1] != -1) {
+                            *sprinting = false;
+                            out.push(Action::Sprint(false));
+                        }
+                    }
                     Role::Button(..) | Role::Spent => {}
                 }
             }
@@ -663,6 +768,17 @@ impl TouchControls {
                 } else {
                     Vec::new()
                 }
+            }
+            Role::DPad { cell, sprinting } => {
+                let mut out = dpad_step(cell, None);
+                if sprinting {
+                    out.push(Action::Sprint(false));
+                }
+                if cell.is_some_and(|c| c == [0, -1]) {
+                    self.dpad_up_at = Some(now);
+                }
+                self.dpad = None;
+                out
             }
             Role::Button(Button::Pause, _) if ended => vec![Action::Press(Button::Pause)],
             Role::Button(Button::Pause, _) => Vec::new(),
@@ -744,6 +860,8 @@ pub enum Chip {
 pub enum EditorAction {
     Done,
     Reset,
+    /// The stick or the D-pad.
+    Movement,
 }
 
 /// The layout editor: drag a control to move it; the one last touched gets chips to make it
@@ -763,7 +881,7 @@ const SIZE_STEP: f32 = 0.1;
 
 impl LayoutEditor {
     /// Done and Reset, near the top centre, under the row of buttons the default layout puts there.
-    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 2] {
+    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 3] {
         let u = unit(width, height);
         [
             (
@@ -776,6 +894,7 @@ impl LayoutEditor {
                 [width / 2.0 + 1.4 * u, 2.6 * u],
                 0.6 * u,
             ),
+            (EditorAction::Movement, [width / 2.0, 2.6 * u], 0.6 * u),
         ]
     }
 
@@ -897,6 +1016,9 @@ impl LayoutEditor {
                 {
                     if action == EditorAction::Reset {
                         *config = LayoutConfig::default();
+                    }
+                    if action == EditorAction::Movement {
+                        config.dpad = !config.dpad;
                     }
                     return Some(action);
                 }
@@ -1431,6 +1553,57 @@ mod tests {
             Some(EditorAction::Reset)
         );
         assert_eq!(config, LayoutConfig::default());
+    }
+
+    #[test]
+    fn the_dpad_walks_stands_still_in_the_middle_and_sprints_on_up_tapped_twice() {
+        let (w, h) = (3200.0, 1440.0);
+        let config = LayoutConfig {
+            dpad: true,
+            ..LayoutConfig::default()
+        };
+        assert!(LayoutConfig::from_json(&config.to_json()).dpad);
+        let layout = Layout::from_config(&config, w, h, 4.0);
+        let [x, y] = layout.stick_home;
+        let third = layout.stick_radius * 2.0 / 3.0;
+        let up = [x, y - third];
+        let middle = [x, y];
+        let up_left = [x - third, y - third];
+        let mut t = TouchControls::default();
+        let now = Instant::now();
+        assert_eq!(
+            t.event(&layout, 1, TouchPhase::Started, up, now),
+            [Action::Stick([0.0, 1.0])]
+        );
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(
+            t.event(&layout, 1, TouchPhase::Moved, up_left, now),
+            [Action::Stick([-s, s])]
+        );
+        assert_eq!(
+            t.event(&layout, 1, TouchPhase::Moved, middle, now),
+            [Action::Stick([0.0, 0.0])]
+        );
+        assert!(!t.held(Button::Sneak));
+        assert_eq!(t.event(&layout, 1, TouchPhase::Ended, middle, now), []);
+        // Up, let go, up again quickly: sprint while the finger stays on the forward row.
+        t.event(&layout, 2, TouchPhase::Started, up, now);
+        t.event(&layout, 2, TouchPhase::Ended, up, now);
+        let again = now + Duration::from_millis(150);
+        assert_eq!(
+            t.event(&layout, 3, TouchPhase::Started, up, again),
+            [Action::Stick([0.0, 1.0]), Action::Sprint(true)]
+        );
+        assert_eq!(
+            t.event(&layout, 3, TouchPhase::Moved, middle, again),
+            [Action::Stick([0.0, 0.0]), Action::Sprint(false)]
+        );
+        // Off the pad the left side turns the view, as anywhere without a control.
+        let far = [
+            layout.stick_home[0] + layout.stick_radius * 2.0,
+            layout.stick_home[1],
+        ];
+        assert!(layout.dpad_cell(far).is_none());
     }
 
     #[test]

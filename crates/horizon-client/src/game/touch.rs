@@ -744,12 +744,18 @@ impl Game<'_> {
             for (action, c, r) in LayoutEditor::bar(w, h) {
                 let fill = match action {
                     EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
-                    EditorAction::Reset => color::with_alpha(color::BG, 0.85),
+                    EditorAction::Reset | EditorAction::Movement => {
+                        color::with_alpha(color::BG, 0.85)
+                    }
                 };
                 circle(&mut ui, c, r, fill);
+                let dpad = self.touch.config.as_ref().is_some_and(|c| c.dpad);
                 let text = match action {
                     EditorAction::Done => "Done",
                     EditorAction::Reset => "Reset",
+                    // What a press switches to.
+                    EditorAction::Movement if dpad => "Stick",
+                    EditorAction::Movement => "D-pad",
                 };
                 label(&mut ui, c, r, text, ink(1.0));
             }
@@ -765,7 +771,28 @@ impl Game<'_> {
             } else {
                 layout.stick_alpha
             };
-            if a > 0.0 {
+            if layout.dpad {
+                // Bedrock's D-pad: four arrows, the one held lit; the middle holds nothing yet.
+                let a = layout.stick_alpha.max(0.35);
+                let held = self.touch.controls.dpad;
+                for (cell, c, half) in layout.dpad_buttons() {
+                    let on = held == Some(cell);
+                    plate_of(
+                        &mut ui,
+                        Shape::Square,
+                        c,
+                        half,
+                        if on { pressed(a) } else { plate(a) },
+                    );
+                    let text = match cell {
+                        [0, -1] => "↑",
+                        [-1, 0] => "←",
+                        [1, 0] => "→",
+                        _ => "↓",
+                    };
+                    label(&mut ui, c, half, text, ink(a));
+                }
+            } else if a > 0.0 {
                 circle(&mut ui, base, layout.stick_radius, plate(a));
                 circle(&mut ui, knob, layout.stick_radius * 0.45, pressed(a));
             }
