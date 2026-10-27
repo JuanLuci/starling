@@ -37,7 +37,7 @@ There is no release yet. Every push to the `android` branch builds a signed APK 
 - **Horizon's own extras:** new menus (vanilla's are one setting away), graphics presets and more, all off by default where they would change the vanilla look. See [Settings](https://playhorizon.dev/docs/settings).
 - **Resource packs and data packs:** resource packs work, and data packs load functions, predicates and item modifiers.
 - **Servers:** offline-mode servers, behind a proxy such as Velocity too, with their resource packs, coloured chat, boss bars, signs, workstation menus (enchanting, anvil, smithing...), flight and the attributes they set. Plugin servers' dialogs, chat buttons, custom armour (ItemsAdder, Nexo), models riding their mobs (ModelEngine, BetterModel) and clickable furniture work, and the touch stick moves in a way each server's anticheat (GrimAC and the like) accepts: Free Direction, D-pad or Analog, remembered per server.
-- **Shader packs:** Iris and OptiFine packs such as Complementary and MakeUp run on the phone, translated when they load; Complementary's LOW profile plays at 45 to 55 fps at half resolution on a Snapdragon 8 Gen 2. See the [roadmap](roadmap/starling.md).
+- **Shader packs:** Iris and OptiFine packs such as Complementary and MakeUp run on the phone, translated when they load: put them in `Starling/shaderpacks` and pick one, and its profile, in **Video Settings > Shader Packs**. Complementary's LOW profile plays at 45 to 55 fps at half resolution on a Snapdragon 8 Gen 2. See the [roadmap](roadmap/starling.md).
 - **Mods:** mods in Rust or JavaScript change the HUD, add screens, commands and keys, read the world and talk to servers, on the phone as on the desktop. See [Mods](#mods).
 
 ## Android status
@@ -54,9 +54,9 @@ What the Android port covers so far; what is being done now and next is in the [
 | Settings | <img src="docs/media/progress/85.svg" alt="85%"> | Options that do nothing are greyed out, those a phone can't use are hidden; Zoom has no touch button yet |
 | Mods | <img src="docs/media/progress/60.svg" alt="60%"> | Starling's mod API, Rust and JavaScript mods, tried on a phone; more of the game to open to them |
 | Servers | <img src="docs/media/progress/70.svg" alt="70%"> | Offline-mode servers and proxies, dialogs, chat buttons and links; secure chat (signed messages) not yet |
-| Server plugins | <img src="docs/media/progress/65.svg" alt="65%"> | Custom armour from any pack, animated models riding mobs, clickable furniture, item cooldowns; custom HUD fonts can run out of room, text shadows not yet |
+| Server plugins | <img src="docs/media/progress/70.svg" alt="70%"> | Custom armour from any pack, animated models riding mobs, clickable furniture, item cooldowns, HUD text without shadows; block displays show their block's item |
 | Movement on anticheat servers | <img src="docs/media/progress/80.svg" alt="80%"> | Free Direction, D-pad or Analog per server, no pull-backs on GrimAC or Pika in tests; some old-version servers behind ViaVersion still pull back |
-| Shader packs | <img src="docs/media/progress/50.svg" alt="50%"> | Complementary and MakeUp run on a phone; no Shaders page yet (packs are picked in a file), some effects still differ |
+| Shader packs | <img src="docs/media/progress/60.svg" alt="60%"> | Complementary and MakeUp run on a phone, picked with their profile in Video Settings > Shader Packs; a pack's own options and some effects still differ |
 | APK builds | <img src="docs/media/progress/70.svg" alt="70%"> | Every push builds a signed APK in GitHub Actions; no release yet |
 | Open to LAN and invites | <img src="docs/media/progress/10.svg" alt="10%"> | Not tried on Android yet |
 | Physical controllers | <img src="docs/media/progress/0.svg" alt="0%"> | No Android backend yet |

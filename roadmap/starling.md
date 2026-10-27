@@ -8,16 +8,16 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 
 **Being done now**
 
-- **Shader packs on a phone**: Complementary and MakeUp running smoothly on a phone, with a page to pick
-  them.
+- **Shader packs on a phone**: Complementary and MakeUp running smoothly on a phone, picked on the
+  Shader Packs page.
 - **Servers with plugins**: The custom items, armour, models, menus and buttons of plugin servers
   (ItemsAdder, Nexo, ModelEngine, BetterModel, dialogs) look and work as on Java.
 - **Settings that make sense on a phone**: Every option does what it says, and the ones a phone can't
   use are out of the way.
 
-**Next**: a Shaders page in the game; secure chat for servers that require it; physical controllers on
-Android; preparing the game files on the phone, without a computer;
-Open to LAN and invites on a phone; the first release.
+**Next**: a pack's own options in the game; secure chat for servers that require it; physical
+controllers on Android; preparing the game files on the phone, without a computer; Open to LAN and
+invites on a phone; the first release.
 
 **Later**: a store release; more of the game open to mods; a phone-sized mod browser.
 
@@ -32,11 +32,12 @@ and its quality in the game.
 > GLSL translated to WGSL at load time; nothing is hard-coded per pack. On an Adreno 740 at half
 > resolution Complementary's LOW profile draws in about 16 to 21 ms of GPU time (45 to 55 fps) with the
 > experimental depth pass for solid terrain (`HORIZON_SHADER_PACK_PREPASS`), which lets the tiler drop
-> hidden grass and leaves before the pack's fragment stage runs. Done: option values and profiles
-> (`HORIZON_SHADER_PROFILE`, `HORIZON_SHADER_OPTIONS`), constant texture matrices, a depth pass that
-> keeps no more than the pack's own alpha cut, resolution down to 25%. Left: the Shaders page (pack,
-> profile and options in the game, light defaults on phones); compiling packs off the main thread with a
-> cache (a stall of a few seconds on joining a world); `cloudHeight` and the other uniforms still read as
+> hidden grass and leaves before the pack's fragment stage runs. Done: the Shader Packs page (Video
+> Settings: the pack and its profile, saved in horizon-graphics.txt), option values and profiles,
+> constant texture matrices, a depth pass that keeps no more than the pack's own alpha cut, resolution
+> down to 25%. Left: the pack's own options screen (`HORIZON_SHADER_OPTIONS` for now) and light
+> defaults on phones; compiling packs off the main thread with a cache (a stall of a few seconds on
+> joining a world or changing the pack); `cloudHeight` and the other uniforms still read as
 > zero; reports of water and sun glare changing as the player walks; the depth pass on by default once
 > it is checked on more packs.
 
@@ -53,9 +54,10 @@ menus and dialogs, and stay on it without the anticheat pulling you back.
 > BetterModel models, cosmetics, nameplates) and interpolate their transformation and moves as vanilla
 > does; item cooldowns, forced looks and custom chat completions;
 > the player's real language, chat visibility and main hand sent to the server; Free Direction, D-pad
-> and Analog movement chosen per server, tested against GrimAC. Left, most important first:
-> `shadow_color` on text and more room for custom font glyphs (HUD plugins), block displays drawn from
-> their block state rather than its item, display brightness and glow, secure chat (servers that enforce signed chat), the components
+> and Analog movement chosen per server, tested against GrimAC; text `shadow_color` and a glyph region
+> that starts again when full (HUD and menu plugins). Left, most important first: block displays drawn
+> from their block state rather than its item, display brightness and glow, secure chat (servers that
+> enforce signed chat), the components
 > still dropped from items (custom tooltips, food, gliders), `object` text (sprites and heads in chat),
 > server-synced biomes, mob variants, paintings and trims, and the packets still ignored (camera, server
 > links, message deletion).
@@ -72,7 +74,7 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 
 ## Next
 
-- **A Shaders page in the game**: pick a pack, its quality and its options without editing files.
+- **A pack's own options in the game**: the settings screen a shader pack describes, beside its profile.
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off
   there).
