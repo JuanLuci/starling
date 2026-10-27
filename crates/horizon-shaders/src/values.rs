@@ -23,13 +23,13 @@ impl Values {
         self.values.insert(name.to_owned(), value.to_owned());
     }
 
-    /// `NAME=VALUE`, `NAME` (a switch on) and `!NAME` (off), separated by spaces or commas, as a
-    /// profile lists them; later ones win.
+    /// `NAME=VALUE` (or OptiFine's `NAME:VALUE`), `NAME` (a switch on) and `!NAME` (off),
+    /// separated by spaces or commas, as a profile lists them; later ones win.
     pub fn parse_list(&mut self, list: &str) {
         for word in list.split([' ', ',', '\t']).filter(|w| !w.is_empty()) {
             if let Some(name) = word.strip_prefix('!') {
                 self.set(name, "false");
-            } else if let Some((name, value)) = word.split_once('=') {
+            } else if let Some((name, value)) = word.split_once(['=', ':']) {
                 self.set(name, value);
             } else {
                 self.set(word, "true");
@@ -191,5 +191,14 @@ mod tests {
         expected.parse_list("SHADOW_QUALITY=0 shadowDistance=64.0 !SSAO");
         assert_eq!(potato, expected);
         assert!(Values::profile(&properties, "ULTRA").is_none());
+    }
+
+    #[test]
+    fn a_value_may_follow_a_colon() {
+        let mut colon = Values::default();
+        colon.parse_list("REFLECTION_MODE:1 BLOOM_QUALITY:0.25 !CLOUDS");
+        let mut equals = Values::default();
+        equals.parse_list("REFLECTION_MODE=1 BLOOM_QUALITY=0.25 !CLOUDS");
+        assert_eq!(colon, equals);
     }
 }
