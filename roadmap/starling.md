@@ -38,10 +38,11 @@ and its quality in the game.
 > down to 25%, outputs kept finite (Adreno made NaNs that turned Complementary black for good after a
 > pond was flooded), `cameraPositionInt`/`Fract`, terrain's face normals and `mc_Entity` off a Mac
 > (they read up and -1 everywhere but Metal: side faces were shaded as tops, which striped and
-> flickered their shadows, and the pack could not tell water or leaves). Left: checking on the phone
-> that the sun glare and the water's dark band went with them; the pack's own options
-> screen (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; compiling packs off the main
-> thread with a cache (a stall of a few seconds on joining a world or changing the pack);
+> flickered their shadows, and the pack could not tell water or leaves), programs translated and
+> built beside the game (the world draws without the pack for the few seconds it takes, instead of
+> stopping). Left: reflections that warp while walking on the phone (not seen on the PC); checking on
+> the phone that the sun glare and the water's dark band went; the pack's own options screen
+> (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; a cache of the built programs;
 > `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
 > checked on more packs.
 
