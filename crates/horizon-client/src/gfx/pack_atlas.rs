@@ -184,7 +184,9 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
-        if flat {
+        // Developers' aid: `HORIZON_SHADER_PACK_NO_FACE=1` leaves the faces' normal and tangent
+        // out (wrong lighting), to time what working them out per vertex costs.
+        if flat && std::env::var_os("HORIZON_SHADER_PACK_NO_FACE").is_none() {
             body.push_str(FACE);
         }
         declarations.push_str("vec2 hz_cell; vec2 hz_scale; vec4 hz_tangent;\n");

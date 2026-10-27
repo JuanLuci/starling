@@ -21,10 +21,14 @@ impl Stage<'_> {
              hz_FogParameters hz_Fog;\n",
         );
         if self.gbuffers {
-            // Set by our `main` from the frame's matrices (gbuffers.rs).
+            // Set by our `main` from the frame's matrices (gbuffers.rs). The texture matrices
+            // never change (the lightmap's scales its 0..240 coordinates): constants, not stored
+            // again by every vertex and fragment.
             p.push_str(
                 "mat4 hz_ModelViewMatrix; mat4 hz_ProjectionMatrix; mat4 hz_ModelViewProjectionMatrix;\n\
-                 mat4 hz_ModelViewMatrixInverse; mat4 hz_ProjectionMatrixInverse; mat3 hz_NormalMatrix; mat4 hz_TextureMatrix[8];\n",
+                 mat4 hz_ModelViewMatrixInverse; mat4 hz_ProjectionMatrixInverse; mat3 hz_NormalMatrix;\n\
+                 const mat4 hz_light = mat4(vec4(1.0 / 256.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0 / 256.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0 / 32.0, 1.0 / 32.0, 0.0, 1.0));\n\
+                 const mat4 hz_TextureMatrix[8] = mat4[8](mat4(1.0), hz_light, hz_light, mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0));\n",
             );
         } else {
             p.push_str(

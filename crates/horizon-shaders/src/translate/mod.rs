@@ -185,9 +185,7 @@ const GBUFFERS_MATRICES: &str = "    hz_ModelViewMatrix = gbufferModelView;\n   
      hz_ModelViewProjectionMatrix = gbufferProjection * gbufferModelView;\n    \
      hz_ModelViewMatrixInverse = gbufferModelViewInverse;\n    \
      hz_ProjectionMatrixInverse = gbufferProjectionInverse;\n    \
-     hz_NormalMatrix = mat3(gbufferModelView);\n    \
-     mat4 hz_light = mat4(vec4(1.0 / 256.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0 / 256.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0 / 32.0, 1.0 / 32.0, 0.0, 1.0));\n    \
-     hz_TextureMatrix = mat4[8](mat4(1.0), hz_light, hz_light, mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0));\n";
+     hz_NormalMatrix = mat3(gbufferModelView);\n";
 
 fn translate(
     vertex: &Preprocessed,
