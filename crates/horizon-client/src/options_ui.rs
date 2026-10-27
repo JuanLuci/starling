@@ -56,6 +56,7 @@ pub enum Opt {
     ChatVisibility,
     ChatColors,
     ChatLinks,
+    ChatLinksPrompt,
     ChatOpacity,
     TextBackgroundOpacity,
     ChatScale,
@@ -168,6 +169,9 @@ pub(crate) const ACCESSIBILITY_OPTIONS: &[Opt] = &[
     Opt::RotateWithMinecarts,
     Opt::HighContrastBlockOutlines,
 ];
+/// The built-in pack Options.highContrast turns on and off.
+const HIGH_CONTRAST: &str = "high_contrast";
+
 impl Opt {
     /// Keep controls visible while their underlying systems are still missing.
     pub(crate) fn available(self) -> bool {
@@ -182,12 +186,19 @@ impl Opt {
                 | Opt::MonochromeLogo
                 | Opt::RotateWithMinecarts
                 | Opt::HighContrastBlockOutlines
+                // Stored, not drawn yet: the fade-in, the saving icon and vanilla's own
+                // transparency pass and chunk builder (Horizon's Chunk Updates set the pace).
+                | Opt::ChunkFade
+                | Opt::Autosave
+                | Opt::ImprovedTransparency
+                | Opt::ChunkBuilder
         )
     }
     fn file_key(self) -> Option<&'static str> {
         Some(match self {
             Opt::Narrator => "narrator",
             Opt::TextBackground => "backgroundForChatOnly",
+            Opt::ChatLinksPrompt => "chatLinksPrompt",
             Opt::ChatDelay => "chatDelay",
             Opt::DistortionEffects => "screenEffectScale",
             Opt::FovEffects => "fovEffectScale",
@@ -247,6 +258,7 @@ impl Opt {
             Opt::ChatVisibility => "options.chat.visibility",
             Opt::ChatColors => "options.chat.color",
             Opt::ChatLinks => "options.chat.links",
+            Opt::ChatLinksPrompt => "options.chat.links.prompt",
             Opt::ChatOpacity => "options.chat.opacity",
             Opt::TextBackgroundOpacity => "options.accessibility.text_background_opacity",
             Opt::ChatScale => "options.chat.scale",
@@ -529,6 +541,7 @@ impl Opt {
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
             Opt::HideSplashTexts => on_off(s.file.bool("hideSplashTexts")),
+            Opt::ChatLinksPrompt => on_off(s.file.bool("chatLinksPrompt")),
             Opt::NarratorHotkey => on_off(s.file.bool("narratorHotkey")),
             Opt::RotateWithMinecarts => on_off(s.file.bool("rotateWithMinecart")),
             Opt::HighContrastBlockOutlines => on_off(s.file.bool("highContrastBlockOutline")),
@@ -720,7 +733,10 @@ impl Opt {
                     value + 1
                 };
             }
-            Opt::TextBackground | Opt::HideLightningFlashes | Opt::HideSplashTexts => {
+            Opt::TextBackground
+            | Opt::HideLightningFlashes
+            | Opt::HideSplashTexts
+            | Opt::ChatLinksPrompt => {
                 let key = self.file_key().unwrap();
                 s.file
                     .set(key, crate::options_file::V::Bool(!s.file.bool(key)));
@@ -759,7 +775,13 @@ impl Opt {
             Opt::ChatLinks => s.chat_links = !s.chat_links,
             Opt::AutoSuggestions => s.auto_suggestions = !s.auto_suggestions,
             Opt::ReducedDebugInfo => s.reduced_debug_info = !s.reduced_debug_info,
-            Opt::HighContrast => s.high_contrast = !s.high_contrast,
+            Opt::HighContrast => {
+                s.high_contrast = !s.high_contrast;
+                s.resource_packs.retain(|p| p != HIGH_CONTRAST);
+                if s.high_contrast {
+                    s.resource_packs.push(HIGH_CONTRAST.into());
+                }
+            }
             Opt::ShowSubtitles => s.show_subtitles = !s.show_subtitles,
             Opt::ForceUnicode => s.force_unicode = !s.force_unicode,
             Opt::JapaneseGlyphs => s.japanese_glyphs = !s.japanese_glyphs,
@@ -1350,7 +1372,9 @@ impl OptionsUi {
                     ),
                     Row::Buttons(
                         open("Controller Settings...", Page::Controller),
-                        Some(self.extra_button(s, crate::extras::Item::DiscordPresence)),
+                        // A phone has no Discord client to show the game in.
+                        (!cfg!(target_os = "android"))
+                            .then(|| self.extra_button(s, crate::extras::Item::DiscordPresence)),
                     ),
                     Row::Buttons(
                         open("Extras...", Page::Extras),
@@ -1514,23 +1538,35 @@ impl OptionsUi {
                     ),
                     None,
                 )];
-                rows.extend(pairs(&[
-                    Opt::PadEnabled,
-                    Opt::PadVibration,
-                    Opt::PadAdaptiveTriggers,
-                    Opt::PadLightbar,
-                    Opt::PadLookSensitivity,
-                    Opt::PadToggleSneak,
-                    Opt::PadServerStick,
-                    Opt::PadStickPrompt,
-                    Opt::PadInvertX,
-                    Opt::PadInvertY,
-                    Opt::PadMoveDeadzone,
-                    Opt::PadLookDeadzone,
-                    Opt::PadGlyphs,
-                    Opt::PadMenuNav,
-                    Opt::PadKeyboard,
-                ]));
+                // A phone reads no controllers yet (crates/horizon-android builds without them):
+                // only what the touch controls play through stays.
+                let opts: &[Opt] = if cfg!(target_os = "android") {
+                    &[
+                        Opt::PadToggleSneak,
+                        Opt::PadServerStick,
+                        Opt::PadStickPrompt,
+                        Opt::PadMoveDeadzone,
+                    ]
+                } else {
+                    &[
+                        Opt::PadEnabled,
+                        Opt::PadVibration,
+                        Opt::PadAdaptiveTriggers,
+                        Opt::PadLightbar,
+                        Opt::PadLookSensitivity,
+                        Opt::PadToggleSneak,
+                        Opt::PadServerStick,
+                        Opt::PadStickPrompt,
+                        Opt::PadInvertX,
+                        Opt::PadInvertY,
+                        Opt::PadMoveDeadzone,
+                        Opt::PadLookDeadzone,
+                        Opt::PadGlyphs,
+                        Opt::PadMenuNav,
+                        Opt::PadKeyboard,
+                    ]
+                };
+                rows.extend(pairs(opts));
                 rows
             }
             Page::Mouse => pairs(&[
@@ -1543,6 +1579,7 @@ impl OptionsUi {
                 Opt::ChatVisibility,
                 Opt::ChatColors,
                 Opt::ChatLinks,
+                Opt::ChatLinksPrompt,
                 Opt::ChatOpacity,
                 Opt::TextBackgroundOpacity,
                 Opt::ChatScale,
@@ -2582,6 +2619,9 @@ impl OptionsUi {
                                 apply_preset(s);
                             }
                             events.push(Event::Changed);
+                            if opt == Opt::HighContrast {
+                                events.push(Event::Packs(s.resource_packs.clone()));
+                            }
                         }
                         Act::Extra(item) => {
                             if let Some(name) = item.key_name() {

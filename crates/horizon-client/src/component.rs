@@ -172,11 +172,22 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
     // from a server never opens a file.
     if let Some(e) = o.get("click_event").and_then(Value::as_object) {
         let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
+        use crate::text::ClickEvent as C;
         style.click = match e.get("action").and_then(Value::as_str) {
-            Some("suggest_command") => text("command").map(crate::text::ClickEvent::SuggestCommand),
-            Some("copy_to_clipboard") => {
-                text("value").map(crate::text::ClickEvent::CopyToClipboard)
-            }
+            Some("suggest_command") => text("command").map(C::SuggestCommand),
+            Some("copy_to_clipboard") => text("value").map(C::CopyToClipboard),
+            Some("run_command") => text("command").map(C::RunCommand),
+            // ClickEvent.OpenUrl: only the web's schemes.
+            Some("open_url") => text("url")
+                .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+                .map(C::OpenUrl),
+            Some("show_dialog") => e
+                .get("dialog")
+                .map(|d| C::ShowDialog(d.as_str().map_or_else(|| d.to_string(), str::to_owned))),
+            Some("custom") => text("id").map(|id| C::Custom {
+                id,
+                payload: e.get("payload").map(Value::to_string),
+            }),
             _ => None,
         };
     }

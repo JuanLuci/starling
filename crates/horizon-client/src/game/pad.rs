@@ -111,19 +111,16 @@ impl Pads {
 impl Game<'_> {
     /// Once per loop iteration: read the pads and act on button changes.
     pub(super) fn poll_pads(&mut self, event_loop: &ActiveEventLoop) {
-        let settings = &self.settings.controller;
-        if !settings.enabled {
+        // Off leaves the controllers out; the touch controls play through the pad all the same.
+        let enabled = self.settings.controller.enabled;
+        let hardware = if enabled {
+            let hardware = self.pad.read();
+            self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
+            hardware
+        } else {
             self.pad_output_off();
-            if self.pad.state != PadState::default() {
-                self.pad.state = PadState::default();
-                for (button, down) in self.pad.edges.release_all() {
-                    self.pad_edge(event_loop, button, down);
-                }
-            }
-            return;
-        }
-        let hardware = self.pad.read();
-        self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
+            PadState::default()
+        };
         let state = hardware.merge(&self.pad.injected);
         self.pad.virtual_input = self.pad.injected != PadState::default();
         for button in std::mem::take(&mut self.pad.taps) {
@@ -140,7 +137,9 @@ impl Game<'_> {
         let threshold = self.settings.controller.trigger_threshold;
         let edges = self.pad.edges.update(&state, threshold);
         self.pad.state = state;
-        self.pad_output_frame();
+        if enabled {
+            self.pad_output_frame();
+        }
         // Damage from any source, here or on a server; nothing counts on
         // the title screen.
         let health = self
@@ -148,7 +147,9 @@ impl Game<'_> {
             .as_ref()
             .filter(|_| self.title.is_none())
             .map(|p| p.health.health());
-        if let Some(damage) = self.pad.health.observe(health) {
+        if let Some(damage) = self.pad.health.observe(health)
+            && enabled
+        {
             self.pad_rumble(Rumble::Hurt(damage));
         }
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;

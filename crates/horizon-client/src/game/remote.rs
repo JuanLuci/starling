@@ -211,8 +211,8 @@ pub(super) struct Remote {
     /// movement speed, jump strength, gravity, step height... kept for a LocalPlayer made
     /// after the packet came, and across respawns.
     player_attributes: Vec<play::AttributeSnapshot>,
-    /// The view distance last sent in ClientInformation.
-    sent_view: i8,
+    /// The ClientInformation last sent (the view distance, language, chat and hand options).
+    sent_info: horizon_protocol::packets::configuration::ClientInformation,
     /// BlockStatePredictionHandler: blocks changed ahead of the server (a predicted break),
     /// with the sequence of the last action that changed them and the state the server
     /// last said they have. Until the server acknowledges that sequence its block updates
@@ -618,7 +618,8 @@ impl Game<'_> {
             waiting_ticks: 0,
             setbacks: 0,
             player_attributes: Vec::new(),
-            sent_view: view,
+            // What the configuration phase sent (net.rs).
+            sent_info: horizon_protocol::packets::configuration::ClientInformation::new(view),
             predictions: HashMap::new(),
             menu: None,
             menu_title: None,
@@ -923,6 +924,13 @@ impl Game<'_> {
     }
     /// A click in one of the game's own dialogs (`starling:` actions).
     pub(super) fn starling_dialog_click(&mut self, id: &str, payload: Option<&Tag>) {
+        // The link confirmation's Open (`confirm_link`).
+        if id == "starling:open_link" {
+            if let Some(Tag::String(url)) = payload.and_then(|p| p.get("url")) {
+                self.open_link(&url.to_string_lossy());
+            }
+            return;
+        }
         if id != "starling:server_stick" {
             log::warn!("Horizon: no such dialog action {id}");
             return;
@@ -2194,13 +2202,11 @@ impl Game<'_> {
                 self.streaming.radius =
                     self.settings.render_distance.min(p.chunk_radius + 1).max(2);
                 self.enter_remote_dimension(&p.spawn, false);
-                let view = client_view_distance(self.settings.render_distance);
+                let info = self.client_information();
                 if let Some(r) = self.remote.as_mut() {
-                    r.sent_view = view;
+                    r.sent_info = info.clone();
                 }
-                self.send(S::ClientInformation(
-                    horizon_protocol::packets::configuration::ClientInformation::new(view),
-                ));
+                self.send(S::ClientInformation(info));
             }
             C::Respawn(p) => {
                 // A new player, without effects: the server sends them again.
@@ -3775,16 +3781,14 @@ impl Game<'_> {
         // hit after the move of its tick).
         self.send_held_back();
         self.track_experience_display();
-        // Options.broadcastOptions: a changed render distance is sent again.
-        let view = client_view_distance(self.settings.render_distance);
+        // Options.broadcastOptions: a changed option is sent again.
+        let info = self.client_information();
         if let Some(r) = self.remote.as_mut()
             && r.joined
-            && r.sent_view != view
+            && r.sent_info != info
         {
-            r.sent_view = view;
-            self.send(S::ClientInformation(
-                horizon_protocol::packets::configuration::ClientInformation::new(view),
-            ));
+            r.sent_info = info.clone();
+            self.send(S::ClientInformation(info));
         }
         // Minecraft.tick: TickRateManager.tick; ClientLevel.tickTime advances
         // the time only while the level runs normally.
@@ -6226,6 +6230,23 @@ fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
 
 /// The view distance a client asks for: its render distance, which Horizon
 /// lets go past vanilla's 32 (a vanilla server still caps it at its own).
+impl Game<'_> {
+    /// Options.buildPlayerInformation: the options a server reads of the player (plugins read the
+    /// language, chat visibility and main hand too).
+    fn client_information(&self) -> horizon_protocol::packets::configuration::ClientInformation {
+        let s = &self.settings;
+        let mut info = horizon_protocol::packets::configuration::ClientInformation::new(
+            client_view_distance(s.render_distance),
+        );
+        info.language = s.language.clone();
+        info.chat_visibility = i32::from(s.chat_visibility);
+        info.chat_colors = s.chat_colors;
+        info.main_hand = if s.main_hand_left { 0 } else { 1 };
+        info.particle_status = i32::from(s.particles);
+        info
+    }
+}
+
 fn client_view_distance(render_distance: i32) -> i8 {
     render_distance.clamp(2, i32::from(i8::MAX)) as i8
 }

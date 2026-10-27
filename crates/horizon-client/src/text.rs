@@ -44,6 +44,17 @@ pub fn named_color(name: &str) -> Option<u32> {
 pub enum ClickEvent {
     SuggestCommand(String),
     CopyToClipboard(String),
+    /// `run_command`: sent as if typed (a plugin's [Accept], Paper's click callbacks).
+    RunCommand(String),
+    /// `open_url`: an http(s) address, opened once the player says yes (ConfirmLinkScreen).
+    OpenUrl(String),
+    /// `show_dialog`: a `minecraft:dialog` id, or the dialog itself as JSON.
+    ShowDialog(String),
+    /// `custom`: back to the server (ServerboundCustomClickActionPacket), its payload as JSON.
+    Custom {
+        id: String,
+        payload: Option<String>,
+    },
     /// A local file to open with the system handler.
     /// Only allow this in locally constructed messages, never server/LAN text.
     OpenFile(String),
@@ -536,6 +547,24 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
                 json!({ "action": "copy_to_clipboard", "value": value })
             }
             ClickEvent::OpenFile(path) => json!({ "action": "open_file", "path": path }),
+            ClickEvent::RunCommand(command) => {
+                json!({ "action": "run_command", "command": command })
+            }
+            ClickEvent::OpenUrl(url) => json!({ "action": "open_url", "url": url }),
+            ClickEvent::ShowDialog(dialog) => {
+                let dialog = serde_json::from_str::<serde_json::Value>(dialog)
+                    .ok()
+                    .filter(serde_json::Value::is_object)
+                    .unwrap_or_else(|| dialog.as_str().into());
+                json!({ "action": "show_dialog", "dialog": dialog })
+            }
+            ClickEvent::Custom { id, payload } => {
+                let mut event = json!({ "action": "custom", "id": id });
+                if let Some(p) = payload.as_ref().and_then(|p| serde_json::from_str(p).ok()) {
+                    event["payload"] = p;
+                }
+                event
+            }
         };
         out.push(("click_event".to_owned(), event));
     }

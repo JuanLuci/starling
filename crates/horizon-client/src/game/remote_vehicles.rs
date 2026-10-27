@@ -23,6 +23,17 @@ pub(super) struct ObjectHit {
 }
 
 impl Game<'_> {
+    /// The nearest interaction entity the view hits within the player's entity interaction range:
+    /// its id and how far along the view.
+    pub(super) fn interaction_hit(&self) -> Option<(u32, f64)> {
+        let eye = self.eye_position()?;
+        let dir = view_vector(self.yaw, self.pitch);
+        let reach = if self.creative { 5.0 } else { 3.0 };
+        self.interactions
+            .iter()
+            .filter_map(|(id, i)| Some((*id, ray_box(eye, dir, reach, i.bounds())?)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
     /// The nearest boat, minecart, item frame, armor stand or painting the
     /// view hits within reach; also End crystals when attacking.
     pub(super) fn remote_object_hit(&self, attacking: bool) -> Option<ObjectHit> {
@@ -63,6 +74,10 @@ impl Game<'_> {
         if let Some((i, d)) = self.cart_hit() {
             let p = self.carts[i].position;
             hits.push((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
+        }
+        if let Some((id, d)) = self.interaction_hit() {
+            let p = self.interactions[&id].position;
+            hits.push((id as i32, d, [p.x, p.y, p.z]));
         }
         if attacking {
             // EndCrystal.isPickable: its 2 x 2 box, with the server's entity

@@ -164,6 +164,7 @@ impl Game<'_> {
                 }
             }
             Some(Click::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
+            Some(Click::OpenUrl(url)) => self.confirm_link(&url),
             Some(Click::CopyToClipboard(value)) => {
                 use horizon_client::clipboard::Clipboard;
                 self.clipboard.set(&value);
@@ -177,8 +178,75 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// `Screen.clickUrlAction`: with Chat Links on, a link opens once the player says yes
+    /// (`ConfirmLinkScreen`, unless Prompt on Links is off), or is copied.
+    pub(super) fn confirm_link(&mut self, url: &str) {
+        if !self.settings.chat_links {
+            return;
+        }
+        if !self.settings.file.bool("chatLinksPrompt") {
+            self.open_link(url);
+            return;
+        }
+        let t = |key: &str| Tag::compound([("translate", Tag::String(key.into()))]);
+        let message = |contents: Tag| {
+            Tag::compound([
+                ("type", Tag::String("minecraft:plain_message".into())),
+                ("contents", contents),
+                ("width", Tag::Int(300)),
+            ])
+        };
+        let button = |label: Tag, action: Option<Tag>| {
+            Tag::compound(
+                [("label", label), ("width", Tag::Int(100))]
+                    .into_iter()
+                    .chain(action.map(|a| ("action", a))),
+            )
+        };
+        let open = Tag::compound([
+            ("type", Tag::String("minecraft:custom".into())),
+            ("id", Tag::String("starling:open_link".into())),
+            ("payload", Tag::compound([("url", Tag::String(url.into()))])),
+        ]);
+        let copy = Tag::compound([
+            ("type", Tag::String("minecraft:copy_to_clipboard".into())),
+            ("value", Tag::String(url.into())),
+        ]);
+        let dialog = Tag::compound([
+            ("type", Tag::String("minecraft:multi_action".into())),
+            ("title", t("chat.link.confirm")),
+            ("pause", Tag::Byte(0)),
+            ("columns", Tag::Int(3)),
+            (
+                "body",
+                Tag::List(vec![
+                    message(Tag::String(url.into())),
+                    message(t("chat.link.warning")),
+                ]),
+            ),
+            (
+                "actions",
+                Tag::List(vec![
+                    button(t("chat.link.open"), Some(open)),
+                    button(t("chat.copy"), Some(copy)),
+                    button(t("gui.cancel"), None),
+                ]),
+            ),
+        ]);
+        self.show_local_dialog(&dialog);
+    }
+
+    /// The platform's browser on `url`; without one (the desktop opens no links) it is copied.
+    pub(super) fn open_link(&mut self, url: &str) {
+        if horizon_client::platform::open_link(url) != Some(true) {
+            use horizon_client::clipboard::Clipboard;
+            self.clipboard.set(url);
+            log::info!("Horizon: no browser here; {url} copied");
+        }
+    }
+
     /// A `show_dialog` click event's dialog: a registry id or the dialog itself.
-    fn show_dialog_ref(&mut self, dialog: &Tag) {
+    pub(super) fn show_dialog_ref(&mut self, dialog: &Tag) {
         match dialog {
             Tag::String(id) => {
                 let id = id.to_string_lossy();

@@ -103,6 +103,24 @@ pub struct UiState {
     pub death_time: u32,
 }
 
+/// A click event's JSON (the server's NBT read as JSON) as NBT again: whole numbers as ints, the
+/// rest as doubles.
+fn json_tag(v: &serde_json::Value) -> horizon_world::nbt::Tag {
+    use horizon_world::nbt::Tag;
+    use serde_json::Value;
+    match v {
+        Value::Null => Tag::Compound(Default::default()),
+        Value::Bool(b) => Tag::Byte(i8::from(*b)),
+        Value::Number(n) => match n.as_i64().and_then(|i| i32::try_from(i).ok()) {
+            Some(i) => Tag::Int(i),
+            None => Tag::Double(n.as_f64().unwrap_or(0.0).to_bits()),
+        },
+        Value::String(s) => Tag::String(s.as_str().into()),
+        Value::Array(a) => Tag::List(a.iter().map(json_tag).collect()),
+        Value::Object(o) => Tag::compound(o.iter().map(|(k, v)| (k.as_str(), json_tag(v)))),
+    }
+}
+
 impl Game<'_> {
     /// `PlayerList.isOp` for the single-player owner: the world's Allow Commands.
     pub(super) fn allow_commands(&self) -> bool {
@@ -656,13 +674,37 @@ impl Game<'_> {
                     screen.suggest_command(&m, &c, &command);
                 }
             }
+            // Screen.defaultHandleGameClickEvent: the server's commands, links, dialogs and
+            // custom actions.
+            Some(ClickEvent::RunCommand(command)) => {
+                let command = command.strip_prefix('/').unwrap_or(&command).to_owned();
+                self.send_chat(&format!("/{command}"));
+            }
+            Some(ClickEvent::OpenUrl(url)) => self.confirm_link(&url),
+            Some(ClickEvent::ShowDialog(dialog)) => {
+                let tag = match serde_json::from_str::<serde_json::Value>(&dialog) {
+                    Ok(v) if v.is_object() => json_tag(&v),
+                    _ => horizon_world::nbt::Tag::String(dialog.as_str().into()),
+                };
+                self.show_dialog_ref(&tag);
+            }
+            Some(ClickEvent::Custom { id, payload }) => {
+                let payload = payload
+                    .and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
+                    .map(|v| json_tag(&v));
+                if let Some(r) = &self.remote {
+                    r.session.send_custom_click(&id, payload);
+                }
+            }
             None => {}
         }
     }
     /// Chat lines over the HUD (focused while the chat screen is open).
     pub(super) fn draw_chat(&mut self, batch: &mut HudBatch) {
         let focused = self.screen == Screen::Chat;
-        if self.ui.hide_gui && !focused {
+        // ChatComponent.isChatHidden: Chat Visibility Hidden draws no lines (a server is told
+        // too, and leaves out other players' chat for Commands Only).
+        if (self.ui.hide_gui || self.settings.chat_visibility == 2) && !focused {
             return;
         }
         self.ui

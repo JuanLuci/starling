@@ -1483,6 +1483,8 @@ struct Game<'a> {
     map_patches: Vec<horizon_client::font::Patch>,
     text_displays: std::collections::HashMap<i32, text_displays::RemoteTextDisplay>,
     text_display_vertices: usize,
+    /// A server's interaction entities (furniture and model hitboxes), by entity id.
+    interactions: std::collections::HashMap<u32, remote_objects::Interaction>,
     /// Player skin downloads, and which skin each atlas skin slot holds
     /// (least recently shown first).
     skin_downloads: RefCell<horizon_client::skins::Downloader>,
@@ -7040,9 +7042,16 @@ impl Game<'_> {
         self.name_tag_geometry(camera, alpha, &mut out, &mut see_through);
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
-        // Entity shadows (EntityRenderer.extractShadow).
+        // Entity shadows (EntityRenderer.extractShadow), unless the Entity Shadows option is off.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        if let Some(sprite) = self.gui.atlas.sprites.get("misc/shadow").copied() {
+        if let Some(sprite) = self
+            .gui
+            .atlas
+            .sprites
+            .get("misc/shadow")
+            .copied()
+            .filter(|_| self.settings.entity_shadows)
+        {
             let ambient = if self.dim == Dim::Nether { 0.1 } else { 0.0 };
             let darken = self.sky_darken();
             let a = alpha;
@@ -11366,8 +11375,11 @@ impl ApplicationHandler for Game<'_> {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
                         MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
                     };
-                    // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity.
-                    let discrete = self.settings.discrete_scroll;
+                    // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity. A
+                    // phone's pixel scrolls are a finger's (touch.rs), which follow it instead.
+                    let finger = cfg!(target_os = "android")
+                        && matches!(delta, MouseScrollDelta::PixelDelta(_));
+                    let discrete = self.settings.discrete_scroll && !finger;
                     let wheel_sensitivity = f64::from(self.settings.mouse_wheel_sensitivity);
                     let scaled = |v: f64| {
                         (if discrete {
@@ -12419,6 +12431,7 @@ impl<'a> Game<'a> {
             map_patches: Vec::new(),
             text_displays: Default::default(),
             text_display_vertices: 0,
+            interactions: Default::default(),
             skin_downloads: RefCell::new(horizon_client::skins::Downloader::new(
                 std::env::current_dir()
                     .unwrap_or_default()

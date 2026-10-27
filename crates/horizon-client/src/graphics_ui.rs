@@ -113,7 +113,7 @@ pub fn rows(level: Level) -> Vec<Row> {
     let preset = h(
         H::Preset,
         None,
-        "Sets the options below together. Changing one makes it Custom.",
+        "Sets distance, particles, shadows, sky and fog; changing one makes it Custom.",
     );
     let mut rows = match level {
         Level::Simple => vec![preset, render, lod, far, fov, fps, vsync, gui],

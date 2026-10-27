@@ -8,6 +8,26 @@ use horizon_core::geometry::Vec3;
 use horizon_protocol::entity_data::Value;
 use std::sync::Arc;
 
+/// `Interaction`: an invisible box a plugin puts where a click should land (furniture, the parts of
+/// a model drawn by display entities), `width` wide and `height` tall from its feet.
+pub(super) struct Interaction {
+    pub position: Vec3,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Interaction {
+    /// `Interaction.getDimensions` at its position.
+    pub fn bounds(&self) -> horizon_core::geometry::Aabb {
+        let (w, h) = (f64::from(self.width) / 2.0, f64::from(self.height));
+        let p = self.position;
+        horizon_core::geometry::Aabb::new(
+            Vec3::new(p.x - w, p.y, p.z - w),
+            Vec3::new(p.x + w, p.y + h, p.z + w),
+        )
+    }
+}
+
 impl Game<'_> {
     /// `handleAddEntity` for an object type; false when `kind` isn't one.
     /// Hanging entities come at their block, with their direction as the
@@ -24,7 +44,17 @@ impl Game<'_> {
         let at = Vec3::new(position[0], position[1], position[2]);
         let block = position.map(|v| v.floor() as i32);
         self.remove_remote_object(id);
-        if kind == "minecraft:text_display" {
+        if kind == "minecraft:interaction" {
+            // Interaction.DATA_WIDTH_ID and DATA_HEIGHT_ID start at one block.
+            self.interactions.insert(
+                id,
+                Interaction {
+                    position: at,
+                    width: 1.0,
+                    height: 1.0,
+                },
+            );
+        } else if kind == "minecraft:text_display" {
             self.text_displays.insert(
                 id as i32,
                 super::text_displays::RemoteTextDisplay::new(position, yaw),
@@ -103,6 +133,16 @@ impl Game<'_> {
             return;
         }
         let id = id as u32;
+        if let Some(box_) = self.interactions.get_mut(&id) {
+            for (index, _, value) in values {
+                match (index, value) {
+                    (8, Value::Float(w)) => box_.width = *w,
+                    (9, Value::Float(h)) => box_.height = *h,
+                    _ => {}
+                }
+            }
+            return;
+        }
         for (index, _, value) in values {
             if self.item_frames.iter().any(|f| f.id == id) {
                 // HangingEntity.DATA_DIRECTION, ItemFrame.DATA_ITEM and DATA_ROTATION.
@@ -242,6 +282,9 @@ impl Game<'_> {
         for a in &mut self.armor_stands {
             a.position = step(a.id, a.position);
         }
+        for (id, i) in &mut self.interactions {
+            i.position = step(*id, i.position);
+        }
     }
 
     /// The boats, minecarts, armor stands, item frames and paintings in the
@@ -277,12 +320,19 @@ impl Game<'_> {
             out.push(json!({"id": p.id, "kind": "minecraft:painting", "position": p.pos, "facing": p.facing,
                 "variant": &*p.variant}));
         }
+        for (id, i) in &self.interactions {
+            out.push(
+                json!({"id": id, "kind": "minecraft:interaction", "position": at(i.position),
+                "width": i.width, "height": i.height}),
+            );
+        }
         out
     }
 
     /// Every object a server sent (a new connection, level or dimension).
     pub(super) fn clear_remote_objects(&mut self) {
         self.text_displays.clear();
+        self.interactions.clear();
         self.carts.clear();
         self.boats.clear();
         self.armor_stands.clear();
@@ -292,6 +342,7 @@ impl Game<'_> {
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
         self.text_displays.remove(&(id as i32));
+        self.interactions.remove(&id);
         self.carts.retain(|c| c.id != id);
         self.boats.retain(|b| b.id != id);
         self.armor_stands.retain(|a| a.id != id);

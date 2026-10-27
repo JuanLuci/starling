@@ -153,6 +153,7 @@ impl Game<'_> {
             || before(self.armor_stand_hit().map(|h| h.1))
             || before(self.boat_hit().map(|h| h.1))
             || before(self.cart_hit().map(|h| h.1))
+            || before(self.interaction_hit().map(|h| h.1))
             || before(self.dragon_hit().map(|h| h.1))
             || before(self.mob_hit().map(|h| h.1))
             || before(self.guest_hit().map(|h| h.1))
