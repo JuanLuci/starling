@@ -31,7 +31,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering},
-        mpsc::{Receiver, Sender, channel, sync_channel},
+        mpsc::{Receiver, Sender, TryRecvError, channel, sync_channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -157,6 +157,14 @@ enum Publish {
 /// of the connection and the world's name, or why it failed.
 type Ready = std::result::Result<(Pipe, String), String>;
 
+/// A server thread opening its world (`open_integrated`), joined by `poll_integrated` once it
+/// says it can be.
+pub(super) struct Starting {
+    handle: Integrated,
+    ready: Receiver<Ready>,
+    player: String,
+}
+
 /// The world to open and the player who owns it.
 struct Launch {
     folder: String,
@@ -256,20 +264,41 @@ impl Game<'_> {
                     let _ = ready_tx.send(Err(e.to_string()));
                 }
             })?;
-        let mut handle = Integrated {
+        let handle = Integrated {
             flags,
             thread: Some(thread),
             tasks,
             world_name: String::new(),
         };
-        let pipe = match ready.recv() {
-            Ok(Ok((pipe, world_name))) => {
-                handle.world_name = world_name;
-                pipe
-            }
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Err("the integrated server stopped".into()),
+        // The window goes on drawing "Opening world" and taking input while the server loads the
+        // world (seconds on a phone, whose system ends an app that keeps a touch unanswered for
+        // five): `poll_integrated` joins it once it can be.
+        self.integrated_starting = Some(Starting {
+            handle,
+            ready,
+            player,
+        });
+        Ok(())
+    }
+
+    /// Joins the world `open_integrated` started once its server says it can be.
+    pub(super) fn poll_integrated(&mut self) -> Result<()> {
+        let Some(starting) = &self.integrated_starting else {
+            return Ok(());
         };
+        let ready = match starting.ready.try_recv() {
+            Ok(ready) => ready,
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => Err("the integrated server stopped".to_owned()),
+        };
+        let Some(Starting {
+            mut handle, player, ..
+        }) = self.integrated_starting.take()
+        else {
+            return Ok(());
+        };
+        let (pipe, world_name) = ready?;
+        handle.world_name = world_name;
         self.connect_local(pipe, &player)?;
         self.integrated = Some(handle);
         Ok(())

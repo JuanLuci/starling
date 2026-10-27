@@ -1582,6 +1582,8 @@ struct Game<'a> {
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
     integrated: Option<integrated::Integrated>,
+    /// That thread while it opens its world, before the window joins it.
+    integrated_starting: Option<integrated::Starting>,
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
@@ -10192,6 +10194,19 @@ impl Game<'_> {
             }
             return Ok(false);
         }
+        if self.integrated_starting.is_some() {
+            if let Some(renderer) = &mut self.renderer {
+                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                horizon_client::level_loading::draw_progress(
+                    &mut hud,
+                    &self.gui.atlas,
+                    "Opening world",
+                    0.0,
+                );
+                return renderer.render(&loading_frame(&hud));
+            }
+            return Ok(false);
+        }
         if self.pending_entry.is_some() {
             if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
@@ -11270,7 +11285,9 @@ impl ApplicationHandler for Game<'_> {
             self.perf.cancel_world_opening();
             return;
         }
-        if (self.pending_entry.is_some() || self.world_loader.is_some())
+        if (self.pending_entry.is_some()
+            || self.world_loader.is_some()
+            || self.integrated_starting.is_some())
             && !matches!(
                 &event,
                 WindowEvent::CloseRequested
@@ -12495,6 +12512,7 @@ impl<'a> Game<'a> {
             remote: None,
             lan: None,
             integrated: None,
+            integrated_starting: None,
             serving: None,
             world_options: None,
             options_to_world_options: false,
@@ -12672,6 +12690,7 @@ impl Game<'_> {
 
     fn resume_world_entry(&mut self) -> Result<()> {
         self.poll_world_rest()?;
+        self.poll_integrated()?;
         if let Some(loader) = &self.world_loader {
             // The world opens with its mods running: entered before they start, it would play
             // without them (they load in the background, a JavaScript mod for seconds).
