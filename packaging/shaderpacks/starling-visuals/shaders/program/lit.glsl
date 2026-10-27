@@ -108,6 +108,26 @@ uniform vec4 entityColor;
 #ifdef SHADOWED
 uniform sampler2DShadow shadowtex0;
 #endif
+#ifdef WATER
+uniform sampler2D depthtex1;
+uniform mat4 gbufferProjectionInverse;
+uniform vec3 cameraPosition;
+uniform float frameTimeCounter;
+uniform float viewWidth;
+uniform float viewHeight;
+
+// The open water's normal at world point `p` (x, z) and time `t`: three travelling waves, each
+// leaning the surface along its direction by its slope.
+vec3 waveNormal(vec2 p, float t) {
+    vec2 a = vec2(0.80, 0.60);
+    vec2 b = vec2(-0.50, 0.87);
+    vec2 c = vec2(0.20, -0.98);
+    vec2 slope = a * cos(dot(a, p) * 1.3 + t * 1.1) * 0.026
+        + b * cos(dot(b, p) * 2.1 + t * 1.7) * 0.025
+        + c * cos(dot(c, p) * 3.7 + t * 2.3) * 0.026;
+    return normalize(vec3(-slope.x, 1.0, -slope.y));
+}
+#endif
 
 // How much of the sun reaches this point: the shadow map within its reach, the open sky past it.
 // Each lookup is filtered by the hardware over four texels; SHADOW_FILTER 4 takes four of them
@@ -151,12 +171,21 @@ void main() {
             vec3 s = sunDir();
             vec3 n = normalize(normal);
             vec3 view = normalize(rel);
+            // Its open surface moves with waves; the sides of falling water stay flat.
+            if (n.y > 0.9) n = waveNormal(rel.xz + cameraPosition.xz, frameTimeCounter);
             vec3 mirrored = reflect(view, n);
+            mirrored.y = abs(mirrored.y);
             float fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(-view, n), 0.0, 1.0), 5.0);
             vec3 reflected = skyRadiance(mirrored, s) * skyLevel;
-            float glint = pow(clamp(dot(mirrored, keyLightDir()), 0.0, 1.0), 300.0);
-            color = mix(color * 0.6, reflected, fresnel) + sunlight(s) * glint * 4.0 * sunReaches();
-            alpha = mix(0.55, 1.0, fresnel);
+            float glint = pow(clamp(dot(mirrored, keyLightDir()), 0.0, 1.0), 600.0);
+            // How much water the eye looks through to the bottom (the depth without water): clear
+            // where shallow, its own colour where deep.
+            float bottom = texture2D(depthtex1, gl_FragCoord.xy / vec2(viewWidth, viewHeight)).r;
+            vec4 under = gbufferProjectionInverse * vec4(vec3(gl_FragCoord.xy / vec2(viewWidth, viewHeight), bottom) * 2.0 - 1.0, 1.0);
+            float through = bottom >= 1.0 ? 64.0 : max(length(under.xyz / under.w) - length(rel), 0.0);
+            float body = clamp(1.0 - exp(-through * 0.35), 0.12, 0.92);
+            color = mix(color * 0.45, reflected, fresnel) + sunlight(s) * glint * 6.0 * sunReaches();
+            alpha = mix(body, 1.0, fresnel);
         }
     #endif
     #ifdef WEATHER
