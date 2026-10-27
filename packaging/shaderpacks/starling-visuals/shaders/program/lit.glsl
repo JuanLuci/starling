@@ -47,7 +47,8 @@ void main() {
     gl_Position = gl_ProjectionMatrix * position;
 
     vec3 n = normalize(mat3(gbufferModelViewInverse) * (gl_NormalMatrix * gl_Normal));
-    vec3 at = mat3(gbufferModelViewInverse) * position.xyz;
+    // The whole matrix: the view bob is in it, translation and all.
+    vec3 at = (gbufferModelViewInverse * position).xyz;
     vec2 levels = lightLevels((gl_TextureMatrix[1] * gl_MultiTexCoord1).xy);
     float wrap = 0.0;
     float unshade = 1.0;
@@ -108,14 +109,25 @@ uniform vec4 entityColor;
 uniform sampler2DShadow shadowtex0;
 #endif
 
-// How much of the sun reaches this point: the shadow map within its reach (filtered by the
-// hardware over four texels), the open sky past it.
+// How much of the sun reaches this point: the shadow map within its reach, the open sky past it.
+// Each lookup is filtered by the hardware over four texels; SHADOW_FILTER 4 takes four of them
+// on a rotated grid, which softens the edges and their crawl as the sun moves.
 float sunReaches() {
     #ifdef SHADOWED
         float reach = max(abs(shadowClip.x), abs(shadowClip.y));
         if (reach < 1.0) {
             vec3 at = vec3(distortShadow(shadowClip.xy), shadowClip.z) * 0.5 + 0.5;
-            float lit = shadow2D(shadowtex0, vec3(at.xy, at.z - 0.0002)).r;
+            at.z -= 0.0002;
+            #if SHADOW_FILTER == 4
+                float texel = 1.0 / float(shadowMapResolution);
+                float lit = 0.25 * (
+                    shadow2D(shadowtex0, at + vec3(vec2(0.75, 0.25) * texel, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(-0.25, 0.75) * texel, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(-0.75, -0.25) * texel, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(0.25, -0.75) * texel, 0.0)).r);
+            #else
+                float lit = shadow2D(shadowtex0, at).r;
+            #endif
             return mix(lit, open, smoothstep(0.85, 1.0, reach));
         }
     #endif

@@ -40,7 +40,7 @@ void main() {
         color = skyRadiance(dir, sunDir()) + texture2D(colortex2, texcoord).rgb;
     } else {
         vec4 view = gbufferProjectionInverse * vec4(vec3(texcoord, depth) * 2.0 - 1.0, 1.0);
-        vec3 rel = mat3(gbufferModelViewInverse) * (view.xyz / view.w);
+        vec3 rel = (gbufferModelViewInverse * vec4(view.xyz / view.w, 1.0)).xyz;
         color = mix(color, fogColor(rel), fogAmount(rel));
     }
     color = pow(tonemap(color), vec3(1.0 / 2.2));
