@@ -55,9 +55,9 @@ menus and dialogs, and stay on it without the anticheat pulling you back.
 > does; item cooldowns, forced looks and custom chat completions;
 > the player's real language, chat visibility and main hand sent to the server; Free Direction, D-pad
 > and Analog movement chosen per server, tested against GrimAC; text `shadow_color` and a glyph region
-> that starts again when full (HUD and menu plugins). Left, most important first: block displays drawn
-> from their block state rather than its item, display brightness and glow, secure chat (servers that
-> enforce signed chat), the components
+> that starts again when full (HUD and menu plugins); block displays drawn from their block state, and
+> displays' brightness. Left, most important first: secure chat (servers that enforce signed chat),
+> glowing outlines, the components
 > still dropped from items (custom tooltips, food, gliders), `object` text (sprites and heads in chat),
 > server-synced biomes, mob variants, paintings and trims, and the packets still ignored (camera, server
 > links, message deletion).

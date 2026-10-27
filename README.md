@@ -54,7 +54,7 @@ What the Android port covers so far; what is being done now and next is in the [
 | Settings | <img src="docs/media/progress/85.svg" alt="85%"> | Options that do nothing are greyed out, those a phone can't use are hidden; Zoom has no touch button yet |
 | Mods | <img src="docs/media/progress/60.svg" alt="60%"> | Starling's mod API, Rust and JavaScript mods, tried on a phone; more of the game to open to them |
 | Servers | <img src="docs/media/progress/70.svg" alt="70%"> | Offline-mode servers and proxies, dialogs, chat buttons and links; secure chat (signed messages) not yet |
-| Server plugins | <img src="docs/media/progress/70.svg" alt="70%"> | Custom armour from any pack, animated models riding mobs, clickable furniture, item cooldowns, HUD text without shadows; block displays show their block's item |
+| Server plugins | <img src="docs/media/progress/75.svg" alt="75%"> | Custom armour from any pack, animated models riding mobs, block and item displays, clickable furniture, item cooldowns, HUD text without shadows; no glowing outlines yet |
 | Movement on anticheat servers | <img src="docs/media/progress/80.svg" alt="80%"> | Free Direction, D-pad or Analog per server, no pull-backs on GrimAC or Pika in tests; some old-version servers behind ViaVersion still pull back |
 | Shader packs | <img src="docs/media/progress/60.svg" alt="60%"> | Complementary and MakeUp run on a phone, picked with their profile in Video Settings > Shader Packs; a pack's own options and some effects still differ |
 | APK builds | <img src="docs/media/progress/70.svg" alt="70%"> | Every push builds a signed APK in GitHub Actions; no release yet |
