@@ -3047,6 +3047,11 @@ impl Renderer {
         )
     }
     /// The dimension the shader pack was last set for.
+    /// No shader pack, and none loaded for any dimension: the next frame loads the chosen one.
+    pub fn forget_shader_pack(&mut self) {
+        let _ = self.set_shader_pack(0, None, &[]);
+        self.pack_post = None;
+    }
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         self.pack_post.as_ref().map(|p| p.0)
     }

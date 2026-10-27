@@ -1,6 +1,7 @@
-//! Shader packs, for development until the Shader Packs page exists: `HORIZON_SHADER_PACK=<name>`
-//! runs `shaderpacks/<name>` (a folder or a zip beside `options.txt`) over the world. The
-//! programs of the current dimension's folder are loaded when the dimension changes (spec 1.2).
+//! Shader packs: the Shader Packs page's choice (`Graphics::shader_choice`; `HORIZON_SHADER_PACK`
+//! for development) runs `shaderpacks/<name>` (a folder or a zip beside `options.txt`) over the
+//! world. The programs of the current dimension's folder are loaded when the dimension or the
+//! choice changes (spec 1.2).
 
 use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::PackInputs;
@@ -29,15 +30,12 @@ pub(super) struct PackIds {
     old_hand_light: bool,
 }
 
-/// The pack's option values, until the Shader Packs page picks them: `HORIZON_SHADER_PROFILE`
-/// names one of its profiles (`LOW`), then `HORIZON_SHADER_OPTIONS` lists values over it
-/// (`shadowDistance=64.0 SHADOW_QUALITY=0 !BLOOM`).
-fn picked_values(properties: &Properties, name: &str) -> horizon_shaders::Values {
+/// The pack's option values: the chosen `profile` (`LOW`), then `HORIZON_SHADER_OPTIONS` lists
+/// values over it (`shadowDistance=64.0 SHADOW_QUALITY=0 !BLOOM`).
+fn picked_values(properties: &Properties, name: &str, profile: &str) -> horizon_shaders::Values {
     let mut values = horizon_shaders::Values::default();
-    if let Ok(profile) = std::env::var("HORIZON_SHADER_PROFILE")
-        && !profile.is_empty()
-    {
-        match horizon_shaders::Values::profile(properties, &profile) {
+    if !profile.is_empty() {
+        match horizon_shaders::Values::profile(properties, profile) {
             Some(p) => values = p,
             None => log::warn!("shader pack {name}: no profile `{profile}`"),
         }
@@ -55,7 +53,17 @@ impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
     pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
-        let Some(name) = std::env::var_os("HORIZON_SHADER_PACK") else {
+        // A new choice, once the options close (each load takes seconds): the pack loaded for
+        // the old one goes.
+        let choice = self.settings.horizon.shader_choice();
+        if choice != self.shader_choice && self.screen != super::Screen::Options {
+            self.shader_choice = choice;
+            self.pack_ids = None;
+            if let Some(renderer) = &mut self.renderer {
+                renderer.forget_shader_pack();
+            }
+        }
+        let Some((name, profile)) = self.shader_choice.clone() else {
             return PackInputs::default();
         };
         let dimension = match self.dim {
@@ -66,7 +74,6 @@ impl Game<'_> {
         if let Some(renderer) = &mut self.renderer
             && renderer.shader_pack_dimension() != Some(dimension)
         {
-            let name = name.to_string_lossy();
             let started = std::time::Instant::now();
             let path = std::env::current_dir()
                 .unwrap_or_default()
@@ -77,7 +84,7 @@ impl Game<'_> {
                     let macros = Macros::standard();
                     let text = pack.read_text("shaders.properties").unwrap_or_default();
                     let properties = Properties::parse(&text, &macros);
-                    let values = picked_values(&properties, &name);
+                    let values = picked_values(&properties, &name, &profile);
                     if !values.is_empty() {
                         pack.set_values(values);
                     }

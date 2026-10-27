@@ -264,6 +264,29 @@ pub struct Graphics {
     pub battery: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// `shaders`: the shader pack in `shaderpacks/` (the Shader Packs page): empty for
+    /// `HORIZON_SHADER_PACK`'s (none without it), `off` for none.
+    pub shader_pack: String,
+    /// The pack's profile (`profile.<name>`): empty for `HORIZON_SHADER_PROFILE`'s, `default` for
+    /// the pack's own defaults.
+    pub shader_profile: String,
+}
+impl Graphics {
+    /// The shader pack and profile chosen (the page's, else the development variables').
+    pub fn shader_choice(&self) -> Option<(String, String)> {
+        let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+        let pack = match self.shader_pack.as_str() {
+            "off" => return None,
+            "" => env("HORIZON_SHADER_PACK")?,
+            pack => pack.to_owned(),
+        };
+        let profile = match self.shader_profile.as_str() {
+            "" => env("HORIZON_SHADER_PROFILE").unwrap_or_default(),
+            "default" => String::new(),
+            profile => profile.to_owned(),
+        };
+        Some((pack, profile))
+    }
 }
 impl Default for Graphics {
     fn default() -> Self {
@@ -287,6 +310,8 @@ impl Default for Graphics {
             fxaa: false,
             battery: false,
             api: GraphicsApi::Auto,
+            shader_pack: String::new(),
+            shader_profile: String::new(),
         }
     }
 }
@@ -337,6 +362,9 @@ impl Graphics {
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "batteryMode" => g.battery = flag(g.battery),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                // Not `shaderPack`, which older versions saved and is ignored.
+                "shaders" => g.shader_pack = value.to_owned(),
+                "shadersProfile" => g.shader_profile = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
                         "fps" => Overlay::Fps,
@@ -352,7 +380,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nbatteryMode:{}\ngraphicsApi:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nbatteryMode:{}\ngraphicsApi:{}\nshaders:{}\nshadersProfile:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -380,6 +408,8 @@ impl Graphics {
             bool_text(self.fxaa),
             bool_text(self.battery),
             self.api.name(),
+            self.shader_pack,
+            self.shader_profile,
         )
     }
     pub fn save(&self, dir: &Path) {
@@ -549,6 +579,8 @@ mod tests {
             fxaa: true,
             battery: true,
             api: GraphicsApi::Dx12,
+            shader_pack: "Pack.zip".into(),
+            shader_profile: "LOW".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
         assert_eq!(Graphics::parse(""), Graphics::default());

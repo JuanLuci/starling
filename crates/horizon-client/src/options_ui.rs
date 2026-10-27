@@ -915,6 +915,8 @@ pub enum Page {
     Horizon,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
+    /// Shader Packs: the packs in `shaderpacks/`, one on or none, and its profile.
+    ShaderPacks,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -931,6 +933,10 @@ enum Act {
     ResetPadKey(&'static str),
     ResetPadKeys,
     ToggleMod(usize),
+    /// A pack of the Shader Packs page (None: Off).
+    ShaderPack(Option<usize>),
+    /// The next profile of the chosen pack.
+    ShaderProfile,
     /// The mod's settings screen (`screens.set-config`, Mod Menu's config button).
     ModConfig(usize),
     /// The installed mod's own settings page (capability `ui`), shown as a
@@ -1053,6 +1059,9 @@ pub struct OptionsUi {
     pub graphics: crate::graphics_ui::GraphicsUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// The Shader Packs page's packs, and the chosen one's profiles ("" first: its defaults).
+    shader_packs: Vec<String>,
+    shader_profiles: Vec<String>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1082,6 +1091,8 @@ impl Default for OptionsUi {
             center_language: false,
             graphics: Default::default(),
             agent_status: Vec::new(),
+            shader_packs: Vec::new(),
+            shader_profiles: Vec::new(),
         }
     }
 }
@@ -1262,6 +1273,7 @@ impl OptionsUi {
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
+            Page::ShaderPacks => "Shader Packs",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1423,6 +1435,16 @@ impl OptionsUi {
                         Act::Push(Page::GraphicsAdvanced),
                     )),
                 )];
+                rows.push(Row::Buttons(
+                    button(
+                        0.0,
+                        0.0,
+                        310.0,
+                        Text::literal("Shader Packs..."),
+                        Act::Push(Page::ShaderPacks),
+                    ),
+                    None,
+                ));
                 rows.push(Row::Header("options.video.display.header"));
                 // A phone's app always fills its screen.
                 let display: &[Opt] = if cfg!(target_os = "android") {
@@ -1652,10 +1674,77 @@ impl OptionsUi {
                 }
                 rows
             }
+            Page::ShaderPacks => {
+                let choice = s.horizon.shader_choice();
+                let pick = |on: bool, name: &str, act: Act| {
+                    let label = if on {
+                        format!("> {name} <")
+                    } else {
+                        name.to_owned()
+                    };
+                    Row::Buttons(button(0.0, 0.0, 310.0, Text::literal(label), act), None)
+                };
+                let mut rows = vec![
+                    Row::Note("Iris and OptiFine packs from the shaderpacks folder".into()),
+                    pick(choice.is_none(), "Off", Act::ShaderPack(None)),
+                ];
+                for (i, pack) in self.shader_packs.iter().enumerate() {
+                    let on = choice.as_ref().is_some_and(|(p, _)| p == pack);
+                    rows.push(pick(on, pack, Act::ShaderPack(Some(i))));
+                }
+                if let Some((_, profile)) = &choice {
+                    let shown = if profile.is_empty() {
+                        "Pack Default"
+                    } else {
+                        profile
+                    };
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            Text::literal(format!("Profile: {shown}")),
+                            Act::ShaderProfile,
+                        ),
+                        None,
+                    ));
+                }
+                rows
+            }
             _ => {
                 let _ = s;
                 Vec::new()
             }
+        }
+    }
+    /// The packs in `shaderpacks/` (beside `options.txt`) and the chosen one's profiles
+    /// (`profile.<name>` in its shaders.properties), for the Shader Packs page.
+    fn refresh_shader_lists(&mut self, s: &Settings) {
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join("shaderpacks");
+        let mut packs: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir() || e.file_name().to_string_lossy().ends_with(".zip"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        packs.sort();
+        self.shader_packs = packs;
+        self.shader_profiles = vec![String::new()];
+        if let Some((pack, _)) = s.horizon.shader_choice()
+            && let Ok(pack) = horizon_shaders::Pack::open(&dir.join(pack))
+        {
+            let text = pack.read_text("shaders.properties").unwrap_or_default();
+            let macros = horizon_shaders::Macros::standard();
+            let properties = horizon_shaders::Properties::parse(&text, &macros);
+            self.shader_profiles.extend(
+                properties
+                    .entries
+                    .iter()
+                    .filter_map(|e| e.key.strip_prefix("profile.").map(str::to_owned)),
+            );
         }
     }
     /// Build every widget of the current page.
@@ -2611,7 +2700,36 @@ impl OptionsUi {
                 } => {
                     events.push(Event::ButtonClick);
                     match act {
-                        Act::Push(p) => self.push(p),
+                        Act::Push(p) => {
+                            if p == Page::ShaderPacks {
+                                self.refresh_shader_lists(s);
+                            }
+                            self.push(p)
+                        }
+                        Act::ShaderPack(i) => {
+                            s.horizon.shader_pack = match i {
+                                Some(i) => self.shader_packs[i].clone(),
+                                None => "off".into(),
+                            };
+                            s.horizon.shader_profile.clear();
+                            self.refresh_shader_lists(s);
+                            events.push(Event::Changed);
+                        }
+                        Act::ShaderProfile => {
+                            let now = s.horizon.shader_choice().map(|c| c.1).unwrap_or_default();
+                            let list = &self.shader_profiles;
+                            let at = list.iter().position(|p| *p == now).unwrap_or(0);
+                            if let Some(next) = list.get((at + 1) % list.len().max(1)) {
+                                // Empty would fall back to the variable's: the pack's own
+                                // defaults are `default`.
+                                s.horizon.shader_profile = if next.is_empty() {
+                                    "default".into()
+                                } else {
+                                    next.clone()
+                                };
+                            }
+                            events.push(Event::Changed);
+                        }
                         Act::Done => events.extend(self.back(s)),
                         Act::Cycle(opt) => {
                             opt.cycle(s, right, framebuffer);
