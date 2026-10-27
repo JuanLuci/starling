@@ -112,6 +112,8 @@ struct Region {
     cursor: (u32, u32),
     row: u32,
     pending: Vec<Patch>,
+    /// A placement found no room (`glyph_of` then starts the region again).
+    full: bool,
 }
 struct Cache {
     /// Every font by id, the default one first (the common lookup).
@@ -544,6 +546,7 @@ impl Region {
             self.row = 0;
         }
         if y + h > region.1 {
+            self.full = true;
             return None;
         }
         let (ax, ay) = (x, region.0 + y);
@@ -596,6 +599,7 @@ impl Font {
                     cursor: (0, 0),
                     row: 0,
                     pending: Vec::new(),
+                    full: false,
                 },
                 random: horizon_core::random::LegacyRandom::new(
                     std::time::SystemTime::now()
@@ -685,14 +689,28 @@ impl Font {
         let Cache { sets, region, .. } = &mut *cache;
         // FontManager.getFontSetRaw: a font that doesn't exist draws every
         // character as the missing glyph.
-        let Some((_, set)) = sets.iter_mut().find(|(k, _)| k == id) else {
+        let Some(i) = sets.iter().position(|(k, _)| k == id) else {
             return self.missing;
         };
-        if let Some(g) = set.glyphs.get(&c) {
+        if let Some(g) = sets[i].1.glyphs.get(&c) {
             return *g;
         }
-        let glyph = self.resolve(set, region, c).unwrap_or(self.missing);
-        set.glyphs.insert(c, glyph);
+        region.full = false;
+        let mut glyph = self.resolve(&mut sets[i].1, region, c);
+        // A server pack's menu backgrounds and HUD images fill the run-time rows as they are
+        // drawn: once full, the rows start again and what they held is placed again when next
+        // drawn, rather than every new glyph missing for the rest of the session.
+        if glyph.is_none() && region.full {
+            region.cursor = (0, 0);
+            region.row = 0;
+            let top = self.region.0 as f32 / self.atlas.1 as f32;
+            for (_, set) in sets.iter_mut() {
+                set.glyphs.retain(|_, g| g.rect.is_none_or(|r| r.v0 < top));
+            }
+            glyph = self.resolve(&mut sets[i].1, region, c);
+        }
+        let glyph = glyph.unwrap_or(self.missing);
+        sets[i].1.glyphs.insert(c, glyph);
         glyph
     }
     fn resolve(&self, set: &mut FontSet, region: &mut Region, c: char) -> Option<Glyph> {
@@ -1220,5 +1238,27 @@ mod tests {
         font.uniform = true;
         font.reset_cache();
         assert_eq!(font.glyph('a').advance, 2.0);
+    }
+
+    #[test]
+    fn a_full_glyph_region_starts_again_instead_of_missing_glyphs() {
+        // Three 2048 x 200 glyphs: the 512 run-time rows hold two.
+        let sheet = png(2048, 600, |_, _| true);
+        let def = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/big.png","ascent":7,"height":8,"chars":["a","b","c"]}]}"#;
+        let root = root(
+            "full",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/textures/font/big.png", &sheet),
+            ],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let a = font.glyph('a').rect.expect("a fits");
+        assert!(font.glyph('b').rect.is_some());
+        let c = font.glyph('c').rect.expect("c takes the rows again");
+        assert_eq!(c.v0, a.v0);
+        // 'a' went with the rows and is placed again.
+        assert!(font.glyph('a').rect.is_some_and(|r| r.v0 != c.v0));
     }
 }
