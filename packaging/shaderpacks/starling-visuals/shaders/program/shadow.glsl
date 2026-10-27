@@ -1,5 +1,8 @@
 // Starling Visuals: the world seen from the sun (or moon) into the shadow map, distorted as the
-// lookups in lit.glsl undo. Water casts none: the sun goes on lighting what is under it.
+// lookups in lit.glsl undo. Water casts none: the sun goes on lighting what is under it. Nor do
+// grass, flowers and crops: blades thinner than a texel of the map came and went as the sun
+// moved, a shimmer over every field. Leaves cast whole, without their cut-out holes, which far
+// away were the same noise.
 
 #include "/lib/common.glsl"
 
@@ -27,7 +30,8 @@ flat in int material;
 uniform sampler2D gtexture;
 
 void main() {
-    if (material == 10001 || texture2D(gtexture, texcoord).a < 0.1) discard;
+    if (material == 10001 || material == 10002) discard;
+    if (material != 10003 && texture2D(gtexture, texcoord).a < 0.1) discard;
 
     /* DRAWBUFFERS:0 */
     gl_FragData[0] = vec4(1.0);
