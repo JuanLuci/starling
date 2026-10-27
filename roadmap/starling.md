@@ -40,8 +40,9 @@ and its quality in the game.
 > (they read up and -1 everywhere but Metal: side faces were shaded as tops, which striped and
 > flickered their shadows, and the pack could not tell water or leaves), programs translated and
 > built beside the game (the world draws without the pack for the few seconds it takes, instead of
-> stopping). Left: reflections that warp while walking on the phone (not seen on the PC); checking on
-> the phone that the sun glare and the water's dark band went; the pack's own options screen
+> stopping), view bobbing in the model-view matrix as Iris has it (reflections and the water's dark
+> band swung with each step). Left: checking on the phone that the sun glare went with it; the pack's
+> own options screen
 > (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; a cache of the built programs;
 > `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
 > checked on more packs.
