@@ -15,8 +15,8 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 - **Settings that make sense on a phone**: Every option does what it says, and the ones a phone can't
   use are out of the way.
 
-**Next**: a Shaders page in the game; moving models that animate smoothly; secure chat for servers that
-require it; physical controllers on Android; preparing the game files on the phone, without a computer;
+**Next**: a Shaders page in the game; secure chat for servers that require it; physical controllers on
+Android; preparing the game files on the phone, without a computer;
 Open to LAN and invites on a phone; the first release.
 
 **Later**: a store release; more of the game open to mods; a phone-sized mod browser.
@@ -50,11 +50,12 @@ menus and dialogs, and stay on it without the anticheat pulling you back.
 > any namespace a stack's own `equippable` names (Nexo, Oraxen, ItemsAdder's modern mode); chat click
 > events (`run_command`, `open_url` with vanilla's confirmation, `show_dialog`, `custom`); interaction
 > entities that can be hit and used; display entities that ride their mob or the player (ModelEngine and
-> BetterModel models, cosmetics, nameplates); item cooldowns, forced looks and custom chat completions;
+> BetterModel models, cosmetics, nameplates) and interpolate their transformation and moves as vanilla
+> does; item cooldowns, forced looks and custom chat completions;
 > the player's real language, chat visibility and main hand sent to the server; Free Direction, D-pad
-> and Analog movement chosen per server, tested against GrimAC. Left, most important first: display
-> interpolation (a model's animation moves at 20 steps a second), `shadow_color` on text and more room
-> for custom font glyphs (HUD plugins), secure chat (servers that enforce signed chat), the components
+> and Analog movement chosen per server, tested against GrimAC. Left, most important first:
+> `shadow_color` on text and more room for custom font glyphs (HUD plugins), block displays drawn from
+> their block state rather than its item, display brightness and glow, secure chat (servers that enforce signed chat), the components
 > still dropped from items (custom tooltips, food, gliders), `object` text (sprites and heads in chat),
 > server-synced biomes, mob variants, paintings and trims, and the packets still ignored (camera, server
 > links, message deletion).
@@ -72,8 +73,6 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 ## Next
 
 - **A Shaders page in the game**: pick a pack, its quality and its options without editing files.
-- **Moving models that animate smoothly**: display entities interpolate between the server's steps
-  (`interpolation_duration`, `teleport_duration`).
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off
   there).
