@@ -1,17 +1,26 @@
 // Starling Visuals: everything drawn with the world's light, in one forward pass. The light is
-// worked out per vertex (faces are flat, the lightmap is per vertex anyway), so the fragment stage
-// only samples, multiplies and blends; water adds its reflection per fragment. `final` adds fog.
-// The stage file defines VERTEX_SHADER or FRAGMENT_SHADER, and what it draws: TERRAIN, WATER,
-// ENTITIES, CLOUDS, PARTICLES, WEATHER or nothing (other textured things).
+// worked out per vertex (faces are flat, the lightmap is per vertex anyway); the fragment stage
+// samples, looks the sun up in the shadow map and blends, and water adds its reflection.
+// `final` adds fog. The stage file defines VERTEX_SHADER or FRAGMENT_SHADER, and what it draws:
+// TERRAIN, WATER, ENTITIES, CLOUDS, PARTICLES, WEATHER or nothing (other textured things).
 
 #include "/lib/common.glsl"
+
+#if defined SHADOWS && !defined CLOUDS
+    #define SHADOWED
+#endif
 
 #ifdef VERTEX_SHADER
 
 out vec2 texcoord;
 out vec4 glcolor;
-out vec3 light;
+out vec3 fill;
+out vec3 key;
+out float open;
 flat out int material;
+#ifdef SHADOWED
+out vec3 shadowClip;
+#endif
 #ifdef WATER
 out vec3 rel;
 out vec3 normal;
@@ -19,6 +28,9 @@ out float skyLevel;
 #endif
 
 attribute vec4 mc_Entity;
+
+uniform mat4 shadowModelView;
+uniform mat4 shadowProjection;
 
 // The face shade the game bakes into terrain colours (1 up, 0.5 down, 0.8 north and south,
 // 0.6 east and west), which this pack's own sun replaces.
@@ -54,7 +66,16 @@ void main() {
         wrap = 1.0;
     #endif
 
-    light = lightAt(n, levels, wrap) * unshade;
+    fill = fillLightAt(n, levels) * unshade;
+    key = keyLightAt(n, wrap) * unshade;
+    open = openSky(levels);
+    #ifdef SHADOWED
+        // Off the surface a little, along its normal (toward the light for plants, whose normals
+        // point anywhere), so that it doesn't shadow itself; further with distance, where the
+        // map's texels are bigger.
+        vec3 off = mix(n, keyLightDir(), wrap) * (0.03 + length(at) * 0.004);
+        shadowClip = (shadowProjection * (shadowModelView * vec4(at + off, 1.0))).xyz;
+    #endif
     #ifdef WATER
         rel = at;
         normal = n;
@@ -68,8 +89,13 @@ void main() {
 
 in vec2 texcoord;
 in vec4 glcolor;
-in vec3 light;
+in vec3 fill;
+in vec3 key;
+in float open;
 flat in int material;
+#ifdef SHADOWED
+in vec3 shadowClip;
+#endif
 #ifdef WATER
 in vec3 rel;
 in vec3 normal;
@@ -78,6 +104,23 @@ in float skyLevel;
 
 uniform sampler2D gtexture;
 uniform vec4 entityColor;
+#ifdef SHADOWED
+uniform sampler2DShadow shadowtex0;
+#endif
+
+// How much of the sun reaches this point: the shadow map within its reach (filtered by the
+// hardware over four texels), the open sky past it.
+float sunReaches() {
+    #ifdef SHADOWED
+        float reach = max(abs(shadowClip.x), abs(shadowClip.y));
+        if (reach < 1.0) {
+            vec3 at = vec3(distortShadow(shadowClip.xy), shadowClip.z) * 0.5 + 0.5;
+            float lit = shadow2D(shadowtex0, vec3(at.xy, at.z - 0.0002)).r;
+            return mix(lit, open, smoothstep(0.85, 1.0, reach));
+        }
+    #endif
+    return open;
+}
 
 void main() {
     vec4 albedo = texture2D(gtexture, texcoord) * glcolor;
@@ -86,7 +129,8 @@ void main() {
         albedo.rgb = mix(albedo.rgb, entityColor.rgb, entityColor.a);
     #endif
 
-    vec3 color = toLinear(albedo.rgb) * light;
+    float sun = dot(key, vec3(1.0)) > 0.0 ? sunReaches() : 0.0;
+    vec3 color = toLinear(albedo.rgb) * (fill + key * sun);
     float alpha = albedo.a;
 
     #ifdef WATER
@@ -98,7 +142,7 @@ void main() {
             float fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(-view, n), 0.0, 1.0), 5.0);
             vec3 reflected = skyRadiance(mirrored, s) * skyLevel;
             float glint = pow(clamp(dot(mirrored, keyLightDir()), 0.0, 1.0), 300.0);
-            color = mix(color * 0.6, reflected, fresnel) + sunlight(s) * glint * 4.0 * skyLevel;
+            color = mix(color * 0.6, reflected, fresnel) + sunlight(s) * glint * 4.0 * sunReaches();
             alpha = mix(0.55, 1.0, fresnel);
         }
     #endif

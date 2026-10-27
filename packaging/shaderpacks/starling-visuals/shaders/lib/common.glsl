@@ -68,27 +68,41 @@ vec2 lightLevels(vec2 lm) {
     return clamp((lm - 1.0 / 32.0) * (16.0 / 15.0), 0.0, 1.0);
 }
 
-// The light reaching a surface facing `n` (world space) with light levels `levels`: the sun or
-// moon, the sky around (half its colour, the rest grey), the warm light the sunlit ground sends
-// back, torches, and a floor that keeps caves readable. `wrap` lights both sides of thin plants.
-vec3 lightAt(vec3 n, vec2 levels, float wrap) {
+// The sun's or moon's light on a surface facing `n` (world space), before shadows. `wrap` lights
+// both sides of thin plants.
+vec3 keyLightAt(vec3 n, float wrap) {
     vec3 s = sunDir();
     float facing = dot(n, keyLightDir());
     float lit = mix(clamp(facing, 0.0, 1.0), abs(facing) * 0.6 + 0.4, wrap);
-    // No shadow map yet: where the sky can't see, the sun doesn't either.
-    float open = smoothstep(0.7, 0.97, levels.y);
-    vec3 sun = sunlight(s);
-    vec3 key = (sun + moonlight(s)) * lit * open;
+    return (sunlight(s) + moonlight(s)) * lit;
+}
+
+// Everything else reaching it with light levels `levels`: the sky around (half its colour, the
+// rest grey), the warm light the sunlit ground sends back, torches, and a floor that keeps caves
+// readable.
+vec3 fillLightAt(vec3 n, vec2 levels) {
+    vec3 s = sunDir();
     // The sky's light is about the average of the zenith and a horizon away from the sun, and
     // nearer white than either.
     vec3 sky = 0.5 * (skyRadiance(vec3(0.0, 1.0, 0.0), s) + skyRadiance(normalize(vec3(-s.x, 0.1, -s.z)), s));
     vec3 ambient = mix(vec3(luma(sky)), sky, 0.4) * 1.6 * (0.75 + 0.25 * n.y);
-    vec3 bounce = sun * max(s.y, 0.0) * 0.2 * (0.5 - 0.5 * n.y);
+    vec3 bounce = sunlight(s) * max(s.y, 0.0) * 0.2 * (0.5 - 0.5 * n.y);
     float sky2 = levels.y * levels.y;
     float block = levels.x;
     vec3 torch = vec3(1.0, 0.56, 0.26) * (pow(block, 4.0) * 1.8 + block * 0.08) * BLOCKLIGHT_STRENGTH;
     vec3 floorLight = vec3(0.012, 0.013, 0.016) + nightVision * 0.3;
-    return key + (ambient + bounce) * sky2 + torch + floorLight;
+    return (ambient + bounce) * sky2 + torch + floorLight;
+}
+
+// Without the shadow map (past its reach, or shadows off): where the sky can't see, the sun
+// doesn't either.
+float openSky(vec2 levels) {
+    return smoothstep(0.7, 0.97, levels.y);
+}
+
+// The shadow map's own distortion: points near the player get more of its texels.
+vec2 distortShadow(vec2 p) {
+    return p / (length(p) * SHADOW_DISTORTION + (1.0 - SHADOW_DISTORTION));
 }
 
 // How much fog covers a point `rel` blocks from the camera: haze with distance, and the world's
