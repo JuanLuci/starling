@@ -119,12 +119,13 @@ float sunReaches() {
             vec3 at = vec3(distortShadow(shadowClip.xy), shadowClip.z) * 0.5 + 0.5;
             at.z -= 0.0002;
             #if SHADOW_FILTER == 4
-                float texel = 1.0 / float(shadowMapResolution);
+                // SHADOW_SOFTNESS texels out, on a grid turned by about 18 degrees.
+                float radius = SHADOW_SOFTNESS / float(shadowMapResolution);
                 float lit = 0.25 * (
-                    shadow2D(shadowtex0, at + vec3(vec2(0.75, 0.25) * texel, 0.0)).r
-                    + shadow2D(shadowtex0, at + vec3(vec2(-0.25, 0.75) * texel, 0.0)).r
-                    + shadow2D(shadowtex0, at + vec3(vec2(-0.75, -0.25) * texel, 0.0)).r
-                    + shadow2D(shadowtex0, at + vec3(vec2(0.25, -0.75) * texel, 0.0)).r);
+                    shadow2D(shadowtex0, at + vec3(vec2(0.95, 0.32) * radius, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(-0.32, 0.95) * radius, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(-0.95, -0.32) * radius, 0.0)).r
+                    + shadow2D(shadowtex0, at + vec3(vec2(0.32, -0.95) * radius, 0.0)).r);
             #else
                 float lit = shadow2D(shadowtex0, at).r;
             #endif
