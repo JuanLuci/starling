@@ -2593,28 +2593,45 @@ impl Game<'_> {
             // player holds and wears (EquipmentSlot ordinals).
             C::SetEquipment(p) => {
                 self.remote_object_equipment(p.id, &p.slots);
-                let items: Vec<(u8, Option<Arc<str>>, Option<i32>)> = p
+                type Worn = (u8, Option<Arc<str>>, Option<i32>, Option<Arc<str>>);
+                let items: Vec<Worn> = p
                     .slots
                     .iter()
                     .map(|(slot, stack)| {
-                        let dye = self
-                            .to_stack(stack)
+                        let worn = self.to_stack(stack);
+                        let dye = worn
+                            .as_ref()
                             .and_then(|s| s.data().and_then(|d| d.dyed_color));
-                        (*slot, stack.as_ref().map(|s| self.item_name(s.item)), dye)
+                        let asset = worn.and_then(|s| s.equippable_asset()).map(Arc::from);
+                        (
+                            *slot,
+                            stack.as_ref().map(|s| self.item_name(s.item)),
+                            dye,
+                            asset,
+                        )
                     })
                     .collect();
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
-                    for (slot, item, dye) in items {
+                    for (slot, item, dye, asset) in items {
                         let e = &mut m.extra;
-                        match slot {
-                            0 => e.main_hand = item,
-                            1 => e.off_hand = item,
-                            2 => (e.feet, e.armor_dyes[3]) = (item, dye),
-                            3 => (e.legs, e.armor_dyes[2]) = (item, dye),
-                            4 => (e.chest, e.armor_dyes[1]) = (item, dye),
-                            5 => (e.head, e.armor_dyes[0]) = (item, dye),
-                            _ => {}
-                        }
+                        let piece = match slot {
+                            0 => {
+                                e.main_hand = item;
+                                continue;
+                            }
+                            1 => {
+                                e.off_hand = item;
+                                continue;
+                            }
+                            2 => (&mut e.feet, 3),
+                            3 => (&mut e.legs, 2),
+                            4 => (&mut e.chest, 1),
+                            5 => (&mut e.head, 0),
+                            _ => continue,
+                        };
+                        *piece.0 = item;
+                        e.armor_dyes[piece.1] = dye;
+                        e.armor_assets[piece.1] = asset;
                     }
                 }
             }

@@ -67,6 +67,7 @@ pub mod entities;
 pub mod entity_culling;
 pub mod entity_nbt;
 pub mod environment;
+pub mod equipment;
 pub mod extras;
 pub mod extras_hud;
 pub mod falling_block;

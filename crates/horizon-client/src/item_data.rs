@@ -146,6 +146,17 @@ impl ItemStack {
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
     }
+    /// The equipment asset the stack's own `equippable` names (a server's custom armour).
+    pub fn equippable_asset(&self) -> Option<String> {
+        match self
+            .data()?
+            .other("minecraft:equippable")?
+            .get("asset_id")?
+        {
+            horizon_world::nbt::Tag::String(s) => Some(s.to_string_lossy()),
+            _ => None,
+        }
+    }
     pub fn data_mut(&mut self) -> &mut StackData {
         self.extra.get_or_insert_with(Box::default)
     }

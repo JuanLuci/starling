@@ -590,6 +590,42 @@ impl Stack {
             _ => 0,
         }
     }
+    /// The stack's own `equippable` (a server's custom armour), read from its bytes.
+    pub fn equippable(&self) -> Option<Equippable> {
+        let Some(Component::Raw(bytes)) = self.component(component::EQUIPPABLE) else {
+            return None;
+        };
+        let mut r = Reader::new(bytes);
+        let slot = r.varint().ok()?;
+        // equipSound: a registry id plus one, or 0 and the sound itself.
+        if r.varint().ok()? == 0 {
+            r.string(32767).ok()?;
+            if r.bool().ok()? {
+                r.f32().ok()?;
+            }
+        }
+        let mut ident = || match r.bool().ok()? {
+            true => Some(Some(r.string(32767).ok()?)),
+            false => Some(None),
+        };
+        let asset = ident()?;
+        let overlay = ident()?;
+        Some(Equippable {
+            slot,
+            asset,
+            overlay,
+        })
+    }
+}
+/// What a stack's `equippable` says of where and how it is worn: the slot by `EquipmentSlot`'s
+/// id (0 main hand, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand, 6 body, 7 saddle), the
+/// equipment asset it draws (`nexo:ruby` is `assets/nexo/equipment/ruby.json`) and the camera
+/// overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Equippable {
+    pub slot: i32,
+    pub asset: Option<String>,
+    pub overlay: Option<String>,
 }
 /// ItemStack.OPTIONAL_STREAM_CODEC: `None` is the empty stack (count 0).
 pub struct Slot;
@@ -1185,6 +1221,29 @@ mod tests {
         );
         assert_eq!(Slot::read(&mut r).unwrap(), Some(Stack::new(7, 3)));
         assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn a_stack_names_its_own_equipment_asset() {
+        let mut w = Writer::new();
+        w.varint(4);
+        sound_inline(&mut w, "minecraft:item.armor.equip_generic");
+        w.bool(true);
+        w.string("nexo:ruby");
+        w.bool(false);
+        let mut stack = Stack::new(7, 1);
+        stack
+            .added
+            .push((component::EQUIPPABLE, Component::Raw(w.data)));
+        assert_eq!(
+            stack.equippable(),
+            Some(Equippable {
+                slot: 4,
+                asset: Some("nexo:ruby".into()),
+                overlay: None,
+            })
+        );
+        assert_eq!(Stack::new(7, 1).equippable(), None);
     }
 
     #[test]

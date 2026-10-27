@@ -592,15 +592,11 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
-        let Some(asset) = self.armor[1]
-            .as_ref()
-            .and_then(|s| self.res.items().get(&s.item))
-            .and_then(|i| i.equip_asset.as_ref())
-        else {
+        let Some(asset) = self.armor[1].as_ref().and_then(|s| self.worn_asset(s)) else {
             return;
         };
         let assets = &self.armor_stand_assets;
-        let Some((texture, _)) = assets.equipment.get(asset).and_then(|k| k.get("wings")) else {
+        let Some((texture, _)) = assets.equipment.get(&asset).and_then(|k| k.get("wings")) else {
             return;
         };
         let (Some(model), Some(rect)) = (

@@ -262,6 +262,37 @@ fn namespaced_gui_sprites(root: &Path) -> Vec<PackedImage> {
     out
 }
 
+/// The equipment layer textures of every namespace but vanilla's (a server's custom armour), as
+/// `<namespace>:entity/equipment/<kind>/<name>` (`equipment::sprite`).
+fn namespaced_equipment(root: &Path) -> Vec<PackedImage> {
+    let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ns in namespaces.flatten() {
+        let name = ns.file_name().to_string_lossy().into_owned();
+        if name == "minecraft" {
+            continue;
+        }
+        let textures = ns.path().join("textures/entity/equipment");
+        let mut files = Vec::new();
+        walk(&textures, &mut files);
+        for path in files {
+            let Ok(rel) = path.strip_prefix(&textures) else {
+                continue;
+            };
+            let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
+            if let Ok((w, h, pixels)) = decode(&path)
+                && w <= 1024
+                && h <= 512
+            {
+                out.push((format!("{name}:entity/equipment/{rel}"), w, h, pixels));
+            }
+        }
+    }
+    out
+}
+
 impl HudAtlas {
     /// A font glyph's atlas cell (8x8 GUI pixels) and advance.
     pub fn glyph(&self, ch: char) -> Option<(Rect, f32)> {
@@ -470,6 +501,7 @@ impl HudAtlas {
         if full {
             images.extend(atlas_sprites(root, &images));
             images.extend(namespaced_gui_sprites(root));
+            images.extend(namespaced_equipment(root));
         }
         // The title screen's "JAVA EDITION" banner reads "RUST EDITION".
         if let Some(edition) = images

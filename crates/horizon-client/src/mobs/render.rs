@@ -675,6 +675,34 @@ pub fn layers(m: &Mob) -> Vec<Layer> {
 }
 /// `HumanoidArmorLayer`: the armour models of the mob's main model with the
 /// equipment textures (leather tinted, with its overlay).
+/// The texture `humanoid_armor` gives a piece with its own equipment asset, then the layer kind.
+const OWN_EQUIPMENT: &str = "horizon:own_equipment/";
+
+/// A piece's own equipment asset (`Extra::armor_assets`) as the pack's equipment layers draw it:
+/// the layer of `kind` of the asset of the piece `model` wears (`...#chestplate`), in its dye
+/// colour (or the undyed one) when dyeable. An asset the packs lack draws nothing.
+fn own_equipment(m: &Mob, layer: &mut Layer, kind: &str, equipment: &crate::equipment::Layers) {
+    let slot = match layer.model.rsplit('#').next() {
+        Some("helmet") => 0,
+        Some("chestplate") => 1,
+        Some("leggings") => 2,
+        _ => 3,
+    };
+    let found = m.extra.armor_assets[slot]
+        .as_deref()
+        .and_then(|a| equipment.get(a))
+        .and_then(|k| k.get(kind));
+    let Some((texture, undyed)) = found else {
+        layer.texture.clear();
+        return;
+    };
+    layer.texture = texture.clone();
+    if let Some(undyed) = undyed {
+        let dye = m.extra.armor_dyes[slot].map(|d| d as u32 & 0xFF_FFFF);
+        layer.color = abgr(dye.unwrap_or(*undyed));
+    }
+}
+
 fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
     if super::equine::is_equine(m.species()) {
         return;
@@ -689,7 +717,22 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
         (&m.extra.legs, "leggings"),
         (&m.extra.feet, "boots"),
     ];
-    for ((item, layer), dye) in slots.into_iter().zip(m.extra.armor_dyes) {
+    for (i, ((item, layer), dye)) in slots.into_iter().zip(m.extra.armor_dyes).enumerate() {
+        // A piece with its own equipment asset: its layer, found when drawn (`own_equipment`).
+        if item.is_some() && m.extra.armor_assets[i].is_some() {
+            let folder = if layer == "leggings" {
+                "humanoid_leggings"
+            } else {
+                "humanoid"
+            };
+            v.push(Layer {
+                model: format!("{base}#{layer}"),
+                texture: format!("{OWN_EQUIPMENT}{folder}"),
+                color: 0xFFFF_FFFF,
+                full_bright: false,
+            });
+            continue;
+        }
         let Some(name) = item.as_deref().and_then(|i| i.strip_prefix("minecraft:")) else {
             continue;
         };
@@ -1094,7 +1137,15 @@ fn render_visible(
         .armor_atlases
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let equipment = data
+        .equipment
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for mut layer in all_layers {
+        if let Some(kind) = layer.texture.strip_prefix(OWN_EQUIPMENT) {
+            let kind = kind.to_owned();
+            own_equipment(m, &mut layer, &kind, &equipment);
+        }
         let Some(part) = m.kind.layer(&layer.model).cloned() else {
             continue;
         };
@@ -1349,6 +1400,7 @@ mod tests {
             entity_tags: Default::default(),
             villager_hats: Default::default(),
             armor_atlases: Default::default(),
+            equipment: Default::default(),
             pois: Default::default(),
         };
         let atlas = |name: &str| {

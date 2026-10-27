@@ -46,6 +46,28 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             continue;
         };
         let value = match c {
+            // A server's custom armour names its own equipment asset.
+            Component::Raw(_) if *kind == component::EQUIPPABLE => {
+                let Some(e) = s.equippable() else {
+                    continue;
+                };
+                const SLOTS: [&str; 8] = [
+                    "mainhand", "feet", "legs", "chest", "head", "offhand", "body", "saddle",
+                ];
+                let slot = SLOTS.get(e.slot as usize).copied().unwrap_or("head");
+                Tag::compound(
+                    [("slot", Tag::String(slot.into()))]
+                        .into_iter()
+                        .chain(
+                            e.asset
+                                .map(|a| ("asset_id", Tag::String(a.as_str().into()))),
+                        )
+                        .chain(
+                            e.overlay
+                                .map(|o| ("camera_overlay", Tag::String(o.as_str().into()))),
+                        ),
+                )
+            }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
             // Trim materials and patterns are synced registries, as enchantments are.

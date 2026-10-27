@@ -26,7 +26,7 @@ pub(super) struct ArmorStandAssets {
     /// The player's armour models by slot (helmet, chestplate, leggings, boots).
     pub player: HashMap<&'static str, Part>,
     /// asset id -> layer kind (humanoid / humanoid_leggings) -> (texture, undyed colour).
-    pub equipment: HashMap<String, HashMap<String, (String, Option<u32>)>>,
+    pub equipment: horizon_client::equipment::Layers,
     /// asset id -> `trim_overrides`.
     pub trim_overrides: HashMap<String, Vec<TrimOverride>>,
     /// Layer textures a pack's shader makes custom armour of (`custom_armor`).
@@ -56,39 +56,12 @@ impl ArmorStandAssets {
         if let Some(part) = load("minecraft:elytra#main") {
             player.insert("elytra", part);
         }
+        // Every namespace's: a server's pack adds its own (`nexo:ruby`).
         let mut equipment = HashMap::new();
         let mut trim_overrides = HashMap::new();
-        if let Ok(entries) = std::fs::read_dir(root.join("assets/minecraft/equipment")) {
-            for e in entries.flatten() {
-                let path = e.path();
-                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let Ok(v) =
-                    std::fs::read(&path).map(|b| serde_json::from_slice::<serde_json::Value>(&b))
-                else {
-                    continue;
-                };
-                let Ok(v) = v else { continue };
-                let mut kinds = HashMap::new();
-                for kind in ["humanoid", "humanoid_leggings", "wings"] {
-                    if let Some(layer) = v["layers"][kind].get(0) {
-                        let tex = layer["texture"]
-                            .as_str()
-                            .unwrap_or(name)
-                            .trim_start_matches("minecraft:");
-                        let undyed = layer["dyeable"]["color_when_undyed"]
-                            .as_i64()
-                            .map(|c| c as u32 & 0xFF_FFFF);
-                        kinds.insert(
-                            kind.to_owned(),
-                            (format!("entity/equipment/{kind}/{tex}"), undyed),
-                        );
-                    }
-                }
-                trim_overrides.insert(format!("minecraft:{name}"), TrimOverride::list(&v));
-                equipment.insert(format!("minecraft:{name}"), kinds);
-            }
+        for (id, v) in horizon_client::equipment::assets(root) {
+            trim_overrides.insert(id.clone(), TrimOverride::list(&v));
+            equipment.insert(id.clone(), horizon_client::equipment::layers(&id, &v));
         }
         Self {
             main: load("minecraft:armor_stand#main"),
@@ -133,9 +106,21 @@ impl Game<'_> {
         armor: &[Option<ItemStack>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
         self.armor_layers(armor.each_ref().map(|s| {
-            s.as_ref()
-                .map(|s| (&*s.item, Some(s), s.data().and_then(|d| d.dyed_color)))
+            s.as_ref().map(|s| {
+                let asset = self.worn_asset(s);
+                (asset, Some(s), s.data().and_then(|d| d.dyed_color))
+            })
         }))
+    }
+    /// The equipment asset `stack` draws when worn: its own `equippable`'s (a server's custom
+    /// armour), else its item's.
+    pub(super) fn worn_asset(&self, stack: &ItemStack) -> Option<String> {
+        stack.equippable_asset().or_else(|| {
+            self.res
+                .items()
+                .get(&stack.item)
+                .and_then(|i| i.equip_asset.clone())
+        })
     }
     /// `HumanoidArmorLayer` for another player's model: the armour it wears
     /// (`extra.head` .. `extra.feet`).
@@ -143,14 +128,22 @@ impl Game<'_> {
         let e = &m.extra;
         let worn = [&e.head, &e.chest, &e.legs, &e.feet];
         self.armor_layers(std::array::from_fn(|i| {
-            worn[i].as_deref().map(|item| (item, None, e.armor_dyes[i]))
+            worn[i].as_deref().map(|item| {
+                let asset = e.armor_assets[i].as_deref().map(str::to_owned).or_else(|| {
+                    self.res
+                        .items()
+                        .get(item)
+                        .and_then(|i| i.equip_asset.clone())
+                });
+                (asset, None, e.armor_dyes[i])
+            })
         }))
     }
-    /// The layers of the armour items `worn` (with their stacks when known,
-    /// for trims, and their dye colours), head to feet.
+    /// The layers of the armour `worn` (each piece's equipment asset, its stack when known,
+    /// for trims, and its dye colour), head to feet.
     fn armor_layers(
         &self,
-        worn: [Option<(&str, Option<&ItemStack>, Option<i32>)>; 4],
+        worn: [Option<(Option<String>, Option<&ItemStack>, Option<i32>)>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
         let assets = &self.armor_stand_assets;
         // The shaders' GameTime: the part of the day gone.
@@ -160,15 +153,7 @@ impl Game<'_> {
             .into_iter()
             .zip(["helmet", "chestplate", "leggings", "boots"])
         {
-            let Some((item, stack, dye)) = item else {
-                continue;
-            };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(item)
-                .and_then(|i| i.equip_asset.clone())
-            else {
+            let Some((Some(asset), stack, dye)) = item else {
                 continue;
             };
             let kind = if layer == "leggings" {
@@ -235,12 +220,13 @@ impl Game<'_> {
             let Some(stack) = stack.as_ref().filter(|s| s.extra.is_some()) else {
                 continue;
             };
-            let Some(asset) = items
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.as_deref())
+            let Some(asset) = stack
+                .equippable_asset()
+                .or_else(|| items.get(&stack.item).and_then(|i| i.equip_asset.clone()))
             else {
                 continue;
             };
+            let asset = asset.as_str();
             let kind = if layer == "leggings" {
                 "humanoid_leggings"
             } else {
@@ -695,12 +681,7 @@ impl Game<'_> {
                 let Some(stack) = &a.equipment[slot] else {
                     continue;
                 };
-                let Some(asset) = self
-                    .res
-                    .items()
-                    .get(&stack.item)
-                    .and_then(|i| i.equip_asset.clone())
-                else {
+                let Some(asset) = self.worn_asset(stack) else {
                     continue;
                 };
                 let kind = if layer == "leggings" {
@@ -906,11 +887,7 @@ impl Game<'_> {
         }
         // A head item that is not worn armour.
         if let Some(stack) = &a.equipment[5]
-            && self
-                .res
-                .items()
-                .get(&stack.item)
-                .is_none_or(|i| i.equip_asset.is_none())
+            && self.worn_asset(stack).is_none()
             && let Some(head) = part_matrix(model, base, poses, "head", 0.0)
         {
             let pose = head

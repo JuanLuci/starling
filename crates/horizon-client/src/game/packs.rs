@@ -317,6 +317,13 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             self.armor_stand_assets.atlases.clone();
+        *self
+            .res
+            .mob_data()
+            .equipment
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            self.armor_stand_assets.equipment.clone();
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.to_path_buf();
