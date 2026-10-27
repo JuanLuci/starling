@@ -248,6 +248,9 @@ pub(super) struct Remote {
     pub(super) names: HashMap<i32, (Option<horizon_client::text::Text>, bool)>,
     /// The item displays in the level, by entity.
     pub(super) item_displays: HashMap<i32, ItemDisplay>,
+    /// The vehicle each display or interaction entity rides (a plugin's model or cosmetic on a
+    /// mob or a player): it is drawn where the vehicle is, which the server never sends again.
+    pub(super) mounts: HashMap<i32, i32>,
     players: HashMap<u128, String>,
     /// `ClientPacketListener.playerInfoMap` as player-list entries, and
     /// which of them are listed.
@@ -367,6 +370,7 @@ impl Remote {
         self.commands = None;
         self.names.clear();
         self.item_displays.clear();
+        self.mounts.clear();
         self.players.clear();
         self.tab_players.clear();
         self.skin_textures.clear();
@@ -638,6 +642,7 @@ impl Game<'_> {
             commands: None,
             names: HashMap::new(),
             item_displays: HashMap::new(),
+            mounts: HashMap::new(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -2039,6 +2044,9 @@ impl Game<'_> {
             r.pending_items.remove(&id);
             r.names.remove(&id);
             r.item_displays.remove(&id);
+            // Entity.remove: its passengers get off.
+            r.mounts.remove(&id);
+            r.mounts.retain(|_, vehicle| *vehicle != id);
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.

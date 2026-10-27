@@ -164,10 +164,22 @@ impl Game<'_> {
         } else {
             [self.yaw, self.pitch]
         };
-        for display in self.text_displays.values_mut() {
+        // A text display riding a mob or a player (a nameplate, a hologram over a model).
+        let ridden: std::collections::HashMap<i32, glam::DVec3> = self
+            .text_displays
+            .keys()
+            .filter_map(|id| {
+                let p = self.ridden_position(*id, partial)?;
+                Some((*id, glam::DVec3::new(p.x, p.y, p.z)))
+            })
+            .collect();
+        for (id, display) in self.text_displays.iter_mut() {
             display.last_progress = display.progress(partial as f32);
             let d = display.shown.blend(&display.from, display.last_progress);
-            let position = display.previous.lerp(display.position, partial);
+            let position = ridden
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| display.previous.lerp(display.position, partial));
             let range = f64::from(d.view_range) * 64.0 * f64::from(self.settings.entity_distance);
             if position.distance_squared(camera) >= range * range || d.text.is_empty() {
                 continue;

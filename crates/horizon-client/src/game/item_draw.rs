@@ -396,7 +396,12 @@ impl Game<'_> {
     /// `ItemDisplayRenderer` on a server: each item display's item in its display context, posed
     /// by `DisplayRenderer` (the billboard or the entity's rotation, then the transformation,
     /// then half a turn).
-    pub(super) fn item_display_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+    pub(super) fn item_display_geometry(
+        &self,
+        camera: glam::DVec3,
+        partial: f64,
+        out: &mut Vec<Vertex>,
+    ) {
         let Some(r) = &self.remote else {
             return;
         };
@@ -404,7 +409,11 @@ impl Game<'_> {
             let (Some(stack), Some(t)) = (&d.stack, r.entities.get(id)) else {
                 continue;
             };
-            let pos = glam::DVec3::from_array(t.position) - camera;
+            // A display riding a mob or a player (a plugin's model, a backpack) is where it is.
+            let at = self
+                .ridden_position(*id, partial)
+                .map_or(t.position, |p| [p.x, p.y, p.z]);
+            let pos = glam::DVec3::from_array(at) - camera;
             if pos.length_squared() > 64.0 * 64.0 {
                 continue;
             }
@@ -450,9 +459,9 @@ impl Game<'_> {
                 * transformation
                 * last;
             let packed = self.world.light(
-                t.position[0].floor() as i32,
-                t.position[1].floor() as i32,
-                t.position[2].floor() as i32,
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
             );
             let entity_start = out.len();
             self.submit_item_world(&state, pose, vertex_light(packed), out);

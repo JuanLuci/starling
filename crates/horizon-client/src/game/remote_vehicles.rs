@@ -23,6 +23,57 @@ pub(super) struct ObjectHit {
 }
 
 impl Game<'_> {
+    /// `Entity.positionRider` for a display or interaction entity riding `vehicle`, `partial` of the
+    /// way through the tick: the vehicle's passenger attachment, on top of it (EntityAttachments'
+    /// default); a display rides another display at that one's place.
+    pub(super) fn mount_point(&self, vehicle: i32, partial: f64) -> Option<Vec3> {
+        let r = self.remote.as_ref()?;
+        let lerp = |a: Vec3, b: Vec3| {
+            Vec3::new(
+                a.x + (b.x - a.x) * partial,
+                a.y + (b.y - a.y) * partial,
+                a.z + (b.z - a.z) * partial,
+            )
+        };
+        let up = |p: Vec3, h: f64| Vec3::new(p.x, p.y + h, p.z);
+        let mut vehicle = vehicle;
+        // A model's parts may ride one another; a loop ends.
+        for _ in 0..8 {
+            if vehicle == r.entity_id {
+                let p = self.player.as_ref()?;
+                let height = f64::from(p.pose.dimensions(1.0).height);
+                return Some(up(lerp(self.previous_position, p.position), height));
+            }
+            if let Some(m) = self.mobs.iter().find(|m| m.id as i32 == vehicle) {
+                return Some(up(lerp(m.previous, m.position), f64::from(m.height())));
+            }
+            if let Some(a) = self.armor_stands.iter().find(|a| a.id as i32 == vehicle) {
+                let height = if a.marker {
+                    0.0
+                } else if a.small {
+                    0.9875
+                } else {
+                    1.975
+                };
+                return Some(up(a.position, height));
+            }
+            match r.mounts.get(&vehicle) {
+                Some(&next) => vehicle = next,
+                None => {
+                    let t = r.entities.get(&vehicle)?;
+                    return Some(Vec3::new(t.position[0], t.position[1], t.position[2]));
+                }
+            }
+        }
+        None
+    }
+
+    /// Where display or interaction entity `id` is: on its vehicle when it rides one.
+    pub(super) fn ridden_position(&self, id: i32, partial: f64) -> Option<Vec3> {
+        let vehicle = *self.remote.as_ref()?.mounts.get(&id)?;
+        self.mount_point(vehicle, partial)
+    }
+
     /// The nearest interaction entity the view hits within the player's entity interaction range:
     /// its id and how far along the view.
     pub(super) fn interaction_hit(&self) -> Option<(u32, f64)> {
@@ -31,7 +82,13 @@ impl Game<'_> {
         let reach = if self.creative { 5.0 } else { 3.0 };
         self.interactions
             .iter()
-            .filter_map(|(id, i)| Some((*id, ray_box(eye, dir, reach, i.bounds())?)))
+            .filter_map(|(id, i)| {
+                let mut i = super::remote_objects::Interaction { ..*i };
+                if let Some(at) = self.ridden_position(*id as i32, 1.0) {
+                    i.position = at;
+                }
+                Some((*id, ray_box(eye, dir, reach, i.bounds())?))
+            })
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
     /// The nearest boat, minecart, item frame, armor stand or painting the
@@ -123,6 +180,16 @@ impl Game<'_> {
             } else if passengers.contains(&(m.id as i32)) {
                 m.extra.mount = Some(vehicle_id);
                 m.extra.passenger = true;
+            }
+        }
+        // Displays and interaction boxes ride along (`mount_point`).
+        let mobs = &self.mobs;
+        if let Some(r) = self.remote.as_mut() {
+            r.mounts.retain(|_, v| *v != vehicle);
+            for &p in passengers {
+                if p != me && !mobs.iter().any(|m| m.id as i32 == p) {
+                    r.mounts.insert(p, vehicle);
+                }
             }
         }
         if passengers.contains(&me) {

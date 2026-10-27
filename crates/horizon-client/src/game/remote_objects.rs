@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 /// `Interaction`: an invisible box a plugin puts where a click should land (furniture, the parts of
 /// a model drawn by display entities), `width` wide and `height` tall from its feet.
+#[derive(Clone, Copy)]
 pub(super) struct Interaction {
     pub position: Vec3,
     pub width: f32,

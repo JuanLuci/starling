@@ -7022,7 +7022,7 @@ impl Game<'_> {
         self.mark_entity(out.len(), "minecraft:item");
         self.dropped_item_geometry(camera, alpha, &mut out);
         // `ItemDisplayRenderer` (a server's item displays).
-        self.item_display_geometry(camera, &mut out);
+        self.item_display_geometry(camera, alpha, &mut out);
         // `VaultRenderer`.
         self.mark_entity(out.len(), "");
         self.vault_geometry(camera, alpha, &mut out);
