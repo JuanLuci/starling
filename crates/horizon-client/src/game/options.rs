@@ -16,7 +16,7 @@ pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",
     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
     "graphics-get [KEY...]          Horizon's graphics settings (graphics.txt) by key",
-    "graphics-set KEY VALUE         set a Horizon graphics setting (resolutionScale 50..200, presentMode, workers...), apply and save it",
+    "graphics-set KEY VALUE         set a Horizon graphics setting (resolutionScale 25..200, presentMode, workers...), apply and save it",
 ];
 
 impl Game<'_> {

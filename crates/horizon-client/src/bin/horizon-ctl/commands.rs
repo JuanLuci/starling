@@ -362,7 +362,7 @@ pub const COMMANDS: &[Cmd] = &[
         "Keys: preset, lodDistance, caveCulling, cullLeaves, entityCulling, chunkUpdates, uploadBudgetKiB, sky, fog, weather, animatedTextures, presentMode, framePacing, workers, overlay, resolutionScale, fxaa, level, batteryMode, shaderPack, graphicsApi.",
         ["horizon-ctl graphics-get", "horizon-ctl graphics-get resolutionScale presentMode"], &[opt("keys", Ty::Rest, "setting keys (default: all)")], mcp: true, local: false),
     cmd!("graphics-set", Screens, "graphics-set KEY VALUE", "set one of Horizon's graphics settings, apply it at once and save graphics.txt",
-        "Numbers are clamped to the setting's range (resolutionScale 50..200); a value the setting ignores is an error. restart: true in the reply means it applies at the next start (workers, graphicsApi).",
+        "Numbers are clamped to the setting's range (resolutionScale 25..200); a value the setting ignores is an error. restart: true in the reply means it applies at the next start (workers, graphicsApi).",
         ["horizon-ctl graphics-set resolutionScale 75", "horizon-ctl graphics-set presentMode mailbox", "horizon-ctl graphics-set batteryMode true"],
         &[p("key", Ty::Str, "setting key from graphics-get"), p("value", Ty::Rest, "the new value")], mcp: true, local: false),
     cmd!("click-button", Screens, "click-button LABEL", "click a button of the open screen or title menu by its label",
