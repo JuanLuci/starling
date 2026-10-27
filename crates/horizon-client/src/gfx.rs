@@ -356,6 +356,9 @@ pub struct Renderer {
     flat: Option<flat::Flat>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
+    /// `flat` is there for shader packs only (`flat::for_packs`): with `flat_on` off, frames
+    /// whose terrain a pack draws are flat.
+    pack_flat: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
     /// counts reach a multi-draw's entries (Vulkan, Metal).
     cull: Option<cull::Cull>,
@@ -2251,15 +2254,18 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let flat_wanted = flat::wanted(&adapter, &device);
+        let pack_flat = !flat_wanted && flat::for_packs(&adapter, &device);
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
             1 << 20,
-            flat_wanted,
+            flat_wanted || pack_flat,
         );
-        // Sections as one index list per frame where multi-draw is emulated.
-        let flat = flat_wanted.then(|| {
+        // Sections as one index list per frame where multi-draw is emulated, or only while a
+        // shader pack draws terrain.
+        let started_flat = std::time::Instant::now();
+        let flat = (flat_wanted || pack_flat).then(|| {
             let buffers = [Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -2285,6 +2291,18 @@ impl Renderer {
                 },
             )
         });
+        if flat.is_some() {
+            log::info!(
+                "flat section draws for {}, {} vertices a page, ready in {} ms",
+                if flat_wanted {
+                    "every frame"
+                } else {
+                    "shader packs"
+                },
+                arena.page_vertices(),
+                started_flat.elapsed().as_millis()
+            );
+        }
         let sorted_indices = arena::Arena::indices(&device, 1 << 16, flat.is_some());
         let multi_draw = device
             .features()
@@ -2370,7 +2388,8 @@ impl Renderer {
             config,
             solid,
             translucent,
-            flat_on: flat.is_some(),
+            flat_on: flat_wanted && flat.is_some(),
+            pack_flat,
             cull_on,
             sides_on: true,
             cull,
@@ -3038,8 +3057,9 @@ impl Renderer {
             );
             self.queue.submit([encoder.finish()]);
         }
-        // Flat draws whenever the device has them (`render` keeps them on with a pack).
-        self.pack_terrain_flat = self.flat.is_some() && self.flat_on;
+        // Flat draws whenever the device has them (`render` keeps them on with a pack): the
+        // per-section draws give the pack no face normals and no `mc_Entity`.
+        self.pack_terrain_flat = self.flat.is_some() && (self.flat_on || self.pack_flat);
         Some(
             self.pack_atlas
                 .as_ref()?
@@ -4011,11 +4031,10 @@ impl Renderer {
         }
         let flat_frame = match &mut self.flat {
             Some(flat)
-                if self.flat_on
-                    && !self.draws.is_empty()
-                    && (self.drawn_sections >= flat.min_sections
-                        || pack_terrain
-                        || shadow_view.is_some()) =>
+                if !self.draws.is_empty()
+                    && ((self.flat_on && self.drawn_sections >= flat.min_sections)
+                        || ((self.flat_on || self.pack_flat)
+                            && (pack_terrain || shadow_view.is_some()))) =>
             {
                 let sections = &self.sections;
                 let lods = &self.lods;

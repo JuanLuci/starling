@@ -90,8 +90,13 @@ impl Arena {
         capacity: u64,
         usage: wgpu::BufferUsages,
     ) -> Self {
-        // 256 MiB pages, or less where the device's buffers are smaller.
-        let bytes = device.limits().max_buffer_size.min(PAGE_BYTES);
+        // 256 MiB pages, or less where the device's buffers are smaller, or its storage bindings
+        // when shaders read pages whole (a phone's Adreno binds 128 MiB).
+        let limits = device.limits();
+        let mut bytes = limits.max_buffer_size.min(PAGE_BYTES);
+        if usage.contains(wgpu::BufferUsages::STORAGE) {
+            bytes = bytes.min(limits.max_storage_buffer_binding_size);
+        }
         let page_limit = (bytes / stride) / GRAIN * GRAIN;
         let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
         Self {
