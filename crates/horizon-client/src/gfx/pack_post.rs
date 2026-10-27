@@ -2284,6 +2284,11 @@ impl PackPost {
     pub fn programs(&self) -> Vec<&str> {
         self.passes.iter().map(|p| p.name.as_str()).collect()
     }
+    /// The programs that run and the notes of loading them.
+    pub fn report(&self) -> (Vec<String>, Vec<String>) {
+        let programs = self.programs().into_iter().map(str::to_owned).collect();
+        (programs, self.notes.clone())
+    }
 
     fn resize(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if self.targets.as_ref().is_some_and(|t| t.size == size) {

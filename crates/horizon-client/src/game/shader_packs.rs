@@ -30,6 +30,14 @@ pub(super) struct PackIds {
     old_hand_light: bool,
 }
 
+/// A pack the renderer is making on its own thread (`Renderer::start_shader_pack`): its ids,
+/// which entity spans use once it draws, and what the log says of it then.
+pub(super) struct Making {
+    ids: PackIds,
+    folder: String,
+    started: std::time::Instant,
+}
+
 /// The pack's option values: the chosen `profile` (`LOW`), then `HORIZON_SHADER_OPTIONS` lists
 /// values over it (`shadowDistance=64.0 SHADOW_QUALITY=0 !BLOOM`).
 fn picked_values(properties: &Properties, name: &str, profile: &str) -> horizon_shaders::Values {
@@ -59,6 +67,7 @@ impl Game<'_> {
         if choice != self.shader_choice && self.screen != super::Screen::Options {
             self.shader_choice = choice;
             self.pack_ids = None;
+            self.pack_making = None;
             if let Some(renderer) = &mut self.renderer {
                 renderer.forget_shader_pack();
             }
@@ -75,6 +84,8 @@ impl Game<'_> {
             && renderer.shader_pack_dimension() != Some(dimension)
         {
             let started = std::time::Instant::now();
+            self.pack_ids = None;
+            self.pack_making = None;
             let path = std::env::current_dir()
                 .unwrap_or_default()
                 .join("shaderpacks")
@@ -97,10 +108,13 @@ impl Game<'_> {
                     }
                     let folder = dimension_folder(&pack, dimension);
                     let inputs = renderer.pack_inputs();
-                    let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
-                    let biomes = self.res.biomes();
-                    let names: Vec<&str> = biomes.list.iter().map(|b| b.name.as_str()).collect();
-                    post.custom.set_biomes(&names);
+                    let biomes: Vec<String> = self
+                        .res
+                        .biomes()
+                        .list
+                        .iter()
+                        .map(|b| b.name.clone())
+                        .collect();
                     let text = pack.read_text("block.properties").unwrap_or_default();
                     let ids = BlockIds::parse(&Properties::parse(&text, &macros));
                     for note in &ids.notes {
@@ -116,7 +130,7 @@ impl Game<'_> {
                         &Properties::parse(text.as_deref().unwrap_or_default(), &macros),
                         "item",
                     );
-                    self.pack_ids = Some(PackIds {
+                    let pack_ids = PackIds {
                         items: items.plain(),
                         missing_item: if text.is_some() { -1 } else { 0 },
                         // OQ-21: on unless the pack turns it off.
@@ -128,7 +142,7 @@ impl Game<'_> {
                         missing_block: if ids.is_empty() { 0 } else { 65535 },
                         blocks: ids.clone(),
                         block_states: RefCell::default(),
-                    });
+                    };
                     let started_ids = std::time::Instant::now();
                     let table = block_id_table(&self.pack, &ids);
                     log::info!(
@@ -137,25 +151,51 @@ impl Game<'_> {
                         table.len() / 2,
                         started_ids.elapsed().as_millis()
                     );
-                    if let Some((programs, notes)) =
-                        renderer.set_shader_pack(dimension, Some(post), &table)
-                    {
-                        for note in notes {
-                            log::warn!("shader pack {name}: {note}");
-                        }
-                        log::info!(
-                            "shader pack {name}: folder `{folder}`, {} programs ({}) in {} ms",
-                            programs.len(),
-                            programs.join(" "),
-                            started.elapsed().as_millis()
-                        );
-                    }
+                    // The programs are translated and built on the renderer's thread for packs;
+                    // the world draws without the pack until they are.
+                    let program_folder = folder.clone();
+                    renderer.start_shader_pack(
+                        dimension,
+                        move || {
+                            let mut post =
+                                load_post(&pack, &program_folder, &properties, &macros, &inputs);
+                            let names: Vec<&str> = biomes.iter().map(String::as_str).collect();
+                            post.custom.set_biomes(&names);
+                            post
+                        },
+                        table,
+                    );
+                    self.pack_making = Some(Making {
+                        ids: pack_ids,
+                        folder,
+                        started,
+                    });
                 }
                 Err(e) => {
-                    self.pack_ids = None;
                     log::warn!("shader pack {name}: {e}");
                     renderer.set_shader_pack(dimension, None, &[]);
                 }
+            }
+        }
+        if let Some(made) = self.renderer.as_mut().and_then(|r| r.poll_shader_pack())
+            && let Some(making) = self.pack_making.take()
+        {
+            match made {
+                Ok((programs, notes)) => {
+                    for note in notes {
+                        log::warn!("shader pack {name}: {note}");
+                    }
+                    log::info!(
+                        "shader pack {name}: folder `{}`, {} programs ({}) in {} ms, made \
+                         beside the game",
+                        making.folder,
+                        programs.len(),
+                        programs.join(" "),
+                        making.started.elapsed().as_millis()
+                    );
+                    self.pack_ids = Some(making.ids);
+                }
+                Err(e) => log::warn!("shader pack {name}: {e}"),
             }
         }
         let lerp = |(old, new): (f32, f32)| old + (new - old) * partial;

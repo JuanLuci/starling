@@ -1284,6 +1284,8 @@ struct Game<'a> {
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
     /// The shader pack's entity and block entity ids, while one draws entities.
     pack_ids: Option<shader_packs::PackIds>,
+    /// The pack the renderer is making on its own thread: its ids, set once it draws.
+    pack_making: Option<shader_packs::Making>,
     /// The shader pack and profile the renderer's pack was loaded for (`shader_pack_inputs`).
     shader_choice: Option<(String, String)>,
     started: Instant,
@@ -12301,6 +12303,7 @@ impl<'a> Game<'a> {
             see_through_vertices: Vec::new(),
             entity_spans: Default::default(),
             pack_ids: None,
+            pack_making: None,
             shader_choice: None,
             health_hud: hud_layout::HealthHud::default(),
             started: now,

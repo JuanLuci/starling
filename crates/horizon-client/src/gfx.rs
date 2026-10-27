@@ -32,6 +32,62 @@ fn entity_shader() -> String {
     crate::overlay::wgsl_constants() + include_str!("entity.wgsl")
 }
 
+/// What `PackPost::new` reads of the renderer (`pack_post::World`), owned.
+struct PackWorld {
+    atlas: Option<(wgpu::TextureView, [u32; 2])>,
+    lightmap: wgpu::TextureView,
+    /// The pack can draw terrain (its block atlas fits).
+    terrain: bool,
+    /// Flat terrain's set 1 (`Renderer::pack_terrain_flat`).
+    table: Option<wgpu::BindGroupLayout>,
+    celestial: Option<wgpu::TextureView>,
+    clouds: wgpu::BindGroupLayout,
+    screen: wgpu::TextureFormat,
+}
+
+impl PackWorld {
+    fn build(
+        self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        post: horizon_shaders::Post,
+        block_ids: &[i32],
+    ) -> pack_post::PackPost {
+        let instance = wgpu::vertex_attr_array![5=>Float32x4];
+        let vertex = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &TERRAIN_ATTRIBUTES,
+        };
+        let instances = wgpu::VertexBufferLayout {
+            array_stride: 16,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &instance,
+        };
+        let buffers = [Some(vertex), Some(instances)];
+        let flat = self.table.is_some();
+        let world = pack_post::World {
+            atlas: self.atlas,
+            lightmap: self.lightmap,
+            terrain: self.terrain.then(|| pack_post::Geometry {
+                buffers: if flat { &buffers[..1] } else { &buffers },
+                table: self.table.as_ref(),
+                depth_write: true,
+                atlas: None,
+                ids: None,
+                cull: true,
+                prepass: false,
+            }),
+            block_ids,
+            celestial: self.celestial,
+            clouds: Some(&self.clouds),
+            weather: true,
+            hand: true,
+        };
+        pack_post::PackPost::new(device, queue, post, self.screen, world)
+    }
+}
+
 mod entity_batch;
 mod weather;
 use entity_batch::EntityBatch;
@@ -512,6 +568,8 @@ pub struct Renderer {
     pack_atlas: Option<pack_atlas::PackAtlas>,
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
+    /// The pack being made on its own thread, for a dimension (`start_shader_pack`).
+    pack_loading: Option<(i32, std::sync::mpsc::Receiver<pack_post::PackPost>)>,
     pub hud: HudRenderer,
     /// Vanilla's menu background blur, made on first use.
     menu_blur: Option<crate::menu_blur::MenuBlur>,
@@ -2496,6 +2554,7 @@ impl Renderer {
             pack_weather: None,
             pack_atlas: None,
             pack_terrain_flat: false,
+            pack_loading: None,
             hud,
             menu_blur: None,
             info,
@@ -2971,59 +3030,87 @@ impl Renderer {
         pack: Option<horizon_shaders::Post>,
         block_ids: &[i32],
     ) -> Option<(Vec<String>, Vec<String>)> {
+        self.pack_loading = None;
         if pack.is_none() {
             self.pack_atlas = None;
         }
-        let instance = wgpu::vertex_attr_array![5=>Float32x4];
-        let vertex = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &TERRAIN_ATTRIBUTES,
-        };
-        let instances = wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &instance,
-        };
-        let buffers = [Some(vertex), Some(instances)];
-        let flat = self.pack_terrain_flat;
         let post = pack.map(|post| {
-            let world = pack_post::World {
-                atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
-                lightmap: self.lightmap_view.clone(),
-                terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
-                    table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
-                    depth_write: true,
-                    atlas: None,
-                    ids: None,
-                    cull: true,
-                    prepass: false,
-                }),
-                block_ids,
-                celestial: self
-                    .hud
-                    .atlas_texture
-                    .as_ref()
-                    .map(|t| t.create_view(&Default::default())),
-                clouds: Some(&self.cloud_bindings),
-                weather: true,
-                hand: true,
-            };
-            pack_post::PackPost::new(
-                &self.device,
-                &self.queue,
-                post,
-                self.config.format.remove_srgb_suffix(),
-                world,
-            )
+            self.pack_world()
+                .build(&self.device, &self.queue, post, block_ids)
         });
-        let report = post.as_ref().map(|p| {
-            let programs = p.programs().into_iter().map(str::to_owned).collect();
-            (programs, p.notes.clone())
-        });
+        let report = post.as_ref().map(pack_post::PackPost::report);
         self.pack_post = Some((dimension, post));
         report
+    }
+    /// Makes the pack `post` returns on a thread of its own, for the dimension `dimension`:
+    /// translating its programs and building their pipelines takes seconds (about five on a
+    /// phone). The world draws without a pack meanwhile; `poll_shader_pack` puts it in.
+    pub fn start_shader_pack(
+        &mut self,
+        dimension: i32,
+        post: impl FnOnce() -> horizon_shaders::Post + Send + 'static,
+        block_ids: Vec<i32>,
+    ) {
+        let world = self.pack_world();
+        let (device, queue) = (self.device.clone(), self.queue.clone());
+        let (send, receive) = std::sync::mpsc::channel();
+        // naga's GLSL front end recurses into a pack's longest expressions.
+        let spawned = std::thread::Builder::new()
+            .name("shader pack".into())
+            .stack_size(16 << 20)
+            .spawn(move || {
+                let _ = send.send(world.build(&device, &queue, post(), &block_ids));
+            });
+        if let Err(e) = spawned {
+            log::warn!("shader pack: no thread to make it on: {e}");
+            self.pack_post = Some((dimension, None));
+            return;
+        }
+        self.pack_post = None;
+        self.pack_loading = Some((dimension, receive));
+    }
+    /// The pack `start_shader_pack` makes, once made: the programs that run and the notes of
+    /// loading them, or why there is none (the world goes on without a pack).
+    pub fn poll_shader_pack(
+        &mut self,
+    ) -> Option<std::result::Result<(Vec<String>, Vec<String>), String>> {
+        let (dimension, receive) = self.pack_loading.as_ref()?;
+        let dimension = *dimension;
+        let result = match receive.try_recv() {
+            Ok(post) => {
+                let report = post.report();
+                self.pack_post = Some((dimension, Some(post)));
+                Ok(report)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pack_post = Some((dimension, None));
+                Err("the thread making it stopped".to_owned())
+            }
+        };
+        self.pack_loading = None;
+        Some(result)
+    }
+    /// What a pack's programs are built against, owned so that another thread can build them.
+    fn pack_world(&self) -> PackWorld {
+        let flat = self.pack_terrain_flat;
+        PackWorld {
+            atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+            lightmap: self.lightmap_view.clone(),
+            terrain: self.pack_atlas.is_some(),
+            table: self
+                .flat
+                .as_ref()
+                .filter(|_| flat)
+                .map(|f| f.draw_layout.clone()),
+            celestial: self
+                .hud
+                .atlas_texture
+                .as_ref()
+                .map(|t| t.create_view(&Default::default())),
+            clouds: self.cloud_bindings.clone(),
+            screen: self.config.format.remove_srgb_suffix(),
+        }
     }
     /// What a shader pack's gbuffers programs read from Horizon's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
@@ -3066,14 +3153,18 @@ impl Renderer {
                 .terrain_inputs(self.pack_terrain_flat),
         )
     }
-    /// The dimension the shader pack was last set for.
-    /// No shader pack, and none loaded for any dimension: the next frame loads the chosen one.
+    /// No shader pack, and none loaded or being made for any dimension: the next frame loads
+    /// the chosen one.
     pub fn forget_shader_pack(&mut self) {
         let _ = self.set_shader_pack(0, None, &[]);
         self.pack_post = None;
     }
+    /// The dimension the shader pack was last set or started for.
     pub fn shader_pack_dimension(&self) -> Option<i32> {
-        self.pack_post.as_ref().map(|p| p.0)
+        match &self.pack_loading {
+            Some((dimension, _)) => Some(*dimension),
+            None => self.pack_post.as_ref().map(|p| p.0),
+        }
     }
     /// The Mipmap Levels option: block textures sample at most `levels`
     /// reduced copies (0: none).
