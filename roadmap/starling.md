@@ -35,11 +35,13 @@ and its quality in the game.
 > hidden grass and leaves before the pack's fragment stage runs. Done: the Shader Packs page (Video
 > Settings: the pack and its profile, saved in horizon-graphics.txt), option values and profiles,
 > constant texture matrices, a depth pass that keeps no more than the pack's own alpha cut, resolution
-> down to 25%. Left: the pack's own options screen (`HORIZON_SHADER_OPTIONS` for now) and light
-> defaults on phones; compiling packs off the main thread with a cache (a stall of a few seconds on
-> joining a world or changing the pack); `cloudHeight` and the other uniforms still read as
-> zero; reports of water and sun glare changing as the player walks; the depth pass on by default once
-> it is checked on more packs.
+> down to 25%, outputs kept finite (Adreno made NaNs that turned Complementary black for good after a
+> pond was flooded), `cameraPositionInt`/`Fract`. Left: checking on the phone that the sun glare, the
+> water's dark band and the shadows that flicker at 25% went with the NaNs; the pack's own options
+> screen (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; compiling packs off the main
+> thread with a cache (a stall of a few seconds on joining a world or changing the pack);
+> `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
+> checked on more packs.
 
 ### Servers with plugins
 
@@ -90,3 +92,6 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 - **More of the game open to mods**, guided by porting popular Java mods (see
   [mod-porting](../docs/mod-porting.md)).
 - **A mod browser made for a phone.**
+- **Discord Rich Presence on a phone**: Discord's Social SDK (1.10 and later) shows the game through the
+  Discord app on Android without signing in, but it needs a Starling application on Discord's developer
+  portal and the SDK downloaded from there; until then the setting stays hidden on Android.
