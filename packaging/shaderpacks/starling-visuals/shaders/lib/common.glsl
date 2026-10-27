@@ -51,14 +51,15 @@ vec3 skyRadiance(vec3 d, vec3 s) {
     float up = clamp(d.y, 0.0, 1.0);
     float horizon = pow(1.0 - up, 5.0);
     vec3 zenith = mix(vec3(0.002, 0.004, 0.010), vec3(0.045, 0.13, 0.48), day);
-    vec3 rim = mix(vec3(0.006, 0.008, 0.016), vec3(0.30, 0.46, 0.78), day);
+    // With the sun low, the long way through the air takes the blue out of the horizon too.
+    vec3 rim = mix(vec3(0.006, 0.008, 0.016), vec3(0.30, 0.46, 0.78) * (1.0 - 0.4 * lowSun), day);
     vec3 color = mix(zenith, rim, horizon);
     float toward = max(dot(d, s), 0.0);
     // A low sun warms the horizon around it; a halo surrounds it all day.
     color += vec3(1.0, 0.38, 0.10) * lowSun * day * pow(toward, 4.0) * horizon * 2.2;
-    color += vec3(1.0, 0.85, 0.65) * smoothstep(-0.05, 0.05, s.y) * pow(toward, 32.0) * 0.5;
-    // Under the horizon, the darker ground.
-    color *= mix(1.0, 0.35, clamp(-d.y * 3.0, 0.0, 1.0));
+    color += sunlight(s) * (0.5 / SUN_STRENGTH) * pow(toward, 32.0);
+    // Under the horizon, hazy land as far as the horizon's colour, darker looking further down.
+    color *= mix(1.0, 0.5, smoothstep(0.1, 0.7, -d.y));
     color = mix(color, vec3(luma(color) * 0.8), rainStrength * 0.85);
     return color * SKY_BRIGHTNESS;
 }
@@ -103,22 +104,6 @@ float openSky(vec2 levels) {
 // The shadow map's own distortion: points near the player get more of its texels.
 vec2 distortShadow(vec2 p) {
     return p / (length(p) * SHADOW_DISTORTION + (1.0 - SHADOW_DISTORTION));
-}
-
-// How much fog covers a point `rel` blocks from the camera: haze with distance, and the world's
-// edge fading into the sky. Its colour is fogColor's.
-float fogAmount(vec3 rel) {
-    float dist = length(rel);
-    if (isEyeInWater == 1) return 1.0 - exp(-dist * 0.07);
-    float edge = smoothstep(far * 0.6, far, dist);
-    float haze = 1.0 - exp(-dist * (0.0025 + rainStrength * 0.012));
-    return max(edge, haze * 0.65);
-}
-
-vec3 fogColor(vec3 rel) {
-    vec3 s = sunDir();
-    if (isEyeInWater == 1) return vec3(0.02, 0.11, 0.15) * (0.15 + 0.85 * daylight(s));
-    return skyRadiance(normalize(rel), s);
 }
 
 // The ACES film curve (Narkowicz's fit), then saturation.

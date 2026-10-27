@@ -15,3 +15,11 @@ const bool shadowHardwareFiltering = true;
 #define SHADOW_DISTORTION 0.9 // [0.0 0.7 0.85 0.9 0.93]
 #define SHADOW_FILTER 4 // [1 4]
 #define SHADOW_SOFTNESS 1.2 // [0.5 0.8 1.2 1.6 2.4]
+
+// The air and the lens: haze, the sun's rays through it, and the glow around bright things.
+#define FOG_DENSITY 1.0 // [0.0 0.5 0.75 1.0 1.5 2.0 3.0]
+#define GODRAYS
+#define GODRAYS_STRENGTH 1.0 // [0.5 0.75 1.0 1.5 2.0]
+#define GODRAYS_SAMPLES 10 // [6 10 16]
+#define BLOOM
+#define BLOOM_STRENGTH 0.08 // [0.03 0.05 0.08 0.12 0.16]

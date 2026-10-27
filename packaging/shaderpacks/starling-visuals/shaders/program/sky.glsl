@@ -1,5 +1,5 @@
-// Starling Visuals: the vanilla sky's geometry. The sky's colour itself is drawn by `final` (one
-// evaluation per sky pixel); here only the stars stay, in colortex2 with the sun and moon.
+// Starling Visuals: the vanilla sky's geometry. The sky's colour itself is drawn by `composite`
+// (one evaluation per sky pixel); here only the stars stay, in colortex2 with the moon.
 
 #include "/lib/common.glsl"
 

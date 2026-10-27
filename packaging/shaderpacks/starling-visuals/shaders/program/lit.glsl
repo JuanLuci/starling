@@ -1,8 +1,8 @@
 // Starling Visuals: everything drawn with the world's light, in one forward pass. The light is
 // worked out per vertex (faces are flat, the lightmap is per vertex anyway); the fragment stage
 // samples, looks the sun up in the shadow map and blends, and water adds its reflection.
-// `final` adds fog. The stage file defines VERTEX_SHADER or FRAGMENT_SHADER, and what it draws:
-// TERRAIN, WATER, ENTITIES, CLOUDS, PARTICLES, WEATHER or nothing (other textured things).
+// `composite` adds the haze. The stage file defines VERTEX_SHADER or FRAGMENT_SHADER, and what it
+// draws: TERRAIN, WATER, ENTITIES, CLOUDS, PARTICLES, WEATHER or nothing (other textured things).
 
 #include "/lib/common.glsl"
 
@@ -69,6 +69,11 @@ void main() {
 
     fill = fillLightAt(n, levels) * unshade;
     key = keyLightAt(n, wrap) * unshade;
+    #ifdef CLOUDS
+        // Their texture is white; the cloud itself sends back about half the light.
+        fill *= 0.55;
+        key *= 0.55;
+    #endif
     open = openSky(levels);
     #ifdef SHADOWED
         // Off the surface a little, along its normal (toward the light for plants, whose normals
