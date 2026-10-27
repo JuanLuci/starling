@@ -168,6 +168,14 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
     style.strikethrough = flag("strikethrough");
     style.obfuscated = flag("obfuscated");
     style.font = o.get("font").and_then(crate::text::font_id);
+    // ExtraCodecs.ARGB_COLOR_CODEC: an ARGB int, or [r, g, b, a] in 0..1.
+    style.shadow_color = o.get("shadow_color").and_then(|v| match v {
+        Value::Array(c) if c.len() == 4 => {
+            let channel = |i: usize| (c[i].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) * 255.0) as u32;
+            Some(channel(3) << 24 | channel(0) << 16 | channel(1) << 8 | channel(2))
+        }
+        v => v.as_i64().map(|i| i as u32),
+    });
     // ClickEvent.CODEC: the actions a chat line acts on here. A component
     // from a server never opens a file.
     if let Some(e) = o.get("click_event").and_then(Value::as_object) {
@@ -318,5 +326,18 @@ mod tests {
         let (v, _) = parse_snbt(r#"{text:"a",font:"Bad Font"}"#).unwrap();
         let t = to_text(&v, &mut |_| Text::empty());
         assert_eq!(t.spans[0].style.font, None);
+    }
+
+    #[test]
+    fn the_shadow_colour_reads_as_an_int_or_four_floats_and_is_inherited() {
+        let v = serde_json::json!({"text": "a", "shadow_color": 0, "extra": ["b"]});
+        let t = to_text(&v, &mut |_| Text::empty());
+        let shadows: Vec<_> = t.chars().map(|(_, s)| s.shadow_color).collect();
+        assert_eq!(shadows, [Some(0), Some(0)]);
+        let v = serde_json::json!({"text": "c", "shadow_color": [1.0, 0.0, 0.0, 0.5]});
+        let t = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(t.spans[0].style.shadow_color, Some(0x7F_FF_00_00));
+        let again = to_text(&t.component(), &mut |_| Text::empty());
+        assert_eq!(again.spans[0].style.shadow_color, Some(0x7F_FF_00_00));
     }
 }

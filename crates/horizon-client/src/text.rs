@@ -75,6 +75,9 @@ pub struct Style {
     /// The font (`FontDescription.Resource`), a full id like
     /// `minecraft:alt`; the default font when unset.
     pub font: Option<String>,
+    /// `Style.shadowColor` (ARGB): the drop shadow's colour; unset, a quarter of the text's.
+    /// HUD plugins hide shadows with a transparent one.
+    pub shadow_color: Option<u32>,
 }
 /// A style's `font` field: an identifier (`alt` is `minecraft:alt`).
 pub fn font_id(v: &Value) -> Option<String> {
@@ -104,6 +107,7 @@ impl Style {
         if self.font.is_none() {
             self.font.clone_from(&base.font);
         }
+        self.shadow_color = self.shadow_color.or(base.shadow_color);
     }
     pub fn is_bold(&self) -> bool {
         self.bold == Some(true)
@@ -576,6 +580,9 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
     }
     if let Some(font) = &style.font {
         out.push(("font".to_owned(), font.clone().into()));
+    }
+    if let Some(argb) = style.shadow_color {
+        out.push(("shadow_color".to_owned(), (argb as i32).into()));
     }
     out
 }

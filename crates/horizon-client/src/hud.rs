@@ -997,6 +997,11 @@ impl HudBatch {
             });
             let bold = style.is_bold();
             let advance = g.advance + if bold { g.offset } else { 0.0 };
+            // Font.StringRenderOutput: the style's shadow colour, faded with the text.
+            let shadow = style.shadow_color.map(|argb| {
+                let a = (f32::from((argb >> 24) as u8) * f32::from(alpha) / 255.0) as u8;
+                rgba((argb >> 16) as u8, (argb >> 8) as u8, argb as u8, a)
+            });
             glyphs.push((
                 cursor,
                 g,
@@ -1007,6 +1012,7 @@ impl HudBatch {
                 style.strikethrough == Some(true),
                 i == 0,
                 advance,
+                shadow,
             ));
             cursor += advance;
         }
@@ -1014,17 +1020,19 @@ impl HudBatch {
         let white = font.white();
         let passes: &[bool] = if shadow { &[true, false] } else { &[false] };
         for &is_shadow in passes {
-            for &(gx, g, c, bold, italic, underline, strike, first, advance) in &glyphs {
+            for &(gx, g, c, bold, italic, underline, strike, first, advance, shadow) in &glyphs {
                 let (dx, col) = if is_shadow {
                     let b = c.to_le_bytes();
                     (
                         g.offset,
-                        rgba(
-                            (f32::from(b[0]) * 0.25) as u8,
-                            (f32::from(b[1]) * 0.25) as u8,
-                            (f32::from(b[2]) * 0.25) as u8,
-                            b[3],
-                        ),
+                        shadow.unwrap_or_else(|| {
+                            rgba(
+                                (f32::from(b[0]) * 0.25) as u8,
+                                (f32::from(b[1]) * 0.25) as u8,
+                                (f32::from(b[2]) * 0.25) as u8,
+                                b[3],
+                            )
+                        }),
                     )
                 } else {
                     (0.0, c)
