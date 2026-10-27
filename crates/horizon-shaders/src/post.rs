@@ -363,8 +363,12 @@ pub fn load_post(
             }
         }
     }
+    // Developers' aid: `HORIZON_SHADER_PACK_SKIP=gbuffers_terrain` leaves a program out of the
+    // fallback chains too, so the geometry draws with the next one (to time a program).
+    let skip = std::env::var("HORIZON_SHADER_PACK_SKIP").unwrap_or_default();
     let mut gbuffers = |names: &[&str], group, inputs: &GbuffersInputs| {
-        names.iter().find_map(|name| {
+        let skip = skip.split(',').collect::<Vec<_>>();
+        names.iter().filter(|n| !skip.contains(n)).find_map(|name| {
             // `alphaTest.<program>` replaces the geometry's default test (OQ-23).
             let key = properties.get(&format!("alphaTest.{name}"));
             let test = key.and_then(|v| crate::AlphaTest::parse(v.trim()));
