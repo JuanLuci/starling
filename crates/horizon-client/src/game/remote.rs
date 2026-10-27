@@ -248,6 +248,11 @@ pub(super) struct Remote {
     pub(super) names: HashMap<i32, (Option<horizon_client::text::Text>, bool)>,
     /// The item displays in the level, by entity.
     pub(super) item_displays: HashMap<i32, ItemDisplay>,
+    /// ItemCooldowns as the server sets them (ClientboundCooldownPacket): each group's first and
+    /// last tick.
+    pub(super) cooldowns: HashMap<String, (u64, u64)>,
+    /// ClientboundCustomChatCompletionsPacket's suggestions for chat (a server's @names, emoji).
+    pub(super) completions: Vec<String>,
     /// The vehicle each display or interaction entity rides (a plugin's model or cosmetic on a
     /// mob or a player): it is drawn where the vehicle is, which the server never sends again.
     pub(super) mounts: HashMap<i32, i32>,
@@ -643,6 +648,8 @@ impl Game<'_> {
             names: HashMap::new(),
             item_displays: HashMap::new(),
             mounts: HashMap::new(),
+            cooldowns: HashMap::new(),
+            completions: Vec::new(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
@@ -1124,7 +1131,65 @@ impl Game<'_> {
         let r = self.remote.as_ref()?;
         let mut names: Vec<String> = r.players.values().cloned().collect();
         names.sort();
+        // ClientSuggestionProvider.getCustomTabSugggestions: the server's own too.
+        names.extend(
+            r.completions
+                .iter()
+                .filter(|c| !names.contains(c))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         Some(names)
+    }
+    /// `ItemCooldowns.getCooldownPercent` of `stack`, `partial` of the way through the tick.
+    pub(super) fn cooldown_percent(
+        &self,
+        stack: &horizon_client::items::ItemStack,
+        partial: f32,
+    ) -> f32 {
+        let Some(&(start, end)) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.cooldowns.get(&stack.cooldown_group()))
+        else {
+            return 0.0;
+        };
+        let left = end.saturating_sub(self.ticks) as f32 - partial;
+        (left / (end - start).max(1) as f32).clamp(0.0, 1.0)
+    }
+    /// `Player.lookAt`: the view turned from the feet or eyes to the packet's point, or to its
+    /// entity's feet or eyes.
+    fn remote_look_at(&mut self, p: &play::PlayerLookAt) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        let eye = |anchor: i32, at: [f64; 3], eye_height: f64| {
+            [
+                at[0],
+                at[1] + if anchor == 1 { eye_height } else { 0.0 },
+                at[2],
+            ]
+        };
+        let me = player.position;
+        let my_eye = f64::from(player.pose.dimensions(1.0).eye_height);
+        let target = p
+            .entity
+            .and_then(|(id, anchor)| {
+                let m = self.mobs.iter().find(|m| m.id as i32 == id)?;
+                let at = [m.position.x, m.position.y, m.position.z];
+                Some(eye(anchor, at, f64::from(m.height()) * 0.85))
+            })
+            .unwrap_or(p.at);
+        let from = eye(p.from, [me.x, me.y, me.z], my_eye);
+        let (dx, dy, dz) = (
+            target[0] - from[0],
+            target[1] - from[1],
+            target[2] - from[2],
+        );
+        let horizontal = (dx * dx + dz * dz).sqrt();
+        let wrap = |d: f64| ((d + 180.0).rem_euclid(360.0) - 180.0) as f32;
+        self.pitch = wrap(-dy.atan2(horizontal).to_degrees());
+        self.yaw = wrap(dz.atan2(dx).to_degrees() - 90.0);
     }
     /// The open menu's window id (0: the inventory).
     pub(super) fn remote_menu_id(&self) -> i32 {
@@ -3248,6 +3313,36 @@ impl Game<'_> {
             C::SetTitleText(p) => self.titles.set_title(remote_text(&p.text)),
             C::SetSubtitleText(p) => self.titles.set_subtitle(remote_text(&p.text)),
             C::SetTitlesAnimation(p) => self.titles.set_times(p.fade_in, p.stay, p.fade_out),
+            // ClientPacketListener.handleItemCooldown.
+            C::Cooldown(p) => {
+                let now = self.ticks;
+                if let Some(r) = self.remote.as_mut() {
+                    if p.ticks > 0 {
+                        let end = now + p.ticks as u64;
+                        r.cooldowns.insert(p.group, (now, end));
+                    } else {
+                        r.cooldowns.remove(&p.group);
+                    }
+                }
+            }
+            // ClientPacketListener.handleCustomChatCompletions.
+            C::CustomChatCompletions(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    match p.action {
+                        0 => {
+                            for e in p.entries {
+                                if !r.completions.contains(&e) {
+                                    r.completions.push(e);
+                                }
+                            }
+                        }
+                        1 => r.completions.retain(|c| !p.entries.contains(c)),
+                        _ => r.completions = p.entries,
+                    }
+                }
+            }
+            // ClientPacketListener.handleLookAt: Player.lookAt from the feet or the eyes.
+            C::PlayerLookAt(p) => self.remote_look_at(&p),
             // ClientCommonPacketListenerImpl.handleShowDialog / handleClearDialog.
             C::ShowDialog(p) => self.show_play_dialog(&p.dialog),
             C::ClearDialog(_) => self.clear_dialog(),
@@ -6271,6 +6366,11 @@ impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
         self.0.remote_use_block(Hand::Main)
     }
     fn use_item(&mut self) {
+        // MultiPlayerGameMode.useItem: an item on cooldown is not used.
+        let held = self.0.stack_in(self.0.selected).cloned();
+        if held.is_some_and(|s| self.0.cooldown_percent(&s, 0.0) > 0.0) {
+            return;
+        }
         self.0.remote_use_hands();
     }
 }

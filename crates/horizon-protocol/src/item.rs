@@ -590,6 +590,20 @@ impl Stack {
             _ => 0,
         }
     }
+    /// The stack's `use_cooldown`: its seconds and cooldown group (None: the item's id).
+    pub fn use_cooldown(&self) -> Option<(f32, Option<String>)> {
+        let Some(Component::Raw(bytes)) = self.component(component::USE_COOLDOWN) else {
+            return None;
+        };
+        let mut r = Reader::new(bytes);
+        let seconds = r.f32().ok()?;
+        let group = if r.bool().ok()? {
+            Some(r.string(32767).ok()?)
+        } else {
+            None
+        };
+        Some((seconds, group))
+    }
     /// The stack's own `equippable` (a server's custom armour), read from its bytes.
     pub fn equippable(&self) -> Option<Equippable> {
         let Some(Component::Raw(bytes)) = self.component(component::EQUIPPABLE) else {

@@ -4924,7 +4924,7 @@ impl Game<'_> {
         count_text: Option<String>,
     ) {
         // GuiGraphicsExtractor.itemDecorations, laid out at the origin and
-        // moved to (x, y). Horizon tracks no item cooldowns to shade yet.
+        // moved to (x, y), shaded by the cooldown a server set.
         let max_damage = self
             .res
             .items()
@@ -4934,7 +4934,7 @@ impl Game<'_> {
             count: stack.count,
             count_text,
             bar: hud_overlays::damage_bar(stack.damage as i32, max_damage),
-            cooldown: 0.0,
+            cooldown: self.cooldown_percent(stack, self.clock.camera_fraction() as f32),
         };
         let mut draws = vec![hud_layout::GuiDraw::Push(vec![
             hud_layout::PoseOp::Translate(x, y),

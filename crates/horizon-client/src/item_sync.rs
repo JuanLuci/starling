@@ -68,6 +68,17 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                         ),
                 )
             }
+            // A plugin's item with a cooldown of its own (ClientboundCooldownPacket names it).
+            Component::Raw(_) if *kind == component::USE_COOLDOWN => {
+                let Some((seconds, group)) = s.use_cooldown() else {
+                    continue;
+                };
+                Tag::compound(
+                    [("seconds", Tag::Float(seconds.to_bits()))]
+                        .into_iter()
+                        .chain(group.map(|g| ("cooldown_group", Tag::String(g.as_str().into())))),
+                )
+            }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
             // Trim materials and patterns are synced registries, as enchantments are.

@@ -146,6 +146,17 @@ impl ItemStack {
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
     }
+    /// `ItemCooldowns.getCooldownGroup`: `use_cooldown`'s group, else the item's id.
+    pub fn cooldown_group(&self) -> String {
+        let group = self
+            .data()
+            .and_then(|d| d.other("minecraft:use_cooldown"))
+            .and_then(|c| c.get("cooldown_group"));
+        match group {
+            Some(horizon_world::nbt::Tag::String(s)) => s.to_string_lossy(),
+            _ => self.item.to_string(),
+        }
+    }
     /// The equipment asset the stack's own `equippable` names (a server's custom armour).
     pub fn equippable_asset(&self) -> Option<String> {
         match self
