@@ -102,6 +102,10 @@ fn put(out: &mut [u8], offset: usize, bytes: &[u8]) {
 pub const NAMES: &[&str] = &[
     "cameraPosition",
     "previousCameraPosition",
+    "cameraPositionInt",
+    "cameraPositionFract",
+    "previousCameraPositionInt",
+    "previousCameraPositionFract",
     "eyeAltitude",
     "upPosition",
     "sunPosition",
@@ -170,7 +174,7 @@ pub struct FrameUniforms {
     start: std::time::Instant,
     last: Option<std::time::Instant>,
     frame: u32,
-    previous: Option<(Vec3, Mat4, Mat4)>,
+    previous: Option<(DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
     /// The pack's shadow settings (7.1).
@@ -289,10 +293,11 @@ impl FrameUniforms {
             frame.depth_far,
         ) * frame.bob;
         let camera = frame.camera.as_vec3();
-        let (previous_camera, previous_view, previous_projection) =
+        let (previous_precise, previous_view, previous_projection) =
             self.previous
-                .unwrap_or((Vec3::ZERO, Mat4::ZERO, Mat4::ZERO));
-        self.previous = Some((camera, view, projection));
+                .unwrap_or((DVec3::ZERO, Mat4::ZERO, Mat4::ZERO));
+        self.previous = Some((frame.camera, view, projection));
+        let previous_camera = previous_precise.as_vec3();
 
         let to_view = |v: Vec3| view.transform_vector3(v);
         let sun_angle = (frame.sky.sun_angle / 360.0 + 0.25).rem_euclid(1.0);
@@ -337,6 +342,15 @@ impl FrameUniforms {
             match name {
                 "cameraPosition" => v3(camera),
                 "previousCameraPosition" => v3(previous_camera),
+                // Iris splits the camera in double precision, for packs far from 0, 0.
+                "cameraPositionInt" => Value::i(&frame.camera.floor().as_ivec3().to_array()),
+                "cameraPositionFract" => v3((frame.camera - frame.camera.floor()).as_vec3()),
+                "previousCameraPositionInt" => {
+                    Value::i(&previous_precise.floor().as_ivec3().to_array())
+                }
+                "previousCameraPositionFract" => {
+                    v3((previous_precise - previous_precise.floor()).as_vec3())
+                }
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
@@ -446,6 +460,10 @@ fn components(name: &str) -> usize {
     match name {
         "cameraPosition"
         | "previousCameraPosition"
+        | "cameraPositionInt"
+        | "cameraPositionFract"
+        | "previousCameraPositionInt"
+        | "previousCameraPositionFract"
         | "upPosition"
         | "sunPosition"
         | "moonPosition"

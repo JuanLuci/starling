@@ -54,7 +54,13 @@ impl Stage<'_> {
             for (_, decl) in &self.frag_outs {
                 writeln!(p, "{decl}").unwrap();
             }
-            p.push_str("vec4 hz_FragCoord;\n");
+            p.push_str(
+                "vec4 hz_FragCoord;\n\
+                 float hz_finite(float x) { return isnan(x) || isinf(x) ? 0.0 : x; }\n\
+                 vec2 hz_finite(vec2 v) { return vec2(hz_finite(v.x), hz_finite(v.y)); }\n\
+                 vec3 hz_finite(vec3 v) { return vec3(hz_finite(v.x), hz_finite(v.y), hz_finite(v.z)); }\n\
+                 vec4 hz_finite(vec4 v) { return vec4(hz_finite(v.x), hz_finite(v.y), hz_finite(v.z), hz_finite(v.w)); }\n",
+            );
         }
         p
     }

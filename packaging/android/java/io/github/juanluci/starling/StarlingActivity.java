@@ -114,6 +114,17 @@ public final class StarlingActivity extends NativeActivity {
                         @Override
                         public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
                             onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
+                            // The keyboard brings the navigation bar back, and it stayed after
+                            // the keyboard went: home sat beside the chat's keys.
+                            if (insets.isVisible(WindowInsets.Type.navigationBars())
+                                    || insets.isVisible(WindowInsets.Type.statusBars())) {
+                                view.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        hideSystemBars();
+                                    }
+                                });
+                            }
                             return view.onApplyWindowInsets(insets);
                         }
                     });

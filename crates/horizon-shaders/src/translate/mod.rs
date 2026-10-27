@@ -30,7 +30,7 @@ use crate::Preprocessed;
 mod rewrite;
 mod scan;
 
-use scan::Stage;
+use scan::{Stage, is_ident};
 
 /// What a program's stages need from the game.
 #[derive(Debug, Default, PartialEq)]
@@ -416,6 +416,18 @@ fn translate(
             .unwrap(),
         }
     }
+    // A NaN or an infinity written to a buffer stays there: in a pack's history (TAA) it spreads
+    // over the whole picture for good. Adreno makes them where desktop GPUs give a finite value
+    // (a flooded pond turned Complementary black); GL leaves both undefined, so they become 0.
+    for n in &f.outputs {
+        let name = match f.frag_outs.iter().find(|(at, _)| at == n) {
+            Some((_, decl)) => float_output(decl),
+            None => Some(format!("hz_out{n}")),
+        };
+        if let Some(name) = name {
+            writeln!(fragment_main, "    {name} = hz_finite({name});").unwrap();
+        }
+    }
     fragment_main.push_str("}\n");
 
     let v_text = format!(
@@ -458,7 +470,10 @@ fn translate(
         .and_then(|g| g.alpha_test)
         .filter(|t| t.op.starts_with('>'))
         .map(|t| t.reference);
-    let alpha_cut = scan::alpha_cut(&f.tokens).into_iter().chain(tested).reduce(f32::max);
+    let alpha_cut = scan::alpha_cut(&f.tokens)
+        .into_iter()
+        .chain(tested)
+        .reduce(f32::max);
     Ok(Program {
         vertex,
         fragment,
@@ -517,6 +532,16 @@ fn varying_parts(decl: &str) -> Option<(String, Vec<(String, String)>)> {
         })
         .collect();
     Some((format!("{ty} @{array};"), parts))
+}
+
+/// The name of a pack's own fragment output (`layout(location = 0) out vec4 color;`) when it
+/// holds floats that `hz_finite` takes: not integers, not arrays.
+fn float_output(decl: &str) -> Option<String> {
+    let mut words = decl.trim_end_matches(';').split_whitespace().rev();
+    let name = words.next()?;
+    let ty = words.next()?;
+    let plain = is_ident(name) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    (matches!(ty, "float" | "vec2" | "vec3" | "vec4") && plain).then(|| name.to_owned())
 }
 
 /// `sampler2DShadow` → (`texture2D`, `samplerShadow`); `isampler3D` → (`itexture3D`, `sampler`).
@@ -730,6 +755,43 @@ mod tests {
         }
     }
 
+    /// Every float output, gl_FragData's and the pack's own, goes through `hz_finite` after the
+    /// pack's main; an integer output does not.
+    #[test]
+    fn float_outputs_are_kept_finite() {
+        let fsh = "#version 330\nlayout(location = 1) out vec4 color;\nlayout(location = 2) out vec2 normal;\nlayout(location = 3) out ivec4 id;\nvoid main() { color = vec4(1.0); normal = vec2(1.0); id = ivec4(1); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap();
+        let m = &p.fragment;
+        let functions: Vec<_> = m.functions.iter().map(|(_, f)| f).collect();
+        let calls = |f: &naga::Function| {
+            f.body
+                .iter()
+                .filter(|s| {
+                    matches!(s, naga::Statement::Call { function, .. }
+                        if m.functions[*function].name.as_deref() == Some("hz_finite"))
+                })
+                .count()
+        };
+        // Our `main` (the vector `hz_finite` calls the scalar one too).
+        let main = functions
+            .iter()
+            .filter(|f| f.name.as_deref() == Some("main"))
+            .chain([&&m.entry_points[0].function])
+            .map(|f| calls(f))
+            .max();
+        assert_eq!(main, Some(2));
+        assert_eq!(
+            float_output("layout(location = 0) out vec3 albedo;"),
+            Some("albedo".into())
+        );
+        assert_eq!(float_output("layout(location = 0) out vec4 data[2];"), None);
+        assert_eq!(float_output("layout(location = 0) out uvec2 mask;"), None);
+    }
+
     /// Code after an unconditional `discard` (BSL's `gbuffers_clouds` with its own clouds on)
     /// or `return;` still makes a valid module.
     #[test]
@@ -767,7 +829,10 @@ mod tests {
             cut("if (c.a < 0.1) { discard; } if (texture2D(t, uv).a < 0.3f) discard;"),
             Some(0.3)
         );
-        assert_eq!(cut("if (fog < dither) discard; if (c.a < cut) discard;"), None);
+        assert_eq!(
+            cut("if (fog < dither) discard; if (c.a < cut) discard;"),
+            None
+        );
     }
 
     #[test]
