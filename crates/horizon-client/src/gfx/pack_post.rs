@@ -189,8 +189,8 @@ struct Pass {
     atlas: Option<wgpu::TextureView>,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
-    /// The depth-only pipeline drawn first (`Geometry::prepass`).
-    prepass: Option<wgpu::RenderPipeline>,
+    /// The depth-only pipeline drawn first (`Geometry::prepass`) and the alpha it keeps above.
+    prepass: Option<(wgpu::RenderPipeline, f32)>,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
     /// 16–31) and the shadowcolor sides read (bits 32–33).
     groups: HashMap<u64, wgpu::BindGroup>,
@@ -894,6 +894,9 @@ fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
+        // The depth pass keeps a little less than the program's own cut (Complementary's is 0.5,
+        // vanilla's 0.1): a texel it kept and the program threw away would leave a hole.
+        let cut = p.program.interface.alpha_cut.unwrap_or(0.0).max(0.5) + 0.01;
         let (vs, fs) = (module(p.program.vertex), module(p.program.fragment));
         // The depth pass: the atlas' alpha test at the texture's own binding and sampler.
         let atlas = samplers.iter().find(|b| b.source == Source::Atlas);
@@ -905,7 +908,7 @@ fn build_pass(
                     "@group(0) @binding({}) var hz_atlas: texture_2d<f32>;\n\
                      @group(0) @binding({}) var hz_atlas_sampler: sampler;\n\
                      @fragment fn main(@location({PREPASS_UV}) uv: vec2<f32>) {{\n    \
-                     if textureSample(hz_atlas, hz_atlas_sampler, uv).a < 0.1 {{ discard; }}\n}}\n",
+                     if textureSample(hz_atlas, hz_atlas_sampler, uv).a <= {cut:?} {{ discard; }}\n}}\n",
                     a.binding, a.sampler
                 );
                 let depth_fs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -949,7 +952,8 @@ fn build_pass(
                     multiview_mask: None,
                     cache: None,
                 })
-            });
+            })
+            .map(|depth| (depth, cut));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -1264,10 +1268,9 @@ impl PackPost {
             .filter_map(|p| build(p, None))
             .collect();
         if let Some(t) = &terrain {
-            let first = if t.prepass.is_some() {
-                ", its depth first"
-            } else {
-                ""
+            let first = match &t.prepass {
+                Some((_, cut)) => format!(", its depth first (alpha above {cut})"),
+                None => String::new(),
             };
             notes.push(format!("terrain draws with {}{first}", t.name));
         }
@@ -1795,7 +1798,7 @@ impl PackPost {
             );
         }
         let group = self.bind(device, queue, &mut pass, size);
-        if let Some(prepass) = &pass.prepass {
+        if let Some((prepass, _)) = &pass.prepass {
             let targets = self.targets.as_ref().expect("resized");
             let timestamp_writes = self.timing.as_mut().and_then(|t| t.writes("terrain depth"));
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

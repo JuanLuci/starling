@@ -47,6 +47,10 @@ pub struct Interface {
     pub outputs: Vec<u32>,
     /// A gbuffers program reads `DRAW_UNIFORMS`: the block at set 2, binding 0, set per draw.
     pub draw: bool,
+    /// The largest alpha the fragment stage throws away at or below, as packs cut their cutout
+    /// textures (`if (color.a <= 0.5) discard;`) or as the alpha test does: a depth pass of the
+    /// same geometry keeps no more than the program does.
+    pub alpha_cut: Option<f32>,
 }
 
 /// The uniforms a gbuffers program reads per draw (5.3's "D"), in a block of their own
@@ -450,6 +454,11 @@ fn translate(
         })
         .collect();
     let outputs = f.outputs.iter().copied().collect();
+    let tested = gbuffers
+        .and_then(|g| g.alpha_test)
+        .filter(|t| t.op.starts_with('>'))
+        .map(|t| t.reference);
+    let alpha_cut = scan::alpha_cut(&f.tokens).into_iter().chain(tested).reduce(f32::max);
     Ok(Program {
         vertex,
         fragment,
@@ -459,6 +468,7 @@ fn translate(
             samplers,
             outputs,
             draw,
+            alpha_cut,
         },
     })
 }
@@ -747,6 +757,17 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
         }
+    }
+
+    #[test]
+    fn the_cut_of_a_cutout_texture_is_read_from_its_discard() {
+        let cut = |code: &str| scan::alpha_cut(&crate::macros::lex(code));
+        assert_eq!(cut("if (color.a <= 0.5) discard;"), Some(0.5));
+        assert_eq!(
+            cut("if (c.a < 0.1) { discard; } if (texture2D(t, uv).a < 0.3f) discard;"),
+            Some(0.3)
+        );
+        assert_eq!(cut("if (fog < dither) discard; if (c.a < cut) discard;"), None);
     }
 
     #[test]

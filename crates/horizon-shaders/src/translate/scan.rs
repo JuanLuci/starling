@@ -475,3 +475,18 @@ impl<'p> Stage<'p> {
         }
     }
 }
+
+/// The largest literal `N` of `x.a < N) discard` (`<=`, `{ discard`) in `tokens`.
+pub(super) fn alpha_cut(tokens: &[&str]) -> Option<f32> {
+    let t: Vec<&str> = tokens.iter().copied().filter(|t| !t.trim().is_empty()).collect();
+    let cut = |end: usize| {
+        let before = &t[..end];
+        let before = before.strip_suffix(&["{"]).unwrap_or(before);
+        let (number, before) = before.strip_suffix(&[")"])?.split_last()?;
+        let before = before.strip_suffix(&["="]).unwrap_or(before);
+        let before = before.strip_suffix(&["<"])?;
+        let alpha = before.ends_with(&[".", "a"]) || before.ends_with(&[".", "w"]);
+        alpha.then(|| number.trim_end_matches(['f', 'F']).parse::<f32>().ok())?
+    };
+    (0..t.len()).filter(|&i| t[i] == "discard").filter_map(cut).reduce(f32::max)
+}
