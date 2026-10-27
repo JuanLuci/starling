@@ -397,24 +397,45 @@ impl Game<'_> {
     /// by `DisplayRenderer` (the billboard or the entity's rotation, then the transformation,
     /// then half a turn).
     pub(super) fn item_display_geometry(
-        &self,
+        &mut self,
         camera: glam::DVec3,
         partial: f64,
         out: &mut Vec<Vertex>,
     ) {
+        // Each display's interpolated state this frame (`Display.renderState`).
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let frames: Vec<_> = r
+            .item_displays
+            .iter_mut()
+            .map(|(id, d)| (*id, d.motion.frame(partial)))
+            .collect();
         let Some(r) = &self.remote else {
             return;
         };
-        for (id, d) in &r.item_displays {
-            let (Some(stack), Some(t)) = (&d.stack, r.entities.get(id)) else {
+        let front = self.camera_type == super::perspective::CameraType::ThirdPersonFront;
+        let angles = if front {
+            [self.yaw + 180.0, -self.pitch]
+        } else {
+            [self.yaw, self.pitch]
+        };
+        for (id, (data, position, rotation)) in frames {
+            let Some(d) = r.item_displays.get(&id) else {
+                continue;
+            };
+            let Some(stack) = &d.stack else {
                 continue;
             };
             // A display riding a mob or a player (a plugin's model, a backpack) is where it is.
             let at = self
-                .ridden_position(*id, partial)
-                .map_or(t.position, |p| [p.x, p.y, p.z]);
+                .ridden_position(id, partial)
+                .map_or(position.to_array(), |p| [p.x, p.y, p.z]);
             let pos = glam::DVec3::from_array(at) - camera;
-            if pos.length_squared() > 64.0 * 64.0 {
+            // Display.DATA_VIEW_RANGE_ID, scaled by Entity Distance as vanilla's culling does.
+            let range =
+                f64::from(data.view_range) * 64.0 * f64::from(self.settings.entity_distance);
+            if pos.length_squared() > range * range {
                 continue;
             }
             let context = if d.block {
@@ -422,31 +443,16 @@ impl Game<'_> {
             } else {
                 DisplayContext::ALL[usize::from(d.context)]
             };
-            let state = self.resolve_item(stack, context, None, *id);
+            let state = self.resolve_item(stack, context, None, id);
             if state.is_empty() {
                 continue;
             }
-            // DisplayRenderer.calculateOrientation; the camera is turned half round.
-            let (camera_yaw, camera_pitch) = (self.yaw - 180.0, -self.pitch);
-            let (yaw, pitch) = match d.billboard {
-                1 => (camera_yaw, d.pitch),
-                2 => (d.yaw, camera_pitch),
-                3 => (camera_yaw, camera_pitch),
-                _ => (d.yaw, d.pitch),
-            };
-            let orientation = glam::Quat::from_euler(
-                glam::EulerRot::YXZ,
-                -yaw.to_radians(),
-                pitch.to_radians(),
-                0.0,
-            );
-            let q = |v: [f32; 4]| glam::Quat::from_xyzw(v[0], v[1], v[2], v[3]).normalize();
-            // Transformation.getMatrix: translate, left rotation, scale, right rotation.
-            let transformation =
-                glam::Mat4::from_translation(glam::Vec3::from_array(d.translation))
-                    * glam::Mat4::from_quat(q(d.left))
-                    * glam::Mat4::from_scale(glam::Vec3::from_array(d.scale))
-                    * glam::Mat4::from_quat(q(d.right));
+            // DisplayRenderer.calculateOrientation (the billboard) and Transformation.getMatrix.
+            let mut data = data;
+            for q in [&mut data.left_rotation, &mut data.right_rotation] {
+                *q = glam::Quat::from_array(*q).normalize().to_array();
+            }
+            let transformation = data.matrix(rotation, angles);
             // An item turns half round (ItemDisplayRenderer); a block sits on its corner
             // (BlockDisplayRenderer), where an item is drawn about its centre.
             let last = if d.block {
@@ -454,10 +460,7 @@ impl Game<'_> {
             } else {
                 glam::Mat4::from_rotation_y(std::f32::consts::PI)
             };
-            let pose = glam::Mat4::from_translation(pos.as_vec3())
-                * glam::Mat4::from_quat(orientation)
-                * transformation
-                * last;
+            let pose = glam::Mat4::from_translation(pos.as_vec3()) * transformation * last;
             let packed = self.world.light(
                 at[0].floor() as i32,
                 at[1].floor() as i32,

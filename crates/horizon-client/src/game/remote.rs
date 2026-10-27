@@ -82,39 +82,25 @@ impl ChunkGenerator for NoTerrain {
     }
 }
 
-/// `Display.ItemDisplay` as its entity data sets it: the item, how it is held (ItemDisplayContext)
-/// and the display's transformation, billboard and rotation.
-#[derive(Clone)]
+/// `Display.ItemDisplay` as its entity data sets it: the item and how it is held
+/// (ItemDisplayContext); its transformation, billboard, view range and moves interpolate as a
+/// text display's do (`motion`: interpolation and teleport durations, Display 8 to 22).
 pub(super) struct ItemDisplay {
     pub(super) stack: Option<horizon_client::items::ItemStack>,
     /// DATA_ITEM_DISPLAY_ID: an ItemDisplayContext ordinal.
     pub(super) context: u8,
-    /// DATA_TRANSLATION_ID, DATA_SCALE_ID, DATA_LEFT_ROTATION_ID, DATA_RIGHT_ROTATION_ID.
-    pub(super) translation: [f32; 3],
-    pub(super) scale: [f32; 3],
-    pub(super) left: [f32; 4],
-    pub(super) right: [f32; 4],
-    /// DATA_BILLBOARD_RENDER_CONSTRAINTS_ID: fixed, vertical, horizontal, center.
-    pub(super) billboard: u8,
-    pub(super) yaw: f32,
-    pub(super) pitch: f32,
+    pub(super) motion: super::text_displays::RemoteTextDisplay,
     /// A block display (`Display.BlockDisplay`), drawn as its block's item from the block's
     /// corner: its state's other properties are not shown.
     pub(super) block: bool,
 }
 impl ItemDisplay {
-    fn new(yaw: f32, pitch: f32) -> Self {
+    fn new(position: [f64; 3], yaw: f32, pitch: f32) -> Self {
         Self {
             block: false,
             stack: None,
             context: 0,
-            translation: [0.0; 3],
-            scale: [1.0; 3],
-            left: [0.0, 0.0, 0.0, 1.0],
-            right: [0.0, 0.0, 0.0, 1.0],
-            billboard: 0,
-            yaw,
-            pitch,
+            motion: super::text_displays::RemoteTextDisplay::new(position, yaw).turned(pitch),
         }
     }
 }
@@ -1385,6 +1371,9 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        if let Some(d) = r.item_displays.get_mut(&id) {
+            d.motion.metadata(values);
+        }
         for (index, _, value) in values {
             match (index, value) {
                 (2, Value::OptText(t)) => {
@@ -1402,20 +1391,10 @@ impl Game<'_> {
                 if let (23, Value::Id(state)) = (index, value) {
                     pending_blocks.push((id, *state));
                 }
-                if let Some(d) = r.item_displays.get_mut(&id) {
-                    match (index, value) {
-                        (11, Value::Floats(v)) if v.len() == 3 => {
-                            d.translation = [v[0], v[1], v[2]]
-                        }
-                        (12, Value::Floats(v)) if v.len() == 3 => d.scale = [v[0], v[1], v[2]],
-                        (13, Value::Floats(v)) if v.len() == 4 => d.left = [v[0], v[1], v[2], v[3]],
-                        (14, Value::Floats(v)) if v.len() == 4 => {
-                            d.right = [v[0], v[1], v[2], v[3]]
-                        }
-                        (15, Value::Byte(b)) => d.billboard = (*b as u8).min(3),
-                        (24, Value::Byte(c)) => d.context = (*c as u8).min(9),
-                        _ => {}
-                    }
+                if let (Some(d), (24, Value::Byte(c))) =
+                    (r.item_displays.get_mut(&id), (index, value))
+                {
+                    d.context = (*c as u8).min(9);
                 }
                 if let Some(stack) = item {
                     pending_items.push((id, stack));
@@ -1950,10 +1929,11 @@ impl Game<'_> {
                 r.pending_items.insert(id, (position, Vec3::ZERO));
             }
             if kind == "minecraft:item_display" {
-                r.item_displays.insert(id, ItemDisplay::new(yaw, pitch));
+                r.item_displays
+                    .insert(id, ItemDisplay::new(position, yaw, pitch));
             }
             if kind == "minecraft:block_display" {
-                let mut d = ItemDisplay::new(yaw, pitch);
+                let mut d = ItemDisplay::new(position, yaw, pitch);
                 d.block = true;
                 r.item_displays.insert(id, d);
             }
@@ -1997,9 +1977,7 @@ impl Game<'_> {
             if let Some(t) = r.entities.get_mut(&id) {
                 t.position = position;
             }
-            if let (Some(d), Some((yaw, pitch))) = (r.item_displays.get_mut(&id), rotation) {
-                (d.yaw, d.pitch) = (yaw, pitch);
-            }
+
             if let Some(m) = mob {
                 // A living entity: LivingEntity.createInterpolationHandler's
                 // SteppedInterpolationHandler, over its type's update interval.

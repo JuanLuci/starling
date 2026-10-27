@@ -83,7 +83,24 @@ impl RemoteTextDisplay {
         self.dirty |= values.iter().any(|v| renders(v.0));
         self.data.apply(values);
     }
-    fn tick(&mut self) {
+    /// A display turned to `pitch` too (an item or block display's spawn).
+    pub fn turned(mut self, pitch: f32) -> Self {
+        self.rotation[1] = pitch;
+        self.old_rotation[1] = pitch;
+        self.target_rotation[1] = pitch;
+        self
+    }
+    /// `Display.renderState` at `partial`: the interpolated data, place and rotation (the progress
+    /// is kept, where a new interpolation starts from).
+    pub(super) fn frame(&mut self, partial: f64) -> (TextDisplayData, glam::DVec3, [f32; 2]) {
+        self.last_progress = self.progress(partial as f32);
+        let data = self.shown.blend(&self.from, self.last_progress);
+        let rotation = std::array::from_fn(|i| {
+            self.old_rotation[i] + angle(self.rotation[i] - self.old_rotation[i]) * partial as f32
+        });
+        (data, self.previous.lerp(self.position, partial), rotation)
+    }
+    pub(super) fn tick(&mut self) {
         self.age += 1;
         self.previous = self.position;
         self.old_rotation = self.rotation;
@@ -115,7 +132,7 @@ impl RemoteTextDisplay {
         self.start_dirty = false;
         self.duration_dirty = false;
     }
-    fn move_to(&mut self, position: [f64; 3], rotation: Option<(f32, f32)>) {
+    pub(super) fn move_to(&mut self, position: [f64; 3], rotation: Option<(f32, f32)>) {
         self.target = position.into();
         if let Some((yaw, pitch)) = rotation {
             self.target_rotation = [yaw, pitch];
@@ -143,10 +160,23 @@ impl Game<'_> {
         if let Some(d) = self.text_displays.get_mut(&id) {
             d.move_to(position, rotation);
         }
+        // Item and block displays move the same way (teleport_duration).
+        if let Some(d) = self
+            .remote
+            .as_mut()
+            .and_then(|r| r.item_displays.get_mut(&id))
+        {
+            d.motion.move_to(position, rotation);
+        }
     }
     pub(super) fn tick_text_displays(&mut self) {
         for display in self.text_displays.values_mut() {
             display.tick();
+        }
+        if let Some(r) = self.remote.as_mut() {
+            for d in r.item_displays.values_mut() {
+                d.motion.tick();
+            }
         }
     }
     pub(super) fn text_display_geometry(
