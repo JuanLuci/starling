@@ -240,11 +240,19 @@ pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
 /// default near and far planes (OQ-6).
 const SHADOW_EYE: f64 = 128.0;
 
+/// The world grid the shadow view turns about (`shadow_camera`), in blocks.
+const SHADOW_PIVOT: f64 = 64.0;
+
 /// The shadow camera (7.1; OQ-6, impl-plan.md): its view (player space to shadow view space)
 /// and GL projection. The camera looks from the light, world +Z up (+Y when the light is near
 /// Z); the point it centres moves in steps of `shadowIntervalSize` along the shadow view's
 /// own axes, and it sits `SHADOW_EYE` blocks toward the light from it. Orthographic over
 /// `shadowDistance` each side, or perspective with `shadowMapFov`.
+///
+/// The view turns about the camera rounded to `SHADOW_PIVOT` blocks, not about the world's
+/// origin: as the sun moves a point shifts in the map by its distance from that pivot times the
+/// angle, as in Iris. About the origin, 3500 blocks out, it shifted nearly a block every tick, and
+/// every caster smaller than a texel of the map (grass, leaves) flickered.
 pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4) {
     let light = light.as_dvec3();
     let up = if light.z.abs() > 0.99 {
@@ -253,7 +261,8 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
         DVec3::Z
     };
     let rotation = DMat4::look_to_rh(DVec3::ZERO, -light, up);
-    let at = rotation.transform_vector3(camera);
+    let pivot = (camera / SHADOW_PIVOT).round() * SHADOW_PIVOT;
+    let at = rotation.transform_vector3(camera - pivot);
     let step = f64::from(shadow.interval);
     let snapped = if step > 0.0 {
         (at / step).floor() * step
@@ -536,5 +545,23 @@ mod tests {
         // shadowDistance blocks reach the map's edge.
         let edge = projection.project_point3(Vec3::new(160.0, 0.0, -128.0));
         assert!((edge.x.abs() - 1.0).abs() < 1e-4, "{edge}");
+    }
+
+    #[test]
+    fn the_shadow_view_turns_about_the_player_not_the_origin() {
+        let shadow = Shadow::default();
+        let camera = DVec3::new(3500.3, 70.0, 300.2);
+        let light = |degrees: f32| {
+            let a = degrees.to_radians();
+            Vec3::new(a.sin(), a.cos(), 0.0)
+        };
+        let (before, _) = shadow_camera(light(10.0), camera, &shadow);
+        let (after, _) = shadow_camera(light(10.015), camera, &shadow);
+        let near = Vec3::new(10.0, -2.0, 5.0);
+        let moved = (after.transform_point3(near) - before.transform_point3(near))
+            .truncate()
+            .length();
+        // A tick of the sun (0.015 degrees) moves it hundredths of a block, not nearly one.
+        assert!(moved < 0.05, "{moved}");
     }
 }
