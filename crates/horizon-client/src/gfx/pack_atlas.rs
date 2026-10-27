@@ -190,6 +190,14 @@ impl PackAtlas {
             body.push_str(FACE);
         }
         declarations.push_str("vec2 hz_cell; vec2 hz_scale; vec4 hz_tangent;\n");
+        let mut after = String::new();
+        if super::pack_post::prepass_wanted() {
+            let at = super::pack_post::PREPASS_UV;
+            declarations.push_str(&format!(
+                "layout(location = {at}) out vec2 hz_prepass_uv;\n"
+            ));
+            after.push_str("    hz_prepass_uv = hz_MultiTexCoord0.xy;\n");
+        }
         let entity = if flat {
             "vec4(float(hz_block_ids[2u * hz_layer]), float(hz_block_ids[2u * hz_layer + 1u]), 0.0, 0.0)"
         } else {
@@ -215,7 +223,7 @@ impl PackAtlas {
                 .iter()
                 .map(|&(n, v)| (n.to_owned(), v.to_owned()))
                 .collect(),
-            after: String::new(),
+            after,
             alpha_test: None,
         }
     }

@@ -189,6 +189,8 @@ struct Pass {
     atlas: Option<wgpu::TextureView>,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
+    /// The depth-only pipeline drawn first (`Geometry::prepass`).
+    prepass: Option<wgpu::RenderPipeline>,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
     /// 16–31) and the shadowcolor sides read (bits 32–33).
     groups: HashMap<u64, wgpu::BindGroup>,
@@ -685,7 +687,20 @@ pub(super) struct Geometry<'a> {
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
     pub cull: bool,
+    /// Drawn twice (`prepass`): depth only first, then the program over what stays in front.
+    pub prepass: bool,
 }
+
+/// `HORIZON_SHADER_PACK_PREPASS=1` (experimental): solid terrain draws its depth first with the
+/// program's own vertex stage and only the atlas' alpha test, then the program shades with depth
+/// writes off, so a phone's GPU can drop what is hidden before running the pack's fragment stage
+/// (grass and leaves stacked in front of each other otherwise run it once per layer).
+pub(super) fn prepass_wanted() -> bool {
+    std::env::var_os("HORIZON_SHADER_PACK_PREPASS").is_some()
+}
+
+/// The vertex output the depth pass reads the atlas coordinates from (pack_atlas.rs writes it).
+pub(super) const PREPASS_UV: u32 = 15;
 
 /// The pass of program `p`: a quad, or `geometry` drawn by the game. `None` (with a note) when
 /// wgpu refuses it or it writes nothing. `formats` are its buffers' (for a program of the shadow
@@ -880,6 +895,61 @@ fn build_pass(
             })
         };
         let (vs, fs) = (module(p.program.vertex), module(p.program.fragment));
+        // The depth pass: the atlas' alpha test at the texture's own binding and sampler.
+        let atlas = samplers.iter().find(|b| b.source == Source::Atlas);
+        let prepass = geometry
+            .filter(|g| g.prepass && g.depth_write)
+            .zip(atlas)
+            .map(|(_, a)| {
+                let source = format!(
+                    "@group(0) @binding({}) var hz_atlas: texture_2d<f32>;\n\
+                     @group(0) @binding({}) var hz_atlas_sampler: sampler;\n\
+                     @fragment fn main(@location({PREPASS_UV}) uv: vec2<f32>) {{\n    \
+                     if textureSample(hz_atlas, hz_atlas_sampler, uv).a < 0.1 {{ discard; }}\n}}\n",
+                    a.binding, a.sampler
+                );
+                let depth_fs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Shader pack terrain depth"),
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Shader pack terrain depth"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &vs,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        buffers: geometry.map_or(&[], |g| g.buffers),
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        front_face: wgpu::FrontFace::Cw,
+                        cull_mode: geometry.filter(|g| g.cull).map(|_| wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    // A hair farther than the program's own draw lands: the two pipelines may
+                    // round the same vertex differently, and the program's draw must still pass.
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: wgpu::DepthBiasState {
+                            constant: 2,
+                            slope_scale: 1.0,
+                            clamp: 0.0,
+                        },
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &depth_fs,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        targets: &[],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -897,7 +967,8 @@ fn build_pass(
             },
             depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(g.depth_write),
+                // After the depth pass, only what stays in front passes.
+                depth_write_enabled: Some(g.depth_write && prepass.is_none()),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
@@ -912,9 +983,9 @@ fn build_pass(
             multiview_mask: None,
             cache: None,
         });
-        (layout, pipeline)
+        (layout, pipeline, prepass)
     });
-    let (layout, pipeline) = match created {
+    let (layout, pipeline, prepass) = match created {
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{}: skipped: {e}", p.name));
@@ -958,6 +1029,7 @@ fn build_pass(
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
         ids: geometry.is_some_and(|g| g.ids.is_some()),
+        prepass,
         groups: HashMap::new(),
     })
 }
@@ -1037,10 +1109,20 @@ impl PackPost {
             atlas: g.atlas.clone(),
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
+            prepass: false,
+        });
+        let solid_geometry = world.terrain.as_ref().map(|g| Geometry {
+            buffers: g.buffers,
+            table: g.table,
+            depth_write: g.depth_write,
+            atlas: g.atlas.clone(),
+            ids: block_ids.as_ref().map(|i| &i.0),
+            cull: g.cull,
+            prepass: prepass_wanted(),
         });
         let terrain = post
             .terrain
-            .zip(terrain_geometry.as_ref())
+            .zip(solid_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let water = post
             .water
@@ -1063,6 +1145,7 @@ impl PackPost {
                 atlas: None,
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             let basic = post.sky.and_then(|p| build(p, Some(&basic)));
             let textured = Geometry {
@@ -1072,6 +1155,7 @@ impl PackPost {
                 atlas: world.celestial.clone(),
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             let textured = post.sky_textured.and_then(|p| build(p, Some(&textured)));
             Sky {
@@ -1101,6 +1185,7 @@ impl PackPost {
             atlas: world.celestial.clone(),
             ids: None,
             cull: false,
+            prepass: false,
         });
         let entity_passes = programs.map(|p| {
             p.zip(entity_geometry.as_ref())
@@ -1126,6 +1211,7 @@ impl PackPost {
             atlas: world.celestial.clone(),
             ids: None,
             cull: false,
+            prepass: false,
         });
         let hides_clouds = post.clouds.is_some() && cloud_geometry.is_some();
         let weather_geometry = world.weather.then(|| Geometry {
@@ -1135,6 +1221,7 @@ impl PackPost {
             atlas: None,
             ids: None,
             cull: false,
+            prepass: false,
         });
         let hand_geometry = world.hand.then(|| super::pack_hand::PackHand::new(device));
         let hand = post.hand.zip(hand_geometry).and_then(|(p, geometry)| {
@@ -1145,6 +1232,7 @@ impl PackPost {
                 atlas: world.celestial.clone(),
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             build(p, Some(&g)).map(|pass| (pass, geometry))
         });
@@ -1176,7 +1264,12 @@ impl PackPost {
             .filter_map(|p| build(p, None))
             .collect();
         if let Some(t) = &terrain {
-            notes.push(format!("terrain draws with {}", t.name));
+            let first = if t.prepass.is_some() {
+                ", its depth first"
+            } else {
+                ""
+            };
+            notes.push(format!("terrain draws with {}{first}", t.name));
         }
         for (part, pass) in [
             ("terrain", &shadow_terrain),
@@ -1702,6 +1795,33 @@ impl PackPost {
             );
         }
         let group = self.bind(device, queue, &mut pass, size);
+        if let Some(prepass) = &pass.prepass {
+            let targets = self.targets.as_ref().expect("resized");
+            let timestamp_writes = self.timing.as_mut().and_then(|t| t.writes("terrain depth"));
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack terrain depth"),
+                color_attachments: &[],
+                timestamp_writes,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &targets.depth,
+                    depth_ops: Some(super::pack_shadow::load()),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            rp.set_pipeline(prepass);
+            rp.set_bind_group(0, &group, &[]);
+            if pass.draw {
+                self.draws.bind(&mut rp, "TERRAIN_SOLID");
+            }
+            let (groups, ids) = (&self.page_groups, pass.ids);
+            let page = |rp: &mut wgpu::RenderPass<'_>, page: u32| {
+                if let Some((_, group)) = groups.get(&page).filter(|_| ids) {
+                    rp.set_bind_group(3, group, &[]);
+                }
+            };
+            draw(&mut rp, list, &page);
+        }
         {
             let mut rp = self.begin(encoder, &pass);
             rp.set_pipeline(&pass.pipeline);

@@ -2979,6 +2979,7 @@ impl Renderer {
                     atlas: None,
                     ids: None,
                     cull: true,
+                    prepass: false,
                 }),
                 block_ids,
                 celestial: self
