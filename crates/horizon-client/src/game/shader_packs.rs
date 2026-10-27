@@ -29,6 +29,28 @@ pub(super) struct PackIds {
     old_hand_light: bool,
 }
 
+/// The pack's option values, until the Shader Packs page picks them: `HORIZON_SHADER_PROFILE`
+/// names one of its profiles (`LOW`), then `HORIZON_SHADER_OPTIONS` lists values over it
+/// (`shadowDistance=64.0 SHADOW_QUALITY=0 !BLOOM`).
+fn picked_values(properties: &Properties, name: &str) -> horizon_shaders::Values {
+    let mut values = horizon_shaders::Values::default();
+    if let Ok(profile) = std::env::var("HORIZON_SHADER_PROFILE")
+        && !profile.is_empty()
+    {
+        match horizon_shaders::Values::profile(properties, &profile) {
+            Some(p) => values = p,
+            None => log::warn!("shader pack {name}: no profile `{profile}`"),
+        }
+    }
+    if let Ok(list) = std::env::var("HORIZON_SHADER_OPTIONS") {
+        values.parse_list(&list);
+    }
+    if !values.is_empty() {
+        log::info!("shader pack {name}: option values {values:?}");
+    }
+    values
+}
+
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
@@ -51,10 +73,14 @@ impl Game<'_> {
                 .join("shaderpacks")
                 .join(&*name);
             match Pack::open(&path) {
-                Ok(pack) => {
+                Ok(mut pack) => {
                     let macros = Macros::standard();
                     let text = pack.read_text("shaders.properties").unwrap_or_default();
                     let properties = Properties::parse(&text, &macros);
+                    let values = picked_values(&properties, &name);
+                    if !values.is_empty() {
+                        pack.set_values(values);
+                    }
                     for note in &properties.notes {
                         log::warn!(
                             "shader pack {name}: shaders.properties:{}: {}",

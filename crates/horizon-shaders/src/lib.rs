@@ -11,6 +11,7 @@
 //! - [`Config`] and [`draw_buffers`]: the buffer settings and output lists stage files carry (1.7, 6.1).
 //! - [`load_post`]: a dimension's `prepare`, `deferred`, `composite` and `final` programs, in order (2.1).
 //! - [`Macros`] and [`eval_condition`]: the macros packs test, and the `#if` arithmetic (1.5).
+//! - [`Values`]: option values and profiles a player picked, which [`Pack::set_values`] applies (8.1, 8.3).
 
 mod biomes;
 mod block_ids;
@@ -26,6 +27,7 @@ mod post;
 mod preprocess;
 mod properties;
 mod translate;
+mod values;
 
 pub use biomes::{category as biome_category, precipitation as biome_precipitation};
 pub use block_ids::BlockIds;
@@ -47,3 +49,4 @@ pub use translate::{
     AlphaTest, DRAW_UNIFORMS, Error, GbuffersInputs, Interface, Program, Sampler, Target, Uniform,
     translate_composite, translate_gbuffers, translate_shadow,
 };
+pub use values::Values;

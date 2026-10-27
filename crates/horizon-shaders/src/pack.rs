@@ -16,6 +16,8 @@ const ROOT: &str = "shaders";
 pub struct Pack {
     name: String,
     files: Files,
+    /// The option values picked (`set_values`), applied to the sources as they are read.
+    values: crate::Values,
 }
 
 enum Files {
@@ -69,7 +71,11 @@ impl Pack {
         } else {
             Self::zip_files(fs::read(path)?)?
         };
-        Ok(Self { name, files })
+        Ok(Self {
+            name,
+            files,
+            values: Default::default(),
+        })
     }
 
     /// An archive held in memory; `name` is what [`Pack::name`] returns.
@@ -78,6 +84,7 @@ impl Pack {
         Ok(Self {
             name: name.to_owned(),
             files,
+            values: Default::default(),
         })
     }
 
@@ -119,11 +126,23 @@ impl Pack {
         }
     }
 
-    /// A text file, decoded as UTF-8 (invalid bytes replaced) without its byte-order mark.
+    /// A text file, decoded as UTF-8 (invalid bytes replaced) without its byte-order mark; a
+    /// source with the picked option values (`set_values`) in its declarations.
     pub fn read_text(&self, path: &str) -> Option<String> {
         let bytes = self.read(path)?;
         let text = String::from_utf8_lossy(&bytes);
-        Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let source = !path.ends_with(".properties") && !path.starts_with("lang/");
+        Some(if source {
+            self.values.apply(text)
+        } else {
+            text.to_owned()
+        })
+    }
+
+    /// The option values the player picked (spec 8.1, 8.3), from now on in every source read.
+    pub fn set_values(&mut self, values: crate::Values) {
+        self.values = values;
     }
 
     pub fn exists(&self, path: &str) -> bool {
