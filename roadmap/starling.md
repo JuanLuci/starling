@@ -36,8 +36,10 @@ and its quality in the game.
 > Settings: the pack and its profile, saved in horizon-graphics.txt), option values and profiles,
 > constant texture matrices, a depth pass that keeps no more than the pack's own alpha cut, resolution
 > down to 25%, outputs kept finite (Adreno made NaNs that turned Complementary black for good after a
-> pond was flooded), `cameraPositionInt`/`Fract`. Left: checking on the phone that the sun glare, the
-> water's dark band and the shadows that flicker at 25% went with the NaNs; the pack's own options
+> pond was flooded), `cameraPositionInt`/`Fract`, terrain's face normals and `mc_Entity` off a Mac
+> (they read up and -1 everywhere but Metal: side faces were shaded as tops, which striped and
+> flickered their shadows, and the pack could not tell water or leaves). Left: checking on the phone
+> that the sun glare and the water's dark band went with them; the pack's own options
 > screen (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; compiling packs off the main
 > thread with a cache (a stall of a few seconds on joining a world or changing the pack);
 > `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
