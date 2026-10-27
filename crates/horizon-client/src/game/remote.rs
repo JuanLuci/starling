@@ -90,14 +90,17 @@ pub(super) struct ItemDisplay {
     /// DATA_ITEM_DISPLAY_ID: an ItemDisplayContext ordinal.
     pub(super) context: u8,
     pub(super) motion: super::text_displays::RemoteTextDisplay,
-    /// A block display (`Display.BlockDisplay`), drawn as its block's item from the block's
-    /// corner: its state's other properties are not shown.
+    /// A block display (`Display.BlockDisplay`), drawn as its block state's model from the
+    /// block's corner.
     pub(super) block: bool,
+    /// BlockDisplay.DATA_BLOCK_STATE_ID.
+    pub(super) state: Option<horizon_world::registry::BlockStateId>,
 }
 impl ItemDisplay {
     fn new(position: [f64; 3], yaw: f32, pitch: f32) -> Self {
         Self {
             block: false,
+            state: None,
             stack: None,
             context: 0,
             motion: super::text_displays::RemoteTextDisplay::new(position, yaw).turned(pitch),
@@ -1430,6 +1433,7 @@ impl Game<'_> {
                 .and_then(|r| r.item_displays.get_mut(&id))
             {
                 d.stack = stack;
+                d.state = Some(horizon_world::registry::BlockStateId(state.max(0) as u32));
             }
         }
     }

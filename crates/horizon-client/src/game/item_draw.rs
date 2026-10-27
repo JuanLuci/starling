@@ -424,9 +424,9 @@ impl Game<'_> {
             let Some(d) = r.item_displays.get(&id) else {
                 continue;
             };
-            let Some(stack) = &d.stack else {
+            if d.stack.is_none() && d.state.is_none() {
                 continue;
-            };
+            }
             // A display riding a mob or a player (a plugin's model, a backpack) is where it is.
             let at = self
                 .ridden_position(id, partial)
@@ -438,6 +438,50 @@ impl Game<'_> {
             if pos.length_squared() > range * range {
                 continue;
             }
+            // DisplayRenderer.calculateOrientation (the billboard) and Transformation.getMatrix.
+            let mut data = data;
+            for q in [&mut data.left_rotation, &mut data.right_rotation] {
+                *q = glam::Quat::from_array(*q).normalize().to_array();
+            }
+            let transformation = data.matrix(rotation, angles);
+            let packed = self.world.light(
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
+            );
+            // Display.DATA_BRIGHTNESS_OVERRIDE_ID: block light at bits 4.., sky light at 20...
+            let (block, sky) = match data.brightness {
+                b if b >= 0 => (((b >> 4) & 15) as u32, ((b >> 20) & 15) as u32),
+                _ => (u32::from(packed & 15), u32::from(packed >> 4)),
+            };
+            // BlockDisplayRenderer: the state's model from the block's corner, tinted as a
+            // falling block is.
+            if d.block
+                && let Some(block_state) = d.state
+            {
+                let Some((_, tint)) = self.block_face_sprite(block_state) else {
+                    continue;
+                };
+                let pose = glam::Mat4::from_translation(pos.as_vec3()) * transformation;
+                let start = out.len();
+                self.block_model_vertices(
+                    block_state,
+                    0,
+                    pose,
+                    (sky * 16) | ((block * 16) << 8),
+                    false,
+                    out,
+                );
+                let tint = horizon_client::mobs::render::abgr(tint);
+                for vertex in &mut out[start..] {
+                    vertex.color = horizon_client::hud_layout::multiply(vertex.color, tint);
+                }
+                self.cull_entity_vertices(out, start);
+                continue;
+            }
+            let Some(stack) = &d.stack else {
+                continue;
+            };
             let context = if d.block {
                 DisplayContext::None
             } else {
@@ -447,12 +491,6 @@ impl Game<'_> {
             if state.is_empty() {
                 continue;
             }
-            // DisplayRenderer.calculateOrientation (the billboard) and Transformation.getMatrix.
-            let mut data = data;
-            for q in [&mut data.left_rotation, &mut data.right_rotation] {
-                *q = glam::Quat::from_array(*q).normalize().to_array();
-            }
-            let transformation = data.matrix(rotation, angles);
             // An item turns half round (ItemDisplayRenderer); a block sits on its corner
             // (BlockDisplayRenderer), where an item is drawn about its centre.
             let last = if d.block {
@@ -461,13 +499,9 @@ impl Game<'_> {
                 glam::Mat4::from_rotation_y(std::f32::consts::PI)
             };
             let pose = glam::Mat4::from_translation(pos.as_vec3()) * transformation * last;
-            let packed = self.world.light(
-                at[0].floor() as i32,
-                at[1].floor() as i32,
-                at[2].floor() as i32,
-            );
+            let light = (sky << 4 | block) as u8;
             let entity_start = out.len();
-            self.submit_item_world(&state, pose, vertex_light(packed), out);
+            self.submit_item_world(&state, pose, vertex_light(light), out);
             self.cull_entity_vertices(out, entity_start);
         }
     }
