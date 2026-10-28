@@ -63,8 +63,27 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// What went wrong on the way, short, for a player's report (`dns failed: ...`, a refused or
+/// timed-out connection, a certificate): the transport's kind and message, never its URL.
+pub(crate) fn transport_detail(t: &ureq::Transport) -> String {
+    let mut detail = t.kind().to_string().to_lowercase();
+    if let Some(message) = t.message() {
+        detail.push_str(": ");
+        detail.push_str(message);
+    }
+    // The cause underneath (the system's own words: refused, unreachable, a certificate).
+    if let Some(cause) = std::error::Error::source(t) {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+    }
+    if detail.chars().count() > 120 {
+        detail = detail.chars().take(117).collect::<String>() + "...";
+    }
+    detail
+}
+
 /// One request's result: the status and the JSON body (empty when there is none). Transport
-/// errors name the service, never the URL's query or the request.
+/// errors name the service and what went wrong, never the URL's query or the request.
 fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u16, Value), String> {
     let result = match body {
         None => request.call(),
@@ -74,9 +93,10 @@ fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u1
     let response = match result {
         Ok(r) => r,
         Err(ureq::Error::Status(_, r)) => r,
-        Err(ureq::Error::Transport(_)) => {
+        Err(ureq::Error::Transport(t)) => {
             return Err(format!(
-                "Could not reach {service}. Check your internet connection."
+                "Could not reach {service} ({}). Check your internet connection.",
+                transport_detail(&t)
             ));
         }
     };

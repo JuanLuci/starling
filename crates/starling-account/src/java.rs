@@ -63,9 +63,10 @@ fn fetch(
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("GitHub refused {NAME} ({code})."),
-            ureq::Error::Transport(_) => {
-                format!("Could not download {NAME}. Check your internet connection.")
-            }
+            ureq::Error::Transport(t) => format!(
+                "Could not download {NAME} ({}). Check your internet connection.",
+                crate::transport_detail(&t)
+            ),
         })?;
     let mut part = path.as_os_str().to_owned();
     part.push(".part");

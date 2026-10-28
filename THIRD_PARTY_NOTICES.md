@@ -29,3 +29,13 @@ runs it for the preparing and deletes it after. OpenJDK is licensed under the GN
 License version 2 with the Classpath Exception; its sources are at
 [openjdk/jdk](https://github.com/openjdk/jdk), the build's scripts and patches in that
 repository. Starling's launcher for it (`packaging/android/native/java_launcher.c`) is MIT.
+
+## Bedrock's touch buttons (fetched on the phone, not shipped)
+
+The touch controls wear Minecraft: Bedrock Edition's own buttons, which Starling downloads on the
+phone from Mojang's [bedrock-samples](https://github.com/Mojang/bedrock-samples) repository (the
+revision and each file's git blob SHA-1 in `crates/horizon-client/assets/bedrock-touch.json`, which
+`tools/bedrock_touch_manifest.py` writes) into the player's resources, Mojang's `LICENSE.md` beside
+them. They are © Mojang AB, under the Minecraft End User License Agreement the download is subject
+to; Starling carries none of them. Where they are missing, Starling's own buttons
+(`crates/horizon-client/assets/touch`, drawn by `packaging/touch/make.py`) are MIT.

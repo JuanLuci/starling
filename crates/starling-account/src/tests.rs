@@ -344,10 +344,16 @@ fn refusals_have_messages() {
         microsoft: "http://127.0.0.1:9/ms".into(),
         ..Endpoints::live()
     };
-    assert_eq!(
-        device_code(&dead, "x").unwrap_err(),
-        "Could not reach Microsoft. Check your internet connection."
+    let error = device_code(&dead, "x").unwrap_err();
+    assert!(
+        error.starts_with("Could not reach Microsoft (connection failed"),
+        "{error}"
     );
+    assert!(
+        error.ends_with("). Check your internet connection."),
+        "{error}"
+    );
+    assert!(!error.contains("127.0.0.1"), "no URL: {error}");
 }
 
 #[test]

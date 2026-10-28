@@ -17,10 +17,9 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 - **Settings that make sense on a phone**: Every option does what it says, and the ones a phone can't
   use are out of the way.
 
-**Next**: what players reported (the touch Sneak as hold or toggle, saving when the app is
-closed abruptly, GrimAC and digging up while flying); a pack's own options in the game; secure
-chat for servers that require it; physical controllers on Android; Open to LAN and invites on a
-phone; catching up with Horizon.
+**Next**: a name and a skin of the player's own; a pack's own options in the game; secure chat
+for servers that require it; physical controllers on Android; Open to LAN and invites on a phone;
+keeping up with Horizon.
 
 **Later**: a store release; more of the game open to mods; Horizon's native mods; a phone-sized mod
 browser.
@@ -69,7 +68,23 @@ You hear about a new release on the title screen, and the game installs it: no b
 > to allow installs from Starling the first time, and offers to open it once updated); Tomorrow
 > asks again in a day, No at the next start. Starling Visuals comes in the APK and is put in
 > `shaderpacks/` when the app carries a new one. Left: trying an update from one release to the next
-> on a phone (v0.1.0 has no prompt: it is installed over by hand once).
+> on a phone (v0.1.0 has no prompt: it is installed over by hand once; v0.1.1 is the first offered).
+
+### What players reported
+
+The touch controls players know from Bedrock, a world that keeps when the app is closed, and no
+anticheat flags for digging up while flying.
+
+> Done (v0.1.1): Bedrock's own touch buttons, fetched on the phone from Mojang's bedrock-samples
+> (bedrock_touch.rs, a pinned revision, each file checked by its git blob SHA-1; the project carries
+> names and hashes only), the ones Bedrock has none for drawn on its plate with Starling's glyphs,
+> Starling's own look where they are missing; the layout editor before a world too; Sneak as Hold or
+> Toggle, and in flight going down only while held (a choice for touch: Java's toggled sneak keeps
+> sinking); the autosave's save as soon as the app loses focus, without holding Android's UI thread,
+> level.dat_old read when level.dat is missing, the last run's log kept as previous.log; a dig sent
+> before the move into its space with the stick in Free Direction, and a refused break putting the
+> player back (BlockStatePredictionHandler). Left: trying the dig fix on a GrimAC server with
+> latency; placing blocks while steering, which still waits a tick.
 
 ### Shader packs on a phone
 
@@ -132,11 +147,11 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 
 ## Next
 
-- **What players reported**: the touch Sneak button as hold or toggle in the layout editor (and,
-  flying, going down only while it is held, as on Java); the world saved when the app loses focus,
-  so closing it abruptly keeps it; GrimAC flagging the player who digs up while flying.
-- **Catching up with Horizon**: Starling's base is far behind Horizon's, which moves fast; to bring
-  its fixes over, and so that mods made for a Horizon revision fit.
+- **A name and a skin of your own**: the name you play with in singleplayer and on offline-mode
+  servers, and a skin picked from your files, classic or slim.
+- **Keeping up with Horizon**: v0.1.1 merged Horizon's main of 2026-10-28 (2118 commits: the client
+  split into crates, server mods, HDR, Horizon's own shader packs); to merge it again often, so that
+  its fixes come over and mods made for a Horizon revision fit.
 - **A pack's own options in the game**: the settings screen a shader pack describes, beside its profile.
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off

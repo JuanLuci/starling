@@ -134,9 +134,10 @@ fn sha1_file(path: &Path) -> Option<String> {
 fn fetch_checked(url: &str, sha1: &str, name: &str) -> Result<Vec<u8>, String> {
     let response = agent().get(url).call().map_err(|e| match e {
         ureq::Error::Status(code, _) => format!("Mojang's server refused {name} ({code})."),
-        ureq::Error::Transport(_) => {
-            format!("Could not download {name}. Check your internet connection.")
-        }
+        ureq::Error::Transport(t) => format!(
+            "Could not download {name} ({}). Check your internet connection.",
+            crate::transport_detail(&t)
+        ),
     })?;
     let mut body = Vec::new();
     response

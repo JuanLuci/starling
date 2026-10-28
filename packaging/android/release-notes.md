@@ -1,30 +1,31 @@
-**Starling 0.1.0.1: updates from the game, a real keyboard, and Starling Visuals in the box.** Fixes and the things the first players asked for, a day after 0.1.0.
+**Starling 0.1.1: Bedrock's buttons, a world that keeps, and Horizon brought up to date.**
 
 ## Install
 
-- **Coming from 0.1.0:** download **`starling-0.1.0.1-arm64-v8a.apk`** below and open it: it installs over 0.1.0 and keeps everything. This is the last time you do it by hand.
-- **New here:** the same APK. Open Starling, sign in with the Microsoft account that owns Minecraft: Java Edition, and it downloads and prepares the game on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
+- **On 0.1.0.1:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
+- **On 0.1.0, or new here:** download **`starling-0.1.1-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
 
 > Installed a test build from GitHub Actions? Uninstall it first: test builds are signed with another key. Worlds kept in the `Starling` folder stay where they are.
 
 ## What's new
 
-- **Updates from the game.** When a newer release is out, the title screen says so: **Update** downloads it and Android installs it over this one (it asks you to allow installs from Starling the first time), **Tomorrow** asks again in a day, **No** at the next start.
-- **The phone's own keyboard.** Suggestions, autocorrect, swipe typing and paste now work in the chat, signs and books. Commands are left alone by autocorrect, and **Enter finishes a command** when only one completion fits: `/gamemode c` runs `/gamemode creative`.
-- **Starling Visuals comes with the app.** Pick it in **Video Settings > Shader Packs**: no zip to copy. The page also says where its folder is.
-- **Every language.** The game is prepared on the phone with all the languages Minecraft has, in **Options > Language**.
-- **The Starling folder, again.** Said "Not now" to keeping your files in a `Starling` folder? The **Open Pack Folder** buttons offer it again.
+- **Bedrock's touch buttons.** The controls wear Bedrock's own buttons, which Starling downloads from Mojang after preparing the game (nothing of Mojang's is in the app). Offline, Starling's own stone-grey buttons stand in.
+- **Sneak as Hold or Toggle**, picked in the layout editor. Flying, Sneak only takes you down while you hold it.
+- **Lay out your controls anywhere**, while the game prepares and on the title screen too.
+- **Your world keeps** when you close Starling abruptly: it saves as soon as it leaves the screen.
+- **Fewer anticheat flags.** Breaking a block while moving no longer reaches the server late (GrimAC flagged players digging up while flying), and a break the server refuses puts you back where you stood, as Java does.
+- **Horizon brought up to date**: 2118 of its commits, with many fixes to the game.
 
 ## Fixes
 
-- **Touch Controls** (Options > Controls) opens the layout editor while Starling sets up and on the title screen, not only in a world: lay out your controls while the game prepares.
-- The credits (Options > Credits & Attribution) close with a tap or the back key; while setting up they could not be closed at all.
-- No "No such file or directory" under the setup card on a first start.
+- When the setup cannot reach Microsoft, Mojang or GitHub, it now says why (the network's own words), for a bug report.
+- A world whose save was cut short opens from its backup `level.dat_old`.
+- After an abrupt close the last session's log is kept as `Starling/logs/previous.log`.
 
 ## Known issues
 
 - Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed.
-- Keep Starling open while it prepares the game: leaving it can stop the preparing, and it starts over.
+- Bedrock's buttons show from the start after the one that downloads them.
 - Tested on one phone (POCO F6 Pro, Adreno 740); phones with Mali GPUs are untested so far.
 - Servers that require signed chat (secure chat) refuse messages for now.
 - Starling's own screens are in English only.
