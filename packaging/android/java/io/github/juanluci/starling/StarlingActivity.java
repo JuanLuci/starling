@@ -378,6 +378,23 @@ public final class StarlingActivity extends NativeActivity {
         return true;
     }
 
+    /** The display's fastest refresh rate (Hz), which a game without a frame cap asks for: left
+     * to itself, a phone's own policy may hold a game at 60 Hz on a 120 or 144 Hz screen. 0 where
+     * Android does not say. */
+    @SuppressWarnings("deprecation")
+    public float maxRefreshRate() {
+        android.view.Display display = Build.VERSION.SDK_INT >= 30
+                ? getDisplay()
+                : getWindowManager().getDefaultDisplay();
+        float best = 0;
+        if (display != null) {
+            for (android.view.Display.Mode mode : display.getSupportedModes()) {
+                best = Math.max(best, mode.getRefreshRate());
+            }
+        }
+        return best;
+    }
+
     /** This APK's version (versionName), which the update prompt compares with the latest
      * release's; null where Android does not say. */
     public String versionName() {

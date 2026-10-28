@@ -20,6 +20,10 @@ use winit::event::{Touch, TouchPhase};
 /// What the screen offers now.
 #[derive(Clone, Debug, PartialEq)]
 enum Step {
+    /// Before anything: the Starling folder the title screen offers too (files_offer.rs), so the
+    /// game's files are where a player can reach them, and a bug report's log with them.
+    #[cfg(target_os = "android")]
+    Folder(super::files_offer::Stage),
     /// Nothing under way: sign in, or bring resources from a computer.
     Start,
     /// Asking Microsoft (or renewing the saved sign-in).
@@ -44,6 +48,13 @@ enum Step {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
+    /// The Starling folder: Android's setting that allows it, or, allowed, the restart that moves
+    /// the files.
+    #[cfg(target_os = "android")]
+    Folder,
+    /// Not now (asked again on the title screen only if not turned down), or Later.
+    #[cfg(target_os = "android")]
+    FolderLater,
     SignIn,
     OpenLink,
     CopyCode,
@@ -61,6 +72,12 @@ enum Action {
 pub(super) struct Setup {
     /// The saved sign-in renewed, once.
     resumed: bool,
+    /// The Starling folder's setting opened, waiting for the player to come back from it.
+    #[cfg(target_os = "android")]
+    folder_asked: bool,
+    /// The Starling folder put off for this start (Later).
+    #[cfg(target_os = "android")]
+    folder_later: bool,
     /// Prepared once already: what it made did not load either (the failure says why), so it is
     /// not prepared again unasked.
     prepared: bool,
@@ -120,11 +137,35 @@ fn step(setup: &Setup, failure: &str) -> Step {
         Files::Missing => {}
     }
     match accounts::state() {
-        State::Offline => Step::Start,
+        State::Offline => {
+            #[cfg(target_os = "android")]
+            if let Some(stage) = folder_offer(setup) {
+                return Step::Folder(stage);
+            }
+            Step::Start
+        }
         State::Resuming | State::Starting | State::SignedIn(_) => Step::Talking,
         State::Code { code, link } => Step::Code { code, link },
         State::Failed(e) => Step::Failed(e),
     }
+}
+
+/// The Starling folder's offer where it stands, while the game folder is still the app's own
+/// files and the player has not turned it down.
+#[cfg(target_os = "android")]
+fn folder_offer(setup: &Setup) -> Option<super::files_offer::Stage> {
+    use super::files_offer::{Stage, declined};
+    let private = horizon_client::logging::game_home() == horizon_client::logging::private_home();
+    if !private || setup.folder_later || declined().exists() {
+        return None;
+    }
+    Some(if crate::file_access_allowed() {
+        Stage::Restart
+    } else if setup.folder_asked {
+        Stage::Waiting
+    } else {
+        Stage::Ask
+    })
 }
 
 fn mb(bytes: u64) -> String {
@@ -134,6 +175,11 @@ fn mb(bytes: u64) -> String {
 /// What the step says: title, body, and the line under it.
 fn texts(step: &Step) -> (&'static str, String, Option<String>) {
     match step {
+        #[cfg(target_os = "android")]
+        Step::Folder(stage) => {
+            let [title, body, ..] = super::files_offer::texts(*stage);
+            (title, body.into(), None)
+        }
         Step::Start => (
             "Set up Starling",
             "Starling plays Minecraft: Java Edition from your own copy of the game. Sign in \
@@ -193,6 +239,14 @@ fn fraction(step: &Step) -> Option<f32> {
 
 fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
     match step {
+        #[cfg(target_os = "android")]
+        Step::Folder(stage) => {
+            let [_, _, primary, other] = super::files_offer::texts(*stage);
+            [
+                Some((primary, Action::Folder)),
+                Some((other, Action::FolderLater)),
+            ]
+        }
         Step::Start => [
             Some(("Sign in with Microsoft", Action::SignIn)),
             Some(("Files from a computer", Action::Pick)),
@@ -511,6 +565,23 @@ impl Loading {
             .find(|(r, _)| inside(*r));
         let Some((_, action)) = hit else { return };
         match action {
+            #[cfg(target_os = "android")]
+            Action::Folder => match folder_offer(&self.setup) {
+                Some(super::files_offer::Stage::Restart) => crate::restart_app(),
+                _ => {
+                    crate::open_file_access_settings();
+                    self.setup.folder_asked = true;
+                }
+            },
+            #[cfg(target_os = "android")]
+            Action::FolderLater => {
+                // Not now: as on the title screen, not offered again (Later, once allowed: the
+                // next start moves the files anyway).
+                if folder_offer(&self.setup) != Some(super::files_offer::Stage::Restart) {
+                    let _ = std::fs::write(super::files_offer::declined(), b"");
+                }
+                self.setup.folder_later = true;
+            }
             Action::SignIn => accounts::sign_in(),
             Action::OpenLink => {
                 if let State::Code { link, .. } = accounts::state()

@@ -15,7 +15,7 @@ use winit::event::{Touch, TouchPhase};
 /// How often the setting is looked at while the player is away in it.
 const CHECK: Duration = Duration::from_millis(700);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
     /// What the folder is for, and the way to allow it.
     Ask,
@@ -36,12 +36,13 @@ pub(super) struct FilesOffer {
     buttons: Cell<[[f32; 4]; 2]>,
 }
 
-/// Written when the player turns the offer down: it is not made again.
-fn declined() -> PathBuf {
+/// Written when the player turns the offer down (here or in the setup, game/setup.rs): it is not
+/// made again.
+pub(super) fn declined() -> PathBuf {
     horizon_client::logging::private_home().join("files-offer-declined")
 }
 
-fn texts(stage: Stage) -> [&'static str; 4] {
+pub(super) fn texts(stage: Stage) -> [&'static str; 4] {
     match stage {
         Stage::Ask => [
             "Keep your files where you can reach them",

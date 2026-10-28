@@ -750,6 +750,15 @@ unsafe extern "C" {
     fn _exit(status: std::ffi::c_int) -> !;
 }
 
+/// The display's fastest refresh rate, asked of the activity once (0: unknown, no preference).
+fn max_refresh_rate() -> f32 {
+    static RATE: OnceLock<f32> = OnceLock::new();
+    *RATE.get_or_init(|| {
+        with_activity(|env, activity| env.call_method(activity, "maxRefreshRate", "()F", &[])?.f())
+            .unwrap_or(0.0)
+    })
+}
+
 /// The render thread's hint session, its target, and the window and rate last voted for.
 #[derive(Default)]
 struct HintState {
@@ -805,7 +814,8 @@ pub(crate) fn frame_hint(cpu: std::time::Duration, fps_limit: i32) {
         let Some(window) = android_app().native_window() else {
             return;
         };
-        let rate = cap.map_or(0.0, |c| c as f32);
+        // No cap: the screen's fastest rate (Android's own choice may stay at 60 Hz).
+        let rate = cap.map_or_else(max_refresh_rate, |c| c as f32);
         let ptr = window.ptr().as_ptr() as usize;
         if (state.window, state.voted) != (ptr, rate) {
             // SAFETY: the window is held for the call; 0 is
