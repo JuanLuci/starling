@@ -1,0 +1,24 @@
+{
+ "providers": [
+  {
+   "type": "space",
+   "advances": {
+    " ": 4
+   }
+  },
+  {
+   "type": "bitmap",
+   "file": "minecraft:font/hand_4.png",
+   "height": 10,
+   "ascent": 8,
+   "chars": [
+    " !\"#$%&'()*+,-./",
+    "0123456789:;<=>?",
+    "@ABCDEFGHIJKLMNO",
+    "PQRSTUVWXYZ[\\]^_",
+    "`abcdefghijklmno",
+    "pqrstuvwxyz{|}~\u0000"
+   ]
+  }
+ ]
+}

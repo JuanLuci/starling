@@ -167,15 +167,59 @@ fn run(resources: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The low-budget skin the setup draws the game's menus with while their own resources are not
+/// there (packaging/lowbudget, the APK's `assets/lowbudget.zip`): a resource folder, unpacked
+/// into the app's own folder once for each skin the app carries.
+pub fn skin() -> Option<PathBuf> {
+    let bytes = crate::platform::asset("lowbudget.zip")?;
+    let stamp = format!("{}-{:08x}", bytes.len(), crc32(&bytes));
+    let dir = home().join("lowbudget");
+    let marker = dir.join(".starling-skin");
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(&stamp) {
+        return Some(dir);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    match unpack(&bytes, &dir)
+        .and_then(|()| std::fs::write(&marker, &stamp).map_err(|e| e.to_string()))
+    {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            log::warn!("Horizon: the setup's skin did not unpack: {e}");
+            None
+        }
+    }
+}
+
+/// CRC-32 (IEEE), to tell one skin from the next.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
 /// The kit the app carries, over `dir` (its sources replaced, horizon-prepare's work kept).
 fn unpack_kit(dir: &Path) -> Result<(), String> {
     let bytes = crate::platform::asset("prepare-kit.zip")
         .ok_or("Starling's preparer is missing from the app: install it again.")?;
+    unpack(&bytes, dir)
+}
+
+/// A zip the app carries over `dir`, its entries kept inside it.
+fn unpack(bytes: &[u8], dir: &Path) -> Result<(), String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let Some(name) = entry.enclosed_name() else {
-            return Err(format!("The preparer's kit names {}", entry.name()));
+            return Err(format!("The app's archive names {}", entry.name()));
         };
         let path = dir.join(name);
         if entry.is_dir() {

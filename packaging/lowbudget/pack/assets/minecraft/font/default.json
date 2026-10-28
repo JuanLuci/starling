@@ -1,0 +1,30 @@
+{
+ "providers": [
+  {
+   "type": "space",
+   "advances": {
+    " ": 4
+   }
+  },
+  {
+   "type": "bitmap",
+   "file": "minecraft:font/hand_0.png",
+   "height": 10,
+   "ascent": 8,
+   "chars": [
+    " !\"#$%&'()*+,-./",
+    "0123456789:;<=>?",
+    "@ABCDEFGHIJKLMNO",
+    "PQRSTUVWXYZ[\\]^_",
+    "`abcdefghijklmno",
+    "pqrstuvwxyz{|}~\u0000"
+   ]
+  }
+ ],
+ "starling:variants": [
+  "starling:hand_1",
+  "starling:hand_2",
+  "starling:hand_3",
+  "starling:hand_4"
+ ]
+}

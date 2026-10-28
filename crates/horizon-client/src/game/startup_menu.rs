@@ -11,7 +11,8 @@ use winit::{event::KeyEvent, keyboard::ModifiersState};
 pub(super) struct StartupMenu {
     title: Option<Title>,
     options: OptionsUi,
-    options_open: bool,
+    /// The options screen is up (also the setup's Settings, game/setup.rs).
+    pub(super) options_open: bool,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -323,7 +324,7 @@ impl Loading {
         self.settings.save(&Game::options_path());
     }
 
-    fn open_menu_options(&mut self, page: Page) {
+    pub(super) fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
         self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);

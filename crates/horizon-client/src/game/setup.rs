@@ -2,10 +2,11 @@
 //! load), in place of the loading failure. Sign in with the Microsoft account that owns the game
 //! (accounts.rs), the official files fetched, then prepared on the phone (preparer.rs); or the
 //! resources prepared on a computer, picked as before. Drawn with the embedded Horizon font: the
-//! game's own is part of what is missing. While it waits, water to fish in (fishing.rs).
+//! game's own is part of what is missing. While it waits, water to fish in (fishing.rs), and the
+//! game's settings, drawn in the low-budget skin the app carries (packaging/lowbudget).
 mod fishing;
 
-use super::{Audio, Loading};
+use super::{Audio, Loading, UiResources};
 use horizon_client::{
     accounts::{self, Files, State},
     hud::HudBatch,
@@ -50,6 +51,10 @@ enum Action {
     Pick,
     /// After a failure: the step that failed, again.
     Retry,
+    /// While it waits: to the water, back from it, or to the game's settings.
+    Fish,
+    Back,
+    Settings,
 }
 
 #[derive(Default)]
@@ -67,12 +72,17 @@ pub(super) struct Setup {
     fishing: fishing::Fishing,
     /// The water as last drawn (dp), while there is a wait to pass.
     pond: Cell<Option<[f32; 4]>>,
+    /// Out fishing (the water over the screen), not on the card.
+    fishing_open: bool,
+    /// The low-budget skin put on the menus, once.
+    skinned: bool,
 }
 
 impl Setup {
-    /// How soon the screen draws again: often while the water shows.
-    pub(super) fn frame(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(if self.pond.get().is_some() { 33 } else { 400 })
+    /// How soon the screen draws again: often while the water or the settings show.
+    pub(super) fn frame(&self, settings_open: bool) -> std::time::Duration {
+        let lively = self.pond.get().is_some() || settings_open;
+        std::time::Duration::from_millis(if lively { 33 } else { 400 })
     }
 }
 
@@ -195,6 +205,10 @@ fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
             Some(("Try again", Action::Retry)),
             Some(("Files from a computer", Action::Pick)),
         ],
+        step if waiting(step) => [
+            Some(("Go fishing", Action::Fish)),
+            Some(("Settings", Action::Settings)),
+        ],
         _ => [None, None],
     }
 }
@@ -254,6 +268,16 @@ impl Loading {
             self.setup.resumed = true;
             accounts::resume();
         }
+        // The menus in the skin the app carries: their own resources are what is missing.
+        if !self.setup.skinned {
+            self.setup.skinned = true;
+            if let Some(root) = preparer::skin() {
+                match UiResources::load(&root, &root) {
+                    Ok(gui) => self.set_ui(gui, root),
+                    Err(e) => log::warn!("Horizon: the setup's skin did not load: {e}"),
+                }
+            }
+        }
         if preparer::stage() == Stage::Done {
             self.setup.prepared = true;
             preparer::clear();
@@ -284,7 +308,7 @@ impl Loading {
         let mut ui = Ui::new(&gui.atlas, batch, (-1.0, -1.0));
         let (w, h) = (ui.w, ui.h);
         let now = Instant::now();
-        let pond = waiting(&step).then_some([0.0, 0.0, w, h]);
+        let pond = (waiting(&step) && self.setup.fishing_open).then_some([0.0, 0.0, w, h]);
         if pond.is_some() {
             self.setup.fishing.draw_water(&mut ui, w, h, now);
         } else {
@@ -304,7 +328,12 @@ impl Loading {
             _ => None,
         };
         let bar = fraction(&step);
-        let actions = buttons(&step);
+        // Out fishing, the card only says how far it is; Back is in the corner.
+        let actions = if pond.is_some() {
+            [None, None]
+        } else {
+            buttons(&step)
+        };
         let button_h = 40.0;
         let mut card_h = pad + 26.0 + 12.0 + lines.len() as f32 * 21.0;
         if code.is_some() {
@@ -412,6 +441,24 @@ impl Loading {
         }
         if pond.is_some() {
             self.setup.fishing.draw(&mut ui, w, h, h - 58.0, now);
+            let rect = [16.0, 16.0, 92.0, 36.0];
+            ui.rounded(
+                rect[0],
+                rect[1],
+                rect[2],
+                rect[3],
+                18.0,
+                color::with_alpha(color::BG, 0.88),
+            );
+            ui.text_centered(
+                Face::Semibold,
+                15.0,
+                rect[0] + rect[2] / 2.0,
+                rect[1] + 9.0,
+                color::TEXT,
+                "Back",
+            );
+            drawn[0] = Some((rect, Action::Back));
         }
         ui.finish();
         self.setup.buttons.set(drawn);
@@ -435,9 +482,16 @@ impl Loading {
         let inside = |r: [f32; 4]| {
             p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3]
         };
+        let on_button = self
+            .setup
+            .buttons
+            .get()
+            .into_iter()
+            .flatten()
+            .any(|(r, _)| inside(r));
         // The water: a finger down casts, lifted it reels in.
         match touch.phase {
-            TouchPhase::Started if self.setup.pond.get().is_some_and(inside) => {
+            TouchPhase::Started if !on_button && self.setup.pond.get().is_some_and(inside) => {
                 self.setup.fishing.press(Instant::now(), p);
                 return;
             }
@@ -474,6 +528,12 @@ impl Loading {
                     log::warn!("Horizon: no file picker to import resources with");
                 }
             }
+            Action::Fish => self.setup.fishing_open = true,
+            Action::Back => {
+                self.setup.fishing.release(Instant::now());
+                self.setup.fishing_open = false;
+            }
+            Action::Settings => self.open_menu_options(horizon_client::options_ui::Page::Main),
             Action::Retry => match (preparer::stage(), accounts::files()) {
                 (Stage::Failed(_) | Stage::Idle, Files::Ready) => {
                     preparer::start(self.vanilla_root.clone())

@@ -133,18 +133,24 @@ def build_launchers(ndk, out):
     return libraries
 
 
-def prepare_kit(out):
-    """assets/prepare-kit.zip (PREPARE_KIT, with the paths horizon-prepare reads)."""
-    assets = out / "assets"
-    shutil.rmtree(assets, ignore_errors=True)
-    assets.mkdir()
-    with zipfile.ZipFile(assets / "prepare-kit.zip", "w", zipfile.ZIP_DEFLATED) as kit:
+def assets(out):
+    """The APK's assets/: prepare-kit.zip (PREPARE_KIT, with the paths horizon-prepare reads) and
+    lowbudget.zip, the skin the setup draws the menus with (packaging/lowbudget/pack, made by its
+    make.py)."""
+    folder = out / "assets"
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir()
+    with zipfile.ZipFile(folder / "prepare-kit.zip", "w", zipfile.ZIP_DEFLATED) as kit:
         for entry in PREPARE_KIT:
             path = ROOT / entry
             files = sorted(p for p in path.rglob("*.java")) if path.is_dir() else [path]
             for file in files:
                 kit.write(file, file.relative_to(ROOT).as_posix())
-    return assets
+    skin = HERE.parent / "lowbudget" / "pack"
+    with zipfile.ZipFile(folder / "lowbudget.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for file in sorted(p for p in skin.rglob("*") if p.is_file()):
+            z.write(file, file.relative_to(skin).as_posix())
+    return folder
 
 
 def compile_java(build_tools, android_jar, out):
@@ -269,7 +275,7 @@ def main():
     else:
         run(ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, built)
 
-    link_resources(tool(build_tools, "aapt2"), android_jar, out, prepare_kit(out))
+    link_resources(tool(build_tools, "aapt2"), android_jar, out, assets(out))
     dex = compile_java(build_tools, android_jar, out)
     libraries = build_launchers(ndk, out)
     libraries[library.name] = library

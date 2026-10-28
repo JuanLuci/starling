@@ -13580,9 +13580,10 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        // The failure screen: the setup's buttons (Android), else a tap picks the prepared
-        // resources to import.
+        // The failure screen: the setup's buttons (Android; its settings are the menu's), else a
+        // tap picks the prepared resources to import.
         if self.failure.is_some()
+            && !self.menu.options_open
             && let WindowEvent::Touch(touch) = &event
         {
             if horizon_client::platform::registered() {
@@ -13666,8 +13667,9 @@ impl Loading {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
-            event_loop
-                .set_control_flow(ControlFlow::WaitUntil(Instant::now() + self.setup.frame()));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + self.setup.frame(self.menu.options_open),
+            ));
             return;
         }
         if let Err(error) = self.poll_menu_resources() {
@@ -13700,7 +13702,10 @@ impl Loading {
             return;
         };
         let mut batch = HudBatch::new(size);
-        if let Some(failure) = &self.failure {
+        if self.failure.is_some() && self.menu.options_open {
+            // The setup's settings: the menu's own screens, in the skin it put on.
+            self.draw_menu(&mut batch);
+        } else if let Some(failure) = &self.failure {
             if horizon_client::platform::registered() {
                 self.draw_setup(&mut batch, failure);
             } else {
