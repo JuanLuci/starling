@@ -623,6 +623,15 @@ pub struct HudVertex {
     pub color: u32,
     pub depth: f32,
 }
+/// Which take of a letter a hand-written font draws at the `i`th character of text at `x, y`:
+/// the same each frame for text that stays put.
+fn take_seed(x: f32, y: f32, i: usize) -> u32 {
+    let mut h = (x.round() as i32 as u32).wrapping_mul(0x9e37_79b9)
+        ^ (y.round() as i32 as u32).wrapping_mul(0x85eb_ca6b)
+        ^ (i as u32).wrapping_mul(0xc2b2_ae35);
+    h ^= h >> 15;
+    h.wrapping_mul(0x2c1b_3c6d) >> 7
+}
 /// The GUI Scale option (0 = auto).
 pub static GUI_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// One frame of overlay geometry in GUI pixels.
@@ -985,8 +994,9 @@ impl HudBatch {
         let mut glyphs = Vec::new();
         let mut cursor = x;
         for (i, (ch, style)) in text.chars().enumerate() {
-            // The style's font (`Style.getFont`), the default one unless set.
-            let mut g = font.glyph_styled(ch, style);
+            // The style's font (`Style.getFont`), the default one unless set; a hand-written
+            // skin's take of the letter by where it stands.
+            let mut g = font.glyph_varied(ch, style, take_seed(x, y, i));
             // Font.StringRenderOutput.accept: obfuscated characters draw a
             // random glyph of the same width each frame.
             if style.obfuscated == Some(true) && ch != ' ' {

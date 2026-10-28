@@ -136,6 +136,9 @@ pub struct Font {
     pub uniform: bool,
     /// "Japanese Glyph Variants": the `jp` filter option.
     pub japanese: bool,
+    /// The default font's other takes (`"starling:variants"` beside its providers): a skin that
+    /// writes each letter by hand several times (packaging/lowbudget), picked by `glyph_varied`.
+    variants: Vec<String>,
 }
 fn parse_hex_digit(b: u8) -> Option<u32> {
     (b as char).to_digit(16)
@@ -578,7 +581,7 @@ impl Font {
             .filter(|(k, _)| k.starts_with("font/"))
             .map(|(k, v)| (k.clone(), *v))
             .collect();
-        let font = Self {
+        let mut font = Self {
             sheets,
             missing: Glyph {
                 rect: None,
@@ -609,10 +612,26 @@ impl Font {
             }),
             uniform: false,
             japanese: false,
+            variants: Vec::new(),
         };
         // FontManager.prepare: every font definition of the resources.
         let mut ids = font_ids(root);
         ids.sort_by_key(|id| id != DEFAULT);
+        font.variants = std::fs::read(root.join("assets/minecraft/font/default.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| {
+                let ids = &ids;
+                v["starling:variants"].as_array().map(|takes| {
+                    takes
+                        .iter()
+                        .filter_map(|t| t.as_str())
+                        .filter(|t| ids.iter().any(|id| id == t))
+                        .map(str::to_owned)
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
         let sets = ids
             .into_iter()
             .map(|id| {
@@ -674,6 +693,15 @@ impl Font {
     /// already complete, see `text::font_id`).
     pub fn glyph_styled(&self, c: char, style: &Style) -> Glyph {
         self.glyph_of(style.font.as_deref().unwrap_or(DEFAULT), c)
+    }
+    /// The glyph for a character drawn in `style`, in one of the default font's takes when it has
+    /// some (`variants`), chosen by `seed`: the same seed, the same take. Elsewhere `glyph_styled`.
+    pub fn glyph_varied(&self, c: char, style: &Style, seed: u32) -> Glyph {
+        let take = (seed % (self.variants.len() as u32 + 1)) as usize;
+        if take == 0 || style.font.is_some() || !c.is_ascii() {
+            return self.glyph_styled(c, style);
+        }
+        self.glyph_of(&self.variants[take - 1], c)
     }
     /// The glyph for a character in the font `id` (`alt` is `minecraft:alt`).
     pub fn glyph_in(&self, id: &str, c: char) -> Glyph {

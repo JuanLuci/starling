@@ -429,12 +429,17 @@ pub fn button(
     } else {
         "widget/button"
     };
-    sprite(out, sprite_id, x, y, w, h);
+    sprite(out, &crate::ui::button_take(sprite_id, x, y), x, y, w, h);
     let (left, right) = (x + 2, x + w - 2);
     let lw = m.width(label);
     let top = (y + y + h - 9) / 2 + 1;
     let cx = ((left + right) / 2).clamp(left + lw / 2, right - lw / 2);
-    text(out, label.clone(), center_left(cx, lw), top, WHITE, true);
+    // A skin whose pressed buttons turn whiter writes on them in its dark ink, unshadowed.
+    let (color, shadow) = match crate::ui::pressed_label() {
+        Some(rgb) if active && highlighted => ((0xff00_0000 | rgb) as i32, false),
+        _ => (WHITE, true),
+    };
+    text(out, label.clone(), center_left(cx, lw), top, color, shadow);
 }
 /// `Tooltip.splitTooltip` of a widget's tooltip, shown under the mouse.
 pub fn tooltip(out: &mut Vec<Draw>, m: &Measure, message: &Text, mouse: (i32, i32)) {

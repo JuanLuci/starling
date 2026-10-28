@@ -41,8 +41,51 @@ fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
         stretch_inner: s["stretch_inner"].as_bool().unwrap_or(false),
     })
 }
+/// Starling's low-budget skin (`assets/starling/skin.json`, packaging/lowbudget): how many takes
+/// of each button it drew (`widget/button_1`...), and the writing on a pressed one (RGB, 0: none).
+static BUTTON_TAKES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+static PRESSED_LABEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn load_skin(root: &Path) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let skin: serde_json::Value = std::fs::read(root.join("assets/starling/skin.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let takes = skin["button_takes"].as_u64().unwrap_or(1).clamp(1, 16) as u32;
+    BUTTON_TAKES.store(takes, Relaxed);
+    let label = skin["pressed_label"]
+        .as_str()
+        .and_then(|s| u32::from_str_radix(s.trim_start_matches('#'), 16).ok());
+    PRESSED_LABEL.store(label.map_or(0, |rgb| rgb | 0xff00_0000), Relaxed);
+}
+
+/// The take of a button `sprite` drawn at `x, y`: a skin draws its buttons several times over, and
+/// a button keeps its take where it stands.
+pub fn button_take(sprite: &str, x: i32, y: i32) -> String {
+    let takes = BUTTON_TAKES.load(std::sync::atomic::Ordering::Relaxed);
+    if takes <= 1 {
+        return sprite.to_owned();
+    }
+    let mut h = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    match (h.wrapping_mul(0x2c1b_3c6d) >> 9) % takes {
+        0 => sprite.to_owned(),
+        k => format!("{sprite}_{k}"),
+    }
+}
+
+/// The writing on a pressed button when the skin darkens it (0xRRGGBB).
+pub fn pressed_label() -> Option<u32> {
+    match PRESSED_LABEL.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        argb => Some(argb & 0x00ff_ffff),
+    }
+}
+
 /// Read `gui.scaling` metadata for every GUI sprite under `root`.
 pub fn load_metadata(root: &Path) {
+    load_skin(root);
     let mut map = HashMap::new();
     let base = root.join("assets/minecraft/textures");
     let mut stack = vec![base.join("gui/sprites")];
@@ -348,11 +391,12 @@ pub fn button(
     } else {
         "gui/sprites/widget/button"
     };
-    nine_slice(batch, atlas, sprite, x, y, w, h, u32::MAX);
-    let color = if active {
-        rgba(255, 255, 255, 255)
-    } else {
-        rgba(160, 160, 160, 255)
+    let sprite = button_take(sprite, x.round() as i32, y.round() as i32);
+    nine_slice(batch, atlas, &sprite, x, y, w, h, u32::MAX);
+    let color = match pressed_label() {
+        Some(rgb) if active && hover => rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255),
+        _ if active => rgba(255, 255, 255, 255),
+        _ => rgba(160, 160, 160, 255),
     };
     centered_text(
         batch,
