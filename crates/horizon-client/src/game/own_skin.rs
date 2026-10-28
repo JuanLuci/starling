@@ -34,7 +34,7 @@ pub(super) struct OwnSkin {
     image: Option<Vec<u8>>,
     /// Whether the slot holds `image` as it is now.
     uploaded: bool,
-    /// The title screen's player, read again every second.
+    /// The title screen's player, its skin and name looked at every frame.
     title: Option<TitlePlayer>,
     /// How far a drag turned it, and the drag going on: where it began and the turn then.
     title_turn: f32,
@@ -50,7 +50,6 @@ pub(super) struct OwnSkin {
 pub(super) struct TitlePlayer {
     mob: Mob,
     name: String,
-    read: Instant,
 }
 
 /// Where the title screen's player stands (GUI pixels).
@@ -338,14 +337,19 @@ impl Game<'_> {
         let Some(layout) = self.title_layout(batch.width, batch.height) else {
             return;
         };
-        if self
-            .own_skin
-            .title
-            .as_ref()
-            .is_none_or(|t| t.read.elapsed() > Duration::from_secs(1))
-        {
+        if self.own_skin.title.is_none() {
             self.read_title_player();
         }
+        // The skin and the name every frame (both kept, cheap to ask): a skin waiting for its
+        // atlas slot or its download shows the first frame it has one.
+        let worn = self.worn_skin();
+        let name = self.worlds_name();
+        let Some(player) = self.own_skin.title.as_mut() else {
+            return;
+        };
+        player.mob.slim = worn.as_ref().is_some_and(|(_, slim)| *slim);
+        player.mob.skin = worn.map(|(skin, _)| skin);
+        player.name = name;
         let Some(player) = &self.own_skin.title else {
             return;
         };
@@ -363,26 +367,21 @@ impl Game<'_> {
         self.mob_preview(&mob, batch, layout.model, layout.size, 0.0625, centre, turn);
         let atlas = &self.gui.atlas;
         let name_x = (mid - HudBatch::text_width(atlas, &player.name) / 2.0).floor();
-        batch.text(atlas, &player.name, name_x, y0 - 2.0, u32::MAX, true);
+        batch.text(atlas, &player.name, name_x, y0 - 8.0, u32::MAX, true);
         let [bx, by, bw] = layout.button;
         let hover = ui::hovered(self.cursor, bx, by, bw, 20.0);
         let label = Text::literal("Customize...");
         ui::button(batch, atlas, bx, by, bw, 20.0, &label, true, hover);
     }
 
-    /// The title screen's player as Skin Customization and the sign-in leave it now.
+    /// The title screen's player's model (its skin and name come every frame).
     fn read_title_player(&mut self) {
         let Some(kind) = self.res.player_type().clone() else {
             return;
         };
-        let worn = self.worn_skin();
-        let mut mob = Mob::new(0, kind, Vec3::ZERO, 0.0);
-        mob.skin = worn.as_ref().map(|(skin, _)| skin.clone());
-        mob.slim = worn.is_some_and(|(_, slim)| slim);
         self.own_skin.title = Some(TitlePlayer {
-            mob,
-            name: self.worlds_name(),
-            read: Instant::now(),
+            mob: Mob::new(0, kind, Vec3::ZERO, 0.0),
+            name: String::new(),
         });
     }
 }
