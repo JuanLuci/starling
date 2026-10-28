@@ -1,11 +1,13 @@
-"""Starling's touch buttons in a Bedrock-like look, drawn from scratch: a 20x20 grey tile with a
-bevel (light top and left, dark bottom and right) and a white pixel icon; pressed, the bevel turns
-over and the icon sinks a pixel. The sprites go to crates/horizon-client/assets/touch, which the
-game carries as `starling:touch/<name>` (hud.rs `TOUCH_SPRITES`; a resource pack's own win).
+"""Starling's touch buttons in a Bedrock-like look, drawn from scratch: a 24x24 stone-grey tile
+(a speckled face, a black outline with cut corners, a 2-pixel bevel lit at the top left) and a
+thick white icon outlined in dark grey; pressed, the face darkens, the bevel turns over and the
+icon sinks a pixel. The sprites go to crates/horizon-client/assets/touch, which the game carries
+as `starling:touch/<name>` (hud.rs `TOUCH_SPRITES`; a resource pack's own win).
 
     python packaging/touch/make.py                     # the sprites
     python packaging/touch/make.py SCREENSHOT OUTDIR   # and a sheet and a preview, to look at
 """
+import random
 import sys
 from pathlib import Path
 
@@ -13,16 +15,49 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates" / "horizon-client" / "assets" / "touch"
-T = 20  # tile size
+T = 24  # a button's tile
+STICK = 48  # the stick's base
 
-# Palette (RGBA): outline, highlight, fill, shadow; pressed fill; icon and its shadow.
-OUTLINE = (24, 24, 24, 235)
-LIGHT = (200, 200, 200, 210)
-FILL = (128, 128, 128, 170)
-SHADE = (78, 78, 78, 210)
-FILL_DOWN = (104, 104, 104, 190)
+OUTLINE = (16, 16, 16, 245)
 ICON = (255, 255, 255, 255)
-ICON_SHADOW = (40, 40, 40, 200)
+ICON_EDGE = (38, 38, 38, 255)
+
+
+def face(pressed, alpha):
+    """The face's grey and its bevel's, up and pressed."""
+    if pressed:
+        return dict(face=118, light=(78, 92), dark=(176, 158), alpha=alpha)
+    return dict(face=150, light=(222, 196), dark=(92, 112), alpha=alpha)
+
+
+def plate(size, pressed, alpha=226, seed=7):
+    """A bevelled stone plate: outline, two rings of bevel, a speckled face."""
+    look = face(pressed, alpha)
+    rng = random.Random(seed + (1000 if pressed else 0))
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    px = img.load()
+    last = size - 1
+    for y in range(size):
+        for x in range(size):
+            # Cut corners: the outline's corner pixels go, and the bevel's step in.
+            if (x in (0, last)) and (y in (0, last)):
+                continue
+            ring = min(x, y, last - x, last - y)
+            if ring == 0:
+                px[x, y] = OUTLINE
+                continue
+            if ring in (1, 2) and (x in (1, last - 1)) and (y in (1, last - 1)):
+                px[x, y] = OUTLINE
+                continue
+            top_left = (x + y) < last
+            if ring <= 2:
+                shade = look["light"][ring - 1] if top_left else look["dark"][ring - 1]
+                px[x, y] = (shade, shade, shade, min(255, look["alpha"] + 20))
+            else:
+                g = look["face"] + rng.choice((-14, -8, -4, 0, 0, 0, 4, 8, 10))
+                px[x, y] = (g, g, g, look["alpha"])
+    return img
+
 
 ICONS = {
     "jump": """
@@ -32,10 +67,10 @@ ICONS = {
         ....########....
         ...##########...
         ..############..
-        .......##.......
-        .......##.......
-        .......##.......
-        .......##.......
+        .....######.....
+        .....######.....
+        .....######.....
+        .....######.....
         ................
         ..############..
         ..############..
@@ -44,10 +79,10 @@ ICONS = {
         ..############..
         ..############..
         ................
-        .......##.......
-        .......##.......
-        .......##.......
-        .......##.......
+        .....######.....
+        .....######.....
+        .....######.....
+        .....######.....
         ..############..
         ...##########...
         ....########....
@@ -56,115 +91,125 @@ ICONS = {
         .......##.......
     """,
     "attack": """
-        ...........###
-        ..........####
-        .........####.
-        ........####..
-        .......####...
-        ......####....
-        .#...####.....
-        .##.####......
-        ..#####.......
-        ...###........
-        ..##.##.......
-        .##...##......
-        ##............
-        #.............
+        .............###
+        ............####
+        ...........####.
+        ..........####..
+        .........####...
+        ........####....
+        .......####.....
+        ..##..####......
+        ...######.......
+        ....####........
+        ...######.......
+        ..###..##.......
+        .###............
+        ###.............
+        ##..............
     """,
     "use": """
-        .....####.....
-        ...##....##...
-        ..#........#..
-        .#....##....#.
-        .#....##....#.
-        #...######...#
-        #...######...#
-        .#....##....#.
-        .#....##....#.
-        ..#........#..
-        ...##....##...
-        .....####.....
+        ......####......
+        ......####......
+        ......####......
+        ......####......
+        ................
+        ####...##...####
+        ####..####..####
+        ####..####..####
+        ####...##...####
+        ................
+        ......####......
+        ......####......
+        ......####......
+        ......####......
     """,
     "inventory": """
-        ................
-        ................
-        ................
-        .##....##....##.
-        .##....##....##.
-        ................
+        ###..###..###
+        ###..###..###
+        ###..###..###
     """,
     "chat": """
         .############.
-        #............#
-        #..########..#
-        #............#
-        #..######....#
-        #............#
-        .####..######.
-        ....#.#.......
+        ##############
+        ##..........##
+        ##.########.##
+        ##..........##
+        ##.######...##
+        ##..........##
+        ##############
+        .#####..######
+        ....###.......
         ....##........
         ....#.........
     """,
     "pause": """
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
-        ...###..###...
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
+        ..####..####..
     """,
     "drop": """
-        ..########....
-        ..#......#....
-        ..#..##..#....
-        ..#..##..#....
-        ..########....
-        ......##......
-        ......##......
-        ......##......
+        .....####.....
+        .....####.....
+        .....####.....
+        .....####.....
+        ..##########..
         ...########...
         ....######....
         .....####.....
         ......##......
+        ..............
+        ##############
+        ##############
     """,
     "offhand": """
-        .....#........
-        ....##........
-        ...##########.
-        ....##.......#
-        .....#.......#
-        .#.......#....
-        .#.......##...
-        #..........##.
-        .##########...
-        ........##....
-        ........#.....
+        ....##..........
+        ...###..........
+        ..##############
+        .###############
+        ..##############
+        ...###..........
+        ....##..........
+        ................
+        ..........##....
+        ..........###...
+        ##############..
+        ###############.
+        ##############..
+        ..........###...
+        ..........##....
     """,
     "camera": """
-        ....######....
-        ..##......##..
-        .#....##....#.
-        #....####....#
-        #....####....#
-        .#....##....#.
-        ..##......##..
-        ....######....
+        .....######.....
+        ...##########...
+        .####......####.
+        ###....##....###
+        ##....####....##
+        ###....##....###
+        .####......####.
+        ...##########...
+        .....######.....
     """,
     "command": """
-        ..........##
-        .........##.
-        ........##..
-        .......##...
-        ......##....
-        .....##.....
-        ....##......
-        ...##.......
-        ..##........
-        .##.........
+        ..........###
+        .........###.
+        ........###..
+        .......###...
+        ......###....
+        .....###.....
+        ....###......
+        ...###.......
+        ..###........
+        .###.........
+        ###..........
     """,
     "up": """
         .......##.......
@@ -174,85 +219,54 @@ ICONS = {
         ...##########...
         ..############..
         .##############.
+        ################
     """,
 }
 
 
-def icon_bitmap(name):
+def bitmap(name):
     rows = [r.strip() for r in ICONS[name].strip("\n").splitlines() if r.strip()]
     width = max(len(r) for r in rows)
     return [r.ljust(width, ".") for r in rows]
 
 
-def tile(name, pressed):
-    img = Image.new("RGBA", (T, T), (0, 0, 0, 0))
+def draw_icon(img, rows, ox, oy):
+    """`rows` at (ox, oy): white, with a dark edge around (and between) its pixels."""
     px = img.load()
-    for y in range(T):
-        for x in range(T):
-            edge = x in (0, T - 1) or y in (0, T - 1)
-            corner = x in (0, T - 1) and y in (0, T - 1)
-            if corner:
-                continue
-            if edge:
-                px[x, y] = OUTLINE
-            elif x == 1 or y == 1:
-                px[x, y] = SHADE if pressed else LIGHT
-            elif x == T - 2 or y == T - 2:
-                px[x, y] = LIGHT if pressed else SHADE
-            else:
-                px[x, y] = FILL_DOWN if pressed else FILL
+    on = {(ox + x, oy + y) for y, row in enumerate(rows) for x, c in enumerate(row) if c == "#"}
+    for (x, y) in on:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                p = (x + dx, y + dy)
+                if p not in on and 0 <= p[0] < img.width and 0 <= p[1] < img.height:
+                    px[p] = ICON_EDGE
+    for p in on:
+        px[p] = ICON
+
+
+def tile(name, pressed, turn=None):
+    img = plate(T, pressed, seed=sum(map(ord, name or "plain")))
     if name:
-        rows = icon_bitmap(name)
+        rows = bitmap(name)
+        if turn:
+            # The D-pad's arrows: the same icon turned.
+            square = Image.new("1", (16, 16))
+            for y, row in enumerate(rows):
+                for x, c in enumerate(row):
+                    if c == "#":
+                        square.putpixel((x, y + (16 - len(rows)) // 2), 1)
+            square = square.transpose(turn)
+            rows = ["".join("#" if square.getpixel((x, y)) else "." for x in range(16))
+                    for y in range(16)]
         h, w = len(rows), len(rows[0])
         ox, oy = (T - w) // 2, (T - h) // 2 + (1 if pressed else 0)
-        for dy, row in enumerate(rows):
-            for dx, ch in enumerate(row):
-                if ch == "#":
-                    sx, sy = ox + dx + 1, oy + dy + 1
-                    if 1 < sx < T - 2 and 1 < sy < T - 2 and px[sx, sy] != ICON:
-                        px[sx, sy] = ICON_SHADOW
-        for dy, row in enumerate(rows):
-            for dx, ch in enumerate(row):
-                if ch == "#":
-                    px[ox + dx, oy + dy] = ICON
+        draw_icon(img, rows, ox, oy)
     return img
 
 
-def dpad(direction, pressed):
-    """A D-pad cell: the arrow turned to its direction."""
-    img = tile("up", pressed)
-    turn = {"up": None, "down": Image.Transpose.ROTATE_180, "left": Image.Transpose.ROTATE_90,
-            "right": Image.Transpose.ROTATE_270}[direction]
-    if turn is None:
-        return img
-    base = tile(None, pressed)
-    arrow = tile("up", pressed)
-    # Turn only the icon, keep the bevel's light where it is.
-    icon_only = Image.new("RGBA", (T, T))
-    for y in range(T):
-        for x in range(T):
-            if arrow.getpixel((x, y)) in (ICON, ICON_SHADOW):
-                icon_only.putpixel((x, y), arrow.getpixel((x, y)))
-    base.alpha_composite(icon_only.transpose(turn))
-    return base
-
-
-def stick(size, fill=(96, 96, 96, 110)):
-    """The movement stick's base: a ring of pixels, lit at the top left, around a dimmed plate
-    (with `fill` as the plate's, the knob)."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    c = (size - 1) / 2
-    for y in range(size):
-        for x in range(size):
-            d = ((x - c) ** 2 + (y - c) ** 2) ** 0.5
-            r = size / 2
-            if r - 1 <= d < r:
-                img.putpixel((x, y), OUTLINE)
-            elif r - 2 <= d < r - 1:
-                img.putpixel((x, y), LIGHT if (x + y) < size else SHADE)
-            elif d < r - 2:
-                img.putpixel((x, y), fill)
-    return img
+def stick_base():
+    """The stick's base: a large plate, its face see-through so the world shows."""
+    return plate(STICK, False, alpha=96, seed=3)
 
 
 def build():
@@ -262,59 +276,52 @@ def build():
                  "camera", "command"]:
         sprites[name] = tile(name, False)
         sprites[name + "_pressed"] = tile(name, True)
-    for d in ["up", "down", "left", "right"]:
-        sprites["dpad_" + d] = dpad(d, False)
-        sprites["dpad_" + d + "_pressed"] = dpad(d, True)
+    turns = {"up": None, "down": Image.Transpose.ROTATE_180,
+             "left": Image.Transpose.ROTATE_90, "right": Image.Transpose.ROTATE_270}
+    for d, turn in turns.items():
+        sprites["dpad_" + d] = tile("up", False, turn) if turn else tile("up", False)
+        sprites["dpad_" + d + "_pressed"] = tile("up", True, turn) if turn else tile("up", True)
     sprites["dpad_middle"] = tile(None, False)
-    sprites["stick"] = stick(40)
-    sprites["stick_knob"] = stick(18, FILL)
+    sprites["stick"] = stick_base()
+    sprites["stick_knob"] = tile(None, False)
     for name, img in sprites.items():
         img.save(OUT / f"{name}.png")
     return sprites
 
 
 def preview(sprites, background, out):
+    """The sprites where Starling's default layout puts its buttons, over a screenshot of it
+    (3200 x 1440): each covers the old round button it replaces."""
     bg = Image.open(background).convert("RGBA")
-    W, H = bg.size
-    s = H / 200  # one sprite pixel in screen pixels, as a phone's GUI scale draws it
-    def put(img, cx, cy, scale=1.0):
-        k = s * scale
-        big = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))),
-                         Image.Resampling.NEAREST)
-        bg.alpha_composite(big, (round(cx - big.width / 2), round(cy - big.height / 2)))
-    u = 22 * s  # one tile with its gap
-    # D-pad, bottom left.
-    cx, cy = 3.3 * u, H - 3.2 * u
-    put(sprites["dpad_up"], cx, cy - u)
-    put(sprites["dpad_down_pressed"], cx, cy + u)
-    put(sprites["dpad_left"], cx - u, cy)
-    put(sprites["dpad_right"], cx + u, cy)
-    put(sprites["sneak"], cx, cy)
-    # Right side: attack, use, jump, sneak.
-    rx = W - 2.2 * u
-    put(sprites["jump"], rx, H - 2.0 * u, 1.3)
-    put(sprites["attack_pressed"], rx - 1.6 * u, H - 3.4 * u, 1.3)
-    put(sprites["use"], rx, H - 4.2 * u, 1.3)
-    put(sprites["drop"], rx - 2.9 * u, H - 1.3 * u)
-    put(sprites["offhand"], rx - 3.9 * u, H - 1.3 * u)
-    # Top row.
-    for i, name in enumerate(["pause", "chat", "command", "camera", "inventory"]):
-        put(sprites[name], W / 2 - 2 * u + i * u, 1.0 * u)
-    # The stick, beside, for the other movement mode.
-    put(sprites["stick"], 8.0 * u, H - 2.8 * u, 1.6)
-    put(sprites["stick_knob"], 8.3 * u, H - 3.1 * u, 1.0)
+    k = bg.width / 2000  # the places below are measured on the screenshot shown at 2000 wide
+
+    def put(img, cx, cy, side):
+        big = img.resize((round(side * k),) * 2, Image.Resampling.NEAREST)
+        bg.alpha_composite(big, (round(cx * k - big.width / 2), round(cy * k - big.height / 2)))
+
+    put(sprites["attack_pressed"], 1620, 548, 170)
+    put(sprites["use"], 1840, 481, 130)
+    put(sprites["jump"], 1810, 682, 170)
+    put(sprites["sneak"], 1610, 772, 130)
+    put(sprites["offhand"], 578, 858, 90)
+    put(sprites["drop"], 1420, 858, 90)
+    put(sprites["camera"], 860, 77, 100)
+    put(sprites["pause"], 1000, 77, 100)
+    put(sprites["stick"], 220, 705, 300)
+    put(sprites["stick_knob"], 250, 680, 130)
     bg.convert("RGB").save(out, quality=92)
 
 
 def sheet(sprites, out):
     names = list(sprites)
     cols = 8
-    cell = T * 6 + 12
+    cell = T * 5 + 12
     rows = (len(names) + cols - 1) // cols
-    img = Image.new("RGBA", (cols * cell, rows * cell), (60, 110, 60, 255))
+    img = Image.new("RGBA", (cols * cell, rows * cell), (70, 120, 60, 255))
     for i, name in enumerate(names):
         sp = sprites[name]
-        big = sp.resize((sp.width * 6 if sp.width <= T else sp.width * 3,) * 2, Image.Resampling.NEAREST)
+        side = T * 5 if sp.width == T else T * 5
+        big = sp.resize((side, side), Image.Resampling.NEAREST)
         img.alpha_composite(big, ((i % cols) * cell + 6, (i // cols) * cell + 6))
     img.convert("RGB").save(out)
 

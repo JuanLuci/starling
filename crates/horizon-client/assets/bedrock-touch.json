@@ -1,0 +1,131 @@
+{
+  "repository": "Mojang/bedrock-samples",
+  "revision": "15701fa9c13923f12662984c32c124327e40e3d3",
+  "license": {
+    "source": "LICENSE.md",
+    "sha1": "ed3f1b782fb19fbc5d69f5b1343b056fc23c61fd",
+    "size": 222
+  },
+  "files": [
+    {
+      "name": "attack",
+      "source": "resource_pack/textures/ui/attack.png",
+      "sha1": "851e5e076366e6f328fc452d94269fcd39b14b76",
+      "size": 696
+    },
+    {
+      "name": "attack_pressed",
+      "source": "resource_pack/textures/ui/attack_pressed.png",
+      "sha1": "6e0b72f47dc819ee3e34735d4f9f10519a0acd5d",
+      "size": 696
+    },
+    {
+      "name": "use",
+      "source": "resource_pack/textures/ui/interact.png",
+      "sha1": "75d677e3346003c489d9aeb45e5b612cef157e95",
+      "size": 2958
+    },
+    {
+      "name": "use_pressed",
+      "source": "resource_pack/textures/ui/interact_pressed.png",
+      "sha1": "c1253f5994d9b834c5c9c2cd8bb4d2242d4e4ffc",
+      "size": 273
+    },
+    {
+      "name": "jump",
+      "source": "resource_pack/textures/ui/jump.png",
+      "sha1": "c680defa5618a55cc9319008b6839bc310f4c048",
+      "size": 696
+    },
+    {
+      "name": "jump_pressed",
+      "source": "resource_pack/textures/ui/jump_pressed.png",
+      "sha1": "80491cfcefca3d10a4c55716131f4819c920b960",
+      "size": 696
+    },
+    {
+      "name": "sneak",
+      "source": "resource_pack/textures/ui/sneak.png",
+      "sha1": "10a83b2ab415da2f12dd156452563069e0d21f79",
+      "size": 696
+    },
+    {
+      "name": "sneak_pressed",
+      "source": "resource_pack/textures/ui/sneak_pressed.png",
+      "sha1": "7ccf29444d99a144382f038e3463f744633f732b",
+      "size": 696
+    },
+    {
+      "name": "dpad_up",
+      "source": "resource_pack/textures/gui/controls/up.png",
+      "sha1": "c9af5691a4dfb7c619b64357b3e532480ddc5d54",
+      "size": 284
+    },
+    {
+      "name": "dpad_up_pressed",
+      "source": "resource_pack/textures/gui/controls/up_pressed.png",
+      "sha1": "ffccffb0b0b6600c29b9c09b9d19f6345d12e41c",
+      "size": 314
+    },
+    {
+      "name": "dpad_down",
+      "source": "resource_pack/textures/gui/controls/down.png",
+      "sha1": "c505ec42adf8af62bbd5365013fd247c43e26a48",
+      "size": 289
+    },
+    {
+      "name": "dpad_down_pressed",
+      "source": "resource_pack/textures/gui/controls/down_pressed.png",
+      "sha1": "8e0de1b0bb6da51cb8bb810c7f4809993fd0a6e1",
+      "size": 252
+    },
+    {
+      "name": "dpad_left",
+      "source": "resource_pack/textures/gui/controls/left.png",
+      "sha1": "95f60e6921581522c8af579aad392e29a451d6cd",
+      "size": 287
+    },
+    {
+      "name": "dpad_left_pressed",
+      "source": "resource_pack/textures/gui/controls/left_pressed.png",
+      "sha1": "43fbd103b15fec82929d20831f76635ab701fcc0",
+      "size": 259
+    },
+    {
+      "name": "dpad_right",
+      "source": "resource_pack/textures/gui/controls/right.png",
+      "sha1": "7e483e8f73d9dcf00eea3055c28bd130d8ea1c9b",
+      "size": 291
+    },
+    {
+      "name": "dpad_right_pressed",
+      "source": "resource_pack/textures/gui/controls/right_pressed.png",
+      "sha1": "db24e6ddd4415080bc53ddbfbb69547df47990f2",
+      "size": 255
+    },
+    {
+      "name": "stick",
+      "source": "resource_pack/textures/ui/joystick_frame.png",
+      "sha1": "79a291966875ffe9dbe726cef6cdb460b4cb6475",
+      "size": 3256
+    },
+    {
+      "name": "stick_knob",
+      "source": "resource_pack/textures/ui/joystick_knob.png",
+      "sha1": "d6a6e22c6317bf2a6212309a9bb3d5d2bfcb4dd1",
+      "size": 215
+    },
+    {
+      "name": "plate",
+      "source": "resource_pack/textures/ui/sprint.png",
+      "sha1": "feac835b4cfefcae57cc7f40810bdda039a5b14c",
+      "size": 696
+    },
+    {
+      "name": "plate_pressed",
+      "source": "resource_pack/textures/ui/sprint_pressed.png",
+      "sha1": "811d438b7e8c433bfff9bf3c9e20b21450d8dd21",
+      "size": 696
+    }
+  ]
+}

@@ -15863,6 +15863,17 @@ pub fn run() -> Result<()> {
     let started = Instant::now();
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
+    // Bedrock's touch buttons, fetched from Mojang once (bedrock_touch.rs) where the resources
+    // came without them (prepared on a computer, or no network then): drawn from the next start,
+    // or this one's if they come before its GUI atlas.
+    #[cfg(target_os = "android")]
+    if options.execution_role.is_client() && !horizon_client::bedrock_touch::present(&vanilla_root)
+    {
+        let root = vanilla_root.clone();
+        let _ = std::thread::Builder::new()
+            .name("bedrock touch".into())
+            .spawn(move || horizon_client::bedrock_touch::fetch_logged(&root));
+    }
     let options_txt = std::env::current_dir()?.join("options.txt");
     #[cfg(target_os = "android")]
     let first_start = !options_txt.exists();

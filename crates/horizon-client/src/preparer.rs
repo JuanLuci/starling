@@ -160,6 +160,8 @@ fn run(resources: &Path) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     std::fs::rename(&made, resources).map_err(|e| format!("{}: {e}", resources.display()))?;
+    // Bedrock's touch buttons, from Mojang too, so the first game already has them.
+    crate::bedrock_touch::fetch_logged(resources);
     // Everything the game reads is in the resources now: the runtime and the work files go.
     for done in [&jre, &kit.join(".local"), &temp] {
         let _ = std::fs::remove_dir_all(done);

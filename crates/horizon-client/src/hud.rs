@@ -378,6 +378,11 @@ const TOUCH_SPRITES: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// The names of [`TOUCH_SPRITES`]: every sprite the touch controls draw.
+pub fn touch_sprite_names() -> impl Iterator<Item = &'static str> {
+    TOUCH_SPRITES.iter().map(|(name, _)| *name)
+}
+
 /// [`TOUCH_SPRITES`] a pack has not drawn already (a pack's `starling:touch/jump` wins).
 fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
     TOUCH_SPRITES
