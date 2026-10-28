@@ -2,8 +2,10 @@
 //! load), in place of the loading failure. Sign in with the Microsoft account that owns the game
 //! (accounts.rs), the official files fetched, then prepared on the phone (preparer.rs); or the
 //! resources prepared on a computer, picked as before. Drawn with the embedded Horizon font: the
-//! game's own is part of what is missing.
-use super::Loading;
+//! game's own is part of what is missing. While it waits, water to fish in (fishing.rs).
+mod fishing;
+
+use super::{Audio, Loading};
 use horizon_client::{
     accounts::{self, Files, State},
     hud::HudBatch,
@@ -11,6 +13,7 @@ use horizon_client::{
     ui_theme::{Face, Ui, color},
 };
 use std::cell::Cell;
+use std::time::Instant;
 use winit::event::{Touch, TouchPhase};
 
 /// What the screen offers now.
@@ -61,6 +64,24 @@ pub(super) struct Setup {
     pub(super) starting: bool,
     /// The buttons as last drawn (dp): rectangle and what it does.
     buttons: Cell<[Option<([f32; 4], Action)>; 2]>,
+    fishing: fishing::Fishing,
+    /// The water as last drawn (dp), while there is a wait to pass.
+    pond: Cell<Option<[f32; 4]>>,
+}
+
+impl Setup {
+    /// How soon the screen draws again: often while the water shows.
+    pub(super) fn frame(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(if self.pond.get().is_some() { 33 } else { 400 })
+    }
+}
+
+/// Whether the step is a wait worth passing (the water shows).
+fn waiting(step: &Step) -> bool {
+    matches!(
+        step,
+        Step::Download(_) | Step::Java(..) | Step::Unpacking | Step::Preparing(_)
+    )
 }
 
 fn step(setup: &Setup, failure: &str) -> Step {
@@ -217,6 +238,18 @@ impl Loading {
     /// Every frame on the setup: a saved sign-in renewed, the download after a sign-in, the
     /// preparing once the files are there, and the game loaded once they are prepared.
     pub(super) fn poll_setup(&mut self) {
+        self.setup.fishing.update(Instant::now());
+        // The fishing's sounds, on an output of its own: the game's sounds are not there yet.
+        if self.audio.is_none() && self.setup.pond.get().is_some() {
+            let mut audio = Audio::with_registry(&self.vanilla_root, Default::default());
+            audio.master = self.settings.master_volume;
+            self.audio = Some(audio);
+        }
+        for sound in self.setup.fishing.take_sounds() {
+            if let Some(audio) = &mut self.audio {
+                audio.play_samples(sound.samples(), fishing::RATE, 0.3);
+            }
+        }
         if !self.setup.resumed {
             self.setup.resumed = true;
             accounts::resume();
@@ -224,6 +257,8 @@ impl Loading {
         if preparer::stage() == Stage::Done {
             self.setup.prepared = true;
             preparer::clear();
+            // The game opens its sound output with the sounds just prepared.
+            self.audio = None;
             match self.retry() {
                 Ok(()) => self.setup.starting = true,
                 Err(e) => self.failure = Some(e.to_string()),
@@ -248,7 +283,13 @@ impl Loading {
         let (title, body, note) = texts(&step);
         let mut ui = Ui::new(&gui.atlas, batch, (-1.0, -1.0));
         let (w, h) = (ui.w, ui.h);
-        ui.fill(0.0, 0.0, w, h, color::BG);
+        let now = Instant::now();
+        let pond = waiting(&step).then_some([0.0, 0.0, w, h]);
+        if pond.is_some() {
+            self.setup.fishing.draw_water(&mut ui, w, h, now);
+        } else {
+            ui.fill(0.0, 0.0, w, h, color::BG);
+        }
         let card_w = (w - 48.0).min(520.0);
         let pad = 24.0;
         let inner = card_w - 2.0 * pad;
@@ -279,8 +320,18 @@ impl Loading {
             card_h += 22.0 + button_h;
         }
         card_h += pad;
-        let (x, y) = ((w - card_w) / 2.0, ((h - card_h) / 2.0).max(8.0));
-        ui.rounded(x, y, card_w, card_h, 14.0, color::BG);
+        // With a wait to pass, the card goes up, over the water.
+        let (x, y) = if pond.is_some() {
+            ((w - card_w) / 2.0, 16.0)
+        } else {
+            ((w - card_w) / 2.0, ((h - card_h) / 2.0).max(8.0))
+        };
+        let card = if pond.is_some() {
+            color::with_alpha(color::BG, 0.88)
+        } else {
+            color::BG
+        };
+        ui.rounded(x, y, card_w, card_h, 14.0, card);
         ui.border(x, y, card_w, card_h, 14.0, color::BORDER);
         ui.text(Face::Semibold, 18.0, x + pad, y + pad, color::TEXT, title);
         let mut ty = y + pad + 26.0 + 12.0;
@@ -359,15 +410,20 @@ impl Loading {
                 );
             }
         }
+        if pond.is_some() {
+            self.setup.fishing.draw(&mut ui, w, h, h - 58.0, now);
+        }
         ui.finish();
         self.setup.buttons.set(drawn);
+        // Fishing under the card: the card itself takes no cast.
+        let below = y + card_h + 8.0;
+        self.setup
+            .pond
+            .set(pond.map(|_| [0.0, below, w, h - below]));
     }
 
     /// A finger lifted on a button acts.
     pub(super) fn setup_touch(&mut self, touch: &Touch) {
-        if touch.phase != TouchPhase::Ended {
-            return;
-        }
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let (pw, ph) = (size.width as f32, size.height as f32);
@@ -376,15 +432,28 @@ impl Loading {
             touch.location.x as f32 / density,
             touch.location.y as f32 / density,
         ];
+        let inside = |r: [f32; 4]| {
+            p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3]
+        };
+        // The water: a finger down casts, lifted it reels in.
+        match touch.phase {
+            TouchPhase::Started if self.setup.pond.get().is_some_and(inside) => {
+                self.setup.fishing.press(Instant::now(), p);
+                return;
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => self.setup.fishing.release(Instant::now()),
+            _ => {}
+        }
+        if touch.phase != TouchPhase::Ended {
+            return;
+        }
         let hit = self
             .setup
             .buttons
             .get()
             .into_iter()
             .flatten()
-            .find(|(r, _)| {
-                p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3]
-            });
+            .find(|(r, _)| inside(*r));
         let Some((_, action)) = hit else { return };
         match action {
             Action::SignIn => accounts::sign_in(),

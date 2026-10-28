@@ -13666,9 +13666,8 @@ impl Loading {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(400),
-            ));
+            event_loop
+                .set_control_flow(ControlFlow::WaitUntil(Instant::now() + self.setup.frame()));
             return;
         }
         if let Err(error) = self.poll_menu_resources() {

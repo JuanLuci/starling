@@ -752,6 +752,37 @@ impl Audio {
     pub fn hurt_pitch(&mut self) -> f32 {
         (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0
     }
+    /// Sound the game made itself, mono `samples` at `rate` Hz played once at `gain`, at the
+    /// listener: the setup's fishing, before the game's own sounds exist. Their channels go once
+    /// they have played.
+    pub fn play_samples(&mut self, samples: Arc<Vec<f32>>, rate: u32, gain: f32) {
+        /// Made sounds' channels, far above the engine's own.
+        const MADE: ChannelId = 1 << 48;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(MADE);
+        if !self.backend.live {
+            return;
+        }
+        let Ok(mut m) = self.backend.mixer.lock() else {
+            return;
+        };
+        m.channels
+            .retain(|&id, c| id < MADE || c.state != State::Stopped);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        m.channels.insert(
+            id,
+            Channel {
+                samples: Some((samples, rate)),
+                position: 0.0,
+                state: State::Playing,
+                gain: gain * self.master,
+                pitch: 1.0,
+                linear: None,
+                looping: false,
+                at: [0.0; 3],
+                relative: true,
+            },
+        );
+    }
     /// `AbstractWidget.playButtonClickSound`: an unseeded, relative UI sound.
     pub fn play_button_click(&mut self) {
         self.play_instance(
