@@ -6,7 +6,7 @@ use horizon_client::{
     graphics::Graphics,
     hud::HudBatch,
     lang,
-    options_ui::{Event, Page},
+    options_ui::{Event, Page, SkinAction},
     window::{FrameContext, InactivityFpsLimit, framerate_limit},
 };
 use serde_json::{Value, json};
@@ -168,6 +168,8 @@ impl Game<'_> {
         self.screen = Screen::Options;
         self.options_from_title = from_title;
         let ui = &mut self.ui.options;
+        // The game puts the skin on (game/own_skin.rs).
+        ui.skin_page = true;
         ui.open_at(!from_title && self.title.is_none(), page);
         let root = self.options.resources.clone();
         ui.languages = lang::available(&[&root]);
@@ -324,6 +326,14 @@ impl Game<'_> {
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
                 Event::ModSettings(i) => self.open_mod_ui(i, true),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+            }
+        }
+        for action in self.ui.options.take_skin_actions() {
+            match action {
+                SkinAction::Name(name) => self.keep_player_name(&name),
+                SkinAction::Choice(choice) => self.choose_own_skin(choice),
+                SkinAction::OpenFolder => self.open_game_folder(&Self::skins_dir()),
+                SkinAction::PickFile => self.pick_skin_file(),
             }
         }
         Ok(())

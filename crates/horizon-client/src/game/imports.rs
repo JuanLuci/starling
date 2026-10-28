@@ -6,7 +6,7 @@ use horizon_client::{
     import::{self, Event, Inbox, Kind, Places},
     ui_theme::{Face, Ui, color},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(400);
@@ -26,6 +26,8 @@ pub(super) struct Imports {
     inbox: Option<Inbox>,
     polled: Option<Instant>,
     note: Option<Note>,
+    /// A skin the inbox just put in `skins/`, for the game to put on.
+    skin: Option<PathBuf>,
 }
 
 impl Imports {
@@ -59,6 +61,9 @@ impl Imports {
             Event::Done(installed) => {
                 log::info!("Horizon: import: {}", installed.message);
                 finished = Some(installed.kind);
+                if installed.kind == Kind::Skin {
+                    self.skin = installed.path.clone();
+                }
                 (installed.message, false, true)
             }
             Event::Failed { name, error } => {
@@ -140,6 +145,12 @@ impl super::Game<'_> {
             Some(Kind::ResourcePack) => self.refresh_pack_lists(),
             // The Mods page lists it at once; a mod with code runs as soon as it is turned on.
             Some(Kind::Mod) => self.start_mods(),
+            // A skin is worn at once (Skin Customization's Choose a File...).
+            Some(Kind::Skin) => {
+                if let Some(path) = self.imports.skin.take() {
+                    self.own_skin_imported(&path);
+                }
+            }
             _ => {}
         }
     }

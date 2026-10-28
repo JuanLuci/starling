@@ -24,6 +24,8 @@ pub enum Kind {
     Resources,
     /// Bedrock Edition content (.mcpack, .mcaddon, .mcworld, .mctemplate).
     Bedrock,
+    /// A PNG: a player skin for `skins/` (`own_skin`).
+    Skin,
     Unknown,
 }
 
@@ -39,6 +41,13 @@ pub fn classify(path: &Path) -> (Kind, String) {
         "mcpack" | "mcaddon" | "mcworld" | "mctemplate"
     ) {
         return (Kind::Bedrock, String::new());
+    }
+    // A picked image may have lost its extension on the way: its first bytes tell.
+    let mut head = [0u8; 8];
+    if File::open(path).is_ok_and(|mut f| io::Read::read_exact(&mut f, &mut head).is_ok())
+        && crate::own_skin::is_png(&head)
+    {
+        return (Kind::Skin, String::new());
     }
     let Some(names) = File::open(path)
         .ok()
@@ -97,6 +106,8 @@ pub struct Installed {
     pub kind: Kind,
     /// What the player reads: what was added, and where to turn it on.
     pub message: String,
+    /// The file made, for what the game puts to use at once (a skin is chosen).
+    pub path: Option<PathBuf>,
 }
 
 /// Put the file `name` (at `path`) where the game finds it.
@@ -113,6 +124,7 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
         safe_name(prefix.trim_end_matches('/'))
     };
     let fail = |e: io::Error| format!("could not import {name}: {e}");
+    let mut made = None;
     let message = match kind {
         Kind::ResourcePack | Kind::ShaderPack => {
             let (folder, what) = if kind == Kind::ResourcePack {
@@ -159,6 +171,17 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
             install_resources(path, &prefix, &places.resources)?;
             "Minecraft resources imported".to_owned()
         }
+        Kind::Skin => {
+            // The file as it came: the game lays out a legacy 64x32 one when it reads it.
+            let bytes = fs::read(path).map_err(fail)?;
+            crate::own_skin::decode(&bytes).map_err(|e| format!("{name} is not a skin: {e}"))?;
+            let dir = places.game.join(crate::own_skin::DIR);
+            fs::create_dir_all(&dir).map_err(fail)?;
+            let to = unique(&dir, &title, ".png");
+            copy_file(path, &to).map_err(fail)?;
+            made = Some(to);
+            format!("Skin \"{title}\" added and put on")
+        }
         Kind::Bedrock => {
             return Err(format!(
                 "{name} is Bedrock Edition content: this game plays Java Edition packs, worlds and mods"
@@ -167,11 +190,15 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
         Kind::Unknown => {
             return Err(format!(
                 "the game does not know what {name} is: it takes resource packs, shader packs, \
-                 worlds and mods as .zip or .starling"
+                 worlds and mods as .zip or .starling, and skins as .png"
             ));
         }
     };
-    Ok(Installed { kind, message })
+    Ok(Installed {
+        kind,
+        message,
+        path: made,
+    })
 }
 
 /// Unpack prepared resources beside the current ones, check they are for this Horizon, then
@@ -499,6 +526,40 @@ mod tests {
         assert!(!places.game.join("escaped.txt").exists());
 
         assert!(install(&dir.join("addon.mcaddon"), "addon.mcaddon", &places).is_err());
+    }
+
+    #[test]
+    fn a_png_skin_goes_to_the_skins_folder() {
+        let dir = scratch("skin");
+        let places = Places {
+            game: dir.join("game"),
+            resources: dir.join("resources"),
+        };
+        let image = |width: u32, height: u32| {
+            let mut out = Vec::new();
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&vec![255; (width * height * 4) as usize])
+                .unwrap();
+            writer.finish().unwrap();
+            out
+        };
+        // The picker's copy may have no extension.
+        let legacy = dir.join("old skin");
+        fs::write(&legacy, image(64, 32)).unwrap();
+        assert_eq!(classify(&legacy).0, Kind::Skin);
+        let done = install(&legacy, "old skin", &places).unwrap();
+        assert_eq!(done.kind, Kind::Skin);
+        let to = places.game.join("skins/old skin.png");
+        assert_eq!(done.path.as_deref(), Some(to.as_path()));
+        assert_eq!(fs::read(&to).unwrap(), fs::read(&legacy).unwrap());
+        let photo = dir.join("photo.png");
+        fs::write(&photo, image(16, 16)).unwrap();
+        let error = install(&photo, "photo.png", &places).unwrap_err();
+        assert!(error.contains("not a skin"), "{error}");
+        assert!(!places.game.join("skins/photo.png").exists());
     }
 
     #[test]

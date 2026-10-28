@@ -136,6 +136,7 @@ mod net_harness;
 mod nether_portal;
 mod ominous_item_spawner;
 mod options;
+mod own_skin;
 mod packs;
 mod pad;
 mod pad_menu;
@@ -1807,6 +1808,8 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<horizon_client::skins::Resolver>,
     skin_slots: Vec<(String, usize)>,
+    /// The player's own skin from Options > Skin Customization (game/own_skin.rs).
+    own_skin: own_skin::OwnSkin,
     /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
     trim_slots: Vec<(String, usize)>,
     cart_models: minecarts::CartModels,
@@ -14138,6 +14141,7 @@ impl<'a> Game<'a> {
             )),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: Vec::new(),
+            own_skin: Default::default(),
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,

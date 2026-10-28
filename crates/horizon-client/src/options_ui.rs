@@ -882,6 +882,9 @@ pub enum Page {
     Horizon,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
+    /// SkinCustomizationScreen: the player's name and own skin (`own_skin`); vanilla's model
+    /// parts are not in Horizon yet.
+    Skin,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -914,6 +917,12 @@ enum Act {
     /// Credits & Attribution's Credits button (WinScreen without the poem).
     Credits,
     CopyAgentDetails,
+    /// Skin Customization: the next skin of `skins/`, the other model, the system's file picker
+    /// (phones), the folder.
+    NextSkin,
+    SkinModel,
+    PickSkin,
+    OpenSkinFolder,
 }
 enum WKind {
     Button {
@@ -979,6 +988,19 @@ pub enum Event {
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
 }
+/// What Skin Customization asks of the game (`OptionsUi::take_skin_actions`), apart from
+/// [`Event`]: the menus before the game, which don't show the page, need not know them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkinAction {
+    /// The name, checked (`offline_name::is_valid_choice`): keep it.
+    Name(String),
+    /// The skin or model changed: keep it and put it on.
+    Choice(crate::own_skin::SkinChoice),
+    /// The skins folder (on a phone without the Starling folder, its offer).
+    OpenFolder,
+    /// Ask the system for a skin file; it arrives through the import inbox.
+    PickFile,
+}
 /// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
 /// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
 fn delays_apply(opt: Opt) -> bool {
@@ -1033,6 +1055,42 @@ pub struct OptionsUi {
     pub agent_status: Vec<String>,
     /// The Shader Packs page's chosen pack's profiles ("" first: its defaults).
     shader_profiles: Vec<String>,
+    /// Whether Options opens Skin Customization: the game's options do; the menus before the
+    /// game, which can't put a skin on, keep vanilla's greyed button.
+    pub skin_page: bool,
+    skin: SkinPage,
+}
+/// The Skin Customization page: the name being typed and the skins to choose from, read from
+/// beside options.txt when the page opens.
+struct SkinPage {
+    name: ui::EditBox,
+    /// The name worlds open with now (`offline_name::for_worlds`).
+    saved: String,
+    /// The signed-in account's name, which servers get.
+    account: Option<String>,
+    /// The PNGs of `skins/` (`own_skin::list`).
+    files: Vec<String>,
+    choice: crate::own_skin::SkinChoice,
+    /// A name refused, or a skin the game could not put on.
+    warning: Option<String>,
+    /// For the game, oldest first.
+    actions: Vec<SkinAction>,
+}
+impl Default for SkinPage {
+    fn default() -> Self {
+        let mut name = ui::EditBox::new(0.0, 0.0, 270.0, 20.0);
+        name.max_length = 16;
+        name.focused = false;
+        Self {
+            name,
+            saved: String::new(),
+            account: None,
+            files: Vec::new(),
+            choice: Default::default(),
+            warning: None,
+            actions: Vec::new(),
+        }
+    }
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1063,6 +1121,8 @@ impl Default for OptionsUi {
             graphics: Default::default(),
             agent_status: Vec::new(),
             shader_profiles: Vec::new(),
+            skin_page: false,
+            skin: SkinPage::default(),
         }
     }
 }
@@ -1139,6 +1199,10 @@ enum Row {
     Buttons(Widget, Option<Widget>),
     /// A line of grey text under the row before (a mod's description).
     About(String),
+    /// Skin Customization's name box, after its label.
+    Field,
+    /// A line of red text: what was refused.
+    Warning(String),
 }
 fn pairs(opts: &[Opt]) -> Vec<Row> {
     opts.chunks(2)
@@ -1155,8 +1219,8 @@ impl OptionsUi {
         self.settings_search.focused
             && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
     }
-    /// Whether a text field shown now has the focus: the language and settings searches, or
-    /// the pack search.
+    /// Whether a text field shown now has the focus: the language and settings searches, the
+    /// pack search, or Skin Customization's name.
     pub fn text_focused(&self) -> bool {
         match self.page() {
             Page::Language => self.language_search.focused,
@@ -1164,6 +1228,7 @@ impl OptionsUi {
                 .pack_screen
                 .as_ref()
                 .is_some_and(|p| p.search_focused()),
+            Page::Skin => self.skin.name.focused,
             _ => self.settings_search_active(),
         }
     }
@@ -1175,8 +1240,52 @@ impl OptionsUi {
         match self.page() {
             Page::Language => on(&self.language_search),
             Page::Packs => self.pack_screen.as_ref().is_some_and(|p| p.search_at(x, y)),
+            Page::Skin => on(&self.skin.name),
             _ => self.settings_search_active() && on(&self.settings_search),
         }
+    }
+    /// Read the Skin Customization page's name, skins and choice again (it opened, or a skin
+    /// came through the import inbox).
+    pub fn refresh_skin_page(&mut self) {
+        let dir = std::env::current_dir().unwrap_or_default();
+        let page = &mut self.skin;
+        page.saved = crate::offline_name::for_worlds(&dir);
+        page.account = crate::auth::current().map(|a| a.name.clone());
+        page.files = crate::own_skin::list(&dir.join(crate::own_skin::DIR));
+        page.choice = crate::own_skin::SkinChoice::load(&dir);
+        page.warning = None;
+        if !page.name.focused {
+            page.name.set_value(&page.saved);
+        }
+    }
+    /// A line in red on the Skin Customization page (a skin the game could not put on).
+    pub fn skin_warning(&mut self, text: String) {
+        self.skin.warning = Some(text);
+    }
+    /// What Skin Customization asked of the game since the last call.
+    pub fn take_skin_actions(&mut self) -> Vec<SkinAction> {
+        std::mem::take(&mut self.skin.actions)
+    }
+    /// The name box loses the focus: a changed name is kept when it is one, else refused and
+    /// the old one back in the box.
+    fn commit_name(&mut self) {
+        let page = &mut self.skin;
+        page.name.focused = false;
+        let typed = page.name.value.clone();
+        if typed == page.saved {
+            return;
+        }
+        if crate::offline_name::is_valid_choice(&typed) {
+            page.saved = typed.clone();
+            page.warning = None;
+            page.actions.push(SkinAction::Name(typed));
+            return;
+        }
+        page.warning = Some(format!(
+            "Not a name: 3 to 16 letters, digits or _ ({} kept)",
+            page.saved
+        ));
+        page.name.set_value(&page.saved);
     }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
@@ -1216,6 +1325,10 @@ impl OptionsUi {
         if matches!(page, Page::Graphics | Page::GraphicsAdvanced) {
             self.graphics.reset();
         }
+        if page == Page::Skin {
+            self.skin.name.focused = false;
+            self.refresh_skin_page();
+        }
     }
     /// The graphics screen level of `page`, if it is one.
     fn graphics_level(page: Page) -> Option<crate::graphics_ui::Level> {
@@ -1247,6 +1360,7 @@ impl OptionsUi {
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
+            Page::Skin => "options.skinCustomisation.title",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1401,6 +1515,74 @@ impl OptionsUi {
                     )),
                 )];
                 rows.extend(self.agent_status.iter().cloned().map(Row::Note));
+                rows
+            }
+            Page::Skin => {
+                let page = &self.skin;
+                let mut rows = vec![Row::Field];
+                rows.push(match (&page.warning, &page.account) {
+                    (Some(warning), _) => Row::Warning(warning.clone()),
+                    // Online-mode servers take only the account's name, and the game can't tell
+                    // them from the others before it joins.
+                    (None, Some(account)) => {
+                        Row::Note(format!("Worlds use this name; servers use {account}"))
+                    }
+                    (None, None) => {
+                        Row::Note("Your name in worlds and on servers, from the next one".into())
+                    }
+                });
+                let skin = page
+                    .choice
+                    .file
+                    .as_deref()
+                    .map_or("Default", crate::own_skin::shown_name);
+                let skin = button(
+                    0.0,
+                    0.0,
+                    150.0,
+                    Text::literal(format!("Skin: {}", clipped(skin, 18))),
+                    Act::NextSkin,
+                );
+                let model = if page.choice.slim { "Slim" } else { "Classic" };
+                let model = button(
+                    0.0,
+                    0.0,
+                    150.0,
+                    Text::literal(format!("Model: {model}")),
+                    Act::SkinModel,
+                );
+                // The default skin's model goes with it (Steve's or Alex's, by the UUID).
+                let model = if page.choice.file.is_some() {
+                    model
+                } else {
+                    inactive(model)
+                };
+                rows.push(Row::Buttons(skin, Some(model)));
+                // A phone's own file picker: the file chosen comes through the import inbox.
+                if cfg!(target_os = "android") {
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            Text::literal("Choose a File..."),
+                            Act::PickSkin,
+                        ),
+                        None,
+                    ));
+                }
+                if page.files.is_empty() {
+                    rows.push(Row::Note(
+                        "No skins yet: put 64x64 PNGs in the skins folder".into(),
+                    ));
+                }
+                // Vanilla's protocol: other players get the skin of the profile from the server.
+                rows.push(Row::Note(
+                    "Only you see this skin. On a server, others see".into(),
+                ));
+                rows.push(Row::Note(
+                    "the skin Mojang has for your account, or the default".into(),
+                ));
                 rows
             }
             Page::Video => {
@@ -1777,7 +1959,10 @@ impl OptionsUi {
                     Act::None,
                 )));
                 let entries = [
-                    ("options.skinCustomisation", None),
+                    (
+                        "options.skinCustomisation",
+                        self.skin_page.then_some(Page::Skin),
+                    ),
                     ("options.sounds", Some(Page::Sound)),
                     ("options.video", Some(Page::Video)),
                     ("options.controls", Some(Page::Controls)),
@@ -2233,6 +2418,40 @@ impl OptionsUi {
                             });
                             y += 13.0;
                         }
+                        Row::Field => {
+                            out.push(Widget {
+                                x: cx - 155.0,
+                                y: y + 8.0,
+                                w: 40.0,
+                                h: 9.0,
+                                kind: WKind::Text {
+                                    text: Text::literal("Name"),
+                                    color: 0xFFA0_A0A0,
+                                    centered: false,
+                                },
+                                list: false,
+                            });
+                            // Drawn and edited by the page itself (`skin.name`).
+                            let field = &mut self.skin.name;
+                            (field.x, field.y) = (cx - 115.0, y + 2.0);
+                            (field.width, field.height) = (270.0, 20.0);
+                            y += 25.0;
+                        }
+                        Row::Warning(text) => {
+                            out.push(Widget {
+                                x: 0.0,
+                                y: y + 4.0,
+                                w,
+                                h: 9.0,
+                                kind: WKind::Text {
+                                    text: Text::literal(text),
+                                    color: rgba(255, 85, 85, 255),
+                                    centered: true,
+                                },
+                                list: false,
+                            });
+                            y += 16.0;
+                        }
                     }
                 }
                 content = y + self.scroll - top + 2.0;
@@ -2240,6 +2459,7 @@ impl OptionsUi {
                 let folder = match page {
                     Page::Mods => Some(("Open Mod Folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("Open Pack Folder", Act::OpenShaderPackFolder)),
+                    Page::Skin => Some(("Open Skin Folder", Act::OpenSkinFolder)),
                     _ => None,
                 };
                 if let Some((label, act)) = folder {
@@ -2264,6 +2484,9 @@ impl OptionsUi {
             if widget.list {
                 widget.y += previous_scroll - self.scroll;
             }
+        }
+        if page == Page::Skin {
+            self.skin.name.y += previous_scroll - self.scroll;
         }
         (out, top, bottom, content)
     }
@@ -2543,6 +2766,19 @@ impl OptionsUi {
             }
             self.settings_search = search;
         }
+        if self.page() == Page::Skin {
+            let mut name = self.skin.name.clone();
+            if name.y >= top && name.y + name.height <= bottom {
+                // Red while what is typed is no name, which leaving the box refuses.
+                name.text_color = if crate::offline_name::is_valid_choice(&name.value) {
+                    rgba(224, 224, 224, 255)
+                } else {
+                    rgba(255, 85, 85, 255)
+                };
+                name.draw(batch, atlas, None);
+            }
+            self.skin.name = name;
+        }
         if let Some(lines) = tooltip {
             ui::tooltip(batch, atlas, &lines, cursor);
         }
@@ -2631,6 +2867,24 @@ impl OptionsUi {
                 self.scroll = 0.0;
                 events.push(Event::ButtonClick);
                 return events;
+            }
+        }
+        if !drag && !right && self.page() == Page::Skin {
+            let field = &mut self.skin.name;
+            if ui::hovered((x, y), field.x, field.y, field.width, field.height)
+                && y >= top
+                && y < bottom
+            {
+                if !field.focused {
+                    field.reset_blink();
+                }
+                field.focused = true;
+                field.click(atlas, x, false, false);
+                return events;
+            }
+            // A press anywhere else leaves the box.
+            if field.focused {
+                self.commit_name();
             }
         }
         if drag {
@@ -2802,6 +3056,20 @@ impl OptionsUi {
                         Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
+                        Act::NextSkin => {
+                            let page = &mut self.skin;
+                            page.choice.file =
+                                crate::own_skin::next(&page.files, page.choice.file.as_deref());
+                            page.warning = None;
+                            page.actions.push(SkinAction::Choice(page.choice.clone()));
+                        }
+                        Act::SkinModel => {
+                            let page = &mut self.skin;
+                            page.choice.slim = !page.choice.slim;
+                            page.actions.push(SkinAction::Choice(page.choice.clone()));
+                        }
+                        Act::PickSkin => self.skin.actions.push(SkinAction::PickFile),
+                        Act::OpenSkinFolder => self.skin.actions.push(SkinAction::OpenFolder),
                         Act::None => {}
                     }
                 }
@@ -2923,6 +3191,8 @@ impl OptionsUi {
                     events.push(Event::Packs(ids));
                 }
             }
+            // Done or Escape with the name box focused keeps what it holds, as leaving it does.
+            Page::Skin if self.skin.name.focused => self.commit_name(),
             _ => {}
         }
         events.push(Event::Changed);
@@ -2948,6 +3218,8 @@ impl OptionsUi {
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
+        } else if self.page() == Page::Skin && self.skin.name.focused {
+            self.skin.name.insert_text(text);
         }
     }
     /// Ctrl+A/C/V/X in the language or pack search box; false when neither
@@ -2977,6 +3249,10 @@ impl OptionsUi {
             if self.settings_search.shortcut(shortcut, clipboard) {
                 self.scroll = 0.0;
             }
+            return true;
+        }
+        if self.page() == Page::Skin && self.skin.name.focused {
+            self.skin.name.shortcut(shortcut, clipboard);
             return true;
         }
         false
@@ -3072,6 +3348,22 @@ impl OptionsUi {
                 }
             }
             self.scroll = 0.0;
+        } else if self.page() == Page::Skin && self.skin.name.focused {
+            // Enter (the on-screen keyboard's Done) keeps the name.
+            if matches!(key, K::Enter | K::NumpadEnter) {
+                self.commit_name();
+                return Vec::new();
+            }
+            let field = &mut self.skin.name;
+            if !field.key(key, false, false)
+                && let Some(t) = text
+            {
+                let typed: String = t.chars().filter(|c| !c.is_control()).collect();
+                if !typed.is_empty() {
+                    field.insert_text(&typed);
+                }
+            }
+            field.reset_blink();
         }
         Vec::new()
     }
@@ -4475,5 +4767,113 @@ mod tests {
         }
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
+    }
+
+    #[test]
+    fn the_skin_page_takes_a_name_and_cycles_the_skins() {
+        use winit::keyboard::KeyCode;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        // On the stack without `push`, which reads the page from beside options.txt.
+        ui.stack.push(Page::Skin);
+        ui.skin.saved = "Player00042".into();
+        ui.skin.name.set_value("Player00042");
+        ui.skin.files = vec!["alex.png".into(), "steve.png".into()];
+        let size = (427.0, 240.0);
+        let click = |ui: &mut OptionsUi, s: &mut Settings, (x, y): (f32, f32)| {
+            ui.click(s, &atlas, x, y, size, [1281, 720], false, false)
+        };
+        let find = |ui: &mut OptionsUi, wanted: Act| {
+            let (widgets, ..) = ui.layout(&Settings::default(), size.0, size.1);
+            widgets
+                .iter()
+                .find_map(|w| match &w.kind {
+                    WKind::Button { act, active, .. } if *act == wanted => {
+                        Some(((w.x + 2.0, w.y + 2.0), *active))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // The default skin's model is the default's.
+        assert!(!find(&mut ui, Act::SkinModel).1);
+        // At the box's right end: the cursor after the text.
+        let field = (ui.skin.name.x + 260.0, ui.skin.name.y + 4.0);
+        assert!(click(&mut ui, &mut s, field).is_empty());
+        assert!(ui.text_focused() && ui.text_field_at(field.0, field.1));
+        let retype = |ui: &mut OptionsUi, s: &mut Settings, text: &str| {
+            for _ in 0..16 {
+                ui.key(s, &atlas, KeyCode::Backspace, None);
+            }
+            for c in text.chars() {
+                ui.key(s, &atlas, KeyCode::KeyA, Some(&c.to_string()));
+            }
+            ui.key(s, &atlas, KeyCode::Enter, None)
+        };
+        // Refused: the old name back, a note.
+        retype(&mut ui, &mut s, "no");
+        assert!(ui.take_skin_actions().is_empty());
+        assert_eq!(ui.skin.name.value, "Player00042");
+        assert!(!ui.text_focused());
+        assert!(ui.skin.warning.as_deref().unwrap().contains("Player00042"));
+        click(&mut ui, &mut s, field);
+        retype(&mut ui, &mut s, "Steve_2");
+        assert_eq!(ui.take_skin_actions(), [SkinAction::Name("Steve_2".into())]);
+        assert_eq!(ui.skin.warning, None);
+        // Unchanged, nothing to keep; leaving the box by a press elsewhere keeps a new one.
+        click(&mut ui, &mut s, field);
+        ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert!(ui.take_skin_actions().is_empty());
+        click(&mut ui, &mut s, field);
+        ui.type_text(&atlas, "X");
+        click(&mut ui, &mut s, (1.0, 1.0));
+        assert_eq!(
+            ui.take_skin_actions(),
+            [SkinAction::Name("Steve_2X".into())]
+        );
+        // Default, each skin, Default again; the model once there is a skin.
+        let next = find(&mut ui, Act::NextSkin).0;
+        let mut choice_after = |ui: &mut OptionsUi, at: (f32, f32)| {
+            assert!(click(ui, &mut s, at).contains(&Event::ButtonClick));
+            match ui.take_skin_actions().as_slice() {
+                [SkinAction::Choice(choice)] => choice.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let alex = choice_after(&mut ui, next);
+        assert_eq!(alex.file.as_deref(), Some("alex.png"));
+        let (model, active) = find(&mut ui, Act::SkinModel);
+        assert!(active);
+        assert!(choice_after(&mut ui, model).slim);
+        assert_eq!(
+            choice_after(&mut ui, next).file.as_deref(),
+            Some("steve.png")
+        );
+        assert_eq!(choice_after(&mut ui, next).file, None);
+        let (folder, active) = find(&mut ui, Act::OpenSkinFolder);
+        assert!(active);
+        click(&mut ui, &mut s, folder);
+        assert_eq!(ui.take_skin_actions(), [SkinAction::OpenFolder]);
+        // Only the game's options open the page.
+        let mut menu = OptionsUi::default();
+        let (main, ..) = menu.layout(&s, size.0, size.1);
+        assert!(!main.iter().any(|w| matches!(
+            &w.kind,
+            WKind::Button {
+                act: Act::Push(Page::Skin),
+                ..
+            }
+        )));
+        menu.skin_page = true;
+        let (main, ..) = menu.layout(&s, size.0, size.1);
+        assert!(main.iter().any(|w| matches!(
+            &w.kind,
+            WKind::Button {
+                act: Act::Push(Page::Skin),
+                active: true,
+                ..
+            }
+        )));
     }
 }

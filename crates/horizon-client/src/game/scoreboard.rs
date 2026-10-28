@@ -669,6 +669,16 @@ impl Game<'_> {
                 let mut me = TabPlayer::new(uuid, PLAYER_NAME);
                 me.game_mode = self.mode_id();
                 me.skin = "entity/player/wide/steve".into();
+                // The player's own skin (Skin Customization), on the model too: without a
+                // server's profiles nothing else gives it one.
+                let own = self.own_skin_sprite();
+                if let Some(m) = self.player_model.as_mut() {
+                    m.skin = own.as_ref().map(|(skin, _)| skin.clone());
+                    m.slim = own.as_ref().is_some_and(|(_, slim)| *slim);
+                }
+                if let Some((skin, _)) = own {
+                    me.skin = skin;
+                }
                 let guests = self.lan.as_ref().map_or(&[][..], |h| &h.hub.guests);
                 let players = local_tab_players(me, guests);
                 let upside_down = players

@@ -127,6 +127,7 @@ pub mod options_fixes;
 pub mod options_ui;
 pub mod osk;
 pub mod overlay;
+pub mod own_skin;
 pub mod pack_screen;
 pub mod packs;
 pub mod par;

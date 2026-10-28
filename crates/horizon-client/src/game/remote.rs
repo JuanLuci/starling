@@ -515,9 +515,14 @@ impl Game<'_> {
                 horizon_client::net::shown_address(address),
             );
         }
-        // A signed-in account always plays under its own name.
+        // A signed-in account always plays under its own name on servers (an online-mode one
+        // takes no other); single player's own server, the name its world opened with
+        // (integrated.rs: a name chosen in Skin Customization goes first).
         let auth = horizon_client::auth::current();
-        let name = auth.as_ref().map_or(name, |a| a.name.as_str());
+        let name = match (&auth, &local) {
+            (Some(a), None) => a.name.as_str(),
+            _ => name,
+        };
         let user = auth.as_ref().map_or_else(
             || {
                 (
@@ -3801,6 +3806,17 @@ impl Game<'_> {
                 resolved.push((uuid, skin));
             }
         }
+        // Options > Skin Customization: the player's own skin, in this game only (others get
+        // what the server sends of the profile).
+        if let Some((own, own_slim)) = self.own_skin_sprite() {
+            resolved.retain(|(u, _)| *u != local);
+            resolved.push((local, own));
+            if own_slim {
+                slim.insert(local);
+            } else {
+                slim.remove(&local);
+            }
+        }
         resolved.retain(|(_, skin)| !skin.starts_with("skins/") || self.again_skin(skin));
         // PlayerInfo.getSkin: the downloaded skin and its model, else the
         // profile's default skin (DefaultPlayerSkin.get), slim or wide.
@@ -3915,7 +3931,10 @@ impl Game<'_> {
     /// least recently shown.
     pub(super) fn store_skin(&mut self, location: String, rgba: Vec<u8>) {
         use horizon_client::hud::SKIN_SLOTS;
-        let slot = if self.skin_slots.len() < SKIN_SLOTS {
+        let slot = if let Some(i) = self.skin_slots.iter().position(|e| e.0 == location) {
+            // Already in a slot (its sprite gone with an atlas made again): that slot.
+            self.skin_slots.remove(i).1
+        } else if self.skin_slots.len() < SKIN_SLOTS {
             self.skin_slots.len()
         } else {
             let (old, slot) = self.skin_slots.remove(0);
@@ -3943,7 +3962,7 @@ impl Game<'_> {
         self.skin_slots.push((location, slot));
     }
     /// Whether a downloaded skin is in the atlas, marking it recently shown.
-    fn show_skin(&mut self, location: &str) -> bool {
+    pub(super) fn show_skin(&mut self, location: &str) -> bool {
         let Some(i) = self.skin_slots.iter().position(|e| e.0 == location) else {
             return false;
         };

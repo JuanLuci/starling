@@ -549,6 +549,11 @@ impl Game<'_> {
                 && context != "chat"
             {
                 self.touch.wanted = self.on_text_field().unwrap_or(true);
+                // A tap that just focused the field (the options' boxes start without the
+                // focus): the frame must not take it for a new screen's and put the keyboard away.
+                if self.touch.wanted {
+                    self.touch.context = Some(context);
+                }
             }
             return true;
         }
