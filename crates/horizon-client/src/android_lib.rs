@@ -242,6 +242,39 @@ pub(crate) fn restart_app() {
     with_activity(|env, activity| env.call_method(activity, "restart", "()V", &[]).map(drop));
 }
 
+/// This APK's version (versionName), and whether it is a release, which only can install the
+/// next release over itself (game/update_offer.rs).
+pub(crate) fn app_version() -> Option<(String, bool)> {
+    with_activity(|env, activity| {
+        let name = env
+            .call_method(activity, "versionName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let release = env.call_method(activity, "releaseBuild", "()Z", &[])?.z()?;
+        let name = if name.is_null() {
+            String::new()
+        } else {
+            String::from(env.get_string(&name.into())?)
+        };
+        Ok((name, release))
+    })
+    .filter(|(name, _)| !name.is_empty())
+}
+
+/// Android's installer on `name`, an APK the game downloaded to files/updates/.
+pub(crate) fn install_update(name: &str) -> bool {
+    with_activity(|env, activity| {
+        let name = env.new_string(name)?;
+        env.call_method(
+            activity,
+            "installUpdate",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::Object(&name)],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
 /// What the player made, moved with the game folder when it goes to shared storage: options.txt
 /// last, so a copy cut short is redone next time.
 const PLAYER_FILES: &[&str] = &[
@@ -382,6 +415,129 @@ extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onImeHeight
 /// How far the on-screen keyboard covers the window from the bottom, in pixels.
 pub(crate) fn ime_height() -> u32 {
     IME_HEIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the keyboard's editor (TextMirror.java) did, for the game thread to apply in order
+/// (game/touch/text_mirror.rs).
+pub(crate) enum MirrorEvent {
+    /// The whole text after an edit, the cursor and the selection's other end in characters,
+    /// and the game's update the edit was made on.
+    Edit {
+        text: String,
+        cursor: usize,
+        anchor: usize,
+        generation: i32,
+    },
+    /// The keyboard's action key (Send, Done...).
+    Action,
+    /// A key for the game: Android's KEYCODE_*.
+    Key(i32),
+}
+
+/// The editor's events, from the UI thread, until the game's next frame.
+static MIRROR_EVENTS: std::sync::Mutex<Vec<MirrorEvent>> = std::sync::Mutex::new(Vec::new());
+
+fn mirror_event(event: MirrorEvent) {
+    let mut events = MIRROR_EVENTS.lock().unwrap_or_else(|e| e.into_inner());
+    // Each edit holds the whole text: of a run of them, the last is enough.
+    if matches!(event, MirrorEvent::Edit { .. })
+        && matches!(events.last(), Some(MirrorEvent::Edit { .. }))
+    {
+        events.pop();
+    }
+    events.push(event);
+}
+
+/// The editor's events since the last call.
+pub(crate) fn take_mirror_events() -> Vec<MirrorEvent> {
+    std::mem::take(&mut *MIRROR_EVENTS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// `TextMirror.onMirrorEdit`, called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_TextMirror_onMirrorEdit(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    text: jni::objects::JString,
+    cursor: i32,
+    anchor: i32,
+    generation: i32,
+) {
+    let Ok(text) = env.get_string(&text) else {
+        return;
+    };
+    mirror_event(MirrorEvent::Edit {
+        text: String::from(text),
+        cursor: cursor.max(0) as usize,
+        anchor: anchor.max(0) as usize,
+        generation,
+    });
+}
+
+/// `TextMirror.onMirrorAction`, called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_TextMirror_onMirrorAction(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    mirror_event(MirrorEvent::Action);
+}
+
+/// `TextMirror.onMirrorKey`, called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_TextMirror_onMirrorKey(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    code: i32,
+) {
+    mirror_event(MirrorEvent::Key(code));
+}
+
+/// The text field in the keyboard's editor: shown, focused and the keyboard up
+/// (StarlingActivity.showTextMirror), or told the field's own change (updateTextMirror).
+/// Positions are in characters, -1 to keep the editor's; `max` 0 is no limit.
+pub(crate) fn text_mirror(
+    show: bool,
+    text: &str,
+    cursor: i32,
+    anchor: i32,
+    max: i32,
+    flags: i32,
+    generation: i32,
+) {
+    use jni::objects::JValue;
+    let method = if show {
+        "showTextMirror"
+    } else {
+        "updateTextMirror"
+    };
+    with_activity(|env, activity| {
+        let text = env.new_string(text)?;
+        let called = env.call_method(
+            activity,
+            method,
+            "(Ljava/lang/String;IIIII)V",
+            &[
+                JValue::Object(&text),
+                JValue::Int(cursor),
+                JValue::Int(anchor),
+                JValue::Int(max),
+                JValue::Int(flags),
+                JValue::Int(generation),
+            ],
+        );
+        // A thread attached before the call stays attached, and keeps its local references.
+        env.delete_local_ref(text)?;
+        called.map(drop)
+    });
+}
+
+/// The keyboard and its editor put away (StarlingActivity.hideTextMirror).
+pub(crate) fn hide_text_mirror() {
+    with_activity(|env, activity| {
+        env.call_method(activity, "hideTextMirror", "()V", &[])
+            .map(drop)
+    });
 }
 
 /// The activity, for the event loop (`EventLoopBuilderExtAndroid::with_android_app`).
@@ -569,7 +725,11 @@ fn frame_hints() -> &'static FrameHints {
                 (!s.is_null()).then_some(s)
             };
             let manager = symbol(c"APerformanceHint_getManager")
-                .map(|f| std::mem::transmute::<_, unsafe extern "C" fn() -> usize>(f)())
+                .map(|f| {
+                    std::mem::transmute::<*mut std::ffi::c_void, unsafe extern "C" fn() -> usize>(
+                        f,
+                    )()
+                })
                 .unwrap_or(0);
             FrameHints {
                 create: symbol(c"APerformanceHint_createSession").map(|s| std::mem::transmute(s)),
@@ -722,6 +882,8 @@ fn android_main(app: AndroidApp) {
     }
     let _ = ARGS.set(args);
     let _ = APP.set(app);
+    // Read from the APK's assets, which the app above opens.
+    horizon_client::preparer::put_shader_pack(&home);
     // The saved Microsoft sign-in renews while the game loads.
     horizon_client::accounts::resume();
     if let Err(error) = game::run() {

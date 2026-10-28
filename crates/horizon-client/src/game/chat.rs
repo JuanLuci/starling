@@ -577,6 +577,29 @@ impl Game<'_> {
             screen.server_suggestions(&m, &c, id, range, list);
         }
     }
+    /// The whole input from the on-screen keyboard's editor (Android, game/touch/text_mirror.rs).
+    pub(super) fn chat_set_text(&mut self, text: &str, cursor: usize, anchor: usize) {
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote, &self.mods),
+            registries: &self.ui.registries,
+        };
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            screen.set_text(&m, &c, text, cursor, anchor);
+        }
+    }
+    /// The chat bar's Paste (touch.rs): the clipboard's text at the cursor, as Ctrl+V.
+    pub(super) fn chat_paste(&mut self) {
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote, &self.mods),
+            registries: &self.ui.registries,
+        };
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            let paste = horizon_client::clipboard::EditShortcut::Paste;
+            screen.shortcut(&m, &c, paste, &mut self.clipboard);
+        }
+    }
     /// Text typed into the chat box (control socket `chat`).
     pub(super) fn chat_type(&mut self, text: &str) {
         let m = Measure(&self.gui.atlas.font);

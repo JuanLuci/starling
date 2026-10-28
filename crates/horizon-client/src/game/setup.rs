@@ -425,8 +425,9 @@ impl Loading {
                 drawn[i] = Some((rect, *action));
             }
         }
-        // Why the game could not start, small, under the card: for a report.
-        if matches!(step, Step::Start) {
+        // Why the game could not start, small, under the card: for a report. Not on a first start,
+        // where the game files are simply not there yet.
+        if matches!(step, Step::Start) && self.vanilla_root.exists() {
             for (i, line) in wrap(&ui, 11.0, failure, card_w).iter().take(2).enumerate() {
                 let ly = y + card_h + 14.0 + i as f32 * 15.0;
                 ui.text(

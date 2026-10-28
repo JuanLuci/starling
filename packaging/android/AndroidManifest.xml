@@ -14,6 +14,9 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- The update prompt hands the release it downloaded to Android's installer, which asks the
+         player first. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application
@@ -84,5 +87,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- The downloaded update, for the installer only (UpdateProvider). -->
+        <provider
+            android:name="io.github.juanluci.starling.UpdateProvider"
+            android:authorities="@APPLICATION_ID@.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

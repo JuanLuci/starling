@@ -41,7 +41,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
  * process with the activity, since the game's event loop cannot start twice in one process.
  * The game calls the public methods from its own thread (android_lib.rs): the file manager, the
- * file picker, the clipboard, the browser and the keystore.
+ * file picker, the clipboard, the keyboard's editor (TextMirror), the browser and the keystore.
  */
 public final class StarlingActivity extends NativeActivity {
     static {
@@ -166,6 +166,52 @@ public final class StarlingActivity extends NativeActivity {
                         (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (keyboard != null) {
                     keyboard.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
+                }
+            }
+        });
+    }
+
+    /** The editor behind the keyboard (TextMirror), made the first time the game asks for it. */
+    private TextMirror mirror;
+
+    /**
+     * The game's text field in the keyboard's editor, which takes the focus and shows the keyboard
+     * (game/touch/text_mirror.rs; TextMirror.update says what the numbers are).
+     */
+    public void showTextMirror(final String text, final int cursor, final int anchor,
+            final int maxLength, final int flags, final int generation) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mirror == null) {
+                    mirror = new TextMirror(StarlingActivity.this);
+                    addContentView(mirror, new android.view.ViewGroup.LayoutParams(1, 1));
+                }
+                mirror.show(text, cursor, anchor, maxLength, flags, generation);
+            }
+        });
+    }
+
+    /** The game changed its field itself (Tab, the history, a line sent): the editor follows. */
+    public void updateTextMirror(final String text, final int cursor, final int anchor,
+            final int maxLength, final int flags, final int generation) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mirror != null) {
+                    mirror.update(text, cursor, anchor, maxLength, flags, generation);
+                }
+            }
+        });
+    }
+
+    /** The keyboard and its editor put away. */
+    public void hideTextMirror() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mirror != null) {
+                    mirror.hide();
                 }
             }
         });
@@ -330,6 +376,40 @@ public final class StarlingActivity extends NativeActivity {
         }
         clipboard.setPrimaryClip(ClipData.newPlainText("Starling", text));
         return true;
+    }
+
+    /** This APK's version (versionName), which the update prompt compares with the latest
+     * release's; null where Android does not say. */
+    public String versionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    /** Whether this is a release (signed with the release key, not debuggable): only a release
+     * can install the next one over itself. */
+    public boolean releaseBuild() {
+        return (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)
+                == 0;
+    }
+
+    /**
+     * Android's package installer on an update the game downloaded to files/updates/: it asks the
+     * player to allow installing from Starling the first time, then to update; once installed it
+     * offers to open the game again. False where no installer takes it.
+     */
+    public boolean installUpdate(String name) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(UpdateProvider.uri(getPackageName(), name), UpdateProvider.TYPE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(intent);
+            return true;
+        } catch (ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
     }
 
     /** The Android Keystore key the account's tokens are sealed with; it never leaves the

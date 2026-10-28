@@ -20,6 +20,19 @@ pub(super) const CONTROL_HELP: &[&str] = &[
 ];
 
 impl Game<'_> {
+    /// One of the game's folders (packs, shader packs, mods) in the file manager. On a phone that
+    /// keeps the game in the app's private files, which no file manager opens, the offer of the
+    /// Starling folder instead.
+    fn open_game_folder(&mut self, dir: &std::path::Path) {
+        let _ = std::fs::create_dir_all(dir);
+        #[cfg(target_os = "android")]
+        if horizon_client::logging::game_home() == horizon_client::logging::private_home() {
+            self.ask_files_offer();
+            return;
+        }
+        super::packs::open_folder(dir);
+    }
+
     pub(super) fn save_title_options(&mut self) {
         if let Some(title) = &self.title
             && title.last_server != self.settings.file.string("lastServer")
@@ -282,16 +295,13 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.reload_packs();
                 }
-                Event::OpenPackFolder => {
-                    let dir = super::packs::packs_dir();
-                    let _ = std::fs::create_dir_all(&dir);
-                    super::packs::open_folder(&dir);
+                Event::OpenPackFolder => self.open_game_folder(&super::packs::packs_dir()),
+                Event::OpenShaderFolder => {
+                    self.open_game_folder(&Self::options_path().with_file_name("shaderpacks"));
                 }
-                Event::OpenModFolder => {
-                    let dir = Self::options_path().with_file_name(horizon_client::mod_list::DIR);
-                    let _ = std::fs::create_dir_all(&dir);
-                    super::packs::open_folder(&dir);
-                }
+                Event::OpenModFolder => self.open_game_folder(
+                    &Self::options_path().with_file_name(horizon_client::mod_list::DIR),
+                ),
                 // Over the Mods page, which shows again when the mod closes it.
                 Event::ModConfig(i) => {
                     if let Some(screen) = self

@@ -2,8 +2,9 @@
 """Build Starling's arm64-v8a Android APK (Horizon on Android): horizon-android as a
 NativeActivity library.
 
-The APK holds the game library, the launcher icon and what prepares the game files on the phone
-(the Java launchers in native/ and the exporters' sources), nothing of Minecraft: the resources
+The APK holds the game library, the launcher icon, Starling Visuals and what prepares the game
+files on the phone (the Java launchers in native/ and the exporters' sources), nothing of
+Minecraft: the resources
 horizon-prepare makes from the player's own copy are made on the phone, or copied there.
 
     python3 packaging/android/build_apk.py                 # build the library, then the APK
@@ -29,8 +30,8 @@ HERE = Path(__file__).resolve().parent
 
 APPLICATION_ID = "io.github.juanluci.starling"
 LABEL = "Starling"
-VERSION_NAME = "0.1.0"
-VERSION_CODE = 1
+VERSION_NAME = "0.1.0.1"
+VERSION_CODE = 2
 MIN_SDK = 26  # AAudio (cpal)
 TARGET_SDK = 35
 PLATFORM = 36
@@ -133,10 +134,21 @@ def build_launchers(ndk, out):
     return libraries
 
 
+def zip_folder(folder, archive):
+    """`folder`'s files in the zip `archive`, all dated alike: the same files make the same zip,
+    which the app tells from the next by its bytes."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        for file in sorted(p for p in folder.rglob("*") if p.is_file()):
+            info = zipfile.ZipInfo(file.relative_to(folder).as_posix(), (2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, file.read_bytes())
+
+
 def assets(out):
-    """The APK's assets/: prepare-kit.zip (PREPARE_KIT, with the paths horizon-prepare reads) and
+    """The APK's assets/: prepare-kit.zip (PREPARE_KIT, with the paths horizon-prepare reads),
     lowbudget.zip, the skin the setup draws the menus with (packaging/lowbudget/pack, made by its
-    make.py)."""
+    make.py), and StarlingVisuals.zip, the shader pack the app puts in shaderpacks/ (also left in
+    `out` for the release page)."""
     folder = out / "assets"
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir()
@@ -146,10 +158,9 @@ def assets(out):
             files = sorted(p for p in path.rglob("*.java")) if path.is_dir() else [path]
             for file in files:
                 kit.write(file, file.relative_to(ROOT).as_posix())
-    skin = HERE.parent / "lowbudget" / "pack"
-    with zipfile.ZipFile(folder / "lowbudget.zip", "w", zipfile.ZIP_DEFLATED) as z:
-        for file in sorted(p for p in skin.rglob("*") if p.is_file()):
-            z.write(file, file.relative_to(skin).as_posix())
+    zip_folder(HERE.parent / "lowbudget" / "pack", folder / "lowbudget.zip")
+    zip_folder(HERE.parent / "shaderpacks" / "starling-visuals", folder / "StarlingVisuals.zip")
+    shutil.copyfile(folder / "StarlingVisuals.zip", out / "StarlingVisuals.zip")
     return folder
 
 

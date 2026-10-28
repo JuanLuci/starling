@@ -9,10 +9,12 @@ import sys
 PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
 PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
-# The Android app's own activity (packaging/android/build_apk.py), Horizon's code like the above.
+# The Android app's own classes (packaging/android/build_apk.py), Horizon's code like the above.
 ORIGINAL_ANDROID = {
     "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
     "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java",
+    "packaging/android/java/io/github/juanluci/starling/TextMirror.java",
+    "packaging/android/java/io/github/juanluci/starling/UpdateProvider.java",
     # The same activity before the app was named Starling, in the history.
     "packaging/android/java/dev/horizon/android/HorizonActivity.java",
 }

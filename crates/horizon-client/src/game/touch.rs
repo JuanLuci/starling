@@ -6,6 +6,7 @@
 //! screens with slots a finger works them as Bedrock's touch inventory does (slots.rs). The mods'
 //! buttons are in the layout as the game's own (game/mod_widgets.rs).
 mod slots;
+mod text_mirror;
 
 use super::{Game, Screen, mod_widgets::ModFace};
 use horizon_client::gamepad::ServerStick;
@@ -60,6 +61,8 @@ pub(super) struct Touch {
     /// The keyboard has shown since it was asked for: its height falling to 0 then means the
     /// player put it away (the back key), which the game is not told otherwise.
     ime_seen: bool,
+    /// The keyboard's editor on Android (text_mirror.rs).
+    mirror: text_mirror::Mirror,
     /// The player's layout, read from touch-layout.json on the first frame.
     config: Option<LayoutConfig>,
     /// The layout editor, while it is open.
@@ -74,7 +77,7 @@ pub(super) struct Touch {
     faces: Vec<ModFace>,
 }
 
-/// The chat bar's keys, left to right: history up and down, completion, the cursor.
+/// The chat bar's keys, left to right: history up and down, completion, the cursor; then Paste.
 const CHAT_KEYS: [KeyCode; 5] = [
     KeyCode::ArrowUp,
     KeyCode::ArrowDown,
@@ -110,6 +113,20 @@ fn arrow(
         _ => [cx - 3.0, cy - 1.0],
     };
     batch.fill(atlas, x, y, 3.0, 3.0, ink);
+}
+
+/// A pixel clipboard centred on (cx, cy), for Paste: a board 9 by 11, its clip and two lines.
+fn clipboard(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, c: [f32; 2], ink: u32) {
+    let [cx, cy] = c;
+    let (left, top) = (cx - 4.0, cy - 4.0);
+    batch.fill(atlas, left, top, 1.0, 10.0, ink);
+    batch.fill(atlas, left + 8.0, top, 1.0, 10.0, ink);
+    batch.fill(atlas, left, top + 9.0, 9.0, 1.0, ink);
+    batch.fill(atlas, left, top, 2.0, 1.0, ink);
+    batch.fill(atlas, left + 7.0, top, 2.0, 1.0, ink);
+    batch.fill(atlas, cx - 2.0, top - 1.0, 5.0, 2.0, ink);
+    batch.fill(atlas, cx - 2.0, cy, 5.0, 1.0, ink);
+    batch.fill(atlas, cx - 2.0, cy + 2.0, 5.0, 1.0, ink);
 }
 
 impl Game<'_> {
@@ -205,7 +222,7 @@ impl Game<'_> {
         self.last_input = Instant::now();
         // The offer of the Starling folder, over the title, takes the touches while it shows.
         #[cfg(target_os = "android")]
-        if self.files_offer_touch(t) {
+        if self.files_offer_touch(t) || self.update_offer_touch(t) {
             return true;
         }
         // A touch in the chat brings back a keyboard the back key put away.
@@ -219,7 +236,12 @@ impl Game<'_> {
         {
             self.touch.chat_key = Some((i, Instant::now()));
             self.touch.chat_finger = Some(t.id);
-            let _ = self.touch_key_tap(CHAT_KEYS[i]);
+            match CHAT_KEYS.get(i) {
+                Some(&key) => {
+                    let _ = self.touch_key_tap(key);
+                }
+                None => self.chat_paste(),
+            }
             return true;
         }
         if self.touch.chat_finger == Some(t.id) {
@@ -372,7 +394,8 @@ impl Game<'_> {
             self.touch.use_until = None;
             self.pad.touch_trigger(0, 0.0);
         }
-        // The on-screen keyboard (its keys arrive as key events). The screens made for typing
+        // The on-screen keyboard (its keys arrive as key events; on Android an editor behind it
+        // holds the field, text_mirror.rs). The screens made for typing
         // (chat, sign, book, command block) open it with them; the other text fields on a tap on
         // them. Android shows it only to a focused window: back from the background, it is asked
         // for again once the focus is back.
@@ -394,15 +417,18 @@ impl Game<'_> {
         }
         let keyboard =
             (self.touch.seen || cfg!(target_os = "android")) && self.touch.wanted && self.focused;
+        // On Android the keyboard's editor shows it (text_mirror.rs).
+        #[cfg(target_os = "android")]
+        if self.window.is_some() {
+            self.android_keyboard(keyboard);
+        }
+        #[cfg(not(target_os = "android"))]
         if keyboard != self.touch.keyboard
             && let Some(window) = &self.window
         {
             window.set_ime_allowed(keyboard);
-            // winit hides only a keyboard shown implicitly; Android's own call hides any.
-            #[cfg(target_os = "android")]
-            if !keyboard {
-                crate::hide_keyboard();
-            }
+        }
+        if keyboard != self.touch.keyboard && self.window.is_some() {
             self.touch.keyboard = keyboard;
             self.touch.ime_seen = false;
         }
@@ -886,10 +912,10 @@ impl Game<'_> {
     }
     /// The chat bar's buttons in GUI pixels (x, y, w, h): at the right, just above the text
     /// field (lifted with it over the keyboard).
-    fn chat_bar(batch: &HudBatch) -> [[f32; 4]; 5] {
+    fn chat_bar(batch: &HudBatch) -> [[f32; 4]; 6] {
         let (w, h, gap) = (24.0, 16.0, 2.0);
         let y = batch.height - 14.0 - h - 2.0;
-        let left = batch.width - 2.0 - 5.0 * w - 4.0 * gap;
+        let left = batch.width - 2.0 - 6.0 * w - 5.0 * gap;
         std::array::from_fn(|i| [left + i as f32 * (w + gap), y, w, h])
     }
     /// The chat bar's button under window pixel `p`.
@@ -904,7 +930,7 @@ impl Game<'_> {
             .iter()
             .position(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
     }
-    /// The chat bar: vanilla buttons for ↑ ↓ Tab ← →, the one just tapped lit.
+    /// The chat bar: vanilla buttons for ↑ ↓ Tab ← → and Paste, the one just tapped lit.
     pub(super) fn draw_chat_bar(&self, batch: &mut HudBatch) {
         if !self.chat_bar_shown() {
             return;
@@ -939,7 +965,8 @@ impl Game<'_> {
                 0 => arrow(batch, atlas, c, 0, ink),
                 1 => arrow(batch, atlas, c, 1, ink),
                 3 => arrow(batch, atlas, c, 2, ink),
-                _ => arrow(batch, atlas, c, 3, ink),
+                4 => arrow(batch, atlas, c, 3, ink),
+                _ => clipboard(batch, atlas, c, ink),
             }
         }
     }

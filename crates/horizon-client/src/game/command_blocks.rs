@@ -540,12 +540,7 @@ impl Game<'_> {
         };
         match key {
             KeyCode::Escape => return self.close_command_block(),
-            KeyCode::Enter | KeyCode::NumpadEnter => {
-                if let Some(s) = self.command_block_screen.take() {
-                    self.set_command_block(&s);
-                }
-                return self.close_command_block();
-            }
+            KeyCode::Enter | KeyCode::NumpadEnter => return self.command_block_done(),
             _ => {}
         }
         // The keys the player holds, not those Toggle Sprint and Toggle Sneak hold.
@@ -560,6 +555,17 @@ impl Game<'_> {
         } else if !s.command.key(key, ctrl, shift) && !ctrl {
             self.command_block_type(event.text.as_deref().unwrap_or(""));
         }
+    }
+    /// Enter, as Done: the command block set, the screen closed.
+    pub(super) fn command_block_done(&mut self) {
+        if let Some(s) = self.command_block_screen.take() {
+            self.set_command_block(&s);
+        }
+        self.close_command_block();
+    }
+    /// The command box, for the on-screen keyboard's editor (game/touch/text_mirror.rs).
+    pub(super) fn command_box(&mut self) -> Option<&mut EditBox> {
+        self.command_block_screen.as_mut().map(|s| &mut s.command)
     }
     /// Characters typed into the command box (`StringUtil.isAllowedChatCharacter`).
     pub(super) fn command_block_type(&mut self, typed: &str) {

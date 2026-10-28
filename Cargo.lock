@@ -1396,6 +1396,7 @@ dependencies = [
  "log",
  "pollster",
  "serde_json",
+ "sha2",
  "ureq",
  "wgpu",
  "winit",

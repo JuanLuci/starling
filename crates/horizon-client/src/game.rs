@@ -182,6 +182,8 @@ mod trial_visuals;
 mod trident;
 mod tweaks;
 mod ui_control;
+#[cfg(target_os = "android")]
+mod update_offer;
 mod vault;
 mod villagers;
 mod wandering_trader;
@@ -1551,6 +1553,8 @@ struct Game<'a> {
     /// The offer of the Starling folder in shared storage (game/files_offer.rs).
     #[cfg(target_os = "android")]
     files_offer: files_offer::FilesOffer,
+    #[cfg(target_os = "android")]
+    update_offer: update_offer::UpdateOffer,
     /// Horizon's extras (zoom, FPS counter, keystrokes): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
@@ -4983,7 +4987,10 @@ impl Game<'_> {
         self.draw_pad_cursor(&mut batch);
         self.lift_over_keyboard(&mut batch);
         #[cfg(target_os = "android")]
-        self.draw_files_offer(&mut batch);
+        {
+            self.draw_files_offer(&mut batch);
+            self.draw_update_offer(&mut batch);
+        }
         // Over the keyboard's lift: the note stays at the top.
         self.draw_imports(&mut batch);
         batch
@@ -12128,7 +12135,10 @@ impl ApplicationHandler for Game<'_> {
         self.poll_imports();
         self.poll_mods();
         #[cfg(target_os = "android")]
-        self.poll_files_offer();
+        {
+            self.poll_files_offer();
+            self.poll_update_offer();
+        }
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
@@ -12505,6 +12515,8 @@ impl<'a> Game<'a> {
             imports: Default::default(),
             #[cfg(target_os = "android")]
             files_offer: Default::default(),
+            #[cfg(target_os = "android")]
+            update_offer: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             sky_darken_memo: Default::default(),
@@ -13578,6 +13590,11 @@ impl Loading {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        if let WindowEvent::Touch(touch) = &event
+            && self.credits_touch(touch)
+        {
             return;
         }
         // The failure screen: the setup's buttons (Android; its settings are the menu's), else a

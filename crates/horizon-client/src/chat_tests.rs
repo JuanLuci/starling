@@ -327,3 +327,120 @@ fn a_server_component_keeps_its_click_and_hover_events() {
     let past = 4.0 + f64::from(font.width("CLICK")) + 20.0;
     assert!(chat.hover_at(&font, 360, past, 315.0).is_none());
 }
+
+#[test]
+fn enter_completes_a_failing_command_word_only_when_one_completion_fits() {
+    use winit::keyboard::KeyCode::Enter;
+
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries {
+        permission: 4,
+        items: [
+            "minecraft:diamond",
+            "minecraft:diamond_sword",
+            "minecraft:dirt",
+            "minecraft:totem_of_undying",
+        ]
+        .map(String::from)
+        .to_vec(),
+        ..Registries::default()
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let sent = |typed: &str| {
+        let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360);
+        screen.type_text(&m, &c, typed);
+        screen.key(&m, &c, &[], Enter, false, false)
+    };
+    for (typed, completed) in [
+        ("/gamemode c", "/gamemode creative"),
+        ("/gamemode su", "/gamemode survival"),
+        // Brigadier's completions take the word whatever its case.
+        ("/Gamemode c", "/gamemode creative"),
+        ("/gamemode Creative", "/gamemode creative"),
+        ("/gamemode c @s", "/gamemode creative @s"),
+        ("/give @p totem", "/give @p minecraft:totem_of_undying"),
+    ] {
+        assert_eq!(
+            sent(typed),
+            ChatAction::Submit(completed.to_owned()),
+            "{typed}"
+        );
+        assert_eq!(complete_command(&c, typed).as_deref(), Some(completed));
+    }
+    for typed in [
+        // Two completions: survival and spectator; diamond and diamond_sword.
+        "/gamemode s",
+        "/give @p dia",
+        // A completion that matches inside the id, not from the word's start.
+        "/give @p undying",
+        // Valid as typed.
+        "/gamemode creative",
+        // One completion, but the command still wants its argument.
+        "/gamemod",
+        // Free text and chat lines.
+        "/say hel",
+        "/msg @p hel",
+        "hello wor",
+    ] {
+        assert_eq!(sent(typed), ChatAction::Submit(typed.to_owned()), "{typed}");
+        assert_eq!(complete_command(&c, typed), None, "{typed}");
+    }
+}
+
+#[test]
+fn enter_leaves_a_word_the_server_completes() {
+    // An `ask_server` node: its completions would need the server's reply.
+    let registries = Registries {
+        permission: 4,
+        ..Registries::default()
+    };
+    let mut d = crate::command::vanilla::game_dispatcher().clone();
+    let child = |d: &crate::command::Dispatcher, n: usize, name: &str| {
+        d.nodes[n]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| d.nodes[c].name() == name)
+            .expect(name)
+    };
+    let gamemode = child(&d, child(&d, 0, "gamemode"), "gamemode");
+    d.nodes[gamemode].suggests = Some(crate::command::Suggests::AskServer);
+    let c = Commands {
+        dispatcher: &d,
+        registries: &registries,
+    };
+    assert_eq!(complete_command(&c, "/gamemode c"), None);
+    // Without the server's provider the same word completes.
+    let local = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    assert_eq!(
+        complete_command(&local, "/gamemode c").as_deref(),
+        Some("/gamemode creative")
+    );
+}
+
+#[test]
+fn the_keyboard_editor_sets_the_whole_input_and_its_selection() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "draft", 0, 640, 360);
+    // Refused characters go, and the positions follow the text kept.
+    screen.set_text(&m, &c, "a\u{a7}b\ncd", 5, 2);
+    assert_eq!(screen.value(), "abcd");
+    assert_eq!((screen.input.cursor, screen.input.highlight), (3, 1));
+    // The maximum length holds.
+    screen.set_text(&m, &c, &"x".repeat(300), 300, 300);
+    assert_eq!(screen.value().chars().count(), 256);
+    assert_eq!(screen.input.cursor, 256);
+}

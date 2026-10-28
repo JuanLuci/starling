@@ -3,7 +3,8 @@ name: android
 # it as an artifact, signed with the debug key in STARLING_DEBUG_KEYSTORE_BASE64 so one installs over another (a
 # throwaway key where that secret is missing, as in a fork's pull request). A tag v* signs it with the release key held
 # in the repository's secrets (STARLING_KEYSTORE_BASE64, STARLING_KEY_ALIAS, STARLING_STORE_PASSWORD, STARLING_KEY_PASSWORD)
-# and publishes it as a pre-release. The APK holds no game files: players prepare those from their own copy.
+# and publishes it as the latest release, with packaging/android/release-notes.md. The APK holds no game files: players
+# prepare those from their own copy.
 on:
   push:
     branches: [android]
@@ -78,10 +79,14 @@ jobs:
         with:
           name: starling-apk
           path: target/android/starling-*.apk
+      # The latest release is what the game's update prompt offers (game/update_offer.rs): the APK
+      # it installs, Starling Visuals beside it, and the notes written for it.
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" target/android/starling-*.apk \
-            --title "Starling $GITHUB_REF_NAME" --generate-notes --prerelease
+            target/android/StarlingVisuals.zip \
+            --title "Starling $GITHUB_REF_NAME" --notes-file packaging/android/release-notes.md \
+            --latest

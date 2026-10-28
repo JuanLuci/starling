@@ -250,6 +250,18 @@ pub(super) fn spawn_loader(
 }
 
 impl Loading {
+    /// While the credits roll, a lifted finger closes them, as Escape does: a phone has no
+    /// Escape, and the touch's mouse clicks do nothing to them.
+    pub(super) fn credits_touch(&mut self, touch: &winit::event::Touch) -> bool {
+        if self.menu.win.is_none() {
+            return false;
+        }
+        if touch.phase == winit::event::TouchPhase::Ended {
+            self.menu.win = None;
+        }
+        true
+    }
+
     pub(super) fn poll_menu_resources(&mut self) -> Result<()> {
         if self.loaded.is_none() {
             loop {
@@ -359,6 +371,11 @@ impl Loading {
                 }
                 Event::OpenPackFolder => {
                     let dir = packs::packs_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    packs::open_folder(&dir);
+                }
+                Event::OpenShaderFolder => {
+                    let dir = Game::options_path().with_file_name("shaderpacks");
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
@@ -481,7 +498,12 @@ impl Loading {
             }
             _ if self.gui.is_none() || self.menu.pending.is_some() => {}
             WindowEvent::KeyboardInput { event, .. } if self.menu.win.is_some() => {
-                if let PhysicalKey::Code(code) = event.physical_key {
+                // Android's back key, as Escape.
+                if event.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::BrowserBack)
+                {
+                    self.menu.win = None;
+                } else if let PhysicalKey::Code(code) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
                     if code == KeyCode::Escape && pressed {
                         self.menu.win = None;

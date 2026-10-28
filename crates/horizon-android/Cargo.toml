@@ -37,8 +37,10 @@ log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 # Calls into the activity: the file manager, the file picker, the clipboard (cpal's version).
 jni = "0.21.1"
-# A server's resource packs download through it (game/server_packs.rs).
+# A server's resource packs download through it (game/server_packs.rs), and the updates
+# (game/update_offer.rs), checked with sha2.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10.9"
 
 [features]
 default = ["audio", "mods"]

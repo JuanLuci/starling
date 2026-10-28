@@ -1,7 +1,7 @@
 //! Android: the offer, over the title screen, to keep the game folder in shared storage (a
 //! Starling folder any file manager opens). Android's "all files" setting does the allowing, in a
 //! task of its own; once allowed, a restart moves the player's files (android_lib.rs
-//! `game_folder`).
+//! `game_folder`). Turned down, it comes back from the folder buttons (Open Pack Folder...).
 use super::Game;
 use horizon_client::{
     hud::HudBatch,
@@ -16,7 +16,7 @@ use winit::event::{Touch, TouchPhase};
 const CHECK: Duration = Duration::from_millis(700);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Stage {
+pub(super) enum Stage {
     /// What the folder is for, and the way to allow it.
     Ask,
     /// Sent to the setting; asked again if they come back without allowing.
@@ -29,6 +29,8 @@ enum Stage {
 pub(super) struct FilesOffer {
     stage: Option<Stage>,
     started: bool,
+    /// Made again from a folder button (Open Pack Folder...): it shows over any screen.
+    asked: bool,
     checked: Option<Instant>,
     /// The buttons as last drawn (UI units): the primary's and the other's rectangles.
     buttons: Cell<[[f32; 4]; 2]>,
@@ -96,8 +98,23 @@ impl Game<'_> {
         }
     }
 
-    fn files_offer_shown(&self) -> Option<Stage> {
-        self.files_offer.stage.filter(|_| self.title.is_some())
+    /// A folder button while the game folder is still in the app's private files, which no file
+    /// manager opens: the offer again, turned down or not.
+    pub(super) fn ask_files_offer(&mut self) {
+        let _ = std::fs::remove_file(declined());
+        let offer = &mut self.files_offer;
+        offer.stage = Some(if crate::file_access_allowed() {
+            Stage::Restart
+        } else {
+            Stage::Ask
+        });
+        offer.asked = true;
+    }
+
+    pub(super) fn files_offer_shown(&self) -> Option<Stage> {
+        self.files_offer
+            .stage
+            .filter(|_| self.title.is_some() || self.files_offer.asked)
     }
 
     /// A card in the middle of the title screen, the rest dimmed.
@@ -189,6 +206,7 @@ impl Game<'_> {
             }
             // Later: the next start moves the files anyway.
             offer.stage = None;
+            offer.asked = false;
         }
         true
     }

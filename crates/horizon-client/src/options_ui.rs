@@ -115,6 +115,23 @@ fn clipped(text: &str, chars: usize) -> String {
     let cut: String = text.chars().take(chars - 3).collect();
     format!("{}...", cut.trim_end())
 }
+/// Where the Shader Packs page's folder is, as a player finds it: on a phone, from the storage's
+/// root (`Starling/shaderpacks`), or in the app's own files, which Open Pack Folder sets up a
+/// reachable folder for.
+fn shader_folder_note() -> String {
+    let dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join("shaderpacks");
+    if cfg!(target_os = "android") {
+        if crate::logging::game_home() == crate::logging::private_home() {
+            return "In the app's own files: Open Pack Folder to reach them".into();
+        }
+        if let Ok(shared) = dir.strip_prefix("/storage/emulated/0") {
+            return format!("Folder: {}", shared.display());
+        }
+    }
+    clipped(&format!("Folder: {}", dir.display()), 52)
+}
 fn generic(caption: &str, value: Text) -> Text {
     Text::translate("options.generic_value", &[tr(caption), value])
 }
@@ -943,6 +960,7 @@ enum Act {
     /// screen: `Event::ModSettings` has the game open it.
     ModSettings(usize),
     OpenModFolder,
+    OpenShaderFolder,
     /// The touch layout editor (phones).
     TouchLayout,
     /// Credits & Attribution's Credits button (WinScreen without the poem).
@@ -995,6 +1013,8 @@ pub enum Event {
     Packs(Vec<String>),
     OpenPackFolder,
     OpenModFolder,
+    /// The Shader Packs page's folder (on a phone without the Starling folder, its offer).
+    OpenShaderFolder,
     /// Open mod `i`'s settings screen (`screens.set-config`) over the Mods page.
     ModConfig(usize),
     /// Open the mod's own settings page (capability `ui`): the installed
@@ -1686,6 +1706,7 @@ impl OptionsUi {
                 };
                 let mut rows = vec![
                     Row::Note("Iris and OptiFine packs from the shaderpacks folder".into()),
+                    Row::Note(shader_folder_note()),
                     pick(choice.is_none(), "Off", Act::ShaderPack(None)),
                 ];
                 for (i, pack) in self.shader_packs.iter().enumerate() {
@@ -2242,13 +2263,18 @@ impl OptionsUi {
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
-                if page == Page::Mods {
+                if matches!(page, Page::Mods | Page::ShaderPacks) {
+                    let (label, act) = if page == Page::Mods {
+                        ("Open Mod Folder", Act::OpenModFolder)
+                    } else {
+                        ("Open Pack Folder", Act::OpenShaderFolder)
+                    };
                     out.push(button(
                         cx - 154.0,
                         h - 27.0,
                         150.0,
-                        Text::literal("Open Mod Folder"),
-                        Act::OpenModFolder,
+                        Text::literal(label),
+                        act,
                     ));
                     out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
                 } else {
@@ -2778,6 +2804,7 @@ impl OptionsUi {
                             events.push(Event::ModSettings(i));
                         }
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::OpenShaderFolder => events.push(Event::OpenShaderFolder),
                         Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),

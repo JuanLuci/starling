@@ -24,7 +24,7 @@
 
 ## Download
 
-**[Starling v0.1.0](https://github.com/JuanLuci/starling/releases/latest)**, the first release: download `starling-0.1.0-arm64-v8a.apk` from [the releases page](https://github.com/JuanLuci/starling/releases) and open it on the phone (Android asks you to allow installing apps from your browser or file manager). Later releases install over it.
+**[Starling v0.1.0.1](https://github.com/JuanLuci/starling/releases/latest)**: download `starling-0.1.0.1-arm64-v8a.apk` from [the releases page](https://github.com/JuanLuci/starling/releases) and open it on the phone (Android asks you to allow installing apps from your browser or file manager). It installs over v0.1.0, and from it on Starling tells you on its title screen when a newer release is out, downloads it and has Android install it (Update, Tomorrow or No).
 
 **You need** a 64-bit phone with Android 8 or newer and Vulkan, about 2 GB free, and a Microsoft account that owns Minecraft: Java Edition. No computer: on the first start Starling signs you in, downloads the game's files from Mojang's servers and prepares them on the phone, once (79 seconds on a POCO F6 Pro, longer on slower phones). Go fishing or change the settings while it works.
 
@@ -32,16 +32,17 @@ Builds of every push to the `android` branch are in [GitHub Actions](https://git
 
 ## What works today
 
-- **Setting up on the phone:** sign in with your Microsoft account, and the game's files come from Mojang and are prepared on the phone, with the Java runtime that takes fetched just for it and removed after. While it works, fish in a little pond, or change the settings in a hand-drawn skin made for this screen (the game's own look is part of what is being prepared). Resources prepared on a computer still open too.
+- **Setting up on the phone:** sign in with your Microsoft account, and the game's files come from Mojang and are prepared on the phone, by a Java runtime fetched just for that and removed after, with every language the game has. While it works, fish in a little pond, or change the settings in a hand-drawn skin made for this screen (the game's own look is part of what is being prepared). Resources prepared on a computer still open too.
 - **The game:** singleplayer with vanilla's world generation, mobs, villagers, raids, redstone, every command, the HUD and the recipe book, on saves in vanilla's format. Worlds from 1.8 to 26.2 are upgraded as vanilla does.
 - **Touch controls:** every action on screen, from the movement stick to the hotbar, chat and commands, with a layout you can move, resize and fade in the game.
-- **Your files within reach:** worlds, resource packs, shader packs, mods and screenshots live in a `Starling` folder on the phone's storage, which any file manager opens. Open a `.starling` file to add a pack, a world or a mod.
+- **The phone's own keyboard:** its suggestions, autocorrect, swipe typing and clipboard in the chat, signs and books (commands and searches go without autocorrect), a Paste button on the chat bar, and Enter finishing a command when only one completion fits (`/gamemode c` runs `/gamemode creative`).
+- **Your files within reach:** worlds, resource packs, shader packs, mods and screenshots live in a `Starling` folder on the phone's storage, which any file manager opens (turned down on the first start, it is offered again by the Open Pack Folder buttons). Open a `.starling` file to add a pack, a world or a mod.
 - **Made for phones:** settings picked for your device on the first start, and a stats overlay (tap with three fingers) for FPS, memory and temperature.
 - **Horizon's own extras:** new menus (vanilla's are one setting away), graphics presets and more, all off by default where they would change the vanilla look. See [Settings](https://playhorizon.dev/docs/settings).
 - **Resource packs and data packs:** resource packs work, and data packs load functions, predicates and item modifiers.
 - **Servers:** offline-mode servers, behind a proxy such as Velocity too, with their resource packs, coloured chat, boss bars, signs, workstation menus (enchanting, anvil, smithing...), flight and the attributes they set. Plugin servers' dialogs, chat buttons, custom armour (ItemsAdder, Nexo), models riding their mobs (ModelEngine, BetterModel) and clickable furniture work, and the touch stick moves in a way each server's anticheat (GrimAC and the like) accepts: Free Direction, D-pad or Analog, remembered per server.
 - **Shader packs:** Iris and OptiFine packs such as Complementary and MakeUp run on the phone, translated when they load: put them in `Starling/shaderpacks` and pick one, and its profile, in **Video Settings > Shader Packs**. Complementary's LOW profile plays at 45 to 55 fps at half resolution on a Snapdragon 8 Gen 2. See the [roadmap](roadmap/starling.md).
-- **Starling Visuals:** Starling's own shader pack, made for phones ([packaging/shaderpacks/starling-visuals](packaging/shaderpacks/starling-visuals), also `StarlingVisuals.zip` on the releases page): sunlight and shadows, water with waves and depth, haze thicker down low and at dawn, sun rays through the trees and clouds, bloom, and light from a torch in your hand, at 70 to 80 fps at full resolution with shadows on a Snapdragon 8 Gen 2 (over 100 without them).
+- **Starling Visuals:** Starling's own shader pack, made for phones, which comes with the app: pick it in **Video Settings > Shader Packs** ([packaging/shaderpacks/starling-visuals](packaging/shaderpacks/starling-visuals), also `StarlingVisuals.zip` on the releases page). Sunlight and shadows, water with waves and depth, haze thicker down low and at dawn, sun rays through the trees and clouds, bloom, and light from a torch in your hand, at 70 to 80 fps at full resolution with shadows on a Snapdragon 8 Gen 2 (over 100 without them).
 - **Mods:** mods in Rust or JavaScript change the HUD, add screens, commands and keys, read the world and talk to servers, on the phone as on the desktop. See [Mods](#mods).
 
 ## Android status
@@ -61,7 +62,7 @@ What the Android port covers so far; what is being done now and next is in the [
 | Server plugins | <img src="docs/media/progress/75.svg" alt="75%"> | Custom armour from any pack, animated models riding mobs, block and item displays, clickable furniture, item cooldowns, HUD text without shadows; no glowing outlines yet |
 | Movement on anticheat servers | <img src="docs/media/progress/80.svg" alt="80%"> | Free Direction, D-pad or Analog per server, no pull-backs on GrimAC or Pika in tests; some old-version servers behind ViaVersion still pull back |
 | Shader packs | <img src="docs/media/progress/60.svg" alt="60%"> | Complementary and MakeUp run on a phone, picked with their profile in Video Settings > Shader Packs; a pack's own options and some effects still differ |
-| APK builds | <img src="docs/media/progress/90.svg" alt="90%"> | Signed releases on the releases page; every push also builds an APK in GitHub Actions |
+| APK builds and updates | <img src="docs/media/progress/90.svg" alt="90%"> | Signed releases on the releases page, offered and installed by the game itself from v0.1.0.1; every push also builds an APK in GitHub Actions |
 | Open to LAN and invites | <img src="docs/media/progress/10.svg" alt="10%"> | Not tried on Android yet |
 | Physical controllers | <img src="docs/media/progress/0.svg" alt="0%"> | No Android backend yet |
 | Setting up on the phone | <img src="docs/media/progress/80.svg" alt="80%"> | Prepared on a phone in 79 s from the official 26.3 files, with Java fetched for it; fishing and hand-drawn settings while it works; the download with an account that owns the game is not tried yet |

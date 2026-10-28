@@ -18,10 +18,9 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
   use are out of the way.
 
 **Next**: what players reported (the touch Sneak as hold or toggle, saving when the app is
-closed abruptly, a prompt when a new release is out, the keyboard's paste and autocorrect, GrimAC
-and digging up while flying); a pack's own options in the game; secure chat for servers that
-require it; physical controllers on Android; Open to LAN and invites on a phone; catching up with
-Horizon.
+closed abruptly, GrimAC and digging up while flying); a pack's own options in the game; secure
+chat for servers that require it; physical controllers on Android; Open to LAN and invites on a
+phone; catching up with Horizon.
 
 **Later**: a store release; more of the game open to mods; Horizon's native mods; a phone-sized mod
 browser.
@@ -41,9 +40,36 @@ You install the APK, sign in with the Microsoft account that owns the game, and 
 > waits: fishing seen from above (a bobber where the finger holds, a fish swimming to it, sounds
 > made in the game) and Settings, the game's own Options screens in a hand-drawn skin
 > (packaging/lowbudget: our own handwriting, every letter written in five takes and picked by where
-> it stands; buttons drawn without a ruler in four takes). Left: the download with an account that
-> owns the game, tried end to end; plainer words on the setup's errors; how long it takes on slower
-> phones.
+> it stands; buttons drawn without a ruler in four takes). In v0.1.0.1: every language the game has
+> (the downloaded files carry them; resources prepared on a computer before horizon-prepare learnt
+> them had English only); no file error under the card on a first start; the credits close with a
+> tap or the back key. Left: the download with an account that owns the game, tried end to end;
+> plainer words on the setup's errors; how long it takes on slower phones.
+
+### The keyboard
+
+You type in the chat, on signs and in books as in any app: suggestions, autocorrect, swipe, paste.
+
+> Done (v0.1.0.1): a hidden editor (TextMirror.java) behind the on-screen keyboard instead of
+> NativeActivity's key events, holding a copy of the focused field, its edits sent to the game whole
+> (text and selection) and the game's own changes (Tab, the history, a line sent) sent back; no
+> suggestions for commands, command blocks, names and searches; a Paste button on the chat bar;
+> Enter completing the words of a command that does not parse when each has exactly one
+> completion (never free text, never a word the server completes). Left: trying it on a phone with
+> Gboard and other keyboards; the text fields of mods, the recipe book and the options, which
+> still get the key events.
+
+### Updates from the game
+
+You hear about a new release on the title screen, and the game installs it: no browser.
+
+> Done (v0.1.0.1): a release looks at GitHub's latest release on start (test builds, signed with
+> another key, do not); Update downloads its APK (checked against the SHA-256 GitHub gives) into the
+> app's own files and hands it to Android's installer through a provider of the app's (Android asks
+> to allow installs from Starling the first time, and offers to open it once updated); Tomorrow
+> asks again in a day, No at the next start. Starling Visuals comes in the APK and is put in
+> `shaderpacks/` when the app carries a new one. Left: trying an update from one release to the next
+> on a phone (v0.1.0 has no prompt: it is installed over by hand once).
 
 ### Shader packs on a phone
 
@@ -108,17 +134,13 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 
 - **What players reported**: the touch Sneak button as hold or toggle in the layout editor (and,
   flying, going down only while it is held, as on Java); the world saved when the app loses focus,
-  so closing it abruptly keeps it; a prompt on start when a newer release is on GitHub (No, or
-  remind me in a day); the keyboard's paste and autocorrect, and Enter completing a command's last
-  word when only one completion fits; GrimAC flagging the player who digs up while flying.
+  so closing it abruptly keeps it; GrimAC flagging the player who digs up while flying.
 - **Catching up with Horizon**: Starling's base is far behind Horizon's, which moves fast; to bring
   its fixes over, and so that mods made for a Horizon revision fit.
 - **A pack's own options in the game**: the settings screen a shader pack describes, beside its profile.
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off
   there).
-- **The game files prepared on the phone**: today a computer with Java prepares them once from your own
-  copy of the game.
 - **Open to LAN and invites on a phone**: built in, not tried on Android yet.
 
 ## Later
