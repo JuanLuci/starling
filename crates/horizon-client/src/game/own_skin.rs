@@ -274,6 +274,10 @@ impl Game<'_> {
 
     /// Where the title screen shows its player in a GUI `w` by `h`; None on its other pages.
     fn title_layout(&self, w: f32, h: f32) -> Option<TitleLayout> {
+        // The player's model comes with the world's resources, which load behind the menu.
+        if !self.res.rest_ready() {
+            return None;
+        }
         let title = self.title.as_ref()?;
         matches!(title.mode, Mode::Main)
             .then(|| title_layout_in(w, h))
