@@ -1,32 +1,23 @@
-**Starling 0.1.1: Bedrock's buttons, a world that keeps, and Horizon brought up to date.**
+**Starling 0.1.2: your name and your skin.**
 
 ## Install
 
-- **On 0.1.0.1:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
-- **On 0.1.0, or new here:** download **`starling-0.1.1-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
+- **On 0.1.0.1 or 0.1.1:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
+- **On 0.1.0, or new here:** download **`starling-0.1.2-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
 
 > Installed a test build from GitHub Actions? Uninstall it first: test builds are signed with another key. Worlds kept in the `Starling` folder stay where they are.
 
 ## What's new
 
-- **Bedrock's touch buttons.** The controls wear Bedrock's own buttons, which Starling downloads from Mojang after preparing the game (nothing of Mojang's is in the app). Offline, Starling's own stone-grey buttons stand in.
-- **Sneak as Hold or Toggle**, picked in the layout editor. Flying, Sneak only takes you down while you hold it.
-- **Lay out your controls anywhere**, while the game prepares and on the title screen too.
-- **Your world keeps** when you close Starling abruptly: it saves as soon as it leaves the screen.
-- **Fewer anticheat flags.** Breaking a block while moving no longer reaches the server late (GrimAC flagged players digging up while flying), and a break the server refuses puts you back where you stood, as Java does.
-- **Horizon brought up to date**: 2118 of its commits, with many fixes to the game.
-
-## Fixes
-
-- When the setup cannot reach Microsoft, Mojang or GitHub, it now says why (the network's own words), for a bug report.
-- A world whose save was cut short opens from its backup `level.dat_old`.
-- After an abrupt close the last session's log is kept as `Starling/logs/previous.log`.
+- **Your name and your skin**, in **Options > Skin Customization**: the name you play with in your worlds (3 to 16 letters, digits or `_`), and a skin from your files (**Choose a File...**, or a PNG in `Starling/skins`), classic or slim. Open a skin PNG with Starling and it is put on at once. Signed in with a Microsoft account, servers still see your account's name and skin.
+- **The Starling folder, asked first**: the setup offers to keep your worlds, packs and logs in a `Starling` folder any file manager opens, before you sign in.
+- **High refresh rates**: with Max Framerate on Unlimited, Starling asks Android for your screen's fastest refresh rate instead of letting it hold the game at 60 Hz.
 
 ## Known issues
 
-- Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed.
+- Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed, and the message now says why.
 - Bedrock's buttons show from the start after the one that downloads them.
-- Tested on one phone (POCO F6 Pro, Adreno 740); phones with Mali GPUs are untested so far.
+- Tested on a POCO F6 Pro (Adreno 740) and by a player on a vivo X200s (Immortalis-G925, a Mali GPU: about 100 fps); other Mali phones are untested so far.
 - Servers that require signed chat (secure chat) refuse messages for now.
 - Starling's own screens are in English only.
 

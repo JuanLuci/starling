@@ -17,7 +17,7 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 - **Settings that make sense on a phone**: Every option does what it says, and the ones a phone can't
   use are out of the way.
 
-**Next**: a name and a skin of the player's own; a pack's own options in the game; secure chat
+**Next**: a pack's own options in the game; secure chat
 for servers that require it; physical controllers on Android; Open to LAN and invites on a phone;
 keeping up with Horizon.
 
@@ -85,6 +85,15 @@ anticheat flags for digging up while flying.
 > before the move into its space with the stick in Free Direction, and a refused break putting the
 > player back (BlockStatePredictionHandler). Left: trying the dig fix on a GrimAC server with
 > latency; placing blocks while steering, which still waits a tick.
+>
+> Done (v0.1.2): Options > Skin Customization with the name the worlds use (vanilla's offline-name
+> rules, kept in horizon-player.txt; a signed-in account's name on servers, which cannot be told
+> apart before joining) and a skin from `skins/` or the file picker, classic or slim, worn in the
+> atlas's own-skin slot the way a Mojang skin is (first and third person, the inventory, the player
+> list), a skin PNG opened with Starling put on at once; the Starling folder offered in the setup
+> before the sign-in; with no frame cap, the screen's fastest refresh rate asked for
+> (ANativeWindow_setFrameRate), where a phone's own policy held games at 60 Hz. Left: a skin
+> others see on servers (it is the account's, or a plugin's such as SkinsRestorer).
 
 ### Shader packs on a phone
 
@@ -147,8 +156,6 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 
 ## Next
 
-- **A name and a skin of your own**: the name you play with in singleplayer and on offline-mode
-  servers, and a skin picked from your files, classic or slim.
 - **Keeping up with Horizon**: v0.1.1 merged Horizon's main of 2026-10-28 (2118 commits: the client
   split into crates, server mods, HDR, Horizon's own shader packs); to merge it again often, so that
   its fixes come over and mods made for a Horizon revision fit.
