@@ -37,7 +37,7 @@ pub(super) const HELP: &[&str] = &[
 /// How long a tap holds the use trigger: vanilla samples input once a tick.
 const USE_PULSE: Duration = Duration::from_millis(60);
 /// The layout's file, beside options.txt.
-const LAYOUT_FILE: &str = "touch-layout.json";
+pub(super) const LAYOUT_FILE: &str = "touch-layout.json";
 
 #[derive(Default)]
 pub(super) struct Touch {
@@ -127,6 +127,225 @@ fn clipboard(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, c: [f3
     batch.fill(atlas, cx - 2.0, top - 1.0, 5.0, 2.0, ink);
     batch.fill(atlas, cx - 2.0, cy, 5.0, 1.0, ink);
     batch.fill(atlas, cx - 2.0, cy + 2.0, 5.0, 1.0, ink);
+}
+
+// The controls' looks, in window pixels: a plate, a pressed plate and a label at a control's
+// opacity.
+fn plate(a: f32) -> u32 {
+    color::with_alpha(color::WHITE, 0.16 * a)
+}
+fn pressed(a: f32) -> u32 {
+    color::with_alpha(color::WHITE, 0.38 * a)
+}
+fn ink(a: f32) -> u32 {
+    color::with_alpha(color::WHITE, 0.85 * a)
+}
+fn circle(ui: &mut Ui, c: [f32; 2], r: f32, fill: u32) {
+    let d = ui.density;
+    ui.rounded(
+        (c[0] - r) / d,
+        (c[1] - r) / d,
+        2.0 * r / d,
+        2.0 * r / d,
+        r / d,
+        fill,
+    );
+}
+fn label(ui: &mut Ui, c: [f32; 2], r: f32, text: &str, tint: u32) {
+    let d = ui.density;
+    let size = (r / d * 0.5).clamp(9.0, 16.0);
+    ui.text_centered(
+        Face::Semibold,
+        size,
+        c[0] / d,
+        c[1] / d - size * 0.62,
+        tint,
+        text,
+    );
+}
+/// A plate and an outline of any shape (circles as above).
+fn plate_of(ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, fill: u32) {
+    let d = ui.density;
+    let [hw, hh] = shape.half(r);
+    let corner = match shape {
+        Shape::Square => r * 0.3,
+        Shape::Round | Shape::Wide(_) => r,
+    };
+    ui.rounded(
+        (c[0] - hw) / d,
+        (c[1] - hh) / d,
+        2.0 * hw / d,
+        2.0 * hh / d,
+        corner / d,
+        fill,
+    );
+}
+fn ring_of(ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, line: u32) {
+    let d = ui.density;
+    let [hw, hh] = shape.half(r);
+    let corner = match shape {
+        Shape::Square => r * 0.3,
+        Shape::Round | Shape::Wide(_) => r,
+    };
+    ui.border(
+        (c[0] - hw) / d,
+        (c[1] - hh) / d,
+        2.0 * hw / d,
+        2.0 * hh / d,
+        corner / d,
+        line,
+    );
+}
+/// A sprite over a button, `share` of its height, at an opacity.
+fn icon(ui: &mut Ui, sprite: &str, c: [f32; 2], r: f32, share: f32, a: f32) {
+    let gui = ui.batch.scale;
+    let side = (2.0 * r * share / gui).round();
+    let (x, y) = (
+        (c[0] / gui - side / 2.0).round(),
+        (c[1] / gui - side / 2.0).round(),
+    );
+    let tint = horizon_client::hud::rgba(255, 255, 255, (a.clamp(0.0, 1.0) * 255.0) as u8);
+    horizon_client::ui::sprite_sized(ui.batch, ui.atlas, sprite, x, y, side, side, tint);
+}
+/// A label's size for a button's radius: a wide button's is its height's, not its width's.
+fn text_r(shape: Shape, r: f32) -> f32 {
+    match shape {
+        Shape::Wide(_) => r * 1.5,
+        Shape::Round | Shape::Square => r,
+    }
+}
+
+/// The layout editor over whatever is behind it (the world, the title, the setup's settings):
+/// every control where it will be, the selected one's chips, the opacity slider, and Done, Reset
+/// and the movement control. `face` names a button or a mod's button (and gives the latter its
+/// icon); `shape` is a button's.
+pub(super) fn draw_editor(
+    ui: &mut Ui,
+    layout: &Layout,
+    config: &LayoutConfig,
+    editor: &LayoutEditor,
+    face: &dyn Fn(Target) -> (String, Option<String>),
+    shape: &dyn Fn(Button) -> Shape,
+) {
+    let d = ui.density;
+    let (w, h) = (layout.width, layout.height);
+    // The movement control as it moves the player now.
+    let dpad = layout.dpad;
+    ui.fill(0.0, 0.0, w / d, h / d, color::with_alpha(color::BG, 0.45));
+    for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
+        // As it will look (at least faintly, to be found again), outlined if a ghost.
+        let a = (place.opacity * config.opacity).max(0.35);
+        let shape = match target {
+            Target::Extra(i) => config.extra[i].shape,
+            Target::Button(b) => shape(b),
+            Target::Stick if dpad => Shape::Square,
+            Target::Stick => Shape::Round,
+        };
+        match place.show {
+            Show::On => plate_of(ui, shape, c, r, pressed(a)),
+            Show::Ghost => ring_of(ui, shape, c, r, ink(0.5)),
+            Show::Off => plate_of(ui, shape, c, r, plate(0.5)),
+        }
+        if editor.selected == Some(target) {
+            ring_of(ui, shape, c, r, color::ACCENT);
+        }
+        let (name, sprite) = match target {
+            Target::Stick if dpad => ("D-pad".to_owned(), None),
+            Target::Stick => ("Move".to_owned(), None),
+            _ => face(target),
+        };
+        let tint = if place.show == Show::Off {
+            ink(0.4)
+        } else {
+            ink(1.0)
+        };
+        // A mod's button with an icon shows it, as while playing (its name is on the opacity
+        // slider once picked).
+        let drawn = match target {
+            Target::Extra(_) if !matches!(shape, Shape::Wide(_)) => sprite,
+            _ => None,
+        };
+        match drawn {
+            Some(sprite) => {
+                let a = if place.show == Show::Off { 0.4 } else { 1.0 };
+                icon(ui, &sprite, c, r, 0.6, a);
+            }
+            None => label(ui, c, text_r(shape, r), &name, tint),
+        }
+    }
+    let shown = editor.selected.and_then(|t| {
+        LayoutEditor::targets(config, w, h)
+            .into_iter()
+            .find(|(x, ..)| *x == t)
+            .map(|(_, p, ..)| p.show)
+    });
+    for (chip, c, r) in editor.chips(config, w, h) {
+        circle(ui, c, r, color::with_alpha(color::BG, 0.85));
+        let text = match chip {
+            Chip::Smaller => "-",
+            Chip::Bigger => "+",
+            Chip::Visibility => match shown {
+                Some(Show::Ghost) => "Ghost",
+                Some(Show::Off) => "Off",
+                _ => "On",
+            },
+        };
+        label(ui, c, r, text, ink(1.0));
+    }
+    // The opacity slider: the selected control's, or everyone's.
+    let ([x0, y], [x1, _]) = LayoutEditor::opacity_track(w, h);
+    let value = editor.opacity(config);
+    let u = layout.unit;
+    ui.rounded(
+        x0 / d,
+        (y - 0.08 * u) / d,
+        (x1 - x0) / d,
+        0.16 * u / d,
+        0.08 * u / d,
+        color::with_alpha(color::BG, 0.85),
+    );
+    ui.rounded(
+        x0 / d,
+        (y - 0.08 * u) / d,
+        (x1 - x0) * value / d,
+        0.16 * u / d,
+        0.08 * u / d,
+        color::ACCENT,
+    );
+    circle(ui, [x0 + (x1 - x0) * value, y], 0.28 * u, ink(1.0));
+    let whose = match editor.selected {
+        Some(Target::Stick) => "Move".to_owned(),
+        Some(Target::Button(b)) => b.label().to_owned(),
+        Some(target @ Target::Extra(_)) => face(target).0,
+        None => "all".to_owned(),
+    };
+    ui.text_centered(
+        Face::Semibold,
+        12.0,
+        (x0 + x1) / 2.0 / d,
+        (y - 0.75 * u) / d,
+        ink(1.0),
+        &format!("Opacity ({whose}): {:.0}%", value * 100.0),
+    );
+    for (action, c, r) in LayoutEditor::bar(w, h) {
+        let fill = match action {
+            EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
+            EditorAction::Reset | EditorAction::Movement => color::with_alpha(color::BG, 0.85),
+        };
+        circle(ui, c, r, fill);
+        let text = match action {
+            EditorAction::Done => "Done",
+            EditorAction::Reset => "Reset",
+            // The movement control picked (a press switches it): auto is the D-pad where the
+            // stick moves as the keys.
+            EditorAction::Movement => match config.dpad {
+                Some(true) => "D-pad",
+                Some(false) => "Stick",
+                None => "Auto",
+            },
+        };
+        label(ui, c, r, text, ink(1.0));
+    }
 }
 
 impl Game<'_> {
@@ -265,7 +484,7 @@ impl Game<'_> {
             }
             return true;
         }
-        if self.touch.editor.is_some() && self.touch_playing() {
+        if self.touch.editor.is_some() && (self.touch_playing() || self.title.is_some()) {
             let [w, h] = self.touch_size();
             let config = self.touch.config.get_or_insert_with(LayoutConfig::default);
             let editor = self.touch.editor.as_mut().unwrap();
@@ -582,228 +801,33 @@ impl Game<'_> {
             return;
         }
         let (playing, closable) = (self.touch_playing(), self.touch_closable());
-        if !playing && !closable {
+        // The editor also over the title, before a world.
+        if !playing && !closable && self.touch.editor.is_none() {
             return;
         }
         let layout = self.touch_layout();
         let mut ui = Ui::new(&self.gui.atlas, batch, (-1.0, -1.0));
-        let d = ui.density;
-        // A plate, a pressed plate and a label, at a control's opacity.
-        let plate = |a: f32| color::with_alpha(color::WHITE, 0.16 * a);
-        let pressed = |a: f32| color::with_alpha(color::WHITE, 0.38 * a);
-        let ink = |a: f32| color::with_alpha(color::WHITE, 0.85 * a);
-        let circle = |ui: &mut Ui, c: [f32; 2], r: f32, fill: u32| {
-            ui.rounded(
-                (c[0] - r) / d,
-                (c[1] - r) / d,
-                2.0 * r / d,
-                2.0 * r / d,
-                r / d,
-                fill,
-            );
-        };
-        let label = |ui: &mut Ui, c: [f32; 2], r: f32, text: &str, tint: u32| {
-            let size = (r / d * 0.5).clamp(9.0, 16.0);
-            ui.text_centered(
-                Face::Semibold,
-                size,
-                c[0] / d,
-                c[1] / d - size * 0.62,
-                tint,
-                text,
-            );
-        };
-        // A plate and an outline of any shape (circles as above).
-        let plate_of = |ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, fill: u32| {
-            let [hw, hh] = shape.half(r);
-            let corner = match shape {
-                Shape::Square => r * 0.3,
-                Shape::Round | Shape::Wide(_) => r,
-            };
-            ui.rounded(
-                (c[0] - hw) / d,
-                (c[1] - hh) / d,
-                2.0 * hw / d,
-                2.0 * hh / d,
-                corner / d,
-                fill,
-            );
-        };
-        let ring_of = |ui: &mut Ui, shape: Shape, c: [f32; 2], r: f32, line: u32| {
-            let [hw, hh] = shape.half(r);
-            let corner = match shape {
-                Shape::Square => r * 0.3,
-                Shape::Round | Shape::Wide(_) => r,
-            };
-            ui.border(
-                (c[0] - hw) / d,
-                (c[1] - hh) / d,
-                2.0 * hw / d,
-                2.0 * hh / d,
-                corner / d,
-                line,
-            );
-        };
-        // A sprite over a button, `share` of its height, at an opacity.
-        let gui = ui.batch.scale;
-        let icon = |ui: &mut Ui, sprite: &str, c: [f32; 2], r: f32, share: f32, a: f32| {
-            let side = (2.0 * r * share / gui).round();
-            let (x, y) = (
-                (c[0] / gui - side / 2.0).round(),
-                (c[1] / gui - side / 2.0).round(),
-            );
-            let tint = horizon_client::hud::rgba(255, 255, 255, (a.clamp(0.0, 1.0) * 255.0) as u8);
-            horizon_client::ui::sprite_sized(ui.batch, ui.atlas, sprite, x, y, side, side, tint);
-        };
         // A mod's button: its plate, its icon or its label.
         let face_of = |key: &str| self.touch.faces.iter().find(|f| f.key == key);
-        // A label's size for a button's radius: a wide button's is its height's, not its width's.
-        let text_r = |shape: Shape, r: f32| match shape {
-            Shape::Wide(_) => r * 1.5,
-            Shape::Round | Shape::Square => r,
-        };
         if closable {
             let (c, r) = layout.close;
             circle(&mut ui, c, r, color::with_alpha(color::BG, 0.7));
             label(&mut ui, c, r, "X", ink(1.0));
         } else if let (Some(editor), Some(config)) = (&self.touch.editor, &self.touch.config) {
-            let (w, h) = (layout.width, layout.height);
-            // The movement control as it moves the player now.
-            let dpad = layout.dpad;
-            ui.fill(0.0, 0.0, w / d, h / d, color::with_alpha(color::BG, 0.45));
-            for (target, place, c, r) in LayoutEditor::targets(config, w, h) {
-                // As it will look (at least faintly, to be found again), outlined if a ghost.
-                let a = (place.opacity * config.opacity).max(0.35);
-                let shape = match target {
-                    Target::Extra(i) => config.extra[i].shape,
-                    Target::Button(b) => self.control_face(b).shape,
-                    Target::Stick if dpad => Shape::Square,
-                    Target::Stick => Shape::Round,
-                };
-                match place.show {
-                    Show::On => plate_of(&mut ui, shape, c, r, pressed(a)),
-                    Show::Ghost => ring_of(&mut ui, shape, c, r, ink(0.5)),
-                    Show::Off => plate_of(&mut ui, shape, c, r, plate(0.5)),
-                }
-                if editor.selected == Some(target) {
-                    ring_of(&mut ui, shape, c, r, color::ACCENT);
-                }
-                let name;
-                let text = match target {
-                    Target::Stick if dpad => "D-pad",
-                    Target::Stick => "Move",
-                    Target::Button(b) => {
-                        name = self.control_face(b).label;
-                        &name
-                    }
-                    Target::Extra(i) => {
-                        let key = &config.extra[i].key;
-                        name = face_of(key).map_or_else(|| key.clone(), |f| f.label.clone());
-                        &name
-                    }
-                };
-                let tint = if place.show == Show::Off {
-                    ink(0.4)
-                } else {
-                    ink(1.0)
-                };
-                // A mod's button with an icon shows it, as while playing (its name is on the
-                // opacity slider once picked).
-                let drawn = match target {
-                    Target::Extra(i) if !matches!(shape, Shape::Wide(_)) => {
-                        face_of(&config.extra[i].key).and_then(|f| f.icon.clone())
-                    }
-                    _ => None,
-                };
-                match drawn {
-                    Some(sprite) => {
-                        let a = if place.show == Show::Off { 0.4 } else { 1.0 };
-                        icon(&mut ui, &sprite, c, r, 0.6, a);
-                    }
-                    None => label(&mut ui, c, text_r(shape, r), text, tint),
-                }
-            }
-            let shown = editor.selected.and_then(|t| {
-                LayoutEditor::targets(config, w, h)
-                    .into_iter()
-                    .find(|(x, ..)| *x == t)
-                    .map(|(_, p, ..)| p.show)
-            });
-            for (chip, c, r) in editor.chips(config, w, h) {
-                circle(&mut ui, c, r, color::with_alpha(color::BG, 0.85));
-                let text = match chip {
-                    Chip::Smaller => "-",
-                    Chip::Bigger => "+",
-                    Chip::Visibility => match shown {
-                        Some(Show::Ghost) => "Ghost",
-                        Some(Show::Off) => "Off",
-                        _ => "On",
-                    },
-                };
-                label(&mut ui, c, r, text, ink(1.0));
-            }
-            // The opacity slider: the selected control's, or everyone's.
-            let ([x0, y], [x1, _]) = LayoutEditor::opacity_track(w, h);
-            let value = editor.opacity(config);
-            let u = layout.unit;
-            ui.rounded(
-                x0 / d,
-                (y - 0.08 * u) / d,
-                (x1 - x0) / d,
-                0.16 * u / d,
-                0.08 * u / d,
-                color::with_alpha(color::BG, 0.85),
-            );
-            ui.rounded(
-                x0 / d,
-                (y - 0.08 * u) / d,
-                (x1 - x0) * value / d,
-                0.16 * u / d,
-                0.08 * u / d,
-                color::ACCENT,
-            );
-            circle(&mut ui, [x0 + (x1 - x0) * value, y], 0.28 * u, ink(1.0));
-            let named;
-            let whose = match editor.selected {
-                Some(Target::Stick) => "Move",
-                Some(Target::Button(b)) => b.label(),
-                Some(Target::Extra(i)) => {
+            let face = |target: Target| match target {
+                Target::Button(b) => (self.control_face(b).label, None),
+                Target::Extra(i) => {
                     let key = &config.extra[i].key;
-                    named = face_of(key).map_or_else(|| key.clone(), |f| f.label.clone());
-                    &named
+                    let face = face_of(key);
+                    (
+                        face.map_or_else(|| key.clone(), |f| f.label.clone()),
+                        face.and_then(|f| f.icon.clone()),
+                    )
                 }
-                None => "all",
+                Target::Stick => (String::new(), None),
             };
-            ui.text_centered(
-                Face::Semibold,
-                12.0,
-                (x0 + x1) / 2.0 / d,
-                (y - 0.75 * u) / d,
-                ink(1.0),
-                &format!("Opacity ({whose}): {:.0}%", value * 100.0),
-            );
-            for (action, c, r) in LayoutEditor::bar(w, h) {
-                let fill = match action {
-                    EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
-                    EditorAction::Reset | EditorAction::Movement => {
-                        color::with_alpha(color::BG, 0.85)
-                    }
-                };
-                circle(&mut ui, c, r, fill);
-                let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
-                let text = match action {
-                    EditorAction::Done => "Done",
-                    EditorAction::Reset => "Reset",
-                    // The movement control picked (a press switches it): auto is the D-pad
-                    // where the stick moves as the keys.
-                    EditorAction::Movement => match picked {
-                        Some(true) => "D-pad",
-                        Some(false) => "Stick",
-                        None => "Auto",
-                    },
-                };
-                label(&mut ui, c, r, text, ink(1.0));
-            }
+            let shape = |b: Button| self.control_face(b).shape;
+            draw_editor(&mut ui, &layout, config, editor, &face, &shape);
         } else {
             let (base, knob) = self
                 .touch

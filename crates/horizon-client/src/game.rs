@@ -13592,6 +13592,9 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        if self.menu_touch_editor_event(&event) {
+            return;
+        }
         if let WindowEvent::Touch(touch) = &event
             && self.credits_touch(touch)
         {
@@ -13685,7 +13688,10 @@ impl Loading {
                 w.request_redraw();
             }
             event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + self.setup.frame(self.menu.options_open),
+                Instant::now()
+                    + self
+                        .setup
+                        .frame(self.menu.options_open || self.menu_touch_editing()),
             ));
             return;
         }
@@ -13734,6 +13740,7 @@ impl Loading {
         } else {
             self.draw_menu(&mut batch);
         }
+        self.draw_menu_touch_editor(&mut batch, size);
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),

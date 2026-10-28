@@ -15,6 +15,12 @@ pub(super) struct StartupMenu {
     pub(super) options_open: bool,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
+    /// The touch layout editor from Controls' Touch Controls, and the layout it edits (saved in
+    /// touch-layout.json on Done, which the game reads once it starts).
+    touch_editor: Option<(
+        horizon_client::touch::LayoutEditor,
+        horizon_client::touch::LayoutConfig,
+    )>,
     root: PathBuf,
     cursor: (f32, f32),
     pointer: (f64, f64),
@@ -250,6 +256,99 @@ pub(super) fn spawn_loader(
 }
 
 impl Loading {
+    fn touch_layout_path() -> PathBuf {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(super::touch::LAYOUT_FILE)
+    }
+
+    /// The touch layout editor in place of the options, on the layout as it was saved: the
+    /// controls can be laid out while the game is set up, before a world.
+    fn open_menu_touch_editor(&mut self) {
+        let config = std::fs::read_to_string(Self::touch_layout_path()).map_or_else(
+            |_| horizon_client::touch::LayoutConfig::default(),
+            |text| horizon_client::touch::LayoutConfig::from_json(&text),
+        );
+        self.save_menu_settings();
+        self.menu.options_open = false;
+        self.menu.dragging = false;
+        self.menu.touch_editor = Some((Default::default(), config));
+    }
+
+    pub(super) fn menu_touch_editing(&self) -> bool {
+        self.menu.touch_editor.is_some()
+    }
+
+    /// Done: the layout saved, the options back.
+    fn close_menu_touch_editor(&mut self) {
+        let Some((_, config)) = self.menu.touch_editor.take() else {
+            return;
+        };
+        if let Err(e) = std::fs::write(Self::touch_layout_path(), config.to_json()) {
+            log::warn!("Horizon: the touch layout was not saved: {e}");
+        }
+        self.menu.options_open = true;
+    }
+
+    /// While the editor shows it takes every touch; the back key is its Done.
+    pub(super) fn menu_touch_editor_event(&mut self, event: &WindowEvent) -> bool {
+        if self.menu.touch_editor.is_none() {
+            return false;
+        }
+        let size = self.window.as_ref().map_or([1.0, 1.0], |w| {
+            let s = w.inner_size();
+            [s.width.max(1) as f32, s.height.max(1) as f32]
+        });
+        match event {
+            WindowEvent::Touch(touch) => {
+                let p = [touch.location.x as f32, touch.location.y as f32];
+                let done = self
+                    .menu
+                    .touch_editor
+                    .as_mut()
+                    .is_some_and(|(editor, config)| {
+                        editor.event(config, size[0], size[1], touch.id, touch.phase, p)
+                            == Some(horizon_client::touch::EditorAction::Done)
+                    });
+                if done {
+                    self.close_menu_touch_editor();
+                }
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::BrowserBack) =>
+            {
+                self.close_menu_touch_editor();
+            }
+            // The mouse the fingers would make, and the rest: the editor's.
+            WindowEvent::MouseInput { .. } | WindowEvent::CursorMoved { .. } => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// The editor over the setup or the title: the controls as the game lays them out, named
+    /// as the game names them (mods add none before a world).
+    pub(super) fn draw_menu_touch_editor(&self, batch: &mut HudBatch, size: [u32; 2]) {
+        let (Some(gui), Some((editor, config))) = (&self.gui, &self.menu.touch_editor) else {
+            return;
+        };
+        let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+        let mut layout = horizon_client::touch::Layout::from_config(config, w, h, batch.scale);
+        layout.dpad = config.dpad.unwrap_or(false);
+        let face = |target: horizon_client::touch::Target| match target {
+            horizon_client::touch::Target::Button(b) => (b.label().to_owned(), None),
+            horizon_client::touch::Target::Extra(i) => (config.extra[i].key.clone(), None),
+            horizon_client::touch::Target::Stick => (String::new(), None),
+        };
+        let mut ui = horizon_client::ui_theme::Ui::new(&gui.atlas, batch, (-1.0, -1.0));
+        super::touch::draw_editor(&mut ui, &layout, config, editor, &face, &|_| {
+            horizon_client::touch::Shape::Round
+        });
+        ui.finish();
+    }
+
     /// While the credits roll, a lifted finger closes them, as Escape does: a phone has no
     /// Escape, and the touch's mouse clicks do nothing to them.
     pub(super) fn credits_touch(&mut self, touch: &winit::event::Touch) -> bool {
@@ -391,8 +490,7 @@ impl Loading {
                         audio.play_button_click();
                     }
                 }
-                // Over a world only: the title has no controls to lay out.
-                Event::TouchLayout => {}
+                Event::TouchLayout => self.open_menu_touch_editor(),
                 Event::Credits => {
                     if let Some(gui) = &self.gui {
                         let name = self.options.as_ref().map_or_else(

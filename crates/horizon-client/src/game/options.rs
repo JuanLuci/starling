@@ -314,18 +314,13 @@ impl Game<'_> {
                         self.open_mod_screen(screen);
                     }
                 }
-                // The editor works over the world: the menus close for it.
-                Event::TouchLayout if self.title.is_none() => {
+                // The editor works over the world, or over the title before one: the menus
+                // close for it.
+                Event::TouchLayout => {
                     self.settings.save(&Self::options_path());
                     self.screen = Screen::Playing;
                     self.dragging = false;
                     self.open_touch_editor();
-                }
-                Event::TouchLayout => {
-                    self.message = Some((
-                        "Open a world to edit the touch controls".into(),
-                        std::time::Instant::now(),
-                    ));
                 }
                 Event::ModSettings(i) => self.open_mod_ui(i, true),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
