@@ -43,7 +43,7 @@ You install the APK, sign in with the Microsoft account that owns the game, and 
 > it stands; buttons drawn without a ruler in four takes). In v0.1.0.1: every language the game has
 > (the downloaded files carry them; resources prepared on a computer before horizon-prepare learnt
 > them had English only); no file error under the card on a first start; the credits close with a
-> tap or the back key. Left: the download with an account that owns the game, tried end to end;
+> tap or the back key; Touch Controls opens the layout editor over the setup and the title too. Left: the download with an account that owns the game, tried end to end;
 > plainer words on the setup's errors; how long it takes on slower phones.
 
 ### The keyboard

@@ -17,6 +17,7 @@
 
 ## Fixes
 
+- **Touch Controls** (Options > Controls) opens the layout editor while Starling sets up and on the title screen, not only in a world: lay out your controls while the game prepares.
 - The credits (Options > Credits & Attribution) close with a tap or the back key; while setting up they could not be closed at all.
 - No "No such file or directory" under the setup card on a first start.
 
