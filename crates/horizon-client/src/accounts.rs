@@ -33,6 +33,16 @@ pub fn files_root() -> PathBuf {
     crate::logging::private_home().join("minecraft")
 }
 
+/// The server jar the last complete download fetched, for the preparer (preparer.rs).
+pub fn server_jar() -> Option<PathBuf> {
+    let done: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(files_root().join(FILES_DONE)).ok()?).ok()?;
+    done["server"]
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+}
+
 /// Secrets sealed by the platform's keystore, one file each: what lands on the disk opens on
 /// this device only.
 struct SealedStore {

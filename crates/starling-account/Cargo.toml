@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Starling's Microsoft sign-in for the game itself (no launcher): the device-code flow, Xbox Live, XSTS, the Minecraft services, the ownership check, and the official game files an owner may fetch"
+description = "Starling's Microsoft sign-in for the game itself (no launcher): the device-code flow, Xbox Live, XSTS, the Minecraft services, the ownership check, the official game files an owner may fetch, and the Java runtime that prepares them on a phone"
 publish = false
 
 [dependencies]
@@ -12,3 +12,7 @@ ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
+sha2 = "0.10"
+# The Java runtime that prepares the game files on a phone comes as a .tar.xz.
+lzma-rs = "0.3"
+tar = { version = "0.4", default-features = false }

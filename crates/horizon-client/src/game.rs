@@ -155,6 +155,7 @@ mod sculk;
 mod sculk_fixture;
 mod server_packs;
 mod server_travel;
+mod setup;
 mod shader_packs;
 mod shield;
 mod sign_edit;
@@ -13497,6 +13498,8 @@ struct Loading {
     /// Why the resources did not load, kept on screen instead of quitting where no terminal
     /// shows the error (Android).
     failure: Option<String>,
+    /// Android: the game set up on the phone in place of that failure (game/setup.rs).
+    setup: setup::Setup,
     /// The finger acting as the mouse (horizon_client::touch::TouchPointer).
     touch_pointer: horizon_client::touch::TouchPointer,
     /// Files handed to the game from outside: prepared resources end the failure.
@@ -13577,11 +13580,14 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        // The failure screen: a tap picks the prepared resources to import.
+        // The failure screen: the setup's buttons (Android), else a tap picks the prepared
+        // resources to import.
         if self.failure.is_some()
             && let WindowEvent::Touch(touch) = &event
         {
-            if touch.phase == winit::event::TouchPhase::Ended
+            if horizon_client::platform::registered() {
+                self.setup_touch(touch);
+            } else if touch.phase == winit::event::TouchPhase::Ended
                 && !horizon_client::platform::pick_file()
             {
                 log::warn!("Horizon: no file picker to import resources with");
@@ -13621,6 +13627,7 @@ impl Loading {
         );
         self.menu.set_root(root, &self.settings);
         self.gui = Some(gui);
+        self.setup.starting = false;
         horizon_client::ui_theme::reset_atlas();
         self.apply_menu_settings();
         let Some(window) = self.window.clone() else {
@@ -13652,6 +13659,9 @@ impl Loading {
                 && let Err(e) = self.retry()
             {
                 self.failure = Some(e.to_string());
+            }
+            if self.failure.is_some() && horizon_client::platform::registered() {
+                self.poll_setup();
             }
             if let Some(w) = &self.window {
                 w.request_redraw();
@@ -13692,7 +13702,14 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         if let Some(failure) = &self.failure {
-            self.draw_failure(&mut batch, failure);
+            if horizon_client::platform::registered() {
+                self.draw_setup(&mut batch, failure);
+            } else {
+                self.draw_failure(&mut batch, failure);
+            }
+        } else if self.setup.starting {
+            // Prepared: the setup stays until the menu's own font has come.
+            self.draw_setup(&mut batch, "");
         } else {
             self.draw_menu(&mut batch);
         }
@@ -14016,6 +14033,7 @@ fn run_loading(
         menu,
         error: None,
         failure: None,
+        setup: Default::default(),
         touch_pointer: Default::default(),
         imports: Default::default(),
         audio: None,

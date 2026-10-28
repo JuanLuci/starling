@@ -2,13 +2,14 @@
 """Build Starling's arm64-v8a Android APK (Horizon on Android): horizon-android as a
 NativeActivity library.
 
-The APK holds the game library and the launcher icon, nothing of Minecraft: the resources
-horizon-prepare makes from the player's own copy are copied to the app's folder separately.
+The APK holds the game library, the launcher icon and what prepares the game files on the phone
+(the Java launchers in native/ and the exporters' sources), nothing of Minecraft: the resources
+horizon-prepare makes from the player's own copy are made on the phone, or copied there.
 
     python3 packaging/android/build_apk.py                 # build the library, then the APK
     python3 packaging/android/build_apk.py --no-build      # package the library built last
     python3 packaging/android/build_apk.py --install       # and adb install it
-    python3 packaging/android/build_apk.py --zip           # and a zip of it to send (a third the size)
+    python3 packaging/android/build_apk.py --zip           # and a zip of it to send
 
 Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
 NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (javac, keytool,
@@ -45,6 +46,13 @@ ICONS = {
     "mipmap-xxhdpi": "128x128",
     "mipmap-xxxhdpi": "256x256",
 }
+# What horizon-prepare reads from its version folder on the phone (assets/prepare-kit.zip):
+# the pins and the exporters' Java sources, which the phone compiles against the player's jars.
+PREPARE_KIT = (
+    "research-lock.json",
+    "crates/horizon-prepare/src/exporters.rs",
+    "mods/horizon/src/test/java",
+)
 
 
 def sdk_dir():
@@ -106,6 +114,39 @@ def build_library(profile, ndk, sdk):
     )
 
 
+def build_launchers(ndk, out):
+    """The `java` and `javac` horizon-prepare runs on the phone (native/java_launcher.c), with the
+    C++ runtime the Java runtime's libraries need: an app runs programs only from its library
+    folder, so they go in the APK as libraries."""
+    clang = ndk_tool(ndk, f"{TRIPLE}{MIN_SDK}-clang")
+    source = HERE / "native" / "java_launcher.c"
+    libraries = {}
+    for name, flags in (("libstarling_java.so", []), ("libstarling_javac.so", ["-DJAVAC"])):
+        target = out / name
+        run(
+            clang, "-O2", "-fPIE", "-pie", "-Wall", "-Werror", *flags,
+            "-Wl,-z,max-page-size=16384", "-o", target, source, "-ldl",
+        )
+        libraries[name] = target
+    sysroot = ndk_tool(ndk, "clang").parent.parent / "sysroot"
+    libraries["libc++_shared.so"] = sysroot / "usr" / "lib" / TRIPLE / "libc++_shared.so"
+    return libraries
+
+
+def prepare_kit(out):
+    """assets/prepare-kit.zip (PREPARE_KIT, with the paths horizon-prepare reads)."""
+    assets = out / "assets"
+    shutil.rmtree(assets, ignore_errors=True)
+    assets.mkdir()
+    with zipfile.ZipFile(assets / "prepare-kit.zip", "w", zipfile.ZIP_DEFLATED) as kit:
+        for entry in PREPARE_KIT:
+            path = ROOT / entry
+            files = sorted(p for p in path.rglob("*.java")) if path.is_dir() else [path]
+            for file in files:
+                kit.write(file, file.relative_to(ROOT).as_posix())
+    return assets
+
+
 def compile_java(build_tools, android_jar, out):
     """StarlingActivity and LauncherActivity (java/) as classes.dex."""
     classes, dex = out / "classes", out / "dex"
@@ -121,8 +162,9 @@ def compile_java(build_tools, android_jar, out):
     return dex / "classes.dex"
 
 
-def link_resources(aapt2, android_jar, out):
-    """The manifest, the launcher icon and the themes, compiled and linked into `out/base.apk`."""
+def link_resources(aapt2, android_jar, out, assets):
+    """The manifest, the launcher icon, the themes and `assets`, compiled and linked into
+    `out/base.apk`."""
     manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
     manifest = manifest.replace("@APPLICATION_ID@", APPLICATION_ID).replace("@LABEL@", LABEL)
     (out / "AndroidManifest.xml").write_text(manifest, encoding="utf-8")
@@ -148,17 +190,19 @@ def link_resources(aapt2, android_jar, out):
         "--min-sdk-version", MIN_SDK, "--target-sdk-version", TARGET_SDK,
         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
         "--debug-mode",
+        "-A", assets,
         *sorted(compiled.glob("*.flat")),
     )
 
 
-def add_code(base, library, dex, unsigned):
-    """`base` plus the activity's dex and the library, stored uncompressed so Android maps it
-    straight from the APK."""
+def add_code(base, libraries, dex, unsigned):
+    """`base` plus the activity's dex and the libraries, compressed: Android extracts them at
+    install (extractNativeLibs), as it must for the Java launchers to run."""
     shutil.copyfile(base, unsigned)
     with zipfile.ZipFile(unsigned, "a") as apk:
         apk.write(dex, "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
-        apk.write(library, f"lib/{ABI}/lib{LIBRARY}.so", compress_type=zipfile.ZIP_STORED)
+        for name, path in sorted(libraries.items()):
+            apk.write(path, f"lib/{ABI}/{name}", compress_type=zipfile.ZIP_DEFLATED)
 
 
 def sign(build_tools, aligned, apk, out):
@@ -194,7 +238,7 @@ def main():
     parser.add_argument("--install", action="store_true", help="adb install the APK")
     parser.add_argument(
         "--zip", action="store_true",
-        help="also zip the APK, whose library is stored uncompressed (about 22 MB instead of 54)",
+        help="also zip the APK, for chats that take no .apk",
     )
     parser.add_argument(
         "--keep-symbols", action="store_true", help="ship the library unstripped (backtraces)"
@@ -225,16 +269,18 @@ def main():
     else:
         run(ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, built)
 
-    link_resources(tool(build_tools, "aapt2"), android_jar, out)
+    link_resources(tool(build_tools, "aapt2"), android_jar, out, prepare_kit(out))
     dex = compile_java(build_tools, android_jar, out)
-    add_code(out / "base.apk", library, dex, out / "unsigned.apk")
+    libraries = build_launchers(ndk, out)
+    libraries[library.name] = library
+    add_code(out / "base.apk", libraries, dex, out / "unsigned.apk")
     aligned = out / "aligned.apk"
     run(tool(build_tools, "zipalign"), "-P", "16", "-f", "4", out / "unsigned.apk", aligned)
     apk = out / f"starling-{VERSION_NAME}-{ABI}.apk"
     sign(build_tools, aligned, apk, out)
     print(apk)
     if args.zip:
-        # Sent where files are capped in size (a chat, a phone away from adb): unzip, then install.
+        # Sent where an .apk is refused (a chat, a phone away from adb): unzip, then install.
         packed = apk.with_suffix(".apk.zip")
         with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             z.write(apk, apk.name)

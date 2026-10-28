@@ -710,6 +710,7 @@ mod tests {
             menu: StartupMenu::default(),
             error: None,
             failure: None,
+            setup: Default::default(),
             touch_pointer: Default::default(),
             imports: Default::default(),
             audio: None,

@@ -92,6 +92,34 @@ fn clipboard_get() -> Option<String> {
     .flatten()
 }
 
+/// The folder Android extracted the APK's libraries to (ApplicationInfo.nativeLibraryDir), where
+/// the Java launchers are.
+fn library_dir() -> Option<PathBuf> {
+    with_activity(|env, activity| {
+        let info = env
+            .call_method(
+                activity,
+                "getApplicationInfo",
+                "()Landroid/content/pm/ApplicationInfo;",
+                &[],
+            )?
+            .l()?;
+        let dir = env
+            .get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?
+            .l()?;
+        Ok(PathBuf::from(String::from(env.get_string(&dir.into())?)))
+    })
+}
+
+/// A file of the APK's assets/, whole.
+fn asset(name: &str) -> Option<Vec<u8>> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut asset = APP.get()?.asset_manager().open(&name)?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut asset, &mut bytes).ok()?;
+    Some(bytes)
+}
+
 /// `data` sealed by StarlingActivity.sealSecret (the Android Keystore's key).
 fn seal_secret(data: &[u8]) -> Option<Vec<u8>> {
     secret_call("sealSecret", data)
@@ -678,6 +706,8 @@ fn android_main(app: AndroidApp) {
         open_link,
         seal: seal_secret,
         open: open_secret,
+        library_dir,
+        asset,
     });
     horizon_protocol::set_name_servers(dns_servers);
     logging::init(&home, "Render thread");

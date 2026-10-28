@@ -2,7 +2,7 @@
 //! player for a file to import, the system clipboard, open a page in its browser, seal secrets
 //! with its keystore. horizon-android registers Android's (through the activity); elsewhere
 //! nothing is registered and each caller keeps its desktop way.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub struct Hooks {
@@ -22,6 +22,11 @@ pub struct Hooks {
     pub seal: fn(&[u8]) -> Option<Vec<u8>>,
     /// Open what `seal` sealed on this device; None when it cannot (changed, or another key).
     pub open: fn(&[u8]) -> Option<Vec<u8>>,
+    /// The folder the app's libraries are installed in, the one place the platform lets it run
+    /// programs from (the Java launchers that prepare the game files); None when unknown.
+    pub library_dir: fn() -> Option<PathBuf>,
+    /// A file the app carries (the APK's `assets/`), whole; None when it has none of the name.
+    pub asset: fn(&str) -> Option<Vec<u8>>,
 }
 
 static HOOKS: OnceLock<Hooks> = OnceLock::new();
@@ -74,4 +79,14 @@ pub fn seal(data: &[u8]) -> Option<Vec<u8>> {
 /// What [`seal`] sealed on this device.
 pub fn open(sealed: &[u8]) -> Option<Vec<u8>> {
     HOOKS.get().and_then(|h| (h.open)(sealed))
+}
+
+/// The folder the app's libraries are installed in: None without a platform registered.
+pub fn library_dir() -> Option<PathBuf> {
+    HOOKS.get().and_then(|h| (h.library_dir)())
+}
+
+/// A file the app carries: None without a platform registered, or without the file.
+pub fn asset(name: &str) -> Option<Vec<u8>> {
+    HOOKS.get().and_then(|h| (h.asset)(name))
 }

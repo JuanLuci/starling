@@ -3,7 +3,8 @@
      LauncherActivity (java/), in a process of its own, takes files opened with or shared to
      Starling and restarts the game when it asks; StarlingActivity is NativeActivity plus the
      system bars, the keyboard height, the file manager, picker, clipboard and the Starling
-     folder's setting, and the process ending with the activity. -->
+     folder's setting, and the process ending with the activity. The libraries are extracted at
+     install: the Java launchers that prepare the game files on the phone run from there. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="@APPLICATION_ID@">
     <uses-permission android:name="android.permission.INTERNET" />
@@ -22,7 +23,7 @@
         android:isGame="true"
         android:appCategory="game"
         android:requestLegacyExternalStorage="true"
-        android:extractNativeLibs="false">
+        android:extractNativeLibs="true">
         <!-- A task of its own, out of the recents: the game's task stays the game's. -->
         <activity
             android:name="io.github.juanluci.starling.LauncherActivity"

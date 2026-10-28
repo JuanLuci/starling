@@ -154,6 +154,7 @@ pub mod poi_sections;
 pub mod portal_sections;
 pub mod pose;
 pub mod pregen;
+pub mod preparer;
 pub mod projectiles;
 pub mod raid;
 pub mod random_sequences;

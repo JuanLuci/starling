@@ -51,6 +51,8 @@ horizon-telemetry = { path = "../horizon-telemetry", default-features = false, f
 horizon-bench = { path = "../horizon-bench" }
 # Starling's Microsoft sign-in inside the game (`accounts.rs`): a phone has no launcher.
 starling-account = { path = "../starling-account" }
+# The game files prepared on a phone (`preparer.rs`), where no computer prepares them.
+horizon-prepare = { path = "../horizon-prepare" }
 zip ={ version = "2", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }

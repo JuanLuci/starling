@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod files;
+pub mod java;
 
 /// Starling's Azure app (a public client: its ID is no secret).
 pub const CLIENT_ID: &str = "f2719b6f-5617-4631-b2d7-a21defa191fc";
