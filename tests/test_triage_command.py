@@ -223,6 +223,10 @@ class LimitTests(unittest.TestCase):
         do("/close", Fake(past=past("ludovic111", 100)), login="ludovic111")
 
 
+@unittest.skipUnless(
+    (ROOT / ".github/workflows/triage-command.yml").exists(),
+    "Horizon's triage workflow is not in this repository",
+)
 class WorkflowTests(unittest.TestCase):
     def test_workflow_is_safe(self):
         text = (ROOT / ".github/workflows/triage-command.yml").read_text()

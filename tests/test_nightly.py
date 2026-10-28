@@ -101,8 +101,13 @@ if __name__ == "__main__":
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+# Starling's repository drops Horizon's nightly and release workflows (it builds its own APK).
+HORIZON_RELEASES = unittest.skipUnless(
+    (WORKFLOWS / "nightly-build.yml").exists(), "Horizon's nightly workflows are not in this repository"
+)
 
 
+@HORIZON_RELEASES
 class UntrustedBuildTests(unittest.TestCase):
     """A nightly can hold unreviewed pull requests: nothing its build leaves may reach a release (game-build.yml)."""
 
@@ -162,6 +167,7 @@ class PruneBuildsTests(unittest.TestCase):
                     "feature/nightly/build-2026-10-01-1": "g", "nightly/build-2026-10-02-1": "n"}
         self.assertEqual(nightly.stale_builds(branches, set(), self.TODAY, 7), [])
 
+    @HORIZON_RELEASES
     def test_the_source_is_archived_from_git_signed_attached_and_tagged(self):
         build = (WORKFLOWS / "nightly-build.yml").read_text()
         pick = build.split("\n  build:", 1)[0]
@@ -173,6 +179,7 @@ class PruneBuildsTests(unittest.TestCase):
         self.assertIn('"dist/horizon-source.tar.gz#Source of this Nightly', publish)
         self.assertIn('nightly.py keep-source "$SHA" "$DATE"', publish)
 
+    @HORIZON_RELEASES
     def test_the_workflow_prunes_on_schedule_only(self):
         build = (WORKFLOWS / "nightly-build.yml").read_text()
         step = build.split("Old nightly/build-* branches deleted", 1)[1].split("- uses:", 1)[0]
