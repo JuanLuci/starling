@@ -25,7 +25,8 @@ concurrency:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A release's fast profile builds slower (fewer codegen units, fewer at once: below).
+    timeout-minutes: 150
     permissions:
       contents: write
     steps:
@@ -59,6 +60,21 @@ jobs:
           test -n "$KEYSTORE" || { echo "STARLING_KEYSTORE_BASE64 is not set"; exit 1; }
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/starling-release.jks"
           echo "HORIZON_ANDROID_KEYSTORE=$RUNNER_TEMP/starling-release.jks" >> "$GITHUB_ENV"
+      # The fast profile's 16 codegen units of the game's crate took more than the runner's 16 GB, and the runner
+      # went: swap, on the large temporary disk where there is one, and three units at a time instead of four.
+      - name: Make room for the release build
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          sudo swapoff -a || true
+          where=/mnt size=20G
+          avail=$(df --output=avail -BG "$where" 2>/dev/null | tail -1 | tr -dc 0-9)
+          if [ "${avail:-0}" -lt 30 ]; then where=$RUNNER_TEMP size=10G; fi
+          sudo fallocate -l "$size" "$where/release.swap"
+          sudo chmod 600 "$where/release.swap"
+          sudo mkswap "$where/release.swap" > /dev/null
+          sudo swapon "$where/release.swap"
+          free -h
+          echo "CARGO_BUILD_JOBS=3" >> "$GITHUB_ENV"
       # Where build_apk.py keeps its debug key (alias horizon-debug, password android).
       - name: Unpack the debug key
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
@@ -73,9 +89,8 @@ jobs:
           HORIZON_ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
-        # Releases with the quick profile too, as every build tried on a phone: the fast one (16 codegen units) ran
-        # the runner out of memory on the game's crate.
-        run: python packaging/android/build_apk.py ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
+        # Releases with the fast profile (fewer codegen units: a little quicker in game).
+        run: python packaging/android/build_apk.py ${{ startsWith(github.ref, 'refs/tags/v') && '--profile fast' || '' }} ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: starling-apk
