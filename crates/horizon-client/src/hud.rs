@@ -286,6 +286,113 @@ fn namespaced_gui_sprites(root: &Path) -> Vec<PackedImage> {
     out
 }
 
+/// Starling's own touch controls (packaging/touch/make.py draws them): a button's sprite and its
+/// `_pressed`, the D-pad's cells and the stick's, as `starling:touch/<name>`.
+const TOUCH_SPRITES: &[(&str, &[u8])] = &[
+    ("attack", include_bytes!("../assets/touch/attack.png")),
+    (
+        "attack_pressed",
+        include_bytes!("../assets/touch/attack_pressed.png"),
+    ),
+    ("camera", include_bytes!("../assets/touch/camera.png")),
+    (
+        "camera_pressed",
+        include_bytes!("../assets/touch/camera_pressed.png"),
+    ),
+    ("chat", include_bytes!("../assets/touch/chat.png")),
+    (
+        "chat_pressed",
+        include_bytes!("../assets/touch/chat_pressed.png"),
+    ),
+    ("command", include_bytes!("../assets/touch/command.png")),
+    (
+        "command_pressed",
+        include_bytes!("../assets/touch/command_pressed.png"),
+    ),
+    ("dpad_down", include_bytes!("../assets/touch/dpad_down.png")),
+    (
+        "dpad_down_pressed",
+        include_bytes!("../assets/touch/dpad_down_pressed.png"),
+    ),
+    ("dpad_left", include_bytes!("../assets/touch/dpad_left.png")),
+    (
+        "dpad_left_pressed",
+        include_bytes!("../assets/touch/dpad_left_pressed.png"),
+    ),
+    (
+        "dpad_middle",
+        include_bytes!("../assets/touch/dpad_middle.png"),
+    ),
+    (
+        "dpad_right",
+        include_bytes!("../assets/touch/dpad_right.png"),
+    ),
+    (
+        "dpad_right_pressed",
+        include_bytes!("../assets/touch/dpad_right_pressed.png"),
+    ),
+    ("dpad_up", include_bytes!("../assets/touch/dpad_up.png")),
+    (
+        "dpad_up_pressed",
+        include_bytes!("../assets/touch/dpad_up_pressed.png"),
+    ),
+    ("drop", include_bytes!("../assets/touch/drop.png")),
+    (
+        "drop_pressed",
+        include_bytes!("../assets/touch/drop_pressed.png"),
+    ),
+    ("inventory", include_bytes!("../assets/touch/inventory.png")),
+    (
+        "inventory_pressed",
+        include_bytes!("../assets/touch/inventory_pressed.png"),
+    ),
+    ("jump", include_bytes!("../assets/touch/jump.png")),
+    (
+        "jump_pressed",
+        include_bytes!("../assets/touch/jump_pressed.png"),
+    ),
+    ("offhand", include_bytes!("../assets/touch/offhand.png")),
+    (
+        "offhand_pressed",
+        include_bytes!("../assets/touch/offhand_pressed.png"),
+    ),
+    ("pause", include_bytes!("../assets/touch/pause.png")),
+    (
+        "pause_pressed",
+        include_bytes!("../assets/touch/pause_pressed.png"),
+    ),
+    ("sneak", include_bytes!("../assets/touch/sneak.png")),
+    (
+        "sneak_pressed",
+        include_bytes!("../assets/touch/sneak_pressed.png"),
+    ),
+    ("stick", include_bytes!("../assets/touch/stick.png")),
+    (
+        "stick_knob",
+        include_bytes!("../assets/touch/stick_knob.png"),
+    ),
+    ("use", include_bytes!("../assets/touch/use.png")),
+    (
+        "use_pressed",
+        include_bytes!("../assets/touch/use_pressed.png"),
+    ),
+];
+
+/// [`TOUCH_SPRITES`] a pack has not drawn already (a pack's `starling:touch/jump` wins).
+fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
+    TOUCH_SPRITES
+        .iter()
+        .filter_map(|(name, png)| {
+            let key = format!("starling:gui/sprites/touch/{name}");
+            if images.iter().any(|(k, ..)| *k == key) {
+                return None;
+            }
+            let (w, h, pixels) = decode_bytes(png).ok()?;
+            Some((key, w, h, pixels))
+        })
+        .collect()
+}
+
 /// The equipment layer textures of every namespace but vanilla's (a server's custom armour), as
 /// `<namespace>:entity/equipment/<kind>/<name>` (`equipment::sprite`).
 fn namespaced_equipment(root: &Path) -> Vec<PackedImage> {
@@ -557,6 +664,9 @@ impl HudAtlas {
             images.extend(namespaced_gui_sprites(root));
             images.extend(namespaced_equipment(root));
         }
+        // The menus' atlas too: the touch layout editor works before a world.
+        let touch = builtin_touch_sprites(&images);
+        images.extend(touch);
         // The title screen's "JAVA EDITION" banner reads "RUST EDITION".
         if let Some(edition) = images
             .iter_mut()

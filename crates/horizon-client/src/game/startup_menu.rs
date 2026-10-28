@@ -342,10 +342,26 @@ impl Loading {
             horizon_client::touch::Target::Extra(i) => (config.extra[i].key.clone(), None),
             horizon_client::touch::Target::Stick => (String::new(), None),
         };
+        // Starling's own buttons (packaging/touch), which every atlas carries.
+        let sprite = |name: &str| {
+            let key = format!("starling:gui/sprites/touch/{name}");
+            gui.atlas.sprites.contains_key(&key).then_some(key)
+        };
+        let skin = |target: horizon_client::touch::Target| match target {
+            horizon_client::touch::Target::Button(b) => sprite(b.id()),
+            horizon_client::touch::Target::Stick if !layout.dpad => sprite("stick"),
+            _ => None,
+        };
         let mut ui = horizon_client::ui_theme::Ui::new(&gui.atlas, batch, (-1.0, -1.0));
-        super::touch::draw_editor(&mut ui, &layout, config, editor, &face, &|_| {
-            horizon_client::touch::Shape::Round
-        });
+        super::touch::draw_editor(
+            &mut ui,
+            &layout,
+            config,
+            editor,
+            &face,
+            &|_| horizon_client::touch::Shape::Round,
+            &skin,
+        );
         ui.finish();
     }
 

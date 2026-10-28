@@ -220,7 +220,8 @@ fn text_r(shape: Shape, r: f32) -> f32 {
 /// The layout editor over whatever is behind it (the world, the title, the setup's settings):
 /// every control where it will be, the selected one's chips, the opacity slider, and Done, Reset
 /// and the movement control. `face` names a button or a mod's button (and gives the latter its
-/// icon); `shape` is a button's.
+/// icon); `shape` is a button's; `skin` is a sprite drawn whole in a control's place (Starling's
+/// look, packaging/touch, or a pack's).
 pub(super) fn draw_editor(
     ui: &mut Ui,
     layout: &Layout,
@@ -228,6 +229,7 @@ pub(super) fn draw_editor(
     editor: &LayoutEditor,
     face: &dyn Fn(Target) -> (String, Option<String>),
     shape: &dyn Fn(Button) -> Shape,
+    skin: &dyn Fn(Target) -> Option<String>,
 ) {
     let d = ui.density;
     let (w, h) = (layout.width, layout.height);
@@ -243,6 +245,17 @@ pub(super) fn draw_editor(
             Target::Stick if dpad => Shape::Square,
             Target::Stick => Shape::Round,
         };
+        // Drawn as it plays (a ghost only outlined, as it is not drawn while playing).
+        if place.show != Show::Ghost
+            && let Some(sprite) = skin(target)
+        {
+            let a = if place.show == Show::Off { 0.4 } else { a };
+            icon(ui, &sprite, c, r, 1.0, a);
+            if editor.selected == Some(target) {
+                ring_of(ui, shape, c, r, color::ACCENT);
+            }
+            continue;
+        }
         match place.show {
             Show::On => plate_of(ui, shape, c, r, pressed(a)),
             Show::Ghost => ring_of(ui, shape, c, r, ink(0.5)),
@@ -866,7 +879,12 @@ impl Game<'_> {
                 Target::Stick => (String::new(), None),
             };
             let shape = |b: Button| self.control_face(b).shape;
-            draw_editor(&mut ui, &layout, config, editor, &face, &shape);
+            let skin = |target: Target| match target {
+                Target::Button(b) => self.control_face(b).skin.map(|(sprite, _)| sprite),
+                Target::Stick if !layout.dpad => self.mod_sprite("starling:touch/stick"),
+                Target::Stick | Target::Extra(_) => None,
+            };
+            draw_editor(&mut ui, &layout, config, editor, &face, &shape, &skin);
         } else {
             let (base, knob) = self
                 .touch
@@ -879,12 +897,25 @@ impl Game<'_> {
             } else {
                 layout.stick_alpha
             };
+            // Starling's own look (packaging/touch), or a pack's, when the atlas has it.
+            let skin = |name: &str| self.mod_sprite(&format!("starling:touch/{name}"));
             if layout.dpad {
                 // Bedrock's D-pad: four arrows, the one held lit; the middle holds nothing yet.
                 let a = layout.stick_alpha.max(0.35);
                 let held = self.touch.controls.dpad;
                 for (cell, c, half) in layout.dpad_buttons() {
                     let on = held == Some(cell);
+                    let (text, name) = match cell {
+                        [0, -1] => ("↑", "dpad_up"),
+                        [-1, 0] => ("←", "dpad_left"),
+                        [1, 0] => ("→", "dpad_right"),
+                        _ => ("↓", "dpad_down"),
+                    };
+                    let lit = skin(&format!("{name}_pressed")).filter(|_| on);
+                    if let Some(sprite) = lit.or_else(|| skin(name)) {
+                        icon(&mut ui, &sprite, c, half, 1.0, a);
+                        continue;
+                    }
                     plate_of(
                         &mut ui,
                         Shape::Square,
@@ -892,17 +923,19 @@ impl Game<'_> {
                         half,
                         if on { pressed(a) } else { plate(a) },
                     );
-                    let text = match cell {
-                        [0, -1] => "↑",
-                        [-1, 0] => "←",
-                        [1, 0] => "→",
-                        _ => "↓",
-                    };
                     label(&mut ui, c, half, text, ink(a));
                 }
             } else if a > 0.0 {
-                circle(&mut ui, base, layout.stick_radius, plate(a));
-                circle(&mut ui, knob, layout.stick_radius * 0.45, pressed(a));
+                match (skin("stick"), skin("stick_knob")) {
+                    (Some(ring), Some(top)) => {
+                        icon(&mut ui, &ring, base, layout.stick_radius, 1.0, a);
+                        icon(&mut ui, &top, knob, layout.stick_radius * 0.45, 1.0, a);
+                    }
+                    _ => {
+                        circle(&mut ui, base, layout.stick_radius, plate(a));
+                        circle(&mut ui, knob, layout.stick_radius * 0.45, pressed(a));
+                    }
+                }
             }
             let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
             for (button, c, r, a) in &layout.buttons {
