@@ -16,7 +16,7 @@ python packaging/android/build_apk.py            # build the library, then the A
 python packaging/android/build_apk.py --install  # and install it over adb
 ```
 
-Starling never downloads the game: prepare its resources from your own copy of Minecraft 26.3 as described in [Build from source](README.md#build-from-source), zip them as a `.starling` file and open it with the app.
+The APK carries no game files. On its first start the app signs in, downloads them from Mojang for an account that owns the game and prepares them on the phone; to skip that while testing, prepare the resources from your own copy of Minecraft 26.3 as described in [Build from source](README.md#build-from-source), zip them as a `.starling` file and open it with the app. The setup's hand-drawn skin comes from `python packaging/lowbudget/make.py` (Pillow): run it after changing `hand.py`, `make.py` or `strings.json`, and commit `pack/` with them.
 
 ## Test on a phone
 

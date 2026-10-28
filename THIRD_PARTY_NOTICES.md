@@ -18,3 +18,13 @@ by The Pixelify Sans Project Authors, licensed under the SIL Open Font License 1
 `crates/horizon-theme/icons/pixel/*.svg` are icons from
 [Pixelarticons](https://github.com/halfmage/pixelarticons) by Gerrit Halfmann, under the MIT
 license (`crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt`).
+
+## OpenJDK for Android (fetched on the phone, not shipped)
+
+To prepare the game files on a phone, Starling downloads OpenJDK 25.0.5 built for Android by
+AngelAuraMC ([angelauramc-openjdk-build](https://github.com/AngelAuraMC/angelauramc-openjdk-build),
+release `download_jre25`, checked against the SHA-256 in `crates/starling-account/src/java.rs`),
+runs it for the preparing and deletes it after. OpenJDK is licensed under the GNU General Public
+License version 2 with the Classpath Exception; its sources are at
+[openjdk/jdk](https://github.com/openjdk/jdk), the build's scripts and patches in that
+repository. Starling's launcher for it (`packaging/android/native/java_launcher.c`) is MIT.

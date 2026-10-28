@@ -8,20 +8,42 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 
 **Being done now**
 
+- **The first start on a phone**: sign in, and the game's files are downloaded and prepared on the
+  phone, with a pond to fish in and the settings in a hand-drawn skin while it works.
 - **Shader packs on a phone**: Complementary and MakeUp running smoothly on a phone, picked on the
-  Shader Packs page.
+  Shader Packs page, and Starling Visuals, Starling's own pack made for phones.
 - **Servers with plugins**: The custom items, armour, models, menus and buttons of plugin servers
   (ItemsAdder, Nexo, ModelEngine, BetterModel, dialogs) look and work as on Java.
 - **Settings that make sense on a phone**: Every option does what it says, and the ones a phone can't
   use are out of the way.
 
-**Next**: a pack's own options in the game; secure chat for servers that require it; physical
-controllers on Android; preparing the game files on the phone, without a computer; Open to LAN and
-invites on a phone; the first release.
+**Next**: what players reported (the touch Sneak as hold or toggle, saving when the app is
+closed abruptly, a prompt when a new release is out, the keyboard's paste and autocorrect, GrimAC
+and digging up while flying); a pack's own options in the game; secure chat for servers that
+require it; physical controllers on Android; Open to LAN and invites on a phone; catching up with
+Horizon.
 
-**Later**: a store release; more of the game open to mods; a phone-sized mod browser.
+**Later**: a store release; more of the game open to mods; Horizon's native mods; a phone-sized mod
+browser.
 
 ## Now
+
+### The first start on a phone
+
+You install the APK, sign in with the Microsoft account that owns the game, and play: no computer.
+
+> Done (v0.1.0): the setup in place of the loading failure, drawn in Horizon's own font; the sign-in
+> by code; the official files fetched from Mojang for an owner (starling-account); OpenJDK 25 for
+> Android fetched once, checked against its pinned hash, and run through a launcher the APK carries
+> in its library folder (the only place an app may run programs from), with the exporters compiled
+> on the phone from the sources the APK carries; the prepared folder becomes the game's resources
+> and the runtime goes. Prepared on a POCO F6 Pro in 79 s from the official 26.3 files. While it
+> waits: fishing seen from above (a bobber where the finger holds, a fish swimming to it, sounds
+> made in the game) and Settings, the game's own Options screens in a hand-drawn skin
+> (packaging/lowbudget: our own handwriting, every letter written in five takes and picked by where
+> it stands; buttons drawn without a ruler in four takes). Left: the download with an account that
+> owns the game, tried end to end; plainer words on the setup's errors; how long it takes on slower
+> phones.
 
 ### Shader packs on a phone
 
@@ -41,8 +63,12 @@ and its quality in the game.
 > flickered their shadows, and the pack could not tell water or leaves), programs translated and
 > built beside the game (the world draws without the pack for the few seconds it takes, instead of
 > stopping), view bobbing in the model-view matrix as Iris has it (reflections and the water's dark
-> band swung with each step). Left: checking on the phone that the sun glare went with it; the pack's
-> own options screen
+> band swung with each step), the shadow view turned about the player rather than the world's origin
+> (far from spawn its shadows shook), casters between the light and the shadow camera kept, at its
+> near plane (the sun lit caves when it was low). Starling Visuals, Starling's own pack
+> (packaging/shaderpacks/starling-visuals): lit per vertex, shadows with a soft edge, water with
+> waves and depth, haze, sun rays, bloom and light from what you hold; 70 to 80 fps with shadows at
+> full resolution on an Adreno 740. Left: the pack's own options screen
 > (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; a cache of the built programs;
 > `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
 > checked on more packs.
@@ -80,6 +106,13 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 
 ## Next
 
+- **What players reported**: the touch Sneak button as hold or toggle in the layout editor (and,
+  flying, going down only while it is held, as on Java); the world saved when the app loses focus,
+  so closing it abruptly keeps it; a prompt on start when a newer release is on GitHub (No, or
+  remind me in a day); the keyboard's paste and autocorrect, and Enter completing a command's last
+  word when only one completion fits; GrimAC flagging the player who digs up while flying.
+- **Catching up with Horizon**: Starling's base is far behind Horizon's, which moves fast; to bring
+  its fixes over, and so that mods made for a Horizon revision fit.
 - **A pack's own options in the game**: the settings screen a shader pack describes, beside its profile.
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off
@@ -87,14 +120,15 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 - **The game files prepared on the phone**: today a computer with Java prepares them once from your own
   copy of the game.
 - **Open to LAN and invites on a phone**: built in, not tried on Android yet.
-- **The first release**: a signed APK on the releases page (every push already builds one in GitHub
-  Actions).
 
 ## Later
 
 - **A store release**, once the first releases have been played for a while.
 - **More of the game open to mods**, guided by porting popular Java mods (see
   [mod-porting](../docs/mod-porting.md)).
+- **Horizon's native mods** ([horizon-mixins](https://github.com/horizon-rust/horizon-mixins)):
+  mixins rewrite the game's source and the game is built again with them, each mod for one Horizon
+  revision. On a phone that needs Starling at that revision and a way to build it there.
 - **A mod browser made for a phone.**
 - **Discord Rich Presence on a phone**: Discord's Social SDK (1.10 and later) shows the game through the
   Discord app on Android without signing in, but it needs a Starling application on Discord's developer
