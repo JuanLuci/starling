@@ -31,6 +31,8 @@ attribute vec4 mc_Entity;
 
 uniform mat4 shadowModelView;
 uniform mat4 shadowProjection;
+uniform int heldBlockLightValue;
+uniform int heldBlockLightValue2;
 
 // The face shade the game bakes into terrain colours (1 up, 0.5 down, 0.8 north and south,
 // 0.6 east and west), which this pack's own sun replaces.
@@ -50,6 +52,12 @@ void main() {
     // The whole matrix: the view bob is in it, translation and all.
     vec3 at = (gbufferModelViewInverse * position).xyz;
     vec2 levels = lightLevels((gl_TextureMatrix[1] * gl_MultiTexCoord1).xy);
+    #ifdef HAND_LIGHT
+        // What the player holds that glows (a torch, a lantern, a lava bucket) lights around
+        // them as a block of its level would: one level less each block away.
+        float held = float(max(heldBlockLightValue, heldBlockLightValue2));
+        levels.x = max(levels.x, clamp((held - length(at)) / 15.0, 0.0, 1.0));
+    #endif
     float wrap = 0.0;
     float unshade = 1.0;
     #if defined TERRAIN || defined WATER
