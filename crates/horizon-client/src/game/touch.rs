@@ -748,6 +748,10 @@ impl Game<'_> {
     fn on_scrollbar(&self, p: [f32; 2]) -> bool {
         let batch = HudBatch::new(self.touch_size());
         let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
+        // The title screen's player turns under the finger whichever way it moves.
+        if self.on_title_player((x, y)) {
+            return true;
+        }
         // A mod's screen: where it said a finger drags (`mobile.drag-areas`).
         if self.mods.screen.is_some() {
             return self

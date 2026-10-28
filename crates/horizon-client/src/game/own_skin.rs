@@ -4,11 +4,14 @@
 //! and the player list's head take it in place of the profile's skin (`update_remote_skins`).
 use super::Game;
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    hud::HudBatch,
     mobs::Mob,
     offline_name,
+    options_ui::Page,
     own_skin::{self, SkinChoice},
+    text::Text,
     title::Mode,
+    ui,
 };
 use horizon_core::geometry::Vec3;
 use std::path::{Path, PathBuf};
@@ -17,8 +20,10 @@ use std::time::{Duration, Instant};
 /// The own skin's name in the atlas: one skin slot, written again when the skin changes.
 const LOCATION: &str = "horizon/own_skin";
 
-/// GUI pixels per block of the title screen's player (the inventory's is 30 too).
-const TITLE_SIZE: f32 = 30.0;
+/// How far the title screen's player is turned toward the menu, in degrees, as Bedrock's stands.
+const TITLE_TURN: f32 = 25.0;
+/// Degrees the title screen's player turns per GUI pixel dragged.
+const TITLE_TURN_PER_PIXEL: f32 = 2.0;
 
 /// The chosen skin and its image, read on first use.
 #[derive(Default)]
@@ -31,6 +36,9 @@ pub(super) struct OwnSkin {
     uploaded: bool,
     /// The title screen's player, read again every second.
     title: Option<TitlePlayer>,
+    /// How far a drag turned it, and the drag going on: where it began and the turn then.
+    title_turn: f32,
+    title_drag: Option<(f32, f32)>,
     /// Ely.by's skins by name, and whether Skin Customization has them on (read on first use).
     elyby: horizon_client::elyby::Lookup,
     elyby_on: Option<bool>,
@@ -45,18 +53,42 @@ pub(super) struct TitlePlayer {
     read: Instant,
 }
 
-/// The title screen's player box (GUI pixels), right of the menu's buttons and level with them
-/// (title.rs, Mode::Main: 200 wide in the middle, from a quarter of the height plus 48); None
-/// where the screen leaves it too little room.
-fn title_player_box(w: f32, h: f32) -> Option<[f32; 4]> {
+/// Where the title screen's player stands (GUI pixels).
+struct TitleLayout {
+    /// The model's box: the feet at its bottom, the hat inside it however it is turned.
+    model: [f32; 4],
+    /// GUI pixels a block.
+    size: f32,
+    /// Its Customize... button: x, y, width.
+    button: [f32; 3],
+}
+
+const BUTTON_WIDTH: f32 = 90.0;
+
+/// The title screen's player right of the menu's buttons (title.rs, Mode::Main: 200 wide in the
+/// middle), a third of the screen tall and standing about where the scene's ground is, as
+/// Bedrock's; its button under the feet. None where the screen leaves it too little room.
+fn title_layout_in(w: f32, h: f32) -> Option<TitleLayout> {
     let (w, h) = (w.ceil(), h.ceil());
     let left = (w / 2.0).floor() + 100.0;
-    if w - left < 80.0 {
+    let room = w - left;
+    if room < BUTTON_WIDTH + 8.0 {
         return None;
     }
+    let size = (h * 0.19).min(room / 1.6).min(72.0).floor();
     let mid = ((left + w) / 2.0).floor();
-    let top = (h / 4.0).floor() + 48.0 - 14.0;
-    Some([mid - 30.0, top, mid + 30.0, top + 80.0])
+    let feet = (h * 0.74).floor();
+    Some(TitleLayout {
+        // `mob_preview` stands the feet 0.96 blocks under the box's middle.
+        model: [
+            mid - 0.7 * size,
+            feet - 2.0 * size,
+            mid + 0.7 * size,
+            feet + 0.1 * size,
+        ],
+        size,
+        button: [mid - BUTTON_WIDTH / 2.0, feet + 6.0, BUTTON_WIDTH],
+    })
 }
 
 impl Game<'_> {
@@ -241,29 +273,65 @@ impl Game<'_> {
     }
 
     /// Where the title screen shows its player in a GUI `w` by `h`; None on its other pages.
-    fn title_player_rect(&self, w: f32, h: f32) -> Option<[f32; 4]> {
+    fn title_layout(&self, w: f32, h: f32) -> Option<TitleLayout> {
         let title = self.title.as_ref()?;
         matches!(title.mode, Mode::Main)
-            .then(|| title_player_box(w, h))
+            .then(|| title_layout_in(w, h))
             .flatten()
     }
 
-    /// A press on the title screen's player, its name or its hint: Skin Customization opens.
-    pub(super) fn title_player_at(&self, (x, y): (f32, f32)) -> bool {
-        let Some(r) = &self.renderer else {
-            return false;
-        };
+    /// The title screen's player's layout in the window as it is now.
+    fn title_layout_now(&self) -> Option<TitleLayout> {
+        let r = self.renderer.as_ref()?;
         let b = HudBatch::new([r.config.width, r.config.height]);
-        self.title_player_rect(b.width, b.height)
-            .is_some_and(|[x0, y0, x1, y1]| {
-                x >= x0 - 10.0 && x < x1 + 10.0 && y >= y0 && y < y1 + 22.0
+        self.title_layout(b.width, b.height)
+    }
+
+    /// Whether `(x, y)` (GUI pixels) is on the title screen's player, which a drag turns.
+    pub(super) fn on_title_player(&self, (x, y): (f32, f32)) -> bool {
+        self.title_layout_now().is_some_and(|l| {
+            let [x0, y0, x1, y1] = l.model;
+            x >= x0 && x < x1 && y >= y0 && y < y1
+        })
+    }
+
+    /// Whether `cursor` is on the title screen's player or its Customize... button.
+    pub(super) fn title_player_at(&self, cursor: (f32, f32)) -> bool {
+        self.on_title_player(cursor)
+            || self.title_layout_now().is_some_and(|l| {
+                let [x, y, w] = l.button;
+                ui::hovered(cursor, x, y, w, 20.0)
             })
     }
 
-    /// The title screen's player beside the menu, as Bedrock's: the own skin, the name worlds
-    /// open with, and the hint that a press changes them.
+    /// A press on the title screen's player: Customize... opens Skin Customization, the player
+    /// itself only turns while dragged (a tap there does nothing, so a drag never opens it).
+    pub(super) fn press_title_player(&mut self) {
+        if self.on_title_player(self.cursor) {
+            self.own_skin.title_drag = Some((self.cursor.0, self.own_skin.title_turn));
+        } else if self.title_player_at(self.cursor) {
+            self.audio.play_button_click();
+            self.open_options_at(true, Page::Skin);
+        }
+    }
+
+    /// The pointer moved: a drag on the title screen's player turns it, rightward to its left.
+    pub(super) fn drag_title_player(&mut self) {
+        if let Some((x, turn)) = self.own_skin.title_drag {
+            self.own_skin.title_turn = turn - (self.cursor.0 - x) * TITLE_TURN_PER_PIXEL;
+        }
+    }
+
+    /// The pointer let go: the drag ends where it turned the player.
+    pub(super) fn release_title_player(&mut self) {
+        self.own_skin.title_drag = None;
+    }
+
+    /// The title screen's player beside the menu, as Bedrock's: turned toward it and turning
+    /// under a drag, the arms swaying as a still player's do, the name worlds open with over
+    /// the head, and the button that changes skin and name under the feet.
     pub(super) fn draw_title_player(&mut self, batch: &mut HudBatch) {
-        let Some(rect) = self.title_player_rect(batch.width, batch.height) else {
+        let Some(layout) = self.title_layout(batch.width, batch.height) else {
             return;
         };
         if self
@@ -277,27 +345,25 @@ impl Game<'_> {
         let Some(player) = &self.own_skin.title else {
             return;
         };
-        let [x0, y0, x1, y1] = rect;
-        let centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        // Turned toward the mouse; ahead on a touch screen.
-        let cursor = if self.has_touch() {
-            centre
-        } else {
-            self.cursor
-        };
-        self.mob_preview(&player.mob, batch, rect, TITLE_SIZE, 0.0625, cursor, 0.0);
+        let [x0, y0, x1, _] = layout.model;
+        let mid = (x0 + x1) / 2.0;
+        // AnimationUtils.bobModelPart reads the age; the head looks a little around, slowly.
+        let seconds = self.started.elapsed().as_secs_f32();
+        let mut mob = player.mob.clone();
+        mob.age = (seconds * 20.0) as u32;
+        let centre = (
+            mid - 8.0 * (seconds * 0.45).sin(),
+            (y0 + layout.model[3]) / 2.0,
+        );
+        let turn = TITLE_TURN + self.own_skin.title_turn;
+        self.mob_preview(&mob, batch, layout.model, layout.size, 0.0625, centre, turn);
         let atlas = &self.gui.atlas;
-        let mut line = |text: &str, y: f32, color: u32| {
-            let x = (centre.0 - HudBatch::text_width(atlas, text) / 2.0).floor();
-            batch.text(atlas, text, x, y, color, true);
-        };
-        line(&player.name, y1 + 2.0, u32::MAX);
-        let hint = if self.has_touch() {
-            "Tap to customize"
-        } else {
-            "Click to customize"
-        };
-        line(hint, y1 + 12.0, rgba(160, 160, 160, 255));
+        let name_x = (mid - HudBatch::text_width(atlas, &player.name) / 2.0).floor();
+        batch.text(atlas, &player.name, name_x, y0 - 2.0, u32::MAX, true);
+        let [bx, by, bw] = layout.button;
+        let hover = ui::hovered(self.cursor, bx, by, bw, 20.0);
+        let label = Text::literal("Customize...");
+        ui::button(batch, atlas, bx, by, bw, 20.0, &label, true, hover);
     }
 
     /// The title screen's player as Skin Customization and the sign-in leave it now.

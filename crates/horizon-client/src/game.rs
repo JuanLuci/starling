@@ -12959,6 +12959,7 @@ impl ApplicationHandler for Game<'_> {
                             title.drag(self.cursor, (b.width, b.height));
                             title.drag_field(&self.gui.atlas, self.cursor.0);
                         }
+                        self.drag_title_player();
                         if self.dragging && self.screen == Screen::Options {
                             let _ = b;
                             self.options_drag()?;
@@ -13092,15 +13093,13 @@ impl ApplicationHandler for Game<'_> {
                         title.release();
                         title.release_field();
                     }
+                    self.release_title_player();
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
-                } if self.title_player_at(self.cursor) => {
-                    self.audio.play_button_click();
-                    self.open_options_at(true, horizon_client::options_ui::Page::Skin);
-                }
+                } if self.title_player_at(self.cursor) => self.press_title_player(),
                 WindowEvent::MouseInput {
                     state,
                     button: MouseButton::Left,
