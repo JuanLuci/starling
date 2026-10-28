@@ -156,7 +156,6 @@ pub(super) struct Remote {
     /// Options.serverRenderDistance: the server's view distance from the
     /// login or the last chunk-cache-radius packet.
     pub(super) view_distance: i32,
-    sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     /// When the last tick ended to the server, and the last movement packet went: an old
     /// server behind ViaVersion (its anticheat) wants one every tick, so gaps are logged.
@@ -213,11 +212,11 @@ pub(super) struct Remote {
     player_attributes: Vec<play::AttributeSnapshot>,
     /// The ClientInformation last sent (the view distance, language, chat and hand options).
     sent_info: horizon_protocol::packets::configuration::ClientInformation,
-    /// BlockStatePredictionHandler: blocks changed ahead of the server (a predicted break),
-    /// with the sequence of the last action that changed them and the state the server
-    /// last said they have. Until the server acknowledges that sequence its block updates
-    /// only replace the remembered state; then the block takes it.
-    predictions: HashMap<[i32; 3], (i32, i32)>,
+    /// BlockStatePredictionHandler: the actions' sequence and the blocks changed ahead of the
+    /// server (a predicted break), with the state the server last said they have. Until the
+    /// server acknowledges the action its block updates only replace the remembered state;
+    /// then the block takes it.
+    predictions: horizon_client::block_predictions::BlockPredictions,
     /// Open container: (window id, menu name).
     pub(super) menu: Option<(i32, String)>,
     /// The open menu's title as the server named it, with its styles.
@@ -367,7 +366,6 @@ impl Remote {
     fn reset_listener(&mut self) {
         self.joined = false;
         self.entity_id = 0;
-        self.sequence = 0;
         self.position_sender = Default::default();
         self.tick_end_at = None;
         self.moved_at = None;
@@ -379,7 +377,7 @@ impl Remote {
         self.was_sprinting = false;
         self.carried = None;
         self.loaded_sent = false;
-        self.predictions.clear();
+        self.predictions = Default::default();
         self.menu = None;
         self.menu_title = None;
         self.state_id = 0;
@@ -627,7 +625,6 @@ impl Game<'_> {
             )),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
-            sequence: 0,
             position_sender: Default::default(),
             tick_end_at: None,
             moved_at: None,
@@ -656,7 +653,7 @@ impl Game<'_> {
             player_attributes: Vec::new(),
             // What the configuration phase sent (net.rs).
             sent_info: horizon_protocol::packets::configuration::ClientInformation::new(view),
-            predictions: HashMap::new(),
+            predictions: Default::default(),
             menu: None,
             menu_title: None,
             state_id: 0,
@@ -796,14 +793,7 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
-            let interaction = matches!(
-                packet,
-                S::PlayerAction(_)
-                    | S::Attack(_)
-                    | S::Interact(_)
-                    | S::UseItemOn(_)
-                    | S::UseItem(_)
-            );
+            let interaction = is_interaction(&packet);
             if (interaction || matches!(packet, S::Punch(_))) && r.stick_mode == ServerStick::Free {
                 // A hit, a use, a block placed or an item dropped goes where the player looks:
                 // a server places stairs, throws and aims by the rotation it was last sent. While
@@ -811,12 +801,12 @@ impl Game<'_> {
                 // after this tick's move with the view's look (`stick_steer` rests after it): a
                 // look of its own would be a tick more to an anticheat (Grim's TickTimer), the
                 // move after it the same look twice (AimDuplicateLook). The swings after it wait
-                // too.
+                // too; a block being broken does not (`waits_for_the_view`).
                 if interaction {
                     r.interacted_at.set(Some(Instant::now()));
                 }
                 let mut held = r.held_back.borrow_mut();
-                if (interaction && r.steer_yaw.is_some()) || !held.is_empty() {
+                if waits_for_the_view(&packet, r.steer_yaw.is_some(), !held.is_empty()) {
                     held.push(packet);
                     return;
                 }
@@ -1033,9 +1023,7 @@ impl Game<'_> {
         Some(self.yaw - left.atan2(forward).to_degrees())
     }
     fn next_sequence(&mut self) -> i32 {
-        let r = self.remote.as_mut().expect("remote");
-        r.sequence += 1;
-        r.sequence
+        self.remote.as_mut().expect("remote").predictions.start()
     }
     fn item_name(&self, id: i32) -> Arc<str> {
         let r = self.remote.as_ref().expect("remote");
@@ -1821,37 +1809,70 @@ impl Game<'_> {
     /// predicted state until the server acknowledges the action; the server's state is
     /// remembered for then.
     fn server_block(&mut self, pos: [i32; 3], state: i32) {
-        if let Some((_, known)) = self
+        if self
             .remote
             .as_mut()
-            .and_then(|r| r.predictions.get_mut(&pos))
+            .is_some_and(|r| r.predictions.update(pos, state))
         {
-            *known = state;
             return;
         }
         self.set_block(pos, state);
     }
-    /// BlockStatePredictionHandler.endPredictionsUpTo (ClientboundBlockChangedAckPacket): the
-    /// actions up to `sequence` are settled, so the blocks they predicted take the state the
-    /// server gave them (a break the server refused comes back).
+    /// BlockStatePredictionHandler.endPredictionsUpTo (ClientboundBlockChangedAckPacket) and
+    /// ClientLevel.syncBlockState: the actions up to `sequence` are settled, so the blocks they
+    /// predicted take the state the server gave them. A break the server refused comes back,
+    /// and when it comes back where the player now is (flown up into the space it left), the
+    /// player goes back to where it stood when it broke the block: an anticheat that simulates
+    /// vanilla (GrimAC) does the same and takes the next move from there.
     fn end_predictions(&mut self, sequence: i32) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let settled: Vec<_> = r
-            .predictions
-            .iter()
-            .filter(|(_, (s, _))| *s <= sequence)
-            .map(|(&pos, &(_, state))| (pos, state))
-            .collect();
-        for (pos, state) in settled {
-            if let Some(r) = self.remote.as_mut() {
-                r.predictions.remove(&pos);
+        for settled in r.predictions.end_up_to(sequence) {
+            let [x, y, z] = settled.pos;
+            if self.world.block(x, y, z).0 as i32 == settled.state {
+                continue;
             }
-            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 != state {
-                self.set_block(pos, state);
+            self.set_block(settled.pos, settled.state);
+            let Some(back) = settled.player else {
+                continue;
+            };
+            if !self.player_collides_with(settled.pos, settled.state) {
+                continue;
             }
+            log::info!(
+                "Horizon: the server kept the block at {x} {y} {z}; the player goes back to \
+                 {:.2} {:.2} {:.2}",
+                back.x,
+                back.y,
+                back.z
+            );
+            // Entity.absSnapTo: the position and the old one; the motion stays.
+            if let Some(player) = self.player.as_mut() {
+                player.position = back;
+            }
+            self.previous_position = back;
         }
+    }
+    /// Entity.isColliding: whether the block `state` at `pos` overlaps the player's box.
+    fn player_collides_with(&self, pos: [i32; 3], state: i32) -> bool {
+        let Some(player) = self.player.as_ref() else {
+            return false;
+        };
+        let mut scene = horizon_client::collisions::SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let Ok(shape) =
+            self.collision
+                .collision_shape(&mut scene, BlockStateId(state.max(0) as u32), pos)
+        else {
+            return false;
+        };
+        let at = Vec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+        let bounds = player.bounds();
+        shape.moved(at).boxes().iter().any(|b| b.intersects(bounds))
     }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
         let state = BlockStateId(state.max(0) as u32);
@@ -4253,6 +4274,9 @@ impl Game<'_> {
             // handleMovePlayer does not change LocalPlayer.sendPosition's
             // baseline: the next tick must still report the corrected state.
             r.destroying = None;
+            // BlockStatePredictionHandler.onTeleport: the server's position stands against the
+            // breaks sent before it.
+            r.predictions.on_teleport();
         }
         self.mining = None;
         self.send(S::AcceptTeleportation(play::AcceptTeleportation {
@@ -5436,11 +5460,9 @@ impl Game<'_> {
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
         self.mods_block_broken(pos, state);
         // BlockStatePredictionHandler.retainKnownServerState.
+        let at = self.player.as_ref().map(|p| p.position);
         if let Some(r) = self.remote.as_mut() {
-            r.predictions
-                .entry(pos)
-                .and_modify(|p| p.0 = sequence)
-                .or_insert((sequence, state.0 as i32));
+            r.predictions.retain(pos, state.0 as i32, at, sequence);
         }
         // Block.playerWillDestroy's destroy event (particles and the break
         // sound), which BaseFireBlock skips: the server's extinguish sound
@@ -5760,14 +5782,12 @@ impl Game<'_> {
     /// (`BlockStatePredictionHandler.retainKnownServerState`): a use the
     /// server refused goes back.
     pub(super) fn predict_blocks(&mut self, changes: &DryChanges, seq: i32) {
+        let at = self.player.as_ref().map(|p| p.position);
         for &(p, state) in changes {
             let pos = [p.x, p.y, p.z];
             let before = self.world.block(p.x, p.y, p.z);
             if let Some(r) = self.remote.as_mut() {
-                r.predictions
-                    .entry(pos)
-                    .and_modify(|e| e.0 = seq)
-                    .or_insert((seq, before.0 as i32));
+                r.predictions.retain(pos, before.0 as i32, at, seq);
             }
             self.set_block(pos, state.0 as i32);
         }
@@ -7165,6 +7185,28 @@ fn hand_id(hand: Hand) -> i32 {
     }
 }
 
+/// A hit, a use, a block placed or broken, an item dropped: what Free Direction steering
+/// rests after (`Game::send`).
+fn is_interaction(packet: &S) -> bool {
+    matches!(
+        packet,
+        S::PlayerAction(_) | S::Attack(_) | S::Interact(_) | S::UseItemOn(_) | S::UseItem(_)
+    )
+}
+
+/// Whether Free Direction holds `packet` for the next tick (`Game::send`): an interaction
+/// made while the last move steered (`steered`), and whatever comes after one held
+/// (`queued`), in order. Digging (START_DESTROY_BLOCK to STOP_DESTROY_BLOCK, actions 0 to 3)
+/// goes at once: this client has broken the block on its own level already, and this tick's
+/// move may go into the space it left (flying up against the block just dug), which the
+/// server and its anticheat take only once they have the break, as vanilla sends it before
+/// the move. The server reads no look from it, and Grim's RotationBreak checks it against the
+/// look of the move after it, the view's (the steering rests from it on).
+fn waits_for_the_view(packet: &S, steered: bool, queued: bool) -> bool {
+    let digging = matches!(packet, S::PlayerAction(a) if (0..=3).contains(&a.action));
+    (is_interaction(packet) && !digging && steered) || queued
+}
+
 /// Whether `Item.use` usually acts on this item (eats, drinks, equips, raises,
 /// throws, shoots, fills or places), which ends `Minecraft.startUseItem` at
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
@@ -7332,6 +7374,40 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    #[test]
+    fn free_direction_sends_a_break_before_the_move_that_goes_into_its_space() {
+        use super::{Empty, S, play, waits_for_the_view};
+        let action = |action| {
+            S::PlayerAction(play::PlayerAction {
+                action,
+                pos: [0, 62, 0],
+                direction: 0,
+                sequence: 1,
+            })
+        };
+        // Start, change direction, abort and stop go at once right after a steered move.
+        for dig in 0..=3 {
+            assert!(
+                !waits_for_the_view(&action(dig), true, false),
+                "action {dig}"
+            );
+        }
+        // A drop (5, DROP_ITEM) and a use wait for a move with the view's look.
+        let used = S::UseItem(play::UseItem {
+            hand: 0,
+            sequence: 2,
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        assert!(waits_for_the_view(&action(5), true, false));
+        assert!(waits_for_the_view(&used, true, false));
+        assert!(!waits_for_the_view(&used, false, false));
+        // After something held everything waits, in order; a swing alone never does.
+        assert!(waits_for_the_view(&action(0), true, true));
+        assert!(waits_for_the_view(&S::Punch(Empty), false, true));
+        assert!(!waits_for_the_view(&S::Punch(Empty), true, false));
+    }
 
     #[test]
     fn placement_preview_checks_obstruction_without_changing_the_level() {
