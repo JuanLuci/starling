@@ -152,7 +152,7 @@ public final class StarlingActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
-        // The world was saved when the window went away (the game's `suspended`).
+        // The world was saved when the game left the screen (game/saving.rs, save_for_background).
         android.os.Process.killProcess(android.os.Process.myPid());
         super.onDestroy();
     }

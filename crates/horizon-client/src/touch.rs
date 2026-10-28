@@ -125,6 +125,44 @@ impl Show {
     }
 }
 
+/// How the Sneak button sneaks: while a finger is on it, or from one tap to the next (as it always
+/// did). Flying, it only sneaks (goes down) while held either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SneakMode {
+    Hold,
+    #[default]
+    Toggle,
+}
+
+impl SneakMode {
+    /// Its name in touch-layout.json.
+    pub fn id(self) -> &'static str {
+        match self {
+            SneakMode::Hold => "hold",
+            SneakMode::Toggle => "toggle",
+        }
+    }
+    fn from_id(id: &str) -> Option<Self> {
+        [SneakMode::Hold, SneakMode::Toggle]
+            .into_iter()
+            .find(|m| m.id() == id)
+    }
+    /// What the editor's chip says.
+    pub fn label(self) -> &'static str {
+        match self {
+            SneakMode::Hold => "Hold",
+            SneakMode::Toggle => "Toggle",
+        }
+    }
+    /// The other one: the chip switches between them.
+    fn next(self) -> Self {
+        match self {
+            SneakMode::Hold => SneakMode::Toggle,
+            SneakMode::Toggle => SneakMode::Hold,
+        }
+    }
+}
+
 /// Where one control is: its centre as a share of the window's width and height (so a layout
 /// fits any screen), its radius in units (a ninth of the shorter side), whether it shows, and
 /// how opaque it is drawn (times the layout's own opacity).
@@ -208,6 +246,8 @@ pub struct LayoutConfig {
     pub buttons: Vec<(Button, Place)>,
     pub extra: Vec<Extra>,
     pub opacity: f32,
+    /// How the Sneak button sneaks.
+    pub sneak: SneakMode,
 }
 
 impl Default for LayoutConfig {
@@ -232,6 +272,7 @@ impl Default for LayoutConfig {
             ],
             extra: Vec::new(),
             opacity: 1.0,
+            sneak: SneakMode::Toggle,
         }
     }
 }
@@ -271,6 +312,11 @@ impl LayoutConfig {
             Some("analog") => Some(false),
             _ => None,
         };
+        // Layouts from before the choice toggle, as Sneak did then.
+        config.sneak = value["sneak"]
+            .as_str()
+            .and_then(SneakMode::from_id)
+            .unwrap_or_default();
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
@@ -318,6 +364,7 @@ impl LayoutConfig {
                 Some(false) => "analog",
                 None => "auto",
             },
+            "sneak": self.sneak.id(),
             "stick": entry(&self.stick),
             "buttons": buttons,
             "mods": mods,
@@ -609,9 +656,46 @@ pub struct TouchControls {
     /// The D-pad cell held now, and when up was last let go (twice quickly sprints).
     pub dpad: Option<[i8; 2]>,
     dpad_up_at: Option<Instant>,
+    /// Sneak tapped on in Toggle mode. It outlasts flight and screens (vanilla gives a toggled key
+    /// back when a screen closes) until tapped off, Hold is picked or the player dies.
+    sneak_on: bool,
+    /// The Sneak button's mode and whether the player flies ([`TouchControls::set_sneak`]).
+    sneak_mode: SneakMode,
+    flying: bool,
 }
 
 impl TouchControls {
+    /// Each frame: the Sneak button's mode and whether the player flies. Flying, Sneak goes down
+    /// only while held, whatever the mode; a sneak toggled on before take-off waits for the
+    /// landing, as vanilla's toggled key outlives flight. Picking Hold drops it.
+    pub fn set_sneak(&mut self, mode: SneakMode, flying: bool) {
+        self.sneak_mode = mode;
+        self.flying = flying;
+        if mode == SneakMode::Hold {
+            self.sneak_on = false;
+        }
+    }
+
+    /// Whether the Sneak button sneaks now.
+    pub fn sneaking(&self) -> bool {
+        match self.sneak_mode {
+            SneakMode::Toggle if !self.flying => self.sneak_on,
+            _ => self.held(Button::Sneak),
+        }
+    }
+
+    /// Forget a toggled sneak: the player died (`KeyMapping.resetToggleKeys` on respawn).
+    pub fn clear_sneak(&mut self) {
+        self.sneak_on = false;
+    }
+
+    /// A press of Sneak: in Toggle mode and not flying, it turns sneaking on or off.
+    fn tap_sneak(&mut self) {
+        if self.sneak_mode == SneakMode::Toggle && !self.flying {
+            self.sneak_on = !self.sneak_on;
+        }
+    }
+
     pub fn event(
         &mut self,
         layout: &Layout,
@@ -627,6 +711,9 @@ impl TouchControls {
                     // Pause acts when it lifts: a long press is the layout editor.
                     if button != Button::Pause {
                         out.push(Action::Press(button));
+                    }
+                    if button == Button::Sneak {
+                        self.tap_sneak();
                     }
                     Role::Button(button, now)
                 } else if let Some(slot) = layout.slot_at(p) {
@@ -680,6 +767,10 @@ impl TouchControls {
                 if self.landed.len() >= 3 && self.fingers.len() >= 3 {
                     // The three fingers stop whatever they began.
                     self.landed.clear();
+                    // A Sneak pressed by this finger is taken back with its toggle.
+                    if out.contains(&Action::Press(Button::Sneak)) {
+                        self.tap_sneak();
+                    }
                     let start = self.fingers.len() - 3;
                     for i in start..self.fingers.len() {
                         let role = std::mem::replace(&mut self.fingers[i].1, Role::Spent);
@@ -863,6 +954,8 @@ pub enum Chip {
     Bigger,
     /// On, ghost, off ([`Show`]).
     Visibility,
+    /// The Sneak button's only: Hold or Toggle ([`SneakMode`]).
+    Sneak,
 }
 
 /// The editor's own buttons, at the top.
@@ -875,9 +968,9 @@ pub enum EditorAction {
 }
 
 /// The layout editor: drag a control to move it; the one last touched gets chips to make it
-/// smaller or bigger and to turn it on, ghost or off; the opacity slider sets the selected
-/// control's opacity, or every control's with none selected; Done keeps the layout, Reset brings
-/// back the default.
+/// smaller or bigger and to turn it on, ghost or off (and Sneak's to hold or toggle); the opacity
+/// slider sets the selected control's opacity, or every control's with none selected; Done keeps
+/// the layout, Reset brings back the default.
 #[derive(Default)]
 pub struct LayoutEditor {
     pub selected: Option<Target>,
@@ -1004,6 +1097,9 @@ impl LayoutEditor {
         if selected != Target::Stick {
             chips.push((Chip::Visibility, [c[0] + 1.1 * u, y], 0.42 * u));
         }
+        if selected == Target::Button(Button::Sneak) {
+            chips.push((Chip::Sneak, [c[0] + 2.2 * u, y], 0.42 * u));
+        }
         chips
     }
 
@@ -1048,7 +1144,9 @@ impl LayoutEditor {
                     .into_iter()
                     .find(|(_, c, r)| hit(*c, *r))
                 {
-                    if let Some(place) = self.selected.and_then(|t| config.place_mut(t)) {
+                    if chip == Chip::Sneak {
+                        config.sneak = config.sneak.next();
+                    } else if let Some(place) = self.selected.and_then(|t| config.place_mut(t)) {
                         let stick = self.selected == Some(Target::Stick);
                         let extra = matches!(self.selected, Some(Target::Extra(_)));
                         let (min, max) = match (stick, extra) {
@@ -1060,6 +1158,7 @@ impl LayoutEditor {
                             Chip::Smaller => place.size = (place.size - SIZE_STEP).max(min),
                             Chip::Bigger => place.size = (place.size + SIZE_STEP).min(max),
                             Chip::Visibility => place.show = place.show.next(stick),
+                            Chip::Sneak => {}
                         }
                     }
                     return None;
@@ -1566,6 +1665,110 @@ mod tests {
             editor.event(&mut config, w, h, 9, TouchPhase::Started, reset),
             Some(EditorAction::Reset)
         );
+        assert_eq!(config, LayoutConfig::default());
+    }
+
+    #[test]
+    fn the_sneak_mode_is_saved_and_older_layouts_toggle() {
+        let config = LayoutConfig {
+            sneak: SneakMode::Hold,
+            ..LayoutConfig::default()
+        };
+        let back = LayoutConfig::from_json(&config.to_json());
+        assert_eq!(back, config);
+        // A layout saved before the choice, and a name from the future: Toggle, as Sneak was.
+        let old = r#"{"movement":"dpad","buttons":{"sneak":{"x":0.7}}}"#;
+        assert_eq!(LayoutConfig::from_json(old).sneak, SneakMode::Toggle);
+        let odd = r#"{"sneak":"double-tap"}"#;
+        assert_eq!(LayoutConfig::from_json(odd).sneak, SneakMode::Toggle);
+    }
+
+    #[test]
+    fn sneak_toggles_or_holds_and_only_holds_in_flight() {
+        let (l, now) = (layout(), Instant::now());
+        let sneak = l
+            .buttons
+            .iter()
+            .find(|(b, ..)| *b == Button::Sneak)
+            .unwrap()
+            .1;
+        let mut t = TouchControls::default();
+        let tap = |t: &mut TouchControls, id: u64| {
+            t.event(&l, id, TouchPhase::Started, sneak, now);
+            let down = t.sneaking();
+            t.event(&l, id, TouchPhase::Ended, sneak, now);
+            (down, t.sneaking())
+        };
+        // Toggle (the default): a tap on, the next off.
+        assert_eq!(tap(&mut t, 1), (true, true));
+        assert_eq!(tap(&mut t, 2), (false, false));
+        // Hold: only while the finger is on it.
+        t.set_sneak(SneakMode::Hold, false);
+        assert_eq!(tap(&mut t, 3), (true, false));
+        // Flying, either mode goes down only while held.
+        for mode in [SneakMode::Hold, SneakMode::Toggle] {
+            t.set_sneak(mode, true);
+            assert_eq!(tap(&mut t, 4), (true, false));
+        }
+        // A sneak toggled on before take-off does not sink the player, and is back on landing;
+        // taps in flight leave it be.
+        t.set_sneak(SneakMode::Toggle, false);
+        assert_eq!(tap(&mut t, 5), (true, true));
+        t.set_sneak(SneakMode::Toggle, true);
+        assert!(!t.sneaking());
+        assert_eq!(tap(&mut t, 6), (true, false));
+        t.set_sneak(SneakMode::Toggle, false);
+        assert!(t.sneaking());
+        // Screens lift the fingers, not the toggle; Hold and death drop it.
+        t.reset();
+        assert!(t.sneaking());
+        t.set_sneak(SneakMode::Hold, false);
+        t.set_sneak(SneakMode::Toggle, false);
+        assert!(!t.sneaking());
+        tap(&mut t, 7);
+        t.clear_sneak();
+        assert!(!t.sneaking());
+        // A Sneak press that is one of a three-finger tap is taken back.
+        t.event(&l, 8, TouchPhase::Started, [2000.0, 600.0], now);
+        t.event(&l, 9, TouchPhase::Started, [2200.0, 600.0], now);
+        let chord = t.event(&l, 10, TouchPhase::Started, sneak, now);
+        assert_eq!(
+            chord,
+            vec![Action::Release(Button::Sneak), Action::ToggleStats]
+        );
+        assert!(!t.sneaking());
+    }
+
+    #[test]
+    fn the_editor_switches_sneak_between_hold_and_toggle() {
+        let (w, h) = (3200.0, 1440.0);
+        let mut config = LayoutConfig::default();
+        let mut editor = LayoutEditor::default();
+        let at = |config: &LayoutConfig, target: Target| {
+            LayoutEditor::targets(config, w, h)
+                .into_iter()
+                .find(|(t, ..)| *t == target)
+                .unwrap()
+                .2
+        };
+        // Only Sneak has the chip.
+        let jump = at(&config, Target::Button(Button::Jump));
+        editor.event(&mut config, w, h, 1, TouchPhase::Started, jump);
+        editor.event(&mut config, w, h, 1, TouchPhase::Ended, jump);
+        let chips = editor.chips(&config, w, h);
+        assert!(!chips.iter().any(|(c, ..)| *c == Chip::Sneak));
+        let sneak = at(&config, Target::Button(Button::Sneak));
+        editor.event(&mut config, w, h, 2, TouchPhase::Started, sneak);
+        editor.event(&mut config, w, h, 2, TouchPhase::Ended, sneak);
+        let chips = editor.chips(&config, w, h);
+        let chip = chips.iter().find(|(c, ..)| *c == Chip::Sneak).unwrap().1;
+        assert!(chip[0] + 0.42 * unit(w, h) < w);
+        editor.event(&mut config, w, h, 3, TouchPhase::Started, chip);
+        assert_eq!(config.sneak, SneakMode::Hold);
+        assert_eq!(editor.selected, Some(Target::Button(Button::Sneak)));
+        editor.event(&mut config, w, h, 4, TouchPhase::Started, chip);
+        assert_eq!(config.sneak, SneakMode::Toggle);
+        // Nothing else of the button changed.
         assert_eq!(config, LayoutConfig::default());
     }
 

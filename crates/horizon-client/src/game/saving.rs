@@ -1,9 +1,10 @@
 //! The save screen freezes simulation, but keeps pumping window events while
 //! snapshots are prepared in small batches and the region workers drain.
 use super::{Game, loading_frame};
-use horizon_client::{Result, hud::HudBatch};
+use horizon_client::{Result, hud::HudBatch, save::SaveDir};
 use std::{
     collections::{HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -80,23 +81,51 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// Control saves acknowledge only after durable completion, while their
-    /// snapshot work is spread across event-loop turns too.
-    /// The world saved where it stands while the game goes on, before Android may end the
-    /// process in the background: what the `save` command does, at once.
-    pub(super) fn save_for_background(&mut self) -> Result<()> {
-        if self.title.is_some() || self.pending_save.is_some() {
-            return Ok(());
+    /// The game left the screen (Android: the focus went, or the window), and from now on the
+    /// system may end the process without a word: the world is saved where it stands, once each
+    /// time the game goes, as Bedrock does, and the log is flushed. It is the autosave's save
+    /// (vanilla's when the pause menu opens): the files go to the writer threads and nothing waits
+    /// for them, neither the window nor Android's UI thread behind it (a full save waits for the
+    /// generation in flight, seconds on a phone). The log says when they are written.
+    pub(super) fn save_for_background(&mut self) {
+        if !std::mem::replace(&mut self.saved_for_background, true)
+            && self.title.is_none()
+            && self.pending_save.is_none()
+            && self.world_loader.is_none()
+            && self.integrated_starting.is_none()
+            && self.pending_entry.is_none()
+        {
+            if let Some(server) = &self.integrated {
+                log::info!("Horizon: saving the world, the game left the screen");
+                // Out of sight the world waits as saved; the next frame pauses it or not again.
+                if !self.is_published() {
+                    server.set_paused(true);
+                }
+                server.execute(|g| {
+                    let started = Instant::now();
+                    match g.save_game_with(false) {
+                        Ok(()) => {
+                            let mut saves = g.levels.parked_saves();
+                            saves.push(g.save.clone());
+                            log_when_written(saves, started);
+                        }
+                        Err(e) => log::warn!("Horizon: failed to save the world: {e}"),
+                    }
+                });
+            } else if self.remote.is_none() {
+                log::info!("Horizon: saving the world, the game left the screen");
+                let started = Instant::now();
+                match self.save_game_with(false) {
+                    Ok(()) => log_when_written(vec![self.save.clone()], started),
+                    Err(e) => log::warn!("Horizon: failed to save the world: {e}"),
+                }
+            }
         }
-        if let Some(server) = &self.integrated {
-            server
-                .call(|g| g.save_game().map_err(|e| e.to_string()))
-                .ok_or("the integrated server stopped")??;
-            return Ok(());
-        }
-        self.save_game()
+        horizon_client::logging::flush();
     }
 
+    /// Control saves acknowledge only after durable completion, while their
+    /// snapshot work is spread across event-loop turns too.
     pub(super) fn begin_control_save(
         &mut self,
         all: bool,
@@ -261,5 +290,27 @@ impl Game<'_> {
         );
         renderer.render(&loading_frame(&hud))?;
         Ok(())
+    }
+}
+
+/// Logs, from a thread of its own, once the writer threads have put a save that did not wait on
+/// disk: in a bug report it shows whether the process ended before.
+fn log_when_written(saves: Vec<Arc<SaveDir>>, started: Instant) {
+    let waiter = std::thread::Builder::new()
+        .name("Save waiter".into())
+        .spawn(move || {
+            let written = saves.iter().try_for_each(|save| save.flush());
+            horizon_client::save::later::flush();
+            match written {
+                Ok(()) => log::info!(
+                    "Horizon: the world is saved ({:.2} s)",
+                    started.elapsed().as_secs_f32()
+                ),
+                Err(e) => log::warn!("Horizon: failed to save the world: {e}"),
+            }
+            horizon_client::logging::flush();
+        });
+    if let Err(e) = waiter {
+        log::warn!("Horizon: could not wait for the save: {e}");
     }
 }

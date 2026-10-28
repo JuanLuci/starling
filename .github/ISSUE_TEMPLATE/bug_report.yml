@@ -49,5 +49,5 @@ body:
     attributes:
       label: Log
       description: |
-        Attach `Starling/logs/latest.log` from your phone's storage. Send it right after the problem, before opening Starling again: opening it starts a new log.
+        Attach `Starling/logs/latest.log` from your phone's storage, right after the problem. If you have opened Starling again since (or Android did it by itself after closing it), attach `Starling/logs/previous.log` too: the time before. Older times are in the `.log.gz` files beside them, named by date.
       placeholder: Drop the file here.

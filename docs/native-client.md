@@ -172,7 +172,8 @@ socket.
 in the game home (`$HORIZON_HOME`, else `~/.local/share/horizon`; the
 dedicated server in its own folder) with lines like
 `[12:04:31] [Render thread/INFO]: message`, and at start archives the last
-run's as `logs/<yyyy-mm-dd>-<n>.log.gz` (seven a day). Messages still print on
+run's as `logs/<yyyy-mm-dd>-<n>.log.gz` (seven a day), once the new run writes
+its first line, keeping it plain as `logs/previous.log` too. Messages still print on
 stderr as before. A panic on the main thread or a fatal error writes
 `crash-reports/crash-<yyyy-mm-dd_HH.MM.SS>-client.txt` (the error, its stack,
 the machine, the GPU, render settings, resource packs, the open world and the

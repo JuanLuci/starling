@@ -5,6 +5,10 @@
 //! `logs/%d{yyyy-MM-dd}-%i.log.gz`, dated by the old file's last write. DefaultRolloverStrategy
 //! keeps 7 archives a day, the newest with the highest index.
 //!
+//! Unlike log4j, the start's rollover waits for the run's first line, and it also keeps the last
+//! run's log as it was in `logs/previous.log`: a player sends that one when the game has been
+//! opened again since (Android starts it again by itself right after ending it).
+//!
 //! Messages go through the `log` facade. Horizon's own still print their plain text on stderr,
 //! as they did before the log existed; other crates' errors only reach the file (their
 //! warnings are mostly the Vulkan loader's startup chatter).
@@ -18,6 +22,8 @@ use chrono::{DateTime, Local, NaiveDate};
 
 /// DefaultRolloverStrategy's default `max`: archives kept for one date.
 pub const MAX_ARCHIVES_PER_DAY: u32 = 7;
+/// The last run's log, uncompressed beside latest.log.
+pub const PREVIOUS_LOG: &str = "previous.log";
 /// Formatted lines kept in memory for crash reports.
 const RECENT: usize = 50;
 
@@ -174,27 +180,54 @@ fn archive(dir: &Path, date: NaiveDate, text: &[u8]) -> io::Result<()> {
     gz.finish()?.sync_all()
 }
 
-/// Moves what `file` holds into an archive dated `date` and empties it. The file stays open
-/// (and locked), so this works on Windows too.
-fn roll(file: &mut File, dir: &Path, date: NaiveDate) -> io::Result<()> {
+/// Moves what `file` holds into an archive dated `date` and empties it; with `previous`, a copy
+/// stays as `previous.log` too. The file stays open (and locked), so this works on Windows too.
+fn roll(file: &mut File, dir: &Path, date: NaiveDate, previous: bool) -> io::Result<()> {
     let mut text = Vec::new();
     file.seek(SeekFrom::Start(0))?;
     file.read_to_end(&mut text)?;
+    // Only a convenience: the archive goes on without it.
+    let copied = if previous && !text.is_empty() {
+        fs::write(dir.join(PREVIOUS_LOG), &text)
+    } else {
+        Ok(())
+    };
     if !text.is_empty() {
         archive(dir, date, &text)?;
     }
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
-    Ok(())
+    copied
 }
 
 /// The open `latest.log` and the lock that keeps it this game's.
 pub struct Latest {
     pub file: File,
     _lock: File,
+    dir: PathBuf,
+    /// The date of the last run's lines still in the file.
+    last_run: Option<NaiveDate>,
 }
 
-/// Opens `dir/latest.log` for this run, archiving the last run's. None when another Horizon
+impl Latest {
+    /// Archives the last run's lines (keeping them as previous.log), once, before this run's first
+    /// line: until then they stay in latest.log, so a run that writes nothing (Android starting the
+    /// app again right after it ended it) does not leave it empty.
+    pub fn archive_last_run(&mut self) -> io::Result<()> {
+        let Some(date) = self.last_run.take() else {
+            return Ok(());
+        };
+        let rolled = roll(&mut self.file, &self.dir, date, true);
+        if rolled.is_err() {
+            // This run's lines go after the last run's then, not over them.
+            self.file.seek(SeekFrom::End(0))?;
+        }
+        rolled
+    }
+}
+
+/// Opens `dir/latest.log` for this run; the last run's lines in it are archived when this run
+/// writes ([`Latest::archive_last_run`]). None when another Horizon
 /// using the same folder is writing it: that game keeps it, this one logs to stderr only (where
 /// files cannot be locked at all, it is opened unlocked). The
 /// lock is a separate file (`.lock`): Windows locks are mandatory, and a locked latest.log could
@@ -213,16 +246,25 @@ pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
         // rather than not at all.
         Err(fs::TryLockError::Error(_)) => {}
     }
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(dir.join("latest.log"))?;
-    let modified = file.metadata()?.modified()?;
-    let date = DateTime::<Local>::from(modified).date_naive();
-    roll(&mut file, dir, date)?;
-    Ok(Some(Latest { file, _lock: lock }))
+    let metadata = file.metadata()?;
+    // OnStartupTriggeringPolicy's minSize: an empty file is not archived.
+    let last_run = if metadata.len() > 0 {
+        Some(DateTime::<Local>::from(metadata.modified()?).date_naive())
+    } else {
+        None
+    };
+    Ok(Some(Latest {
+        file,
+        _lock: lock,
+        dir: dir.to_owned(),
+        last_run,
+    }))
 }
 
 /// What the writer thread is told.
@@ -261,9 +303,17 @@ impl Writer {
                     if let Some(message) = message {
                         let _ = writeln!(stderr.lock(), "{message}");
                     }
+                    if let Some(latest) = &mut self.file
+                        && let Err(e) = latest.archive_last_run()
+                    {
+                        let _ = writeln!(
+                            stderr.lock(),
+                            "Horizon: could not archive the last run's log: {e}"
+                        );
+                    }
                     if date != self.date {
                         if let Some(latest) = &mut self.file
-                            && let Err(e) = roll(&mut latest.file, &self.dir, self.date)
+                            && let Err(e) = roll(&mut latest.file, &self.dir, self.date, false)
                         {
                             let _ = writeln!(
                                 stderr.lock(),
@@ -581,39 +631,84 @@ mod tests {
         );
     }
 
+    fn gunzip(path: &Path) -> String {
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(File::open(path).unwrap())
+            .read_to_string(&mut text)
+            .unwrap();
+        text
+    }
+
     #[test]
     fn startup_archives_the_last_runs_log() {
         let dir = std::env::temp_dir().join(format!("horizon-logs-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // Empty: nothing is archived (OnStartupTriggeringPolicy's minSize is 1 byte).
-        drop(open_latest(&dir).unwrap().unwrap());
+        open_latest(&dir)
+            .unwrap()
+            .unwrap()
+            .archive_last_run()
+            .unwrap();
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
-        fs::write(
-            dir.join("latest.log"),
-            "[10:00:00] [Render thread/INFO]: first run\n",
-        )
-        .unwrap();
+        let first = "[10:00:00] [Render thread/INFO]: first run\n";
+        fs::write(dir.join("latest.log"), first).unwrap();
         let mut latest = open_latest(&dir).unwrap().unwrap();
         // A second game in the same folder leaves the file alone.
         assert!(open_latest(&dir).unwrap().is_none());
+        latest.archive_last_run().unwrap();
         writeln!(latest.file, "second run").unwrap();
+        // Once only.
+        latest.archive_last_run().unwrap();
+        writeln!(latest.file, "more").unwrap();
         drop(latest);
         let today = Local::now().date_naive();
-        let archive = dir.join(archive_name(today, 1));
-        let mut text = String::new();
-        flate2::read::GzDecoder::new(File::open(&archive).unwrap())
-            .read_to_string(&mut text)
-            .unwrap();
-        assert_eq!(text, "[10:00:00] [Render thread/INFO]: first run\n");
+        assert_eq!(gunzip(&dir.join(archive_name(today, 1))), first);
+        assert!(!dir.join(archive_name(today, 2)).exists());
+        assert_eq!(fs::read_to_string(dir.join(PREVIOUS_LOG)).unwrap(), first);
         assert_eq!(
             fs::read_to_string(dir.join("latest.log")).unwrap(),
-            "second run\n"
+            "second run\nmore\n"
         );
         assert_eq!(
             tail(&dir.join("latest.log"), 100).unwrap(),
-            vec!["second run"]
+            vec!["second run", "more"]
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_that_writes_nothing_leaves_the_last_runs_log() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-logs-quiet-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let killed = "[10:00:00] [Render thread/INFO]: the run that was ended\n";
+        fs::write(dir.join("latest.log"), killed).unwrap();
+        // Android starts the app again right after ending it, and that run ends before a line.
+        drop(open_latest(&dir).unwrap().unwrap());
+        assert_eq!(fs::read_to_string(dir.join("latest.log")).unwrap(), killed);
+        assert!(!dir.join(PREVIOUS_LOG).exists());
+        // The run after that writes: the ended run's log is archived once, and kept plain.
+        let mut latest = open_latest(&dir).unwrap().unwrap();
+        latest.archive_last_run().unwrap();
+        writeln!(latest.file, "next run").unwrap();
+        drop(latest);
+        let today = Local::now().date_naive();
+        assert_eq!(gunzip(&dir.join(archive_name(today, 1))), killed);
+        assert!(!dir.join(archive_name(today, 2)).exists());
+        assert_eq!(fs::read_to_string(dir.join(PREVIOUS_LOG)).unwrap(), killed);
+        // A rollover in the run (the day changing) keeps previous.log as it is.
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("latest.log"))
+            .unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        roll(&mut file, &dir, today, false).unwrap();
+        assert_eq!(gunzip(&dir.join(archive_name(today, 2))), "next run\n");
+        assert_eq!(fs::read_to_string(dir.join(PREVIOUS_LOG)).unwrap(), killed);
+        assert_eq!(fs::read_to_string(dir.join("latest.log")).unwrap(), "");
         let _ = fs::remove_dir_all(&dir);
     }
 

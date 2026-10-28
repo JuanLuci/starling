@@ -104,6 +104,11 @@ impl Integrated {
             .ok()?;
         rx.recv_timeout(Duration::from_secs(10)).ok()
     }
+    /// `MinecraftServer.execute`: run `f` on the server thread between two ticks, without
+    /// waiting for it.
+    pub fn execute(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) {
+        let _ = self.tasks.send(Box::new(f));
+    }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
         self.halt()

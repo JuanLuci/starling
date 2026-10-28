@@ -126,6 +126,10 @@ impl Levels {
     pub(super) fn parked_dims(&self) -> Vec<Dim> {
         self.parked.keys().copied().collect()
     }
+    /// The save folders of the levels not in place, to wait for their writes.
+    pub(super) fn parked_saves(&self) -> Vec<Arc<SaveDir>> {
+        self.parked.values().map(|p| p.save.clone()).collect()
+    }
 }
 
 impl Game<'_> {

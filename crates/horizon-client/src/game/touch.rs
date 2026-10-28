@@ -75,6 +75,8 @@ pub(super) struct Touch {
     mod_keys: Vec<(u64, String, String)>,
     /// The mods' buttons as last offered to the layout.
     faces: Vec<ModFace>,
+    /// The Sneak button holds sneak now (`touch_sync_sneak`).
+    sneaking: bool,
 }
 
 /// The chat bar's keys, left to right: history up and down, completion, the cursor; then Paste.
@@ -289,6 +291,7 @@ pub(super) fn draw_editor(
                 Some(Show::Off) => "Off",
                 _ => "On",
             },
+            Chip::Sneak => config.sneak.label(),
         };
         label(ui, c, r, text, ink(1.0));
     }
@@ -763,9 +766,9 @@ impl Game<'_> {
                     self.pad.touch_trigger(0, 1.0);
                 }
                 Action::Release(Button::Use) => self.pad.touch_trigger(0, 0.0),
-                // The pad's buttons for the rest (docs/controllers.md); the right stick's click
-                // toggles sneaking.
-                Action::Press(Button::Sneak) => self.pad.touch_tap(Pad::RightStick),
+                // Sneak holds the key itself, in its own mode (touch_sync_sneak); the pad's
+                // buttons for the rest (docs/controllers.md).
+                Action::Press(Button::Sneak) => {}
                 Action::Press(Button::Inventory) => self.pad.touch_tap(Pad::North),
                 Action::Press(Button::Chat) => self.pad.touch_tap(Pad::DPadRight),
                 Action::Press(Button::Pause) => self.pad.touch_tap(Pad::Start),
@@ -784,6 +787,42 @@ impl Game<'_> {
                 Action::Slot(slot) => self.selected = slot,
                 Action::ToggleStats => self.toggle_stats_overlay(),
                 Action::EditLayout => self.open_touch_editor(),
+            }
+        }
+        self.touch_sync_sneak();
+    }
+
+    /// Whether the touch Sneak button holds sneak now (`sync_toggle` adds it to the key's state).
+    pub(super) fn touch_sneaking(&self) -> bool {
+        self.touch.sneaking
+    }
+
+    /// Hold or let go of sneak as the Sneak button says, in its mode and with the player's flight:
+    /// only on the playing screen, as vanilla lets go of the keys under a screen and gives a
+    /// toggled one back when it closes.
+    fn touch_sync_sneak(&mut self) {
+        let flying = self.player.as_ref().is_some_and(|p| p.flying);
+        let mode = self
+            .touch
+            .config
+            .as_ref()
+            .map(|c| c.sneak)
+            .unwrap_or_default();
+        self.touch.controls.set_sneak(mode, flying);
+        // The death screen: KeyMapping.resetToggleKeys when the player respawns.
+        if self.screen == Screen::Dead {
+            self.touch.controls.clear_sneak();
+        }
+        let sneaking = self.touch_playing() && self.touch.controls.sneaking();
+        // Also when something let go of the keys under it (the window losing focus).
+        let lost = sneaking && !self.keys.contains(&KeyCode::ShiftLeft);
+        if sneaking != self.touch.sneaking || lost {
+            let pressed = sneaking && !self.touch.sneaking;
+            self.touch.sneaking = sneaking;
+            self.sync_toggle(0);
+            // As a press of the key reaches the game (it gets a sleeper up).
+            if pressed {
+                let _ = self.key_pressed(KeyCode::ShiftLeft);
             }
         }
     }

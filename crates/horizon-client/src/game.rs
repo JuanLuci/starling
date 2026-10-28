@@ -1925,6 +1925,9 @@ struct Game<'a> {
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
+    /// The world was saved as the game left the screen, and it has not come back since
+    /// (`save_for_background`).
+    saved_for_background: bool,
     pending_save: Option<saving::ClosingSave>,
     /// The block a guest is acting on (game/lan_actions.rs).
     forced_hit: Option<Hit>,
@@ -5579,11 +5582,12 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// Keep the held-key state of toggled sneak and sprint in step with their mapping, and with
-    /// the mods holding them (`input.hold`).
+    /// Keep the held-key state of toggled sneak and sprint in step with their mapping, with the
+    /// mods holding them (`input.hold`), and for sneak with the touch Sneak button.
     fn sync_toggle(&mut self, slot: usize) {
         let key = [KeyCode::ShiftLeft, KeyCode::ControlLeft][slot];
-        if self.toggles.is_down(slot) || self.mods.holding(slot) {
+        let touch = slot == 0 && self.touch_sneaking();
+        if self.toggles.is_down(slot) || self.mods.holding(slot) || touch {
             self.keys.insert(key);
         } else {
             self.keys.remove(&key);
@@ -12696,6 +12700,8 @@ impl ApplicationHandler for Game<'_> {
             }
             self.audio.resume_output();
             window.request_redraw();
+            // The next time it goes, it saves again.
+            self.saved_for_background = false;
             return;
         }
         // The Window constructor: created fullscreen when options.txt says so.
@@ -12741,6 +12747,17 @@ impl ApplicationHandler for Game<'_> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
+        }
+        // The focus goes first when the game leaves the screen (home, the recent apps, a call),
+        // before the window, and the system may end the process from then on: the world is saved
+        // at once, as Bedrock does.
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Focused(focused) = &event {
+            if *focused {
+                self.saved_for_background = false;
+            } else {
+                self.save_for_background();
+            }
         }
         if self.touch_event(event_loop, id, &event) {
             return;
@@ -13791,17 +13808,16 @@ impl ApplicationHandler for Game<'_> {
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
     /// window turns it into a window close, so Minecraft.stop saves the world.
     /// Android took the window away (the app went to the background, the screen went off): its
-    /// surface goes now, the sound stops, and the world is saved, since the system may end the
-    /// process at any time from here on.
+    /// surface goes now, the sound stops, and the world is saved unless losing the focus saved it
+    /// already, since the system may end the process at any time from here on. Android's UI
+    /// thread waits for this to return, so nothing here waits for the world's writes.
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(r) = &mut self.renderer {
             r.suspend();
         }
         self.audio.suspend_output();
         self.touch_release_all();
-        if let Err(e) = self.save_for_background() {
-            log::warn!("Horizon: failed to save the world for the background: {e}");
-        }
+        self.save_for_background();
     }
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.pad_close_output();
@@ -14191,6 +14207,7 @@ impl<'a> Game<'a> {
             clipboard: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
+            saved_for_background: false,
             pending_save: None,
             forced_hit: None,
             guest_use: None,
@@ -15299,11 +15316,13 @@ impl Loading {
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
     }
-    /// The window is going away (Android): its surface goes with it.
+    /// The window is going away (Android): its surface goes with it, and the log is flushed
+    /// before the system may end the process.
     fn suspended(&mut self) {
         if let Some(r) = &mut self.renderer {
             r.suspend();
         }
+        horizon_client::logging::flush();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
