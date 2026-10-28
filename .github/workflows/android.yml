@@ -73,8 +73,9 @@ jobs:
           HORIZON_ANDROID_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
-        # Releases with the fast profile (fewer codegen units: a little quicker in game).
-        run: python packaging/android/build_apk.py ${{ startsWith(github.ref, 'refs/tags/v') && '--profile fast' || '' }} ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
+        # Releases with the quick profile too, as every build tried on a phone: the fast one (16 codegen units) ran
+        # the runner out of memory on the game's crate.
+        run: python packaging/android/build_apk.py ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: starling-apk
