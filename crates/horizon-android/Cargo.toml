@@ -23,6 +23,7 @@ horizon-friends = { path = "../horizon-friends" }
 horizon-mods = { path = "../horizon-mods", features = ["runtime"] }
 horizon-protocol = { path = "../horizon-protocol" }
 horizon-shaders = { path = "../horizon-shaders" }
+horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }

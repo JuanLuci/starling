@@ -1724,6 +1724,8 @@ mod tests {
             entity_tags: Default::default(),
             villager_hats: Default::default(),
             pois: Default::default(),
+            armor_atlases: Default::default(),
+            equipment: Default::default(),
         };
         for left in [false, true] {
             let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();

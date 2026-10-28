@@ -259,7 +259,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         Status::Running => ("running", None),
         Status::Off => ("off", None),
         Status::Failed(reason) => ("failed", Some(reason.clone())),
-            Status::Elsewhere => ("elsewhere", None),
+        Status::Elsewhere => ("elsewhere", None),
     };
     let manifest = entry.manifest.as_ref();
     emit(json!({
@@ -854,6 +854,9 @@ fn outputs(mods: &mut Mods, screen: &mut Option<String>, hands: &mut Hands, worl
                 hands.held[usize::from(control == "key.sprint")] = held;
                 json!({ "event": "hold", "control": control, "held": held })
             }
+            // A server mod's and Horizon's own (Tell, Broadcast...): this pretend world runs no
+            // server, so they are said as they are.
+            other => json!({ "event": "other", "output": format!("{other:?}") }),
         };
         emit(line);
     }

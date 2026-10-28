@@ -215,7 +215,7 @@ impl Game<'_> {
             "anvil" => field(("anvil", 0), &self.station.as_ref()?.name, None, 50, DONE),
             "creative" => field(
                 ("creative", 0),
-                &self.creative_screen.search,
+                &self.creative_screen.search.value,
                 None,
                 super::super::clipboard::CREATIVE_SEARCH_CHARS,
                 SEARCH,

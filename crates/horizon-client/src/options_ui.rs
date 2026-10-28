@@ -1678,7 +1678,9 @@ impl OptionsUi {
                     pick(choice.is_none(), "Off", Act::PickShaderPack(None)),
                 ];
                 if s.shader_packs.is_empty() {
-                    rows.push(Row::Header("No shader packs: put them in the shaderpacks folder"));
+                    rows.push(Row::Header(
+                        "No shader packs: put them in the shaderpacks folder",
+                    ));
                 }
                 for (i, pack) in s.shader_packs.iter().enumerate() {
                     let on = choice.as_ref().is_some_and(|(p, _)| *p == pack.file);

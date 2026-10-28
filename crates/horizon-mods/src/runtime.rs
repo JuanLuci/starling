@@ -94,8 +94,6 @@ use recipes_bindings::{
     RecipesHost,
     horizon::mods::{browser, recipes as horizon_recipes},
 };
-/// Horizon's `game.raycast`'s hit.
-pub use v1::horizon::mods::game::Hit;
 /// Horizon's server mods' types (`horizon-server-mod`); Starling's [`BlockPos`] and [`GameMode`]
 /// keep the plain names.
 pub use server_bindings::{
@@ -105,6 +103,8 @@ pub use server_bindings::{
     horizon::mods::players::{GameMode as ServerGameMode, Player as ServerPlayer},
     horizon::mods::world::BlockChange,
 };
+/// Horizon's `game.raycast`'s hit.
+pub use v1::horizon::mods::game::Hit;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
 use ui_bindings::UiHost;
 /// The widget model a Horizon `ui` screen or settings page shows (WIT `interface ui`), for the
@@ -1324,8 +1324,8 @@ impl Mods {
             let instance = linker
                 .instantiate(&mut store, &component)
                 .map_err(|e| quick_detail(&m.id, &e))?;
-            let exports =
-                HorizonServerMod::new(&mut store, &instance).map_err(|e| quick_detail(&m.id, &e))?;
+            let exports = HorizonServerMod::new(&mut store, &instance)
+                .map_err(|e| quick_detail(&m.id, &e))?;
             let r = exports
                 .horizon_mods_server_events()
                 .call_init(&mut store)
@@ -3411,7 +3411,13 @@ impl mod_world::Host for State {
                 blocks.len()
             ));
         }
-        if let Some(view) = self.world_view.lock().ok().as_ref().and_then(|v| v.as_ref()) {
+        if let Some(view) = self
+            .world_view
+            .lock()
+            .ok()
+            .as_ref()
+            .and_then(|v| v.as_ref())
+        {
             if !view.has_dimension(&dimension) {
                 return Err(format!("no dimension {dimension}"));
             }

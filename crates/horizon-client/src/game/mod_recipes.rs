@@ -530,7 +530,10 @@ impl Game<'_> {
         if self.mods.known_recipes.0 != Some(version) {
             self.mods.known_recipes = (Some(version), known.into());
         }
-        (self.mods.horizon_recipes.clone(), self.mods.known_recipes.1.clone())
+        (
+            self.mods.horizon_recipes.clone(),
+            self.mods.known_recipes.1.clone(),
+        )
     }
 
     fn make_mod_recipes(&mut self) -> Recipes {

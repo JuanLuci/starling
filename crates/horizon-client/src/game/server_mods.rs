@@ -60,8 +60,8 @@ mod run {
         text::{self, Text},
     };
     use horizon_mods::{
-        ArgumentKind, Output, ServerBlockPos as BlockPos, ServerCommand, ServerGameMode as GameMode,
-        ServerPlayer, WorldView,
+        ArgumentKind, Output, ServerBlockPos as BlockPos, ServerCommand,
+        ServerGameMode as GameMode, ServerPlayer, WorldView,
     };
     use horizon_protocol::packets::play::{self, Clientbound as C};
     use horizon_world::registry::{BlockRegistry, BlockStateId};

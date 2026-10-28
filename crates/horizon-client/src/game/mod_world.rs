@@ -221,6 +221,7 @@ impl Game<'_> {
                     layer: 2,
                     color,
                     light: 0,
+                    glint_uv: [0.0, 0.0],
                 });
             }
         }
@@ -285,6 +286,7 @@ fn box_quads(o: glam::DVec3, c: &[f32], color: u32, uv: [f32; 2], out: &mut Vec<
                 layer: 2,
                 color,
                 light: 0,
+                glint_uv: [0.0, 0.0],
             });
         }
     }

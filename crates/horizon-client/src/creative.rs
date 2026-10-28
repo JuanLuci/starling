@@ -33,7 +33,6 @@ struct SearchEntry {
     /// Item tags as (namespace, path), lower-cased.
     tags: Vec<(String, String)>,
 }
-#[derive(Clone)]
 pub struct Creative {
     pub tabs: Vec<Tab>,
     pub selected: usize,
@@ -49,6 +48,21 @@ pub struct Creative {
     /// ItemPickerMenu.items: what the grid shows, filled when the tab or the
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
+}
+/// A copy fills its grid again when it is first drawn.
+impl Clone for Creative {
+    fn clone(&self) -> Self {
+        Self {
+            tabs: self.tabs.clone(),
+            selected: self.selected,
+            scroll: self.scroll,
+            scrolling: self.scrolling,
+            search: self.search.clone(),
+            search_items: self.search_items.clone(),
+            search_index: self.search_index.clone(),
+            shown: Mutex::new(None),
+        }
+    }
 }
 /// The grid's stacks for one tab, search text and language.
 struct Shown {
