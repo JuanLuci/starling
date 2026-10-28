@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in Starling does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. A report with the log and the phone's model is the one that gets fixed.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead. Screenshots and screen recordings help a lot.
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone
+      description: The model and, if you know it, the chip (for example "POCO F6 Pro, Snapdragon 8 Gen 2").
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version
+      placeholder: Android 16
+  - type: input
+    id: version
+    attributes:
+      label: Starling version
+      description: From the release you installed, or the commit of the build.
+      placeholder: v0.1.0
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - Setting up (sign-in, download, preparing)
+        - Singleplayer
+        - A server
+        - Shader packs
+        - Resource packs
+        - Mods
+        - Touch controls
+        - Something else
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Attach `Starling/logs/latest.log` from your phone's storage. Send it right after the problem, before opening Starling again: opening it starts a new log.
+      placeholder: Drop the file here.

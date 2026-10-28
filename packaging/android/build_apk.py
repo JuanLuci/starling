@@ -189,13 +189,15 @@ def link_resources(aapt2, android_jar, out, assets):
     shutil.rmtree(compiled, ignore_errors=True)
     compiled.mkdir()
     run(aapt2, "compile", "--dir", res, "-o", compiled)
+    # Debuggable (adb's run-as reaches the app's own files) except when signed for a release.
+    debug = [] if os.environ.get("HORIZON_ANDROID_KEYSTORE") else ["--debug-mode"]
     run(
         aapt2, "link", "-o", out / "base.apk",
         "--manifest", out / "AndroidManifest.xml",
         "-I", android_jar,
         "--min-sdk-version", MIN_SDK, "--target-sdk-version", TARGET_SDK,
         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
-        "--debug-mode",
+        *debug,
         "-A", assets,
         *sorted(compiled.glob("*.flat")),
     )
