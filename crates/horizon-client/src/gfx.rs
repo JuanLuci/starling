@@ -2866,9 +2866,15 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = self.surface.take();
     }
     /// The window is going away (Android destroys it in the background): drop its surface now,
-    /// while the window it was made from still exists, and draw nothing until `resume`.
+    /// while the window it was made from still exists, and draw nothing until `resume`. Not kept
+    /// as the spare (`release_surface`): `resume` would take it back, on a window that is gone,
+    /// and draw to nothing (a black screen on the way back from the browser or the file picker).
     pub fn suspend(&mut self) {
-        self.release_surface();
+        self.surface = None;
+        *self
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.suspended = true;
         self.detached = true;
     }

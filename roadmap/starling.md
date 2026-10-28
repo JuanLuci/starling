@@ -92,8 +92,12 @@ anticheat flags for digging up while flying.
 > atlas's own-skin slot the way a Mojang skin is (first and third person, the inventory, the player
 > list), a skin PNG opened with Starling put on at once; the Starling folder offered in the setup
 > before the sign-in; with no frame cap, the screen's fastest refresh rate asked for
-> (ANativeWindow_setFrameRate), where a phone's own policy held games at 60 Hz. Left: a skin
-> others see on servers (it is the account's, or a plugin's such as SkinsRestorer).
+> (ANativeWindow_setFrameRate), where a phone's own policy held games at 60 Hz; the window's
+> surface dropped when the app goes to the background, as before v0.1.1 (Horizon's
+> `release_surface` now keeps it for a replacement renderer, and the way back drew to the
+> destroyed window: a black screen after the sign-in or the file picker, and most likely the
+> crash a player had there on an Adreno 830). Left: a skin others see on servers (it is the
+> account's, or a plugin's such as SkinsRestorer).
 
 ### Shader packs on a phone
 
