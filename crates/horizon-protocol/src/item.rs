@@ -1141,6 +1141,23 @@ mod tests {
         let mut r = Reader::new(&data);
         let stack = Slot::read(&mut r).unwrap().unwrap();
         assert_eq!(stack.added, [(kind, Component::Raw(bytes))]);
+        same_bytes_after(stack, r, &data, end);
+    }
+    /// As [`raw_round_trip`], for a component the codec reads into its own type: it re-encodes
+    /// to the same bytes.
+    fn typed_round_trip(kind: i32, value: impl FnOnce(&mut Writer)) {
+        let (_, mut data) = with_component(kind, value);
+        let end = data.len();
+        let mut w = Writer::new();
+        Slot::write(&Some(Stack::new(7, 3)), &mut w);
+        data.extend_from_slice(&w.data);
+
+        let mut r = Reader::new(&data);
+        let stack = Slot::read(&mut r).unwrap().unwrap();
+        assert!(!matches!(stack.added[..], [(_, Component::Raw(_))]));
+        same_bytes_after(stack, r, &data, end);
+    }
+    fn same_bytes_after(stack: Stack, mut r: Reader<'_>, data: &[u8], end: usize) {
         assert_eq!(Slot::read(&mut r).unwrap(), Some(Stack::new(7, 3)));
         assert_eq!(r.remaining(), 0);
         let mut back = Writer::new();
@@ -1459,7 +1476,7 @@ mod tests {
 
     #[test]
     fn bundles_and_containers_hold_nested_stacks() {
-        raw_round_trip(component::BUNDLE_CONTENTS, |w| {
+        typed_round_trip(component::BUNDLE_CONTENTS, |w| {
             w.varint(2);
             template(w, 42, 3);
             // A damaged, named stack holding its own bundle, minus a component.
@@ -1607,7 +1624,7 @@ mod tests {
             w.varint(15);
             w.bool(true);
         });
-        raw_round_trip(component::LODESTONE_TRACKER, |w| {
+        typed_round_trip(component::LODESTONE_TRACKER, |w| {
             w.bool(true);
             w.string("minecraft:overworld");
             w.i64(crate::buf::pack_block_pos([10, 64, -5]));

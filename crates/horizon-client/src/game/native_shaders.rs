@@ -18,22 +18,12 @@ use super::Game;
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 const RED: u32 = 0xFF5555;
 
+/// One of Horizon's own packs as it runs; a new choice starts it over (`game/shader_packs.rs`).
 #[derive(Default)]
 pub(super) struct NativeShaders {
-    /// The pack's name in `shaderpacks/`, of either kind (`game/shader_packs.rs`); empty: none.
-    pub picked: String,
     /// The pack's files when it was last read (`fingerprint`).
     stamp: Option<u64>,
     looked: Option<Instant>,
-}
-
-impl NativeShaders {
-    pub fn picking(name: &str) -> Self {
-        Self {
-            picked: name.to_owned(),
-            ..Self::default()
-        }
-    }
 }
 
 impl Game<'_> {

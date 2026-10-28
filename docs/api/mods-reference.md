@@ -1,7 +1,7 @@
 <!-- Generated from crates/horizon-mod-sdk/wit/horizon.wit and the manifest's capabilities by crates/horizon-mods/tests/api_reference.rs; a test fails when this file is out of date. Update it with: HORIZON_WRITE_DOCS=1 cargo test -p horizon-mods --features pack --test api_reference -->
 # Mod API reference
 
-The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`, every interface, type, function and hook in it, and the capabilities a manifest may list. The guide is [mods.md](../mods.md); stability and versions: [stability.md](stability.md). Manifest `api` lines this game serves: `0.1`, `0.2`, `0.3`.
+The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`, every interface, type, function and hook in it, and the capabilities a manifest may list. The guide is [mods.md](../mods.md); stability and versions: [stability.md](stability.md). Manifest `api` lines this game serves: `0.1`, `0.2`, `0.3`, `starling-0.1`.
 
 ## Capabilities
 
@@ -12,26 +12,22 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `inventory-read` | data files (`assets/`, `data/`), no interface | see your items |
 | `inventory-click` | data files (`assets/`, `data/`), no interface | move your items, in your inventory and what you open |
 | `creative` | data files (`assets/`, `data/`), no interface | take items from the creative tabs, in creative mode |
-| `recipes` | data files (`assets/`, `data/`), no interface | see the recipes and fill a crafting grid with one's ingredients |
+| `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `chat` | [`chat`](#chat) | show you chat messages |
 | `chat-send` | data files (`assets/`, `data/`), no interface | send chat messages and commands as you |
 | `hud` | [`hud`](#hud) | draw on your screen |
 | `world-draw` | data files (`assets/`, `data/`), no interface | draw lines and labels in the world |
-| `render` | [`render`](#render) | draw on your screen and shake the camera |
+| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page, and add buttons to the game's |
 | `keys` | data files (`assets/`, `data/`), no interface | use keys you press |
-| `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items, add keys, and hold sprint or sneak for you |
+| `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, add keys, and hold sprint or sneak for you |
 | `sound` | data files (`assets/`, `data/`), no interface | play sounds |
 | `net` | data files (`assets/`, `data/`), no interface | talk to servers on its own channels |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks and items to your worlds |
-| `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
-| `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
-| `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 
 ## World `horizon-mod`
 

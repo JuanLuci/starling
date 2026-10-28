@@ -67,11 +67,7 @@ impl Game<'_> {
         let choice = self.settings.horizon.shader_choice();
         if choice != self.shader_choice && self.screen != super::Screen::Options {
             self.shader_choice = choice;
-            let picked = self
-                .shader_choice
-                .as_ref()
-                .map_or("", |(name, _)| name.as_str());
-            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
+            self.native_shaders = Default::default();
             self.pack_ids = None;
             self.pack_making = None;
             if let Some(renderer) = &mut self.renderer {
@@ -102,7 +98,7 @@ impl Game<'_> {
                     let macros = Macros::standard();
                     let text = pack.read_text("shaders.properties").unwrap_or_default();
                     let properties = Properties::parse(&text, &macros);
-                    let values = picked_values(&properties, &name, &profile);
+                    let values = picked_values(&properties, name, &profile);
                     if !values.is_empty() {
                         pack.set_values(values);
                     }
