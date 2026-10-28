@@ -719,6 +719,10 @@ fn build_pass(
     draws: &wgpu::BindGroupLayout,
 ) -> Option<Pass> {
     let features = device.features();
+    // The shadow pass clamps depth where it can: casters between the light and the shadow
+    // camera's near plane land on it instead of being cut off (gfx.rs `light_frustum`).
+    let unclipped_depth =
+        p.group == Group::Shadow && features.contains(wgpu::Features::DEPTH_CLIP_CONTROL);
     // The frame's uniforms, then the pack's custom ones.
     let index = |name: &str| {
         pack_uniforms::index(name).or_else(|| {
@@ -927,6 +931,7 @@ fn build_pass(
                     primitive: wgpu::PrimitiveState {
                         front_face: wgpu::FrontFace::Cw,
                         cull_mode: geometry.filter(|g| g.cull).map(|_| wgpu::Face::Back),
+                        unclipped_depth,
                         ..Default::default()
                     },
                     // A hair farther than the program's own draw lands: the two pipelines may
@@ -967,6 +972,7 @@ fn build_pass(
             primitive: wgpu::PrimitiveState {
                 front_face: wgpu::FrontFace::Cw,
                 cull_mode: geometry.filter(|g| g.cull).map(|_| wgpu::Face::Back),
+                unclipped_depth,
                 ..Default::default()
             },
             depth_stencil: geometry.map(|g| wgpu::DepthStencilState {

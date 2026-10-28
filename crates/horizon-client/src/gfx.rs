@@ -976,7 +976,8 @@ async fn open_device(
         // Mappable primary buffers: section pages that no longer fit in
         // video memory go to system memory. Shader packs' 16-bit normalized buffers (render
         // targets with the adapter's own format features) and R11F_G11F_B10F: a float
-        // stand-in neither clamps nor drops NaN.
+        // stand-in neither clamps nor drops NaN. Depth clamping: what lies between the light and a
+        // shader pack's shadow camera still casts its shadow (`light_frustum`).
         let features = timing::GpuTimer::features(&adapter)
             | cull::Cull::features(&adapter)
             | (adapter.features()
@@ -984,7 +985,8 @@ async fn open_device(
                     | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
                     | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                     | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-                    | wgpu::Features::RG11B10UFLOAT_RENDERABLE));
+                    | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+                    | wgpu::Features::DEPTH_CLIP_CONTROL));
         let driver = format!("{} {}", info.driver, info.driver_info);
         startup_step(format_args!(
             "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -3555,9 +3557,11 @@ impl Renderer {
             let radius = v
                 .distance
                 .map_or(radius, |d| radius.min((d / 16.0).ceil() as i32));
-            let light = Frustum {
-                planes: frustum(v.cull),
-            };
+            let clamped = self
+                .device
+                .features()
+                .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
+            let light = light_frustum(v.cull, clamped);
             crate::spans::time("shadow visibility", || {
                 self.sections.visible(
                     camera,
@@ -5017,8 +5021,35 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
     planes.map(|p| p / p.truncate().length())
 }
 
+/// What a shader pack's shadow camera draws (`cull`: its view-projection, wgpu depth). With depth
+/// clamping (the shadow programs' pipelines when the device has it), everything between the
+/// light and the camera's near plane too, drawn at that plane: the camera sits 128 blocks toward
+/// the light, and with the sun low the ground over a cave is farther than that along its rays;
+/// cut off, it let the sun into the cave.
+fn light_frustum(cull: Mat4, clamped: bool) -> Frustum {
+    let mut planes = frustum(cull);
+    if clamped {
+        planes[4] = Vec4::W;
+    }
+    Frustum { planes }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_clamped_shadow_view_keeps_what_lies_toward_the_light() {
+        use glam::{Mat4, Vec3};
+        // The shadow camera with the sun overhead: 128 blocks up, 256 deep (wgpu depth).
+        let view = Mat4::look_to_rh(Vec3::new(0.0, 128.0, 0.0), Vec3::NEG_Y, Vec3::Z);
+        let cull = Mat4::orthographic_rh(-64.0, 64.0, -64.0, 64.0, 0.05, 256.0) * view;
+        let above = (Vec3::new(-8.0, 200.0, -8.0), Vec3::new(8.0, 216.0, 8.0));
+        assert!(!super::light_frustum(cull, false).intersects(above.0, above.1));
+        assert!(super::light_frustum(cull, true).intersects(above.0, above.1));
+        // Still bounded across the light's rays.
+        let beside = (Vec3::new(100.0, 0.0, 0.0), Vec3::new(116.0, 16.0, 16.0));
+        assert!(!super::light_frustum(cull, true).intersects(beside.0, beside.1));
+    }
+
     #[test]
     fn surface_is_8_bit_and_not_srgb() {
         use super::surface_format;
