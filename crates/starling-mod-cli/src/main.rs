@@ -259,6 +259,7 @@ fn run_once(options: &Options) -> Result<(), String> {
         Status::Running => ("running", None),
         Status::Off => ("off", None),
         Status::Failed(reason) => ("failed", Some(reason.clone())),
+            Status::Elsewhere => ("elsewhere", None),
     };
     let manifest = entry.manifest.as_ref();
     emit(json!({

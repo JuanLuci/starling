@@ -473,11 +473,6 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
-                Event::OpenShaderFolder => {
-                    let dir = Game::options_path().with_file_name("shaderpacks");
-                    let _ = std::fs::create_dir_all(&dir);
-                    packs::open_folder(&dir);
-                }
                 // No mod runs before a world's game starts.
                 Event::ModConfig(_) => {}
                 Event::OpenModFolder => {
@@ -491,6 +486,16 @@ impl Loading {
                     }
                 }
                 Event::TouchLayout => self.open_menu_touch_editor(),
+                Event::ListShaderPacks => {
+                    self.settings.shader_packs =
+                        horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
+                }
+                Event::ShaderPack => self.save_menu_settings(),
+                Event::OpenShaderPackFolder => {
+                    let dir = Game::shader_packs_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    packs::open_folder(&dir);
+                }
                 Event::Credits => {
                     if let Some(gui) = &self.gui {
                         let name = self.options.as_ref().map_or_else(
@@ -668,6 +673,11 @@ impl Loading {
                             self.menu.cursor,
                             (batch.width, batch.height),
                             self.menu.modifiers.shift_key(),
+                        );
+                        title.press_rules(
+                            &gui.atlas,
+                            self.menu.cursor,
+                            (batch.width, batch.height),
                         );
                         self.menu_action(event_loop, action);
                     }

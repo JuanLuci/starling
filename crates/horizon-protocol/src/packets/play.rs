@@ -8,14 +8,14 @@ use crate::{
     },
     chunk::{ChunkData, LightData},
     entity_data::{EntityData, Particle, Value},
-    item::{Hashed, HashedSlot, Slot, Stack},
+    item::{Component, Hashed, HashedSlot, Slot, Stack},
     packet, packet_enum,
     packets::{
         Empty,
         configuration::{
             ClientInformation, CookieRequest, CookieResponse, CustomClickAction, CustomPayload,
             Disconnect, KeepAlive, Ping, ResourcePackPop, ResourcePackPush, ResourcePackResponse,
-            StoreCookie, Transfer, UpdateTags,
+            ServerLinks, StoreCookie, Transfer, UpdateTags,
         },
         login::Property,
     },
@@ -88,11 +88,31 @@ packet!(ContainerSetContent {
     carried: Option<Stack> => Slot,
 });
 /// ItemCost.STREAM_CODEC: item, count, then the exact component predicate
-/// (Horizon sends and reads it as a component patch without removals).
+/// (a list of typed component values, with no patch removal count).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NetCost {
     pub item: i32,
     pub count: i32,
+    pub components: Vec<(i32, Component)>,
+}
+impl From<Stack> for NetCost {
+    fn from(stack: Stack) -> Self {
+        Self {
+            item: stack.item,
+            count: stack.count,
+            components: stack.added,
+        }
+    }
+}
+impl From<NetCost> for Stack {
+    fn from(cost: NetCost) -> Self {
+        Self {
+            item: cost.item,
+            count: cost.count,
+            added: cost.components,
+            removed: Vec::new(),
+        }
+    }
 }
 /// MerchantOffer.STREAM_CODEC.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,10 +134,17 @@ impl Codec<Vec<NetOffer>> for Offers {
         fn cost(r: &mut Reader) -> Result<NetCost> {
             let item = r.varint()?;
             let count = r.varint()?;
-            if r.varint()? != 0 {
-                return Err(Error::new("item cost components are not supported"));
+            let n = r.count(r.remaining())?;
+            let mut components = Vec::with_capacity(n.min(64));
+            for _ in 0..n {
+                let kind = r.varint()?;
+                components.push((kind, Component::read(kind, r)?));
             }
-            Ok(NetCost { item, count })
+            Ok(NetCost {
+                item,
+                count,
+                components,
+            })
         }
         let n = r.count(r.remaining())?;
         let mut out = Vec::with_capacity(n.min(64));
@@ -144,7 +171,11 @@ impl Codec<Vec<NetOffer>> for Offers {
         fn cost(c: &NetCost, w: &mut Writer) {
             w.varint(c.item);
             w.varint(c.count);
-            w.varint(0);
+            w.varint(c.components.len() as i32);
+            for (kind, value) in &c.components {
+                w.varint(*kind);
+                value.write(*kind, w);
+            }
         }
         w.varint(v.len() as i32);
         for o in v {
@@ -176,6 +207,9 @@ packet!(
     }
 );
 packet!(ContainerSetData { container: i32 => VarInt, id: i16 => Short, value: i16 => Short });
+// ClientboundCooldownPacket: the cooldown group (an identifier) and the ticks
+// its entry lasts (0 ends it).
+packet!(Cooldown { group: String => Ident, duration: i32 => VarInt });
 packet!(ContainerSetSlot { container: i32 => VarInt, state: i32 => VarInt, slot: i16 => Short, item: Option<Stack> => Slot });
 /// A holder reference: registry id + 1, or 0 for an inline value (unsupported).
 pub struct HolderId;
@@ -1032,9 +1066,6 @@ impl Codec<Explode> for Explode {
         w.bool(v.play_sound);
     }
 }
-// ClientboundCooldownPacket: an item cooldown group (`use_cooldown`'s, else the item's id) and
-// the ticks it lasts (0 ends it).
-packet!(Cooldown { group: String => Ident, ticks: i32 => VarInt });
 // ClientboundCustomChatCompletionsPacket: 0 adds, 1 removes, 2 sets the chat's extra suggestions
 // (a server's @names and emoji).
 packet!(CustomChatCompletions { action: i32 => VarInt, entries: Vec<String> => List<Str> });
@@ -1825,6 +1856,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     ContainerSetData(ContainerSetData) = CONTAINER_SET_DATA,
     ContainerSetSlot(ContainerSetSlot) = CONTAINER_SET_SLOT,
     CookieRequest(CookieRequest) = COOKIE_REQUEST,
+    Cooldown(Cooldown) = COOLDOWN,
     CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
     Disconnect(Disconnect) = DISCONNECT,
     DisguisedChat(DisguisedChat) = DISGUISED_CHAT,
@@ -1898,7 +1930,6 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     SetTime(SetTime) = SET_TIME,
     SetTitleText(Text) = SET_TITLE_TEXT,
     SetTitlesAnimation(TitlesAnimation) = SET_TITLES_ANIMATION,
-    Cooldown(Cooldown) = COOLDOWN,
     CustomChatCompletions(CustomChatCompletions) = CUSTOM_CHAT_COMPLETIONS,
     PlayerLookAt(PlayerLookAt) = PLAYER_LOOK_AT,
     Sound(Sound) = SOUND,
@@ -1906,6 +1937,9 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     StopSound(StopSound) = STOP_SOUND,
     StartConfiguration(Empty) = START_CONFIGURATION,
     StoreCookie(StoreCookie) = STORE_COOKIE,
+    // A common packet: the same `configuration::ServerLinks` the
+    // configuration phase sends.
+    ServerLinks(ServerLinks) = SERVER_LINKS,
     SwingAnimation(SwingAnimation) = SWING_ANIMATION,
     SystemChat(SystemChat) = SYSTEM_CHAT,
     TabList(TabList) = TAB_LIST,
@@ -2046,6 +2080,7 @@ impl Codec<TrackedWaypoint> for TrackedWaypoint {
 
 packet!(AcceptTeleportation { id: i32 => VarInt, x: f64 => Double, y: f64 => Double, z: f64 => Double, yaw: f32 => Float, pitch: f32 => Float });
 packet!(Attack { id: i32 => VarInt });
+packet!(TeleportToEntity { uuid: u128 => Uuid });
 packet!(
     /// GameType ids: 0 survival, 1 creative, 2 adventure, 3 spectator.
     ChangeGameMode { mode: i32 => VarInt }
@@ -2164,6 +2199,12 @@ packet!(
     SignUpdate { pos: [i32; 3] => Pos, lines: [String; 4] => SignLines, front: bool => SignSide }
 );
 packet!(
+    /// ServerboundSetCommandBlockPacket: the command block's command, its
+    /// mode (`CommandBlockEntity.Mode` ordinal) and the track output (1),
+    /// conditional (2) and automatic (4) flags.
+    SetCommandBlock { pos: [i32; 3] => Pos, command: String => Str, mode: i32 => VarInt, flags: i8 => Byte }
+);
+packet!(
     /// ServerboundEditBookPacket: the book's slot (a hotbar slot, or 40 for
     /// the off hand), its pages and, to sign it, its title.
     EditBook {
@@ -2237,6 +2278,7 @@ packet!(
     PaddleBoat { left: bool => Bool, right: bool => Bool }
 );
 packet!(PickItemFromBlock { pos: [i32; 3] => Pos, include_data: bool => Bool });
+packet!(PickItemFromEntity { id: i32 => VarInt, include_data: bool => Bool });
 packet!(
     /// ServerboundPlayerActionPacket.Action: 0 start destroy, 1 change destroy
     /// direction, 2 abort, 3 stop destroy, 4 drop all, 5 drop item, 6 release
@@ -2251,6 +2293,11 @@ packet!(
 packet!(
     /// Input flags: forward 1, backward 2, left 4, right 8, jump 16, shift 32, sprint 64.
     PlayerInput { flags: u8 => UByte }
+);
+packet!(
+    /// ServerboundSelectBundleItemPacket: the menu slot of a bundle and the
+    /// index of its selected item (-1: none).
+    SelectBundleItem { slot: i32 => VarInt, index: i32 => VarInt }
 );
 packet!(SetCarriedItem { slot: i16 => Short });
 packet!(SetCreativeModeSlot { slot: i16 => Short, item: Option<Stack> => Slot });
@@ -2281,6 +2328,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     SetGameRule(SetGameRule) = SET_GAME_RULE,
     AcceptTeleportation(AcceptTeleportation) = ACCEPT_TELEPORTATION,
     Attack(Attack) = ATTACK,
+    TeleportToEntity(TeleportToEntity) = TELEPORT_TO_ENTITY,
     ChangeGameMode(ChangeGameMode) = CHANGE_GAME_MODE,
     Chat(Chat) = CHAT,
     ChatAck(ChatAck) = CHAT_ACK,
@@ -2288,6 +2336,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ChatCommandSigned(ChatCommandSigned) = CHAT_COMMAND_SIGNED,
     ChatSessionUpdate(ChatSessionUpdate) = CHAT_SESSION_UPDATE,
     PlaceRecipe(super::recipes::PlaceRecipe) = PLACE_RECIPE,
+    RecipeBookChangeSettings(super::recipes::RecipeBookChangeSettings) = RECIPE_BOOK_CHANGE_SETTINGS,
     ChunkBatchReceived(ChunkBatchReceived) = CHUNK_BATCH_RECEIVED,
     ClientCommand(ClientCommand) = CLIENT_COMMAND,
     ClientInformation(ClientInformation) = CLIENT_INFORMATION,
@@ -2309,6 +2358,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     MoveVehicle(MoveVehicleRequest) = MOVE_VEHICLE,
     PaddleBoat(PaddleBoat) = PADDLE_BOAT,
     PickItemFromBlock(PickItemFromBlock) = PICK_ITEM_FROM_BLOCK,
+    PickItemFromEntity(PickItemFromEntity) = PICK_ITEM_FROM_ENTITY,
     PingRequest(crate::packets::status::Ping) = PING_REQUEST,
     PlayerAbilities(PlayerAbilitiesRequest) = PLAYER_ABILITIES,
     PlayerAction(PlayerAction) = PLAYER_ACTION,
@@ -2320,9 +2370,11 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ContainerSlotStateChanged(ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED,
     Punch(Empty) = PUNCH,
     ResourcePack(ResourcePackResponse) = RESOURCE_PACK,
+    SelectBundleItem(SelectBundleItem) = BUNDLE_ITEM_SELECTED,
     SelectTrade(SelectTrade) = SELECT_TRADE,
     SetBeacon(SetBeacon) = SET_BEACON,
     SetCarriedItem(SetCarriedItem) = SET_CARRIED_ITEM,
+    SetCommandBlock(SetCommandBlock) = SET_COMMAND_BLOCK,
     SetCreativeModeSlot(SetCreativeModeSlot) = SET_CREATIVE_MODE_SLOT,
     SignUpdate(SignUpdate) = SIGN_UPDATE,
     UseItem(UseItem) = USE_ITEM,
@@ -2333,6 +2385,39 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
 mod tests {
     use super::*;
     use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
+
+    #[test]
+    fn merchant_cost_predicate_is_a_typed_list_without_patch_counts() {
+        // ItemCost.STREAM_CODEC: item=7, count=1, one typed component,
+        // potion_contents=53, potion present (water=0), no color/effects/name.
+        // Result: count=1, item=8, empty component patch. Secondary cost:
+        // item=9, count=2, empty predicate, followed by the offer fields.
+        let mut bytes = vec![1, 7, 1, 1, 53, 1, 0, 0, 0, 0, 1, 8, 0, 0, 1, 9, 2, 0, 0];
+        bytes.extend_from_slice(&[0; 4]); // uses
+        bytes.extend_from_slice(&2i32.to_be_bytes()); // max uses
+        bytes.extend_from_slice(&[0; 16]); // xp, special price, multiplier, demand
+        let mut r = Reader::new(&bytes);
+        let offers = Offers::read(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(
+            offers[0].cost_a.components,
+            vec![(
+                53,
+                Component::Potion {
+                    potion: Some(0),
+                    color: None,
+                    rest: Vec::new()
+                }
+            )]
+        );
+        assert!(offers[0].cost_b.as_ref().unwrap().components.is_empty());
+        let mut w = Writer::new();
+        Offers::write(&offers, &mut w);
+        assert_eq!(w.data, bytes);
+        for len in 0..bytes.len() {
+            assert!(Offers::read(&mut Reader::new(&bytes[..len])).is_err());
+        }
+    }
 
     #[test]
     fn serverbound_abilities_carry_only_flying() {
@@ -2610,9 +2695,9 @@ mod tests {
             Clientbound::MerchantOffers(MerchantOffers {
                 container: 3,
                 offers: vec![NetOffer {
-                    cost_a: NetCost { item: 5, count: 24 },
+                    cost_a: Stack::new(5, 24).into(),
                     result: Stack::new(7, 1),
-                    cost_b: Some(NetCost { item: 9, count: 1 }),
+                    cost_b: Some(Stack::new(9, 1).into()),
                     out_of_stock: false,
                     uses: 2,
                     max_uses: 16,
@@ -2962,6 +3047,24 @@ mod tests {
         });
         assert_eq!(&beacon.encode()[1..], &[1, 2, 0]);
         round_trip(beacon, Serverbound::encode, Serverbound::decode);
+    }
+
+    #[test]
+    fn a_cooldown_packet_carries_its_group_and_ticks() {
+        let packet = Clientbound::Cooldown(Cooldown {
+            group: "minecraft:ender_pearl".into(),
+            duration: 20,
+        });
+        round_trip(packet, Clientbound::encode, Clientbound::decode);
+        // The group is an identifier, the ticks a VarInt; a duration of 0
+        // removes the entry.
+        let body = Clientbound::encode(&Clientbound::Cooldown(Cooldown {
+            group: "minecraft:ender_pearl".into(),
+            duration: 0,
+        }));
+        assert_eq!(body[0], crate::ids::play::clientbound::COOLDOWN as u8);
+        assert_eq!(&body[1..3], [21, b'm']);
+        assert_eq!(body[body.len() - 1], 0);
     }
 
     #[test]

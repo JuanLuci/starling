@@ -1,17 +1,28 @@
-//! The mods' `recipes` interface: the game's recipes as a recipe viewer shows them (the recipe
-//! book's displays of the crafting and furnace recipes, campfire cooking, stonecutting, smithing
-//! and brewing), found by what they make and what they take; and the recipe book's placing of
-//! one in the open crafting grid or furnace (`recipes.fill`).
+//! Capability `recipes` (docs/mods.md), as each API has it.
+//!
+//! Horizon's: every item and recipe the game knows, made once for the mods that read them, and
+//! the recipe book's known displays. The recipes are the window's own data: the world's in
+//! single player, vanilla's on a server (a client is sent no others), while the known displays
+//! follow the server's book as the recipe book does.
+//!
+//! Starling's: the game's recipes as a recipe viewer shows them (the recipe book's displays of
+//! the crafting and furnace recipes, campfire cooking, stonecutting, smithing and brewing), found
+//! by what they make and what they take; and the recipe book's placing of one in the open
+//! crafting grid or furnace (`recipes.fill`).
 use super::Game;
 use horizon_client::{
     crafting::Ingredient,
     items::ItemStack,
     recipe_book::{Book, BookType, Category, Display},
+    stations::Smithing,
 };
-use horizon_mods::{Crafting, Lookup, Recipe, RecipeCatalog, RecipeKind};
+use horizon_mods::{
+    Crafting, HorizonRecipe, HorizonRecipeKind, Lookup, Recipe, RecipeCatalog, RecipeItem,
+    RecipeKind, RecipeStack, Recipes,
+};
 use std::{collections::HashMap, sync::Arc};
 
-/// A recipe kept with its stacks as numbers into [`Recipes::stacks`].
+/// A recipe kept with its stacks as numbers into [`Catalog::stacks`].
 struct Kept {
     id: String,
     kind: RecipeKind,
@@ -27,7 +38,7 @@ struct Kept {
 }
 
 /// The recipes for mods, their stacks made mods' once (names in the player's language).
-pub(super) struct Recipes {
+pub(super) struct Catalog {
     all: Vec<Kept>,
     stacks: Vec<horizon_mods::ItemStack>,
     /// The recipes making and taking each item, in order.
@@ -48,7 +59,7 @@ const KINDS: [RecipeKind; 8] = [
     RecipeKind::Brewing,
 ];
 
-impl Recipes {
+impl Catalog {
     /// The recipes `lookup` finds for `stack`: by its item, and its components when it has any.
     fn found(&self, stack: &horizon_mods::ItemStack, lookup: Lookup) -> Vec<usize> {
         let index = match lookup {
@@ -75,7 +86,7 @@ impl Recipes {
     }
 }
 
-impl RecipeCatalog for Recipes {
+impl RecipeCatalog for Catalog {
     fn count(&self, stack: &horizon_mods::ItemStack, lookup: Lookup) -> Vec<(RecipeKind, u32)> {
         let found = self.found(stack, lookup);
         KINDS
@@ -153,19 +164,19 @@ impl Making<'_, '_> {
 }
 
 impl Game<'_> {
-    /// The recipes for mods, made once for the language their names are in.
-    pub(super) fn mod_recipes(&mut self) -> Arc<dyn RecipeCatalog> {
+    /// Starling's `recipes` for mods, made once for the language their names are in.
+    pub(super) fn mod_recipe_catalog(&mut self) -> Arc<dyn RecipeCatalog> {
         let language = horizon_client::lang::code();
         if let Some((made_for, recipes)) = &self.mods.recipes
             && *made_for == language
         {
             return recipes.clone();
         }
-        let recipes: Arc<dyn RecipeCatalog> = Arc::new(self.make_mod_recipes());
+        let recipes: Arc<dyn RecipeCatalog> = Arc::new(self.make_mod_recipe_catalog());
         self.mods.recipes = Some((language, recipes.clone()));
         recipes
     }
-    fn make_mod_recipes(&self) -> Recipes {
+    fn make_mod_recipe_catalog(&self) -> Catalog {
         let mut m = Making {
             game: self,
             all: Vec::new(),
@@ -282,7 +293,6 @@ impl Game<'_> {
             ));
         }
         for r in &stations.recipes.smithing {
-            use horizon_client::stations::Smithing;
             let (id, template, base, addition) = match r {
                 Smithing::Transform {
                     id,
@@ -375,7 +385,7 @@ impl Game<'_> {
                 add(&mut takes, s);
             }
         }
-        Recipes {
+        Catalog {
             all: m.all,
             stacks: m.stacks,
             makes,
@@ -424,4 +434,266 @@ fn lcm(a: usize, b: usize) -> usize {
         a
     };
     a / gcd(a, b) * b
+}
+
+/// Item id -> its index in [`Recipes::items`].
+struct Index(HashMap<Arc<str>, u32>);
+impl Index {
+    fn stack(&self, item: &str, count: u32, components: String) -> Option<RecipeStack> {
+        Some(RecipeStack {
+            item: *self.0.get(item)?,
+            count,
+            components,
+        })
+    }
+    fn of(&self, s: &ItemStack) -> Option<RecipeStack> {
+        self.stack(&s.item, s.count, components(s))
+    }
+    fn any(&self, i: &Ingredient) -> Vec<RecipeStack> {
+        i.1.iter()
+            .filter_map(|id| self.stack(id, 1, String::new()))
+            .collect()
+    }
+}
+
+/// A stack's components beyond its item's, as vanilla's item syntax writes
+/// them (`[minecraft:potion_contents={potion:"minecraft:swiftness"}]`), or "".
+pub(super) fn components(s: &ItemStack) -> String {
+    use horizon_world::nbt::Tag;
+    let Some(Tag::Compound(entries)) = horizon_client::item_data::encode_components(s) else {
+        return String::new();
+    };
+    let parts: Vec<String> = entries
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                k.to_string_lossy(),
+                horizon_client::snbt::to_snbt(v)
+            )
+        })
+        .collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn recipe(id: String, kind: HorizonRecipeKind) -> HorizonRecipe {
+    HorizonRecipe {
+        id,
+        kind,
+        category: String::new(),
+        group: String::new(),
+        width: 0,
+        height: 0,
+        slots: Vec::new(),
+        results: Vec::new(),
+        cooking_time: 0,
+        experience: 0.0,
+        book_id: -1,
+    }
+}
+
+impl Game<'_> {
+    /// `recipes.give`: a creative player takes the stack as from the
+    /// creative inventory; a server hears it as `SetCreativeModeSlot`
+    /// through the inventory's sync, and refuses it unless creative.
+    pub(super) fn mod_give(&mut self, item: &str, count: u32, components: &str) {
+        let Some(max) = self.res.items().get(item).map(|i| i.max_stack) else {
+            return;
+        };
+        if !self.creative {
+            return;
+        }
+        let (damage, extra) = horizon_client::item_data::command_components(components)
+            .map_or((0, None), |tag| {
+                horizon_client::item_data::decode_components(Some(&tag))
+            });
+        let _ = self.give(ItemStack {
+            item: item.into(),
+            // One stack at most, as the creative inventory hands out.
+            count: count.min(max),
+            damage,
+            extra,
+        });
+    }
+    /// Horizon's capability `recipes`'s tables and known displays for this tick's
+    /// snapshot; nothing while no running mod reads them.
+    pub(super) fn mod_recipes(&mut self) -> (Option<Arc<Recipes>>, Arc<[i32]>) {
+        // The tables come from the world resources, which may still be
+        // loading behind the title on a slow start.
+        if !self.mods.mods.wants_recipes() || self.res.rest.get().is_none() {
+            return (None, Arc::from([]));
+        }
+        if self.mods.horizon_recipes.is_none() {
+            self.mods.horizon_recipes = Some(Arc::new(self.make_mod_recipes()));
+        }
+        let (version, known) = self.recipe_book_displays();
+        if self.mods.known_recipes.0 != Some(version) {
+            self.mods.known_recipes = (Some(version), known.into());
+        }
+        (self.mods.horizon_recipes.clone(), self.mods.known_recipes.1.clone())
+    }
+
+    fn make_mod_recipes(&mut self) -> Recipes {
+        let names = &self.pack.names;
+        let items = self.res.items();
+        let mut tags: HashMap<&str, Vec<String>> = HashMap::new();
+        for (tag, members) in &items.item_tags {
+            for m in members {
+                tags.entry(m).or_default().push(tag.clone());
+            }
+        }
+        let table: Vec<RecipeItem> = items
+            .registry_order
+            .iter()
+            .map(|id| RecipeItem {
+                id: id.to_string(),
+                name: names.display_item(id),
+                tags: tags.remove(&**id).map_or_else(Vec::new, |mut t| {
+                    t.sort();
+                    t
+                }),
+            })
+            .collect();
+        let index = Index(
+            items
+                .registry_order
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (id.clone(), i as u32))
+                .collect(),
+        );
+        let mut out = Vec::new();
+        let cooking: HashMap<String, (u32, f32)> = self
+            .res
+            .recipes()
+            .cooking
+            .iter()
+            .map(|c| (format!("minecraft:{}", c.id), (c.time, c.experience)))
+            .collect();
+        for e in self.recipe_book_entries() {
+            let furnace = |c: Category| match c.name().split('_').next() {
+                Some("blast") => HorizonRecipeKind::Blasting,
+                Some("smoker") => HorizonRecipeKind::Smoking,
+                _ => HorizonRecipeKind::Smelting,
+            };
+            let kind = match &e.display {
+                Display::Shaped { .. } => HorizonRecipeKind::CraftingShaped,
+                Display::Shapeless(_) => HorizonRecipeKind::CraftingShapeless,
+                Display::Furnace(_) => furnace(e.category),
+            };
+            let mut r = recipe(e.id.clone(), kind);
+            r.category = e.category.name().to_owned();
+            r.group = e.group.clone().unwrap_or_default();
+            r.book_id = e.display_id;
+            r.slots = match &e.display {
+                Display::Shaped {
+                    width,
+                    height,
+                    cells,
+                } => {
+                    (r.width, r.height) = (*width as u32, *height as u32);
+                    cells
+                        .iter()
+                        .map(|c| c.as_ref().map_or_else(Vec::new, |i| index.any(i)))
+                        .collect()
+                }
+                Display::Shapeless(list) => list.iter().map(|i| index.any(i)).collect(),
+                Display::Furnace(i) => vec![index.any(i)],
+            };
+            // Requirements shown as other stacks (an arrow's potions): the
+            // requirement's index counts the filled slots only.
+            let filled: Vec<usize> = (0..r.slots.len())
+                .filter(
+                    |&k| !matches!(&e.display, Display::Shaped { cells, .. } if cells[k].is_none()),
+                )
+                .collect();
+            for (req, stacks) in &e.stacks {
+                if let Some(&k) = filled.get(*req) {
+                    r.slots[k] = stacks.iter().filter_map(|s| index.of(s)).collect();
+                }
+            }
+            r.results = e.results().iter().filter_map(|s| index.of(s)).collect();
+            if let Some(&(time, xp)) = cooking.get(&e.id) {
+                (r.cooking_time, r.experience) = (time, xp);
+            }
+            out.push(r);
+        }
+        for c in &self.res.recipes().cooking {
+            if c.kind == "minecraft:campfire_cooking" {
+                let mut r = recipe(format!("minecraft:{}", c.id), HorizonRecipeKind::Campfire);
+                r.group = c.group.clone();
+                r.slots = vec![index.any(&c.ingredient)];
+                r.results = index.of(&c.result).into_iter().collect();
+                (r.cooking_time, r.experience) = (c.time, c.experience);
+                out.push(r);
+            }
+        }
+        let stations = self.res.stations();
+        for s in &stations.recipes.stonecutting {
+            let mut r = recipe(s.id.clone(), HorizonRecipeKind::Stonecutting);
+            r.slots = vec![index.any(&s.input)];
+            r.results = index.of(&s.result).into_iter().collect();
+            out.push(r);
+        }
+        for s in &stations.recipes.smithing {
+            let (id, template, base, addition, results) = match s {
+                Smithing::Transform {
+                    id,
+                    template,
+                    base,
+                    addition,
+                    result,
+                } => (
+                    id,
+                    template,
+                    base,
+                    addition,
+                    index.stack(result, 1, String::new()).into_iter().collect(),
+                ),
+                Smithing::Trim {
+                    id,
+                    template,
+                    base,
+                    addition,
+                    ..
+                } => (id, template, base, addition, index.any(base)),
+            };
+            let mut r = recipe(id.clone(), HorizonRecipeKind::Smithing);
+            r.slots = vec![index.any(template), index.any(base), index.any(addition)];
+            r.results = results;
+            out.push(r);
+        }
+        for b in &stations.brewing.recipes {
+            let potion = |p: &horizon_client::brewing::PotionIngredient| -> Vec<RecipeStack> {
+                let mut item_ids: Vec<&String> = p.items.iter().collect();
+                item_ids.sort();
+                let mut potions: Vec<&String> = p.potions.iter().flatten().collect();
+                potions.sort();
+                item_ids
+                    .into_iter()
+                    .flat_map(|item| {
+                        let one = |c: String| index.stack(item, 1, c);
+                        if potions.is_empty() {
+                            one(String::new()).into_iter().collect::<Vec<_>>()
+                        } else {
+                            potions
+                                .iter()
+                                .filter_map(|p| {
+                                    one(format!("[minecraft:potion_contents={{potion:\"{p}\"}}]"))
+                                })
+                                .collect()
+                        }
+                    })
+                    .collect()
+            };
+            let mut r = recipe(b.id.clone(), HorizonRecipeKind::Brewing);
+            r.slots = vec![potion(&b.input), potion(&b.reagent)];
+            r.results = index.of(&b.output).into_iter().collect();
+            out.push(r);
+        }
+        Recipes {
+            items: table,
+            recipes: out,
+        }
+    }
 }

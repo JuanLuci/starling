@@ -1,14 +1,20 @@
 //! Resource pack selection bound to the game: the pack screen lists, and a
 //! full resource reload after a change, while playing.
-use super::Game;
+use super::{
+    Game, PackResources, Resources, UiResources, build_renderer, prepare_renderer_textures,
+};
 use horizon_client::{
+    assets::Assets,
+    gfx::PreparedTextures,
     hud::HudAtlas,
     lang,
     pack_screen::{self, Compat, PackInfo, Source as PackSource},
     packs::{self, Pack, Position},
+    streaming::WorkerContext,
     text::{Style, Text},
 };
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -39,6 +45,14 @@ pub fn open_folder(dir: &Path) {
     if let Err(e) = std::process::Command::new(program).arg(dir).spawn() {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
+}
+/// `Util.getPlatform().openUri`: the system browser on the link.
+pub fn open_uri(uri: &str) {
+    // Android's browser, through the activity.
+    if horizon_client::platform::open_link(uri).is_some() {
+        return;
+    }
+    open_folder(Path::new(uri));
 }
 /// The resource root to load from, given the vanilla root, the selection and
 /// a server's packs, which go on top (`Pack.Position.TOP`, fixed).
@@ -99,28 +113,15 @@ pub(super) fn pack_infos(vanilla: &Path) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
-/// A resource reload preparing on a worker (`Game::reload_selected_packs`).
+/// The player's resource reload preparing on a worker (`Game::reload_selected_packs`; a
+/// server's packs have `server_packs::PackReload`).
 pub(super) struct PackReload {
-    handle: std::thread::JoinHandle<Result<PreparedPacks, String>>,
-    /// For the server's packs, which hear how it went.
-    server: bool,
+    handle: std::thread::JoinHandle<Result<StagedPack, String>>,
     started: Instant,
-}
-/// What a reload reads from the new resource root, off the main thread.
-pub(super) struct PreparedPacks {
-    root: PathBuf,
-    gui: super::UiResources,
-    pack: super::PackResources,
-    textures: horizon_client::gfx::PreparedTextures,
-    sounds: horizon_client::sound_events::SoundRegistry,
-    armor: super::armor_stands::ArmorStandAssets,
-    villager_hats: horizon_client::mobs::villager_hats::VillagerHats,
-    waypoint_styles: horizon_client::locator_bar::WaypointStyles,
-    language: lang::Language,
 }
 
 impl Game<'_> {
-    fn vanilla_root(&self) -> PathBuf {
+    pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
             self.options.resources.clone()
         } else {
@@ -152,14 +153,13 @@ impl Game<'_> {
             self.pending_pack_reload = true;
             return;
         }
-        self.reload_selected_packs(false);
+        self.reload_selected_packs();
     }
-    /// Reload from the selected packs and the server's (`server`: for the server's packs, which
-    /// hear how it went), prepared on a worker while the game goes on (`poll_pack_reload` switches
-    /// over): Android calls an app that does not take a touch for five seconds not responding,
-    /// and a server's pack took about that long to load or to drop. One already preparing
-    /// finishes first; this one follows it.
-    pub(super) fn reload_selected_packs(&mut self, server: bool) {
+    /// `Minecraft.reloadResourcePacks` from the selected packs and the server's, staged on a
+    /// worker while the game goes on (`poll_pack_reload` applies it): Android calls an app that
+    /// does not take a touch for five seconds not responding, and a reload took about that long.
+    /// One already preparing finishes first; this one follows it.
+    pub(super) fn reload_selected_packs(&mut self) {
         if self.pack_reload.is_some() {
             self.pending_pack_reload = true;
             return;
@@ -168,48 +168,44 @@ impl Game<'_> {
         if self.ui.vanilla_root.as_os_str().is_empty() {
             self.ui.vanilla_root = vanilla.clone();
         }
-        let selected = self.settings.resource_packs.clone();
-        let server_packs = self.server_packs.active.clone();
-        let mods = self.settings.mods.enabled.clone();
-        let dev_mods = self.options.dev_mods.clone();
-        let assets = self.pack.assets.clone();
-        let res = self.res.clone();
-        let biomes = self.pack.context.biomes.clone();
-        let light = self.pack.context.light.clone();
-        let prepare = move || -> horizon_client::Result<PreparedPacks> {
-            let root = startup_root(&vanilla, &selected, &server_packs)?;
-            let root = super::mods::content_root(&root, &mods, &dev_mods);
-            let render = Arc::new(assets.reload(&root)?);
-            let gui = super::UiResources {
-                atlas: HudAtlas::build_over(&root, &vanilla)?,
-                panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(&root)),
-            };
-            let pack =
-                super::PackResources::load(&root, assets, render, res.facts(), biomes, light)?;
-            Ok(PreparedPacks {
-                textures: super::prepare_renderer_textures(&pack),
-                sounds: horizon_client::sound_events::SoundRegistry::load(&root),
-                armor: super::armor_stands::ArmorStandAssets::load(&root, None),
-                villager_hats: horizon_client::mobs::villager_hats::VillagerHats::load(&root),
-                waypoint_styles: horizon_client::locator_bar::WaypointStyles::load(&root),
-                language: lang::Language::load(&[&root], &lang::code()),
-                gui,
-                pack,
-                root,
-            })
-        };
+        let (selected, server, mods, dev_mods) = (
+            self.settings.resource_packs.clone(),
+            self.server_packs.active.clone(),
+            self.settings.mods.enabled.clone(),
+            self.options.dev_mods.clone(),
+        );
+        let (assets, res, context) = (
+            self.pack.assets.clone(),
+            self.res.clone(),
+            self.pack.context.clone(),
+        );
+        let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
         let spawned = std::thread::Builder::new()
             .name("pack-reload".into())
-            .spawn(move || prepare().map_err(|e| e.to_string()));
+            .spawn(move || {
+                stage_pack(
+                    &vanilla,
+                    &selected,
+                    &server,
+                    &mods,
+                    &dev_mods,
+                    &assets,
+                    &res,
+                    &context,
+                    unicode,
+                    japanese,
+                    &super::Progress::new(),
+                )
+                .map_err(|e| e.to_string())
+            });
         match spawned {
             Ok(handle) => {
                 self.pack_reload = Some(PackReload {
                     handle,
-                    server,
                     started: Instant::now(),
                 });
             }
-            Err(e) => self.pack_reload_done(server, Err(e.to_string())),
+            Err(e) => self.pack_reload_done(Err(e.to_string())),
         }
     }
     /// The worker's reload, once prepared: the switch-over, then what waited for it.
@@ -221,37 +217,25 @@ impl Game<'_> {
         {
             return;
         }
-        let Some(PackReload {
-            handle,
-            server,
-            started,
-        }) = self.pack_reload.take()
-        else {
+        let Some(PackReload { handle, started }) = self.pack_reload.take() else {
             return;
         };
         let result = handle
             .join()
             .unwrap_or_else(|_| Err("the resource reload panicked".to_owned()))
-            .and_then(|prepared| self.reload_resources(prepared).map_err(|e| e.to_string()));
+            .and_then(|staged| self.apply_staged_pack(staged).map_err(|e| e.to_string()));
         if result.is_ok() {
             log::info!(
                 "Horizon: resources reloaded in {} ms",
                 started.elapsed().as_millis()
             );
         }
-        self.pack_reload_done(server, result);
+        self.pack_reload_done(result);
         if std::mem::take(&mut self.pending_pack_reload) {
             self.reload_packs();
         }
     }
-    fn pack_reload_done(&mut self, server: bool, result: Result<(), String>) {
-        if server {
-            if let Err(e) = &result {
-                log::warn!("Horizon: server resource pack reload failed: {e}");
-            }
-            self.server_packs_reloaded(result.is_ok());
-            return;
-        }
+    fn pack_reload_done(&mut self, result: Result<(), String>) {
         if let Err(e) = result {
             log::warn!("Horizon: resource reload failed: {e}");
             if self.screen != super::Screen::Options {
@@ -263,10 +247,12 @@ impl Game<'_> {
             self.ui.options.resource_error = Some(e);
         }
     }
-    fn reload_resources(&mut self, prepared: PreparedPacks) -> horizon_client::Result<()> {
-        let PreparedPacks {
+    /// The render-thread half: the renderer on the new pack's textures, then
+    /// the swap (`ReloadInstance`'s application listeners).
+    pub(super) fn apply_staged_pack(&mut self, staged: StagedPack) -> horizon_client::Result<()> {
+        let StagedPack {
             root,
-            mut gui,
+            gui,
             pack,
             textures,
             sounds,
@@ -274,11 +260,8 @@ impl Game<'_> {
             villager_hats,
             waypoint_styles,
             language,
-        } = prepared;
-        let root = root.as_path();
-        gui.atlas.font.uniform = self.settings.force_unicode;
-        gui.atlas.font.japanese = self.settings.japanese_glyphs;
-        // Keep the working GPU resources, but release its exclusive window surface.
+        } = staged;
+        // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
@@ -286,7 +269,7 @@ impl Game<'_> {
             .window
             .clone()
             .map(|window| {
-                super::build_renderer(
+                build_renderer(
                     window,
                     self.options.offscreen,
                     &pack,
@@ -329,14 +312,14 @@ impl Game<'_> {
             self.armor_stand_assets.equipment.clone();
         self.random_tick_sections.clear();
         self.portals.sections.clear();
-        self.options.resources = root.to_path_buf();
+        self.options.resources = root.clone();
         let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
-            .reload(root, &self.gui.atlas.sprites, &self.gui.atlas.translucent);
+            .reload(&root, &self.gui.atlas.sprites, &self.gui.atlas.translucent);
         horizon_client::ui_theme::reset_atlas();
         // Villager hats come from the pack's texture metadata (shared data, swapped in place).
         *self
@@ -345,10 +328,10 @@ impl Game<'_> {
             .villager_hats
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = villager_hats;
-        horizon_client::ui::load_metadata(root);
+        horizon_client::ui::load_metadata(&root);
         lang::set(language);
         self.refresh_remote_language();
-        self.audio.reload_with(root, sounds);
+        self.audio.reload_with(&root, sounds);
         self.clear_lod();
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();
@@ -359,6 +342,80 @@ impl Game<'_> {
             self.apply_ui_settings();
         }
         self.ui.chat.rescale(&self.gui.atlas);
+        // The creative screen survives the reload; item names may not.
+        self.creative_screen.forget_items();
         Ok(())
     }
+}
+
+/// The CPU half of a reload (`reload_selected_packs` and a server's
+/// `PackReload` run it on a worker; `apply_staged_pack` does the GPU half and
+/// the swap): the overlay root, the models and sprites, the menu bundle, the
+/// pack's tables and its CPU mip chains, the sounds, armour, villager hats,
+/// waypoint styles and language.
+pub(super) fn stage_pack(
+    vanilla_root: &Path,
+    selected: &[String],
+    server: &[Pack],
+    mods_enabled: &BTreeSet<String>,
+    dev_mods: &[PathBuf],
+    assets: &Arc<Assets>,
+    res: &Resources,
+    context: &WorkerContext,
+    force_unicode: bool,
+    japanese: bool,
+    progress: &super::Progress,
+) -> horizon_client::Result<StagedPack> {
+    let root = startup_root(vanilla_root, selected, server)?;
+    let root = super::mods::content_root(&root, mods_enabled, dev_mods);
+    progress.set(1);
+    let render = Arc::new(assets.reload(&root)?);
+    let mut atlas = HudAtlas::build_over(&root, vanilla_root)?;
+    atlas.font.uniform = force_unicode;
+    atlas.font.japanese = japanese;
+    let gui = UiResources {
+        atlas,
+        panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(&root)),
+    };
+    progress.set(2);
+    let pack = PackResources::load(
+        &root,
+        assets.clone(),
+        render,
+        res.facts(),
+        context.biomes.clone(),
+        context.light.clone(),
+    )?;
+    let textures = prepare_renderer_textures(&pack);
+    let sounds = horizon_client::sound_events::SoundRegistry::load(&root);
+    let armor = super::armor_stands::ArmorStandAssets::load(&root, None);
+    let villager_hats = horizon_client::mobs::villager_hats::VillagerHats::load(&root);
+    let waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(&root);
+    let language = lang::Language::load(&[&root], &lang::code());
+    progress.set(3);
+    Ok(StagedPack {
+        root,
+        gui,
+        pack,
+        textures,
+        sounds,
+        armor,
+        villager_hats,
+        waypoint_styles,
+        language,
+    })
+}
+
+/// Everything a pack reload builds on the CPU (`apply_staged_pack` finishes
+/// it on the render thread).
+pub(super) struct StagedPack {
+    pub root: PathBuf,
+    pub gui: UiResources,
+    pub pack: PackResources,
+    pub textures: PreparedTextures,
+    pub sounds: horizon_client::sound_events::SoundRegistry,
+    pub armor: super::armor_stands::ArmorStandAssets,
+    pub villager_hats: horizon_client::mobs::villager_hats::VillagerHats,
+    pub waypoint_styles: horizon_client::locator_bar::WaypointStyles,
+    pub language: lang::Language,
 }

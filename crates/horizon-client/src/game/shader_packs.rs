@@ -1,7 +1,8 @@
-//! Shader packs: the Shader Packs page's choice (`Graphics::shader_choice`; `HORIZON_SHADER_PACK`
-//! for development) runs `shaderpacks/<name>` (a folder or a zip beside `options.txt`) over the
-//! world. The programs of the current dimension's folder are loaded when the dimension or the
-//! choice changes (spec 1.2).
+//! Shader packs: the one picked on the Shader Packs page, with its profile
+//! (`Graphics::shader_choice`; `HORIZON_SHADER_PACK` for development), runs `shaderpacks/<name>`
+//! (a folder or a zip beside `options.txt`) over the world; Horizon's own packs go to
+//! `game/native_shaders.rs`. The programs of the current dimension's folder are loaded when the
+//! dimension or the choice changes (spec 1.2).
 
 use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::PackInputs;
@@ -61,15 +62,17 @@ impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
     pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
-        // A new choice, once the options close (each load takes seconds): the pack loaded for
-        // the old one goes.
+        // A new choice, once the options close (each load takes seconds): what ran for the old
+        // one goes, of either kind.
         let choice = self.settings.horizon.shader_choice();
         if choice != self.shader_choice && self.screen != super::Screen::Options {
             self.shader_choice = choice;
+            let picked = self.shader_choice.as_ref().map_or("", |(name, _)| name.as_str());
+            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
             self.pack_ids = None;
             self.pack_making = None;
             if let Some(renderer) = &mut self.renderer {
-                renderer.forget_shader_pack();
+                renderer.drop_shader_packs();
             }
         }
         let Some((name, profile)) = self.shader_choice.clone() else {
@@ -80,16 +83,17 @@ impl Game<'_> {
             Dim::Nether => -1,
             Dim::End => 1,
         };
-        if let Some(renderer) = &mut self.renderer
+        let path = Self::shader_packs_dir().join(&name);
+        if horizon_shader_api::package::is_pack(&path) {
+            // One of Horizon's own packs (game/native_shaders.rs).
+            self.tick_native_shader_pack(&path);
+        } else if let Some(renderer) = &mut self.renderer
             && renderer.shader_pack_dimension() != Some(dimension)
         {
+            let name = name.as_str();
             let started = std::time::Instant::now();
             self.pack_ids = None;
             self.pack_making = None;
-            let path = std::env::current_dir()
-                .unwrap_or_default()
-                .join("shaderpacks")
-                .join(&*name);
             match Pack::open(&path) {
                 Ok(mut pack) => {
                     let macros = Macros::standard();

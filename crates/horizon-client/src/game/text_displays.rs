@@ -194,6 +194,7 @@ impl Game<'_> {
         } else {
             [self.yaw, self.pitch]
         };
+        let scale = self.view_scale();
         // A text display riding a mob or a player (a nameplate, a hologram over a model).
         let ridden: std::collections::HashMap<i32, glam::DVec3> = self
             .text_displays
@@ -210,7 +211,7 @@ impl Game<'_> {
                 .get(id)
                 .copied()
                 .unwrap_or_else(|| display.previous.lerp(display.position, partial));
-            let range = f64::from(d.view_range) * 64.0 * f64::from(self.settings.entity_distance);
+            let range = f64::from(d.view_range) * 64.0 * scale;
             if position.distance_squared(camera) >= range * range || d.text.is_empty() {
                 continue;
             }
@@ -252,6 +253,7 @@ impl Game<'_> {
             if bg != 0 {
                 batch.fill(
                     atlas,
+                    // submitTextBackground(-1, -1, width, height): corners, not a size.
                     -1.0,
                     -1.0,
                     width + 1.0,
@@ -309,6 +311,8 @@ impl Game<'_> {
                         light,
                         layer: if through { 2 } else { 0 },
                         normal: [0; 4],
+
+                        glint_uv: [0.0, 0.0],
                     });
                 }
             }

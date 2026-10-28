@@ -245,17 +245,7 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         let _ = fs::remove_dir(link);
-        let status = crate::process::command("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .stdout(Stdio::null())
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other("mklink /J failed"))
-        }
+        crate::sources::junction(target, link)
     }
 }
 
@@ -813,6 +803,8 @@ impl Api {
     }
 
     pub fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        // No proxy here on purpose: the server is on this computer, and this is asked every
+        // second (`proxy` never sends a loopback address through one either).
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(10))
             .build();

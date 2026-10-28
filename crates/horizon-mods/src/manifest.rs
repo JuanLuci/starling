@@ -22,9 +22,12 @@ pub const STARLING_API: &str = "starling-0.1";
 const LINKED: [(&str, &str); 2] = [("horizon:mods/", "0.1."), ("starling:mods/", "0.1.")];
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
 /// `assets/` and `data/` in the `.hmod`, with blocks and items declared in
-/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1. starling-0.1 links
+/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
+/// 0.3 is a server mod (experimental): the `horizon-server-mod` world. starling-0.1 links
 /// `starling:mods` and may hold content too.
-pub const APIS: [&str; 3] = [API, "0.2", STARLING_API];
+pub const APIS: [&str; 4] = [API, "0.2", SERVER_API, STARLING_API];
+/// The line of server mods, experimental: `side = "server"`.
+pub const SERVER_API: &str = "0.3";
 /// Namespaces no mod may claim: vanilla's, the convention tags' (mods add
 /// to those, docs/mods.md) and the game's own.
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
@@ -73,7 +76,7 @@ pub enum Side {
     /// Runs in the player's game only (HUD, keys, chat commands).
     #[default]
     Client,
-    /// Runs where the world is simulated (rules, blocks); not run yet.
+    /// Runs where the world is simulated (rules, blocks): `api = "0.3"`.
     Server,
     /// Both, and the server tells clients which version it expects.
     Both,
@@ -91,8 +94,9 @@ pub enum Capability {
     InventoryClick,
     /// The creative tabs' items, taken in creative mode (Starling's `creative`).
     Creative,
-    /// The game's recipes, and the recipe book's filling of a crafting grid (Starling's
-    /// `recipes`).
+    /// The recipes and items the game knows, for recipe viewers (Horizon's interface
+    /// `recipes`); in Starling's API, the game's recipes and the recipe book's filling of a
+    /// crafting grid (its `recipes`).
     Recipes,
     Chat,
     ChatSend,
@@ -118,9 +122,14 @@ pub enum Capability {
     /// New blocks and items from the mod's `data/` (API 0.2): no WIT
     /// interface, the game reads them before the world loads.
     Registries,
+    /// The players on the server and messages to them (server mods).
+    Players,
+    /// Blocks in the server's loaded chunks, and changes to them (server
+    /// mods; client mods later, where the game runs the world).
+    World,
 }
 impl Capability {
-    pub const ALL: [Capability; 19] = [
+    pub const ALL: [Capability; 21] = [
         Capability::GameRead,
         Capability::WorldRead,
         Capability::InventoryRead,
@@ -140,7 +149,16 @@ impl Capability {
         Capability::Storage,
         Capability::Command,
         Capability::Registries,
+        Capability::Players,
+        Capability::World,
     ];
+    /// Whether a server mod may have it: the others act on a local player.
+    pub fn on_server(self) -> bool {
+        matches!(
+            self,
+            Capability::Storage | Capability::Players | Capability::World
+        )
+    }
     /// The WIT interfaces it grants, in `horizon:mods` and `starling:mods` (both have
     /// `game`, `chat`, `hud`, `storage` and `input`).
     pub fn interfaces(self) -> &'static [&'static str] {
@@ -164,6 +182,8 @@ impl Capability {
             Capability::Storage => &["storage"],
             Capability::Command => &["command"],
             Capability::Registries => &[],
+            Capability::Players => &["players"],
+            Capability::World => &["world"],
         }
     }
     /// The interface it grants in Horizon's `horizon:mods`; `None` for Starling's own
@@ -178,6 +198,9 @@ impl Capability {
             Capability::Ui => Some("ui"),
             Capability::Render => Some("render"),
             Capability::Input => Some("input"),
+            Capability::Players => Some("players"),
+            Capability::World => Some("world"),
+            Capability::Recipes => Some("recipes"),
             _ => None,
         }
     }
@@ -191,13 +214,13 @@ impl Capability {
         }
     }
     /// May change in any release: a mod uses Horizon's interface for it only with
-    /// `experimental = ["<name>"]` in its manifest. Starling's API keeps its own `ui` and
-    /// `input` (`screens`, `widgets`, sprint and sneak) stable: a `starling-0.1` mod opts
-    /// in only to link Horizon's.
+    /// `experimental = ["<name>"]` in its manifest. Starling's API keeps its own `ui`,
+    /// `input` and `recipes` (`screens`, `widgets`, sprint and sneak, the recipe book) stable:
+    /// a `starling-0.1` mod opts in only to link Horizon's.
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input
+            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -209,25 +232,27 @@ impl Capability {
             Capability::InventoryClick => "move your items, in your inventory and what you open",
             Capability::Creative => "take items from the creative tabs, in creative mode",
             Capability::Recipes => {
-                "see the recipes and fill a crafting grid with one's ingredients"
+                "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
             }
             Capability::Chat => "show you chat messages",
             Capability::ChatSend => "send chat messages and commands as you",
             Capability::Hud => "draw on your screen",
             Capability::WorldDraw => "draw lines and labels in the world",
-            Capability::Render => "draw on your screen and shake the camera",
+            Capability::Render => "draw on your screen, shake and zoom the camera",
             Capability::Ui => {
                 "show its own screens and a settings page, and add buttons to the game's"
             }
             Capability::Keys => "use keys you press",
             Capability::Input => {
-                "see the keys you hold and your clicks, take over the use button on its own items, add keys, and hold sprint or sneak for you"
+                "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, add keys, and hold sprint or sneak for you"
             }
             Capability::Sound => "play sounds",
             Capability::Net => "talk to servers on its own channels",
             Capability::Storage => "save its own settings to disk",
             Capability::Command => "run commands as you, with your permissions",
             Capability::Registries => "add blocks and items to your worlds",
+            Capability::Players => "see who is on the server and message them",
+            Capability::World => "read and change the world's blocks",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -255,6 +280,10 @@ impl Capability {
             || (package == "starling:mods/" && interface == "mobile")
         {
             return Ok(None);
+        }
+        // A recipe viewer's panel is part of capability `ui`.
+        if interface == "browser" {
+            return Ok(Some(Capability::Ui));
         }
         Capability::ALL
             .into_iter()
@@ -285,6 +314,8 @@ impl fmt::Display for Capability {
             Capability::Storage => "storage",
             Capability::Command => "command",
             Capability::Registries => "registries",
+            Capability::Players => "players",
+            Capability::World => "world",
         };
         f.write_str(name)
     }
@@ -314,6 +345,20 @@ impl Manifest {
             return Err(format!(
                 "{MANIFEST}: capability registries needs api = \"0.2\" or later"
             ));
+        }
+        let server = m.side == Side::Server;
+        if server != (m.api == SERVER_API) {
+            return Err(format!(
+                "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
+            ));
+        }
+        if let Some(c) = m
+            .capabilities
+            .iter()
+            .find(|c| c.on_server() != server && **c != Capability::Storage)
+        {
+            let side = if server { "client" } else { "server" };
+            return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
         // Starling's API keeps its own `ui` and `input` stable: check_imports asks its mods
         // for the opt-in only where they link Horizon's interfaces of these.
@@ -633,6 +678,26 @@ capabilities = ["game-read", "hud"]
         assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.4"));
         let unknown = format!("{EXAMPLE}network = true\n");
         assert!(Manifest::parse(&unknown).is_err());
+    }
+
+    #[test]
+    fn server_mods_are_api_0_3_with_server_capabilities() {
+        let server = |api: &str, side: &str, caps: &str| {
+            Manifest::parse(&format!(
+                "id = \"w\"\nname = \"W\"\nversion = \"1\"\napi = \"{api}\"\nside = \"{side}\"\ncapabilities = [{caps}]\n"
+            ))
+        };
+        let m = server("0.3", "server", "\"players\", \"storage\"").unwrap();
+        let imports = ["horizon:mods/players@0.1.0", "horizon:mods/storage@0.1.0"];
+        assert_eq!(m.check_imports(imports), Ok(()));
+        for (api, side) in [("0.3", "client"), ("0.3", "both"), ("0.1", "server")] {
+            let e = server(api, side, "").unwrap_err();
+            assert!(e.contains("a server mod is side"), "{e}");
+        }
+        let e = server("0.3", "server", "\"hud\"").unwrap_err();
+        assert!(e.contains("capability hud is for client mods"), "{e}");
+        let e = server("0.1", "client", "\"players\"").unwrap_err();
+        assert!(e.contains("capability players is for server mods"), "{e}");
     }
 
     #[test]

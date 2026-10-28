@@ -33,6 +33,7 @@ static HOOKS: OnceLock<Hooks> = OnceLock::new();
 
 /// Registers the platform's hooks, once, before the game starts.
 pub fn set(hooks: Hooks) {
+    horizon_client_input::clipboard::set_platform((hooks.clipboard_get, hooks.clipboard_set));
     let _ = HOOKS.set(hooks);
 }
 

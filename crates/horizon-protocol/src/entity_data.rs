@@ -1,12 +1,12 @@
 //! SynchedEntityData values (ClientboundSetEntityDataPacket): an entry index,
 //! the EntityDataSerializers id, and the serializer's value, ending with 0xFF.
-//! Every 26.3 serializer is decoded; resolvable profiles are kept as the
-//! exact bytes they were sent as. A serializer id past the 26.3 registry has
-//! no known length, so it ends the list early; the entries before it are kept.
+//! Every 26.3 serializer is decoded. A serializer id past the 26.3 registry
+//! has no known length, so it ends the list early; the entries before it are
+//! kept.
 use crate::{
     Result,
     buf::{Codec, Reader, Writer},
-    item::{Slot, Stack, Template, skip_profile},
+    item::{Slot, Stack, Template},
 };
 use horizon_world::nbt::Tag;
 
@@ -37,9 +37,98 @@ pub enum Value {
     Particles(Vec<Particle>),
     /// Optional GlobalPos: the dimension Identifier and the block.
     OptGlobalPos(Option<(String, [i32; 3])>),
-    /// Exactly the bytes the serializer's codec consumed, re-sent as is
-    /// (RESOLVABLE_PROFILE).
-    Raw(Vec<u8>),
+    /// A `ResolvableProfile` (a mannequin's DATA_PROFILE).
+    Profile(Profile),
+}
+/// `ResolvableProfile.STREAM_CODEC`: the GameProfile a mannequin or player
+/// head resolves — either a full profile (id, name and properties on the
+/// wire) or a partial one (a name and/or id to look up) — followed by a
+/// `PlayerSkin.Patch` of texture overrides.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Profile {
+    pub name: Option<String>,
+    pub uuid: Option<u128>,
+    /// `PropertyMap`: its `textures` property carries the skin.
+    pub properties: Vec<crate::packets::login::Property>,
+    /// `PlayerSkin.Patch`: texture asset ids overriding the profile's.
+    pub body: Option<String>,
+    pub cape: Option<String>,
+    pub elytra: Option<String>,
+    /// `PlayerModelType`: true is the slim (4px arms) model.
+    pub slim: Option<bool>,
+}
+/// `ByteBufCodecs.GAME_PROFILE_PROPERTIES`.
+fn read_properties(r: &mut Reader) -> Result<Vec<crate::packets::login::Property>> {
+    use crate::buf::Codec;
+    let n = r.count(16)?;
+    (0..n)
+        .map(|_| crate::packets::login::Property::read(r))
+        .collect()
+}
+fn write_properties(p: &[crate::packets::login::Property], w: &mut Writer) {
+    use crate::buf::Codec;
+    w.varint(p.len() as i32);
+    p.iter()
+        .for_each(|p| crate::packets::login::Property::write(p, w));
+}
+fn read_profile(r: &mut Reader) -> Result<Profile> {
+    let mut p = Profile::default();
+    // ByteBufCodecs.either: true is the full GameProfile, false a Partial.
+    if r.bool()? {
+        p.uuid = Some(r.uuid()?);
+        p.name = Some(r.string(16)?);
+        p.properties = read_properties(r)?;
+    } else {
+        if r.bool()? {
+            p.name = Some(r.string(16)?);
+        }
+        if r.bool()? {
+            p.uuid = Some(r.uuid()?);
+        }
+        p.properties = read_properties(r)?;
+    }
+    // PlayerSkin.Patch: three optional texture ids, then the model type.
+    if r.bool()? {
+        p.body = Some(r.string(32767)?);
+    }
+    if r.bool()? {
+        p.cape = Some(r.string(32767)?);
+    }
+    if r.bool()? {
+        p.elytra = Some(r.string(32767)?);
+    }
+    if r.bool()? {
+        p.slim = Some(r.bool()?);
+    }
+    Ok(p)
+}
+fn write_profile(p: &Profile, w: &mut Writer) {
+    let full = p.uuid.is_some() && p.name.is_some();
+    w.bool(full);
+    if full {
+        w.uuid(p.uuid.unwrap_or(0));
+        w.string(p.name.as_deref().unwrap_or(""));
+    } else {
+        w.bool(p.name.is_some());
+        if let Some(name) = &p.name {
+            w.string(name);
+        }
+        w.bool(p.uuid.is_some());
+        if let Some(uuid) = p.uuid {
+            w.uuid(uuid);
+        }
+    }
+    write_properties(&p.properties, w);
+    for texture in [&p.body, &p.cape, &p.elytra] {
+        w.bool(texture.is_some());
+        if let Some(texture) = texture {
+            w.string(texture);
+        }
+    }
+    w.bool(p.slim.is_some());
+    if let Some(slim) = p.slim {
+        w.bool(slim);
+    }
 }
 /// One `ParticleTypes.STREAM_CODEC` value: the `minecraft:particle_type` id,
 /// then the data its type carries (26.3 registry order).
@@ -257,12 +346,6 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         } else {
             None
         }),
-        // ResolvableProfile.STREAM_CODEC, measured, then kept as the bytes it took.
-        RESOLVABLE_PROFILE => {
-            let start = r.position();
-            skip_profile(r)?;
-            Value::Raw(r.since(start).to_vec())
-        }
         // VarInt-encoded: direction, block states, optional ints, pose, the
         // holder-registry variants (cat to zombie nautilus, painting) and the
         // enum states (sniffer to weathering copper), arm, dye.
@@ -276,6 +359,7 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         | HUMANOID_ARM
         | DYE_COLOR => Value::Id(r.varint()?),
         PARTICLE => Value::Particle(Particle::read(r)?),
+        RESOLVABLE_PROFILE => Value::Profile(read_profile(r)?),
         PARTICLES => {
             let n = r.count(65536)?;
             let mut list = Vec::with_capacity(n.min(64));
@@ -330,7 +414,7 @@ fn write_value(kind: i32, v: &Value, w: &mut Writer) {
                 crate::buf::Pos::write(pos, w);
             }
         }
-        Value::Raw(bytes) => w.bytes(bytes),
+        Value::Profile(p) => write_profile(p, w),
     }
     let _ = kind;
 }
@@ -494,18 +578,13 @@ mod tests {
         w.u8(0xFF);
         w.data
     }
-    /// `value` reads back as exactly its bytes, the entry after it still
-    /// decodes, and the list writes back byte for byte.
-    fn raw_round_trip(kind: i32, value: &[u8]) {
+    /// `value` reads back, the entry after it still decodes, and the list
+    /// writes back byte for byte.
+    fn bytes_round_trip(kind: i32, value: &[u8]) {
         let bytes = with_next(kind, value);
         let read = EntityData::read(&mut Reader::new(&bytes)).unwrap();
-        assert_eq!(
-            read,
-            vec![
-                (10, kind, Value::Raw(value.to_vec())),
-                (11, serializer::BYTE, Value::Byte(-3)),
-            ]
-        );
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[1], (11, serializer::BYTE, Value::Byte(-3)));
         let mut w = Writer::new();
         EntityData::write(&read, &mut w);
         assert_eq!(w.data, bytes);
@@ -543,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn resolvable_profile() {
+    fn resolvable_profile_writes_back_its_bytes() {
         // Full: GAME_PROFILE (id, name, a signed property), then a
         // PlayerSkin.Patch with a body texture and the slim model.
         let mut w = Writer::new();
@@ -561,7 +640,7 @@ mod tests {
         w.bool(false);
         w.bool(true);
         w.bool(true);
-        raw_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
+        bytes_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
         // Partial: a name, no id, no properties, an empty patch.
         let mut w = Writer::new();
         w.bool(false);
@@ -570,6 +649,55 @@ mod tests {
         w.bool(false);
         w.varint(0);
         (0..4).for_each(|_| w.bool(false));
-        raw_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
+        bytes_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
+    }
+
+    /// RESOLVABLE_PROFILE (a mannequin's DATA_PROFILE): both ResolvableProfile
+    /// contents round-trip, and an entry after it still decodes.
+    #[test]
+    fn resolvable_profile_round_trips() {
+        use crate::packets::login::Property;
+        let full = Profile {
+            name: Some("Gommunity".into()),
+            uuid: Some(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF),
+            properties: vec![Property {
+                name: "textures".into(),
+                value: "e30=".into(),
+                signature: Some("sig".into()),
+            }],
+            body: Some("minecraft:entity/player/wide/steve".into()),
+            cape: None,
+            elytra: None,
+            slim: Some(false),
+        };
+        let partial = Profile {
+            name: Some("Gommunity".into()),
+            ..Profile::default()
+        };
+        let mut w = Writer::new();
+        EntityData::write(
+            &vec![
+                (
+                    17,
+                    serializer::RESOLVABLE_PROFILE,
+                    Value::Profile(full.clone()),
+                ),
+                (
+                    17,
+                    serializer::RESOLVABLE_PROFILE,
+                    Value::Profile(partial.clone()),
+                ),
+                (18, serializer::BOOLEAN, Value::Bool(true)),
+            ],
+            &mut w,
+        );
+        assert_eq!(
+            EntityData::read(&mut Reader::new(&w.data)).unwrap(),
+            vec![
+                (17, serializer::RESOLVABLE_PROFILE, Value::Profile(full)),
+                (17, serializer::RESOLVABLE_PROFILE, Value::Profile(partial)),
+                (18, serializer::BOOLEAN, Value::Bool(true)),
+            ]
+        );
     }
 }

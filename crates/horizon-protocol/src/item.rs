@@ -3,7 +3,7 @@
 //! client sends back in container clicks (HashedStack).
 use crate::{
     Result,
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader, Writer, pack_block_pos, unpack_block_pos},
 };
 use horizon_world::nbt::Tag;
 
@@ -194,6 +194,12 @@ pub enum Component {
     },
     /// `FireworkExplosion` (a firework star).
     FireworkExplosion(FireworkExplosion),
+    /// `LodestoneTracker`: the target's dimension and block, and whether it
+    /// follows the lodestone.
+    LodestoneTracker {
+        target: Option<(String, [i32; 3])>,
+        tracked: bool,
+    },
     /// `ArmorTrim` naming its material and pattern by registry id (`trim_material`,
     /// `trim_pattern`); a trim with a direct holder stays [`Component::Raw`].
     Trim {
@@ -259,7 +265,7 @@ pub struct Profile {
     pub properties: Vec<(String, String, Option<String>)>,
 }
 impl Component {
-    fn read(kind: i32, r: &mut Reader) -> Result<Self> {
+    pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
         use component::*;
         Ok(match kind {
             MAX_STACK_SIZE | MAX_DAMAGE | DAMAGE | RARITY | REPAIR_COST | MAP_ID
@@ -288,7 +294,7 @@ impl Component {
                     resolved: r.bool()?,
                 })
             }
-            CHARGED_PROJECTILES => {
+            CHARGED_PROJECTILES | BUNDLE_CONTENTS => {
                 let n = r.count(1024)?;
                 Self::Stacks((0..n).map(|_| Template::read(r)).collect::<Result<_>>()?)
             }
@@ -414,6 +420,17 @@ impl Component {
                 }
             }
             FIREWORK_EXPLOSION => Self::FireworkExplosion(FireworkExplosion::read(r)?),
+            LODESTONE_TRACKER => {
+                let target = if r.bool()? {
+                    Some((r.string(32767)?, unpack_block_pos(r.i64()?)))
+                } else {
+                    None
+                };
+                Self::LodestoneTracker {
+                    target,
+                    tracked: r.bool()?,
+                }
+            }
             // ArmorTrim.STREAM_CODEC: two holders, each a reference's id plus
             // one. A direct material or pattern has no registry name: read past.
             TRIM => {
@@ -436,7 +453,7 @@ impl Component {
             }
         })
     }
-    fn write(&self, kind: i32, w: &mut Writer) {
+    pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
             Self::Raw(bytes) => w.bytes(bytes),
             Self::Trim { material, pattern } => {
@@ -535,6 +552,14 @@ impl Component {
                 explosions.iter().for_each(|e| e.write(w));
             }
             Self::FireworkExplosion(e) => e.write(w),
+            Self::LodestoneTracker { target, tracked } => {
+                w.bool(target.is_some());
+                if let Some((dimension, pos)) = target {
+                    w.string(dimension);
+                    w.i64(pack_block_pos(*pos));
+                }
+                w.bool(*tracked);
+            }
             Self::WritableBook(pages) => {
                 w.varint(pages.len() as i32);
                 for page in pages {
@@ -556,12 +581,6 @@ impl Component {
             }
         }
     }
-}
-
-/// Consume one ResolvableProfile.STREAM_CODEC value on its own (as in the
-/// RESOLVABLE_PROFILE entity data serializer).
-pub(crate) fn skip_profile(r: &mut Reader) -> Result<()> {
-    Component::read(component::PROFILE, r).map(drop)
 }
 
 /// A non-empty item stack.
@@ -962,6 +981,21 @@ mod tests {
         assert_eq!(
             stack.component(component::CHARGED_PROJECTILES),
             Some(&Component::Stacks(vec![Stack::new(9, 1)]))
+        );
+        let mut w = Writer::new();
+        Slot::write(&Some(stack), &mut w);
+        assert_eq!(w.data, bytes);
+    }
+
+    #[test]
+    fn bundle_contents_are_item_stack_templates() {
+        // A bundle (id 7) holding 32 of item 9: BundleContents is a list of
+        // ItemStackTemplate, as ChargedProjectiles is.
+        let bytes = [1, 7, 1, 0, 52, 1, 9, 32, 0, 0];
+        let stack = Slot::read(&mut Reader::new(&bytes)).unwrap().unwrap();
+        assert_eq!(
+            stack.component(component::BUNDLE_CONTENTS),
+            Some(&Component::Stacks(vec![Stack::new(9, 32)]))
         );
         let mut w = Writer::new();
         Slot::write(&Some(stack), &mut w);

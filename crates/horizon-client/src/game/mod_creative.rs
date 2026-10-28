@@ -206,6 +206,7 @@ impl Game<'_> {
                 self.player_equipment_changed(&before);
                 self.apply_equipment();
             }
+            DisplayClick::Offhand(stack) => self.creative_display_effect(DisplayClick::Hotbar(40, stack)),
             DisplayClick::Drop(stack) => self.creative_drop(stack),
             DisplayClick::Nothing => {}
         }

@@ -844,6 +844,7 @@ impl PackScreen {
             d::label(&mut out, &lines, mx, my, self.width - 50, true);
             for ((bx, by), key) in buttons.into_iter().zip(["gui.yes", "gui.no"]) {
                 let hover = d::inside(mouse, bx, by, 150, 20);
+                crate::widgets::widget_cursor(hover, true);
                 d::button(&mut out, m, &tr(key), bx, by, 150, 20, true, hover);
             }
             return out;
@@ -862,6 +863,8 @@ impl PackScreen {
             } else {
                 "gui.done"
             });
+            // The cursor follows the mouse; the highlight also keyboard focus.
+            crate::widgets::widget_cursor(hover, true);
             d::button(
                 &mut out,
                 m,

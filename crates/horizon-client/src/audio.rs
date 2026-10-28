@@ -747,11 +747,6 @@ impl Audio {
         self.play(event, at, volume, pitch);
         self.capture = capture;
     }
-    /// `LivingEntity.handleDamageEvent`'s pitch, `(r - r) * 0.2 + 1`, drawn on the
-    /// client (the entity's own random there, never the server's world random).
-    pub fn hurt_pitch(&mut self) -> f32 {
-        (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0
-    }
     /// Sound the game made itself, mono `samples` at `rate` Hz played once at `gain`, at the
     /// listener: the setup's fishing, before the game's own sounds exist. Their channels go once
     /// they have played.

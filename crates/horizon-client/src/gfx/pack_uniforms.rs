@@ -297,7 +297,7 @@ impl FrameUniforms {
         // View bobbing (and nausea) goes in the model-view matrix, as Iris has it: vanilla puts it
         // in the projection, but packs take the projection for a plain perspective (its
         // diagonal; Complementary's reflections swung with each step).
-        let view = frame.bob * crate::camera::view_matrix(frame.yaw, frame.pitch);
+        let view = frame.bob * frame.spin * crate::camera::view_matrix(frame.yaw, frame.pitch);
         let projection = Mat4::perspective_rh_gl(
             frame.fov_degrees.to_radians(),
             aspect,
@@ -425,7 +425,8 @@ impl FrameUniforms {
                 _ => Value::i(&[0]),
             }
         };
-        self.values = NAMES.iter().map(|n| value(n)).collect();
+        self.values.clear();
+        self.values.extend(NAMES.iter().map(|n| value(n)));
         self.frame = (self.frame + 1) % 720_720;
     }
 

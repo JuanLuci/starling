@@ -1,4 +1,4 @@
-//! The registry repository (`ludovic111/horizon-mods`, docs/api/mod-index.md):
+//! The registry repository (`horizon-rust/horizon-mods`, docs/api/mod-index.md):
 //! one `mods/<id>.toml` per project, written by the submission form or by
 //! hand and reviewed in a pull request, plus `revoked.toml`. Its CI turns
 //! them into `index.json` with [`build`], reading every listed file, and
@@ -231,6 +231,7 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
         icon,
         key: entry.key.as_ref().map(|k| k.trim().to_owned()),
         versions,
+        downloads: 0,
     })
 }
 
@@ -283,6 +284,7 @@ fn version(entry: &Entry, v: &EntryVersion, src: &Sources) -> Result<Version, St
         api: facts.api,
         side: facts.side,
         capabilities: facts.capabilities,
+        api_level: facts.api_level,
         game: v.game.clone(),
         requires: facts.requires,
         file: File {
