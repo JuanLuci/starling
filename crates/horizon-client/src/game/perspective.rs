@@ -531,15 +531,28 @@ impl Game<'_> {
     fn player_preview(
         &self,
         batch: &mut HudBatch,
+        rect: [f32; 4],
+        size: f32,
+        offset_y: f32,
+        cursor: (f32, f32),
+        spin: f32,
+    ) {
+        if let Some(m) = self.player_model.as_ref() {
+            self.mob_preview(m, batch, rect, size, offset_y, cursor, spin);
+        }
+    }
+    /// `m` as the inventory draws the player (the title screen's player too).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn mob_preview(
+        &self,
+        m: &Mob,
+        batch: &mut HudBatch,
         [x0, y0, x1, y1]: [f32; 4],
         size: f32,
         offset_y: f32,
         cursor: (f32, f32),
         spin: f32,
     ) {
-        let Some(m) = self.player_model.as_ref() else {
-            return;
-        };
         if self
             .player
             .as_ref()
