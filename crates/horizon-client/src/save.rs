@@ -173,7 +173,7 @@ impl SessionLock {
 /// the latter as it reads each file; Horizon runs them all on opening, which reads
 /// the same data. Worlds older than the ported fixes (1.17) are refused.
 pub fn upgrade_older_world(world: &Path) -> Result<()> {
-    let Some(root) = read_dat(&world.join("level.dat")) else {
+    let Some(root) = read_level_dat(world) else {
         return Ok(());
     };
     let version = root.get("Data").map_or(i64::from(DATA_VERSION), |d| {
@@ -2270,6 +2270,12 @@ impl Drop for SaveDir {
     }
 }
 
+/// `world`'s level.dat, else the `level.dat_old` its last write kept (LevelStorageSource's
+/// fallback): a write stopped between its two renames leaves only that one.
+pub fn read_level_dat(world: &Path) -> Option<Tag> {
+    read_dat(&world.join("level.dat")).or_else(|| read_dat(&world.join("level.dat_old")))
+}
+
 pub fn read_dat(path: &Path) -> Option<Tag> {
     let bytes = match later::queued(path) {
         Some(bytes) => bytes,
@@ -2498,7 +2504,7 @@ fn read_saved_data(world: &Path, name: &str) -> Option<Tag> {
 /// level.dat's Data.WorldGenSettings.
 pub fn world_gen_settings(world: &Path) -> Option<Tag> {
     read_saved_data(world, "world_gen_settings").or_else(|| {
-        read_dat(&world.join("level.dat"))?
+        read_level_dat(world)?
             .get("Data")?
             .get("WorldGenSettings")
             .cloned()
@@ -2886,7 +2892,7 @@ impl Level {
         }
     }
     pub fn read(dir: &Path) -> Option<Self> {
-        let root = read_dat(&dir.join("level.dat"))?;
+        let root = read_level_dat(dir)?;
         let data = root.get("Data")?;
         let n = |t: Option<&Tag>| number(t).unwrap_or(0);
         let mut level = Self {
@@ -3322,7 +3328,7 @@ impl Level {
     /// Write every file; a world without a player UUID gets a random one.
     pub fn write(&mut self, dir: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;
-        let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
+        let existing = read_level_dat(dir).and_then(|r| r.get("Data").cloned());
         let legacy = existing
             .as_ref()
             .is_some_and(|d| d.get("Player").is_some() || d.get("WorldGenSettings").is_some());
@@ -4586,6 +4592,22 @@ mod tests {
         super::upgrade_older_world(&dir).unwrap();
         assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
         super::upgrade_older_world(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A write stopped between `level.dat`'s two renames (the app killed while it saves) leaves
+    /// only `level.dat_old`: the world still opens from it, as vanilla's does.
+    #[test]
+    fn a_world_without_level_dat_opens_from_level_dat_old() {
+        let dir = std::env::temp_dir().join(format!("horizon-dat-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let level = Tag::compound([("Data", Tag::compound([("DataVersion", Tag::Int(7))]))]);
+        super::write_dat(&dir.join("level.dat_old"), level).unwrap();
+        let data = super::read_level_dat(&dir).unwrap();
+        assert_eq!(
+            super::number(data.get("Data").unwrap().get("DataVersion")),
+            Some(7)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
