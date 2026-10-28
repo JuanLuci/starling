@@ -10,6 +10,8 @@
 ## What's new
 
 - **Your name and your skin**, in **Options > Skin Customization**: the name you play with in your worlds (3 to 16 letters, digits or `_`), and a skin from your files (**Choose a File...**, or a PNG in `Starling/skins`), classic or slim. Open a skin PNG with Starling and it is put on at once. Signed in with a Microsoft account, servers still see your account's name and skin.
+- **You on the title screen**: your player stands beside the menu with your skin and your name; tap it to change them.
+- **Ely.by skins**: playing without a Microsoft account, you wear the skin your name has on [ely.by](https://ely.by) (when you chose no file), and on offline servers players the server gives no skin show the one their name has there, as offline launchers do. Starling asks ely.by for those names; turn it off with **Ely.by Skins** in Skin Customization.
 - **The Starling folder, asked first**: the setup offers to keep your worlds, packs and logs in a `Starling` folder any file manager opens, before you sign in.
 - **High refresh rates**: with Max Framerate on Unlimited, Starling asks Android for your screen's fastest refresh rate instead of letting it hold the game at 60 Hz.
 - **Back from another app**: coming back to Starling from the browser after signing in, from the file picker or from any other app no longer leaves a black screen (it came with 0.1.1).

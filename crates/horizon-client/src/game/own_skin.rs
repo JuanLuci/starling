@@ -31,6 +31,11 @@ pub(super) struct OwnSkin {
     uploaded: bool,
     /// The title screen's player, read again every second.
     title: Option<TitlePlayer>,
+    /// Ely.by's skins by name, and whether Skin Customization has them on (read on first use).
+    elyby: horizon_client::elyby::Lookup,
+    elyby_on: Option<bool>,
+    /// The name worlds open with, read again every few seconds.
+    worlds_name: Option<(String, Instant)>,
 }
 
 /// The title screen's player: the model wearing the own skin, and the name worlds open with.
@@ -111,6 +116,80 @@ impl Game<'_> {
         if let Err(e) = offline_name::choose(&Self::player_dir(), name) {
             log::warn!("Horizon: {e}");
             self.ui.options.skin_warning(e);
+        }
+        self.own_skin.worlds_name = None;
+        self.own_skin.title = None;
+    }
+
+    /// Skin Customization's Ely.by Skins: kept, and the skins shown again.
+    pub(super) fn keep_elyby(&mut self, on: bool) {
+        if let Err(e) = horizon_client::elyby::set_enabled(&Self::player_dir(), on) {
+            log::warn!("Horizon: could not keep Ely.by Skins: {e}");
+        }
+        self.own_skin.elyby_on = Some(on);
+        self.own_skin.title = None;
+    }
+
+    fn elyby_enabled(&mut self) -> bool {
+        *self
+            .own_skin
+            .elyby_on
+            .get_or_insert_with(|| horizon_client::elyby::enabled(&Self::player_dir()))
+    }
+
+    /// `name`'s skin on Ely.by, where Skin Customization has Ely.by Skins on and it answered.
+    pub(super) fn elyby_textures(&mut self, name: &str) -> Option<horizon_client::skins::Textures> {
+        if !self.elyby_enabled() {
+            return None;
+        }
+        self.own_skin.elyby.textures(name)
+    }
+
+    /// The name worlds open with (`offline_name::for_worlds`), read at most every few seconds.
+    fn worlds_name(&mut self) -> String {
+        if let Some((name, read)) = &self.own_skin.worlds_name
+            && read.elapsed() < Duration::from_secs(5)
+        {
+            return name.clone();
+        }
+        let name = offline_name::for_worlds(&Self::player_dir());
+        self.own_skin.worlds_name = Some((name.clone(), Instant::now()));
+        name
+    }
+
+    /// The skin the player wears where no server gives one (single player, the title screen):
+    /// the file Skin Customization chose, else, playing offline, the one the name worlds open
+    /// with has on Ely.by. None for the default skin.
+    pub(super) fn worn_skin(&mut self) -> Option<(String, bool)> {
+        if let Some(own) = self.own_skin_sprite() {
+            return Some(own);
+        }
+        if horizon_client::auth::current().is_some() {
+            return None;
+        }
+        let name = self.worlds_name();
+        let textures = self.elyby_textures(&name)?;
+        let location = {
+            let mut downloads = self.skin_downloads.borrow_mut();
+            horizon_client::skins::lookup(&textures, false, |kind, url| downloads.state(kind, url))
+        }?;
+        // In its atlas slot (again, if the slot went to another skin).
+        if !self.again_skin(&location) {
+            return None;
+        }
+        self.store_ready_skins();
+        self.gui
+            .atlas
+            .sprites
+            .contains_key(&location)
+            .then_some((location, textures.slim))
+    }
+
+    /// The skins downloaded since the last call, put in the atlas's skin slots.
+    pub(super) fn store_ready_skins(&mut self) {
+        let ready: Vec<_> = self.skin_downloads.borrow_mut().take_ready();
+        for (location, rgba) in ready {
+            self.store_skin(location, rgba);
         }
     }
 
@@ -226,13 +305,13 @@ impl Game<'_> {
         let Some(kind) = self.res.player_type().clone() else {
             return;
         };
-        let own = self.own_skin_sprite();
+        let worn = self.worn_skin();
         let mut mob = Mob::new(0, kind, Vec3::ZERO, 0.0);
-        mob.skin = own.as_ref().map(|(skin, _)| skin.clone());
-        mob.slim = own.is_some_and(|(_, slim)| slim);
+        mob.skin = worn.as_ref().map(|(skin, _)| skin.clone());
+        mob.slim = worn.is_some_and(|(_, slim)| slim);
         self.own_skin.title = Some(TitlePlayer {
             mob,
-            name: offline_name::for_worlds(&Self::player_dir()),
+            name: self.worlds_name(),
             read: Instant::now(),
         });
     }

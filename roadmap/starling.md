@@ -90,7 +90,11 @@ anticheat flags for digging up while flying.
 > rules, kept in horizon-player.txt; a signed-in account's name on servers, which cannot be told
 > apart before joining) and a skin from `skins/` or the file picker, classic or slim, worn in the
 > atlas's own-skin slot the way a Mojang skin is (first and third person, the inventory, the player
-> list), a skin PNG opened with Starling put on at once; the Starling folder offered in the setup
+> list), a skin PNG opened with Starling put on at once; the player on the title screen beside the
+> menu, a press opening Skin Customization; Ely.by's skins (elyby.rs: skinsystem.ely.by's
+> `/textures/{name}` once a name a session, on by default, Ely.by Skins in Skin Customization):
+> offline, the skin the name worlds open with has there when no file is chosen, and on an
+> offline-mode server the players it sends no textures for; the Starling folder offered in the setup
 > before the sign-in; with no frame cap, the screen's fastest refresh rate asked for
 > (ANativeWindow_setFrameRate), where a phone's own policy held games at 60 Hz; the window's
 > surface dropped when the app goes to the background, as before v0.1.1 (Horizon's

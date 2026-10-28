@@ -334,6 +334,7 @@ impl Game<'_> {
                 SkinAction::Choice(choice) => self.choose_own_skin(choice),
                 SkinAction::OpenFolder => self.open_game_folder(&Self::skins_dir()),
                 SkinAction::PickFile => self.pick_skin_file(),
+                SkinAction::ElyBy(on) => self.keep_elyby(on),
             }
         }
         Ok(())

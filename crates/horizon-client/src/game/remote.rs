@@ -3778,6 +3778,10 @@ impl Game<'_> {
             .iter()
             .map(|(uuid, textures)| (*uuid, textures.clone()))
             .collect();
+        let (online_mode, names): (bool, Vec<(u128, String)>) = (
+            r.online_mode,
+            r.players.iter().map(|(u, n)| (*u, n.clone())).collect(),
+        );
         // Minecraft.profileFuture: the signed-in account's own profile, fetched from the
         // services, gives the local player its skin where the server sends none (single
         // player's offline-mode server).
@@ -3787,15 +3791,31 @@ impl Game<'_> {
             entries.retain(|(u, _)| *u != local);
             entries.push((local, own));
         }
+        // Skin Customization's Ely.by Skins: on a server that sends no skin for a player (offline
+        // mode), the one their name has on Ely.by, as offline launchers show it.
+        let mut from_elyby = std::collections::HashSet::new();
+        if !online_mode {
+            for (uuid, name) in names {
+                if entries.iter().any(|(u, t)| *u == uuid && t.skin.is_some()) {
+                    continue;
+                }
+                if let Some(textures) = self.elyby_textures(&name) {
+                    entries.retain(|(u, _)| *u != uuid);
+                    entries.push((uuid, textures));
+                    from_elyby.insert(uuid);
+                }
+            }
+        }
         let mut resolved: Vec<(u128, String)> = Vec::new();
         // PlayerSkin.model of each resolved skin: the textures' `slim`.
         let mut slim = std::collections::HashSet::new();
         for (uuid, textures) in entries {
             // PlayerInfo.createSkinLookup: only the local player's own skin
-            // may be unsigned.
+            // may be unsigned; Ely.by's never are.
+            let secure = uuid != local && !from_elyby.contains(&uuid);
             let skin = {
                 let mut downloads = self.skin_downloads.borrow_mut();
-                horizon_client::skins::lookup(&textures, uuid != local, |kind, url| {
+                horizon_client::skins::lookup(&textures, secure, |kind, url| {
                     downloads.state(kind, url)
                 })
             };
@@ -3971,7 +3991,7 @@ impl Game<'_> {
         true
     }
     /// `show_skin`, or — its slot evicted — the image queued for upload again.
-    fn again_skin(&mut self, location: &str) -> bool {
+    pub(super) fn again_skin(&mut self, location: &str) -> bool {
         self.show_skin(location) || self.skin_downloads.borrow_mut().again(location)
     }
     /// ChatType.Bound.decorate: the chat type's translation, with the

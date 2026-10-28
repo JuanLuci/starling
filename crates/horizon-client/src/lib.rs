@@ -58,6 +58,7 @@ pub mod dialog_screen;
 pub mod discord_presence;
 pub mod dynamic_light;
 pub mod effects;
+pub mod elyby;
 pub mod end_crystal;
 pub mod entities;
 pub mod entity_culling;

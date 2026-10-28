@@ -918,11 +918,12 @@ enum Act {
     Credits,
     CopyAgentDetails,
     /// Skin Customization: the next skin of `skins/`, the other model, the system's file picker
-    /// (phones), the folder.
+    /// (phones), the folder, Ely.by's skins.
     NextSkin,
     SkinModel,
     PickSkin,
     OpenSkinFolder,
+    ElyBySkins,
 }
 enum WKind {
     Button {
@@ -1000,6 +1001,8 @@ pub enum SkinAction {
     OpenFolder,
     /// Ask the system for a skin file; it arrives through the import inbox.
     PickFile,
+    /// Ely.by Skins turned on or off (`elyby`): keep it.
+    ElyBy(bool),
 }
 /// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
 /// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
@@ -1071,6 +1074,8 @@ struct SkinPage {
     /// The PNGs of `skins/` (`own_skin::list`).
     files: Vec<String>,
     choice: crate::own_skin::SkinChoice,
+    /// Ely.by Skins (`elyby::enabled`).
+    elyby: bool,
     /// A name refused, or a skin the game could not put on.
     warning: Option<String>,
     /// For the game, oldest first.
@@ -1087,6 +1092,7 @@ impl Default for SkinPage {
             account: None,
             files: Vec::new(),
             choice: Default::default(),
+            elyby: true,
             warning: None,
             actions: Vec::new(),
         }
@@ -1253,6 +1259,7 @@ impl OptionsUi {
         page.account = crate::auth::current().map(|a| a.name.clone());
         page.files = crate::own_skin::list(&dir.join(crate::own_skin::DIR));
         page.choice = crate::own_skin::SkinChoice::load(&dir);
+        page.elyby = crate::elyby::enabled(&dir);
         page.warning = None;
         if !page.name.focused {
             page.name.set_value(&page.saved);
@@ -1558,18 +1565,30 @@ impl OptionsUi {
                     inactive(model)
                 };
                 rows.push(Row::Buttons(skin, Some(model)));
+                let elyby = |width: f32| {
+                    let on = if page.elyby { "ON" } else { "OFF" };
+                    button(
+                        0.0,
+                        0.0,
+                        width,
+                        Text::literal(format!("Ely.by Skins: {on}")),
+                        Act::ElyBySkins,
+                    )
+                };
                 // A phone's own file picker: the file chosen comes through the import inbox.
                 if cfg!(target_os = "android") {
                     rows.push(Row::Buttons(
                         button(
                             0.0,
                             0.0,
-                            310.0,
+                            150.0,
                             Text::literal("Choose a File..."),
                             Act::PickSkin,
                         ),
-                        None,
+                        Some(elyby(150.0)),
                     ));
+                } else {
+                    rows.push(Row::Buttons(elyby(310.0), None));
                 }
                 if page.files.is_empty() {
                     rows.push(Row::Note(
@@ -1583,6 +1602,15 @@ impl OptionsUi {
                 rows.push(Row::Note(
                     "the skin Mojang has for your account, or the default".into(),
                 ));
+                // Offline play's skins: by the player's name, where nothing else gives one.
+                if page.elyby {
+                    rows.push(Row::Note(
+                        "Ely.by Skins: a player without a skin shows the one".into(),
+                    ));
+                    rows.push(Row::Note(
+                        "their name has on ely.by (yours too, on Default)".into(),
+                    ));
+                }
                 rows
             }
             Page::Video => {
@@ -3069,6 +3097,11 @@ impl OptionsUi {
                             page.actions.push(SkinAction::Choice(page.choice.clone()));
                         }
                         Act::PickSkin => self.skin.actions.push(SkinAction::PickFile),
+                        Act::ElyBySkins => {
+                            let page = &mut self.skin;
+                            page.elyby = !page.elyby;
+                            page.actions.push(SkinAction::ElyBy(page.elyby));
+                        }
                         Act::OpenSkinFolder => self.skin.actions.push(SkinAction::OpenFolder),
                         Act::None => {}
                     }
