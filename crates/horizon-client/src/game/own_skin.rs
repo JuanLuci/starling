@@ -5,7 +5,7 @@
 use super::Game;
 use horizon_client::{
     hud::HudBatch,
-    mobs::Mob,
+    mobs::{Mob, MobData, MobType},
     offline_name,
     options_ui::Page,
     own_skin::{self, SkinChoice},
@@ -15,6 +15,10 @@ use horizon_client::{
 };
 use horizon_core::geometry::Vec3;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    mpsc::{Receiver, channel},
+};
 use std::time::{Duration, Instant};
 
 /// The own skin's name in the atlas: one skin slot, written again when the skin changes.
@@ -36,11 +40,21 @@ pub(super) struct OwnSkin {
     uploaded: bool,
     /// The title screen's player, its skin and name looked at every frame.
     title: Option<TitlePlayer>,
+    /// Before the world's resources: the player's type read on a thread of its own, and the mob
+    /// data its model is drawn with.
+    title_model: Option<Receiver<Option<Arc<MobType>>>>,
+    title_data: Option<MobData>,
+    /// When the title screen first had its player to show (a skin to come is waited for a while),
+    /// and whether it shows now (its drag and button answer only then).
+    title_since: Option<Instant>,
+    title_visible: bool,
     /// How far a drag turned it, and the drag going on: where it began and the turn then.
     title_turn: f32,
     title_drag: Option<(f32, f32)>,
-    /// Ely.by's skins by name, and whether Skin Customization has them on (read on first use).
+    /// Ely.by's skins by name, kept in `assets/skins/elyby.json` once read, and whether Skin
+    /// Customization has them on (read on first use).
     elyby: horizon_client::elyby::Lookup,
+    elyby_kept: bool,
     elyby_on: Option<bool>,
     /// The name worlds open with, read again every few seconds.
     worlds_name: Option<(String, Instant)>,
@@ -51,6 +65,17 @@ pub(super) struct TitlePlayer {
     mob: Mob,
     name: String,
 }
+
+/// What the player wears where no server gives a skin (`worn`).
+enum Worn {
+    Skin(String, bool),
+    Default,
+    /// Ely.by's answer or its skin's download, still to come.
+    Waiting,
+}
+
+/// How long the title screen waits for a skin to come before it shows the default one.
+const SKIN_WAIT: Duration = Duration::from_secs(3);
 
 /// Where the title screen's player stands (GUI pixels).
 struct TitleLayout {
@@ -162,6 +187,11 @@ impl Game<'_> {
     }
 
     fn elyby_enabled(&mut self) -> bool {
+        if !self.own_skin.elyby_kept {
+            self.own_skin.elyby_kept = true;
+            let file = Self::player_dir().join("assets/skins/elyby.json");
+            self.own_skin.elyby.keep_in(file);
+        }
         *self
             .own_skin
             .elyby_on
@@ -192,28 +222,51 @@ impl Game<'_> {
     /// the file Skin Customization chose, else, playing offline, the one the name worlds open
     /// with has on Ely.by. None for the default skin.
     pub(super) fn worn_skin(&mut self) -> Option<(String, bool)> {
-        if let Some(own) = self.own_skin_sprite() {
-            return Some(own);
+        match self.worn() {
+            Worn::Skin(skin, slim) => Some((skin, slim)),
+            Worn::Default | Worn::Waiting => None,
         }
-        if horizon_client::auth::current().is_some() {
-            return None;
+    }
+
+    /// `worn_skin`, telling a skin still to come from the default one.
+    fn worn(&mut self) -> Worn {
+        use horizon_client::skins::{Download, Kind};
+        if let Some((skin, slim)) = self.own_skin_sprite() {
+            return Worn::Skin(skin, slim);
+        }
+        if horizon_client::auth::current().is_some() || !self.elyby_enabled() {
+            return Worn::Default;
         }
         let name = self.worlds_name();
-        let textures = self.elyby_textures(&name)?;
+        let Some(textures) = self.own_skin.elyby.textures(&name) else {
+            return if self.own_skin.elyby.waiting(&name) {
+                Worn::Waiting
+            } else {
+                Worn::Default
+            };
+        };
+        let Some(url) = textures.skin.clone() else {
+            return Worn::Default;
+        };
+        match self.skin_downloads.borrow_mut().state(Kind::Skin, &url) {
+            Download::Pending => return Worn::Waiting,
+            Download::Failed => return Worn::Default,
+            Download::Ready => {}
+        }
         let location = {
             let mut downloads = self.skin_downloads.borrow_mut();
             horizon_client::skins::lookup(&textures, false, |kind, url| downloads.state(kind, url))
-        }?;
+        };
         // In its atlas slot (again, if the slot went to another skin).
-        if !self.again_skin(&location) {
-            return None;
-        }
+        let Some(location) = location.filter(|l| self.again_skin(l)) else {
+            return Worn::Default;
+        };
         self.store_ready_skins();
-        self.gui
-            .atlas
-            .sprites
-            .contains_key(&location)
-            .then_some((location, textures.slim))
+        if self.gui.atlas.sprites.contains_key(&location) {
+            Worn::Skin(location, textures.slim)
+        } else {
+            Worn::Waiting
+        }
     }
 
     /// The skins downloaded since the last call, put in the atlas's skin slots.
@@ -271,14 +324,17 @@ impl Game<'_> {
         }
     }
 
-    /// Where the title screen shows its player in a GUI `w` by `h`; None on its other pages.
+    /// Whether the title screen is on its main page, where its player stands.
+    fn title_main(&self) -> bool {
+        self.title
+            .as_ref()
+            .is_some_and(|t| matches!(t.mode, Mode::Main))
+    }
+
+    /// Where the title screen shows its player in a GUI `w` by `h`, once it is drawn there; None
+    /// before, and on the title's other pages.
     fn title_layout(&self, w: f32, h: f32) -> Option<TitleLayout> {
-        // The player's model comes with the world's resources, which load behind the menu.
-        if !self.res.rest_ready() {
-            return None;
-        }
-        let title = self.title.as_ref()?;
-        matches!(title.mode, Mode::Main)
+        (self.title_main() && self.own_skin.title_visible)
             .then(|| title_layout_in(w, h))
             .flatten()
     }
@@ -334,22 +390,45 @@ impl Game<'_> {
     /// under a drag, the arms swaying as a still player's do, the name worlds open with over
     /// the head, and the button that changes skin and name under the feet.
     pub(super) fn draw_title_player(&mut self, batch: &mut HudBatch) {
-        let Some(layout) = self.title_layout(batch.width, batch.height) else {
+        self.own_skin.title_visible = false;
+        if !self.title_main() {
             return;
-        };
+        }
         if self.own_skin.title.is_none() {
             self.read_title_player();
         }
+        if self.own_skin.title.is_none() {
+            return;
+        }
         // The skin and the name every frame (both kept, cheap to ask): a skin waiting for its
-        // atlas slot or its download shows the first frame it has one.
-        let worn = self.worn_skin();
+        // atlas slot or its download shows the first frame it has one, and the default one only
+        // when it takes long (the first time a name is asked of Ely.by).
+        let worn = self.worn();
+        let since = *self.own_skin.title_since.get_or_insert_with(Instant::now);
+        if matches!(worn, Worn::Waiting) && since.elapsed() < SKIN_WAIT {
+            return;
+        }
         let name = self.worlds_name();
         let Some(player) = self.own_skin.title.as_mut() else {
             return;
         };
-        player.mob.slim = worn.as_ref().is_some_and(|(_, slim)| *slim);
-        player.mob.skin = worn.map(|(skin, _)| skin);
+        (player.mob.skin, player.mob.slim) = match worn {
+            Worn::Skin(skin, slim) => (Some(skin), slim),
+            Worn::Default | Worn::Waiting => (None, false),
+        };
         player.name = name;
+        self.own_skin.title_visible = true;
+        let Some(layout) = self.title_layout(batch.width, batch.height) else {
+            return;
+        };
+        // The world's mob data once it loaded, else the title's own (only the model is drawn).
+        let data = if self.res.rest_ready() {
+            self.res.mob_data()
+        } else if let Some(data) = &self.own_skin.title_data {
+            data
+        } else {
+            return;
+        };
         let Some(player) = &self.own_skin.title else {
             return;
         };
@@ -364,7 +443,8 @@ impl Game<'_> {
             (y0 + layout.model[3]) / 2.0,
         );
         let turn = TITLE_TURN + self.own_skin.title_turn;
-        self.mob_preview(&mob, batch, layout.model, layout.size, 0.0625, centre, turn);
+        let (rect, size) = (layout.model, layout.size);
+        self.mob_preview(&mob, data, batch, rect, size, 0.0625, centre, turn);
         let atlas = &self.gui.atlas;
         let name_x = (mid - HudBatch::text_width(atlas, &player.name) / 2.0).floor();
         batch.text(atlas, &player.name, name_x, y0 - 8.0, u32::MAX, true);
@@ -374,11 +454,35 @@ impl Game<'_> {
         ui::button(batch, atlas, bx, by, bw, 20.0, &label, true, hover);
     }
 
-    /// The title screen's player's model (its skin and name come every frame).
+    /// The title screen's player's model (its skin and name come every frame): the world's
+    /// player type once its resources loaded, else one read beside the menu, on a thread of its
+    /// own (the entity models' file is large), with mob data of the blocks alone to draw it.
     fn read_title_player(&mut self) {
-        let Some(kind) = self.res.player_type().clone() else {
+        let kind = if self.res.rest_ready() {
+            self.res.player_type().clone()
+        } else if let Some(receive) = &self.own_skin.title_model {
+            receive.try_recv().ok().flatten()
+        } else {
+            let (send, receive) = channel();
+            let root = self.options.resources.clone();
+            let read = std::thread::Builder::new()
+                .name("title player".into())
+                .spawn(move || {
+                    let _ = send.send(super::perspective::player_type(&root));
+                });
+            if let Err(e) = read {
+                log::warn!("Horizon: the title screen's player: {e}");
+            }
+            self.own_skin.title_model = Some(receive);
+            None
+        };
+        let Some(kind) = kind else {
             return;
         };
+        if !self.res.rest_ready() {
+            self.own_skin.title_data = Some(MobData::fallback(self.res.facts()));
+        }
+        self.own_skin.title_model = None;
         self.own_skin.title = Some(TitlePlayer {
             mob: Mob::new(0, kind, Vec3::ZERO, 0.0),
             name: String::new(),

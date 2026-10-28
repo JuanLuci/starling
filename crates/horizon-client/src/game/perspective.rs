@@ -538,14 +538,17 @@ impl Game<'_> {
         spin: f32,
     ) {
         if let Some(m) = self.player_model.as_ref() {
-            self.mob_preview(m, batch, rect, size, offset_y, cursor, spin);
+            let data = self.res.mob_data();
+            self.mob_preview(m, data, batch, rect, size, offset_y, cursor, spin);
         }
     }
-    /// `m` as the inventory draws the player (the title screen's player too).
+    /// `m` as the inventory draws the player, with `data` (the title screen's player too, which
+    /// may come before the world's mob data).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn mob_preview(
         &self,
         m: &Mob,
+        data: &horizon_client::mobs::MobData,
         batch: &mut HudBatch,
         [x0, y0, x1, y1]: [f32; 4],
         size: f32,
@@ -584,7 +587,7 @@ impl Game<'_> {
             camera,
             &lookup,
             240 | 240 << 8,
-            self.res.mob_data(),
+            data,
             &self.player_armor_layers(),
             &mut verts,
         );
