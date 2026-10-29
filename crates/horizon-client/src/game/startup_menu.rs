@@ -42,6 +42,15 @@ impl StartupMenu {
                 name: options.player_name(),
                 cookies: None,
             })
+        } else if let Some(next) = super::world_content::next_start() {
+            // Started again for a world's own mods: it opens as the title's Play does.
+            Some(PendingWorldEntry::Local {
+                folder: next.world.clone(),
+                name: None,
+                seed: None,
+                creative: false,
+                create: None,
+            })
         } else {
             options
                 .world
@@ -234,7 +243,24 @@ pub(super) fn spawn_loader(
                     pack_error = Some(error.to_string());
                     vanilla_root.clone()
                 });
-            let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
+            // A content build takes a while (about 40 s on a phone for Create): the menu bundle
+            // goes first, so the loading screen can say what it waits for.
+            let registries = super::world_content::next_start().map(|next| &next.content);
+            let root = mods::content_root(
+                &root,
+                &settings.mods.enabled,
+                &dev_mods,
+                registries,
+                &mut |names| {
+                    progress.note(Some(format!(
+                        "Preparing mods: {names} (the first time takes a minute)"
+                    )));
+                    if let Ok(ui) = UiResources::load(&root, &vanilla_root) {
+                        let _ = sender.send(LoaderMsg::Ui(ui, root.clone()));
+                    }
+                },
+            );
+            progress.note(None);
             let result = load_resources(
                 root,
                 &vanilla_root,
@@ -756,11 +782,12 @@ impl Loading {
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
         let Some(gui) = &self.gui else { return };
-        if self.menu.pending.is_some() {
+        // A content build holds the menu too: its line says what the wait is for.
+        if self.menu.pending.is_some() || self.progress.noted().is_some() {
             horizon_client::level_loading::draw_progress(
                 batch,
                 &gui.atlas,
-                self.progress.line(),
+                &self.progress.line(),
                 self.progress.fraction(),
             );
         } else if let Some((win, frame)) = &mut self.menu.win {

@@ -223,6 +223,7 @@ mod wandering_trader;
 mod win;
 mod wind;
 mod wither;
+mod world_content;
 mod world_loading;
 mod zombie_reinforcements;
 mod zombie_villagers;
@@ -415,7 +416,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..64 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --dev-mod PATH          A Horizon mod (.hmod or folder) to develop: always on, reloaded when rebuilt\n  --in-frame              Run single player's world in the frame, not on its server thread\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon â€” Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..64 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --dev-mod PATH          A Horizon mod (.hmod or folder) to develop: always on, reloaded when rebuilt\n  --in-frame              Run single player's world in the frame, not on its server thread\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -1887,6 +1888,9 @@ struct Game<'a> {
     update_offer: update_offer::UpdateOffer,
     #[cfg(target_os = "android")]
     native_builds: native_builds::NativeBuilds,
+    /// A new world's folder, until its level.dat is there to keep its content mods beside
+    /// (world_content.rs).
+    content_record: Option<String>,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
@@ -9205,6 +9209,32 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
+        // A world plays with the mods it was made with (world_content.rs): another set starts the
+        // game again with it; a new world takes the set running now.
+        if create.is_none() {
+            match world_content::entry(folder) {
+                world_content::Entry::Open => {}
+                world_content::Entry::Restart(set) => {
+                    log::info!(
+                        "Horizon: {folder} plays with mods {set:?}, not the {:?} running: starting again",
+                        world_content::running()
+                    );
+                    world_content::request_restart(folder, &set)?;
+                    world_content::restart();
+                    return Ok(());
+                }
+                world_content::Entry::Missing(missing) => {
+                    return Err(format!(
+                        "This world plays with {}, which did not load: turn it on in Options > \
+                         Mods, or put it back in the mods folder",
+                        world_content::names(&missing)
+                    )
+                    .into());
+                }
+            }
+        } else {
+            self.content_record = Some(folder.to_owned());
+        }
         world_loading::world_data_used();
         if self.defer_world_entry(PendingWorldEntry::Local {
             folder: folder.to_owned(),
@@ -11850,7 +11880,7 @@ impl Game<'_> {
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    loader.progress.line(),
+                    &loader.progress.line(),
                     loader.progress.fraction(),
                 );
                 return renderer.render(&loading_frame(&hud));
@@ -11865,7 +11895,7 @@ impl Game<'_> {
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    reload.progress.line(),
+                    &reload.progress.line(),
                     reload.progress.fraction(),
                 );
                 return renderer.render(&loading_frame(&hud));
@@ -14038,6 +14068,11 @@ impl ApplicationHandler for Game<'_> {
         self.touch_frame(event_loop);
         self.poll_imports();
         self.poll_mods();
+        if let Some(folder) = &self.content_record
+            && world_content::record(folder, &world_content::running())
+        {
+            self.content_record = None;
+        }
         #[cfg(target_os = "android")]
         {
             self.poll_files_offer();
@@ -14456,6 +14491,7 @@ impl<'a> Game<'a> {
             update_offer: Default::default(),
             #[cfg(target_os = "android")]
             native_builds: Default::default(),
+            content_record: None,
             extras: Default::default(),
             mods: Default::default(),
             recipe_tables: Default::default(),
@@ -14792,6 +14828,9 @@ const STAGE_LINES: [&str; 10] = [
 struct Progress {
     value: Arc<AtomicU32>,
     lines: &'static [&'static str],
+    /// A line in place of the stage's, while a step outside the stages runs (a content mods'
+    /// build).
+    note: Arc<std::sync::Mutex<Option<String>>>,
 }
 impl Progress {
     fn new() -> Self {
@@ -14801,16 +14840,32 @@ impl Progress {
         Self {
             value: Arc::new(AtomicU32::new(0)),
             lines,
+            note: Default::default(),
         }
     }
     fn set(&self, stage: u32) {
         self.value.store(stage, Ordering::Relaxed);
     }
+    fn note(&self, line: Option<String>) {
+        *self
+            .note
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = line;
+    }
+    fn noted(&self) -> Option<String> {
+        self.note
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
     fn fraction(&self) -> f32 {
         self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
     }
-    fn line(&self) -> &'static str {
-        self.lines[(self.value.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
+    fn line(&self) -> String {
+        self.noted().unwrap_or_else(|| {
+            self.lines[(self.value.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
+                .to_owned()
+        })
     }
 }
 
@@ -16213,6 +16268,8 @@ pub fn run() -> Result<()> {
         &options.resources,
         &early_settings.mods.enabled,
         &options.dev_mods,
+        world_content::next_start().map(|next| &next.content),
+        &mut |_| {},
     );
     let loaded = load_resources(
         options.resources.clone(),

@@ -1233,28 +1233,83 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
-/// over it, built in `cache/mod-content`.
+/// over it, built in `cache/mod-content/<set>`.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
 /// 25 s and peaks above 3 GB, more than everything the game keeps.
 pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<PathBuf> {
+    resource_root_with(base, mods, cache, &mut || {})
+}
+
+/// Sets of mods whose roots stay built: worlds with other sets start again with theirs
+/// (Starling's game/world_content.rs), and going back to one of these needs no build.
+const KEPT_SETS: usize = 3;
+
+/// [`resource_root`], calling `on_build` before a build (none when the root is reused), so a
+/// loading screen can say why it waits.
+pub fn resource_root_with(
+    base: &Path,
+    mods: &[ContentMod],
+    cache: &Path,
+    on_build: &mut dyn FnMut(),
+) -> Result<PathBuf> {
     if mods.iter().all(|m| m.content.is_empty()) {
         return Ok(base.to_owned());
     }
-    let out = cache.join("mod-content");
+    let sets = cache.join("mod-content");
+    // The first layout kept one root in mod-content itself.
+    if sets.join(STAMP).is_file() {
+        let _ = fs::remove_dir_all(&sets);
+    }
+    let out = sets.join(set_name(mods));
     let stamp = stamp(base, mods)?;
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes()) {
-        // A reused root warns as the build did.
+        // A reused root warns as the build did; rewriting the stamp marks it as used.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
+        let _ = fs::write(out.join(STAMP), &stamp);
         return Ok(out);
     }
+    on_build();
     for warning in build(base, mods, &out)? {
         log::warn!("Horizon: {warning}");
     }
     fs::write(out.join(STAMP), stamp)?;
+    prune_sets(&sets, &out);
     Ok(out)
+}
+
+/// A set's folder: its mods' ids, hashed.
+fn set_name(mods: &[ContentMod]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut ids: Vec<&str> = mods.iter().map(|m| m.id.as_str()).collect();
+    ids.sort_unstable();
+    let hash = Sha256::digest(ids.join("\n").as_bytes());
+    hash.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Removes the roots of sets not used for longest, past [`KEPT_SETS`], never `keep`.
+fn prune_sets(sets: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(sets) else {
+        return;
+    };
+    let mut used: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p != keep && p.is_dir())
+        .map(|p| {
+            let when = fs::metadata(p.join(STAMP))
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (when, p)
+        })
+        .collect();
+    used.sort();
+    let extra = (used.len() + 1).saturating_sub(KEPT_SETS);
+    for (_, path) in used.into_iter().take(extra) {
+        let _ = fs::remove_dir_all(path);
+    }
 }
 
 /// In a root built by [`build`]: its warnings, one per line.

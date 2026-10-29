@@ -377,10 +377,19 @@ impl ItemCatalog for Catalog {
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left
 /// out here and its row on the Mods page says why.
+///
+/// Mods that add blocks or items are tied to the world (world_content.rs): with
+/// `registries`, those are the ones loaded, whatever `enabled` says (a restart
+/// into a world brings its set; a pack reload keeps the start's, since the
+/// registries can't change). The ones loaded are what worlds compare theirs
+/// with. `on_build` hears the mods' names before their root is built (none when
+/// it is reused).
 pub(super) fn content_root(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,
     dev: &[std::path::PathBuf],
+    registries: Option<&std::collections::BTreeSet<String>>,
+    on_build: &mut dyn FnMut(&str),
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Content, Package};
@@ -394,7 +403,11 @@ pub(super) fn content_root(
             continue;
         };
         let m = &package.manifest;
-        let on = enabled.contains(&m.id) || dev.contains(path);
+        let tied = m.capabilities.contains(&Capability::Registries);
+        let on = match registries {
+            Some(set) if tied => set.contains(&m.id),
+            _ => enabled.contains(&m.id),
+        } || dev.contains(path);
         if !on || mods.iter().any(|c| c.id == m.id) {
             continue;
         }
@@ -419,7 +432,24 @@ pub(super) fn content_root(
             Err(e) => log::warn!("Horizon: mod {} content not loaded: {e}", m.id),
         }
     }
-    match mod_content::resource_root(root, &mods, &horizon_client::logging::cache_dir()) {
+    let names = mods
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The world-tied ones: what adds blocks or items.
+    let tied: std::collections::BTreeSet<String> = mods
+        .iter()
+        .filter(|m| !m.content.blocks.is_empty() || !m.content.items.is_empty())
+        .map(|m| m.id.clone())
+        .collect();
+    let built = mod_content::resource_root_with(
+        root,
+        &mods,
+        &horizon_client::logging::cache_dir(),
+        &mut || on_build(&names),
+    );
+    match built {
         Ok(out) => {
             if out != root {
                 log::info!(
@@ -428,10 +458,12 @@ pub(super) fn content_root(
                     out.display()
                 );
             }
+            super::world_content::set_running(tied);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
+            super::world_content::set_running(Default::default());
             root.to_owned()
         }
     }

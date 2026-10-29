@@ -375,7 +375,10 @@ pub(super) fn stage_pack(
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
     let root = startup_root(vanilla_root, selected, server)?;
-    let root = super::mods::content_root(&root, mods_enabled, dev_mods);
+    // The blocks and items stay the start's: the registries can't change (world_content.rs).
+    let started = super::world_content::running();
+    let root =
+        super::mods::content_root(&root, mods_enabled, dev_mods, Some(&started), &mut |_| {});
     progress.set(1);
     let render = Arc::new(assets.reload(&root)?);
     let mut atlas = HudAtlas::build_over(&root, vanilla_root)?;
