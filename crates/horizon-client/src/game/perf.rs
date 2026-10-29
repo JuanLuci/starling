@@ -57,6 +57,11 @@ impl Game<'_> {
             pending_uploads: self.pending_uploads.len(),
             draw_calls: self.renderer.as_ref().map_or(0, |r| r.section_draw_calls),
             drawn_sections: self.renderer.as_ref().map_or(0, |r| r.drawn_sections),
+            drawn_quads: self.renderer.as_ref().map_or(0, |r| r.drawn_quads),
+            gpu_passes: self
+                .renderer
+                .as_ref()
+                .map_or_else(Vec::new, |r| r.frame_pass_times()),
             render_distance: self.streaming.radius,
             backend: self
                 .renderer

@@ -1713,9 +1713,11 @@ impl HudRenderer {
             batch,
             size,
             0..batch.vertices.len() as u32,
+            None,
         );
     }
-    /// Draw part of the prepared batch, preserving its blend/depth runs.
+    /// Draw part of the prepared batch, preserving its blend/depth runs. `timing`: the frame's
+    /// pass timer, which stamps each pass drawn here as `hud`.
     pub fn draw_range(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1724,6 +1726,7 @@ impl HudRenderer {
         batch: &HudBatch,
         size: [u32; 2],
         vertices: std::ops::Range<u32>,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         if vertices.is_empty() || size.contains(&0) {
             return;
@@ -1755,6 +1758,7 @@ impl HudRenderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD"),
                 color_attachments: &attachments,
+                timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("hud")),
                 depth_stencil_attachment: clip.map(|_| wgpu::RenderPassDepthStencilAttachment {
                     view: depth,
                     depth_ops: Some(wgpu::Operations {

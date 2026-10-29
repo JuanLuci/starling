@@ -25,6 +25,10 @@ pub struct StatsView {
     pub pending_uploads: usize,
     pub draw_calls: usize,
     pub drawn_sections: usize,
+    /// The terrain quads those draws cover (gfx.rs `drawn_quads`).
+    pub drawn_quads: u64,
+    /// The frame's passes with their median GPU time in milliseconds, while they are timed.
+    pub gpu_passes: Vec<(String, f32)>,
     pub render_distance: i32,
     pub backend: String,
     pub gpu: String,
@@ -36,6 +40,17 @@ const BAD: u32 = color::hex(0xf06a5a, 255);
 
 fn mb(bytes: Option<u64>) -> String {
     bytes.map_or_else(|| "-".into(), |b| format!("{}", b / (1024 * 1024)))
+}
+
+/// A quad count in thousands or millions.
+fn quads(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1e6)
+    } else if n >= 10_000 {
+        format!("{}k", n / 1000)
+    } else {
+        n.to_string()
+    }
 }
 
 fn celsius(c: Option<f32>) -> String {
@@ -103,11 +118,25 @@ impl StatsView {
         ));
         lines.push((
             format!(
-                "draw calls {} ({} sections)",
-                self.draw_calls, self.drawn_sections
+                "draw calls {} ({} sections, {} quads)",
+                self.draw_calls,
+                self.drawn_sections,
+                quads(self.drawn_quads)
             ),
             color::TEXT,
         ));
+        if !self.gpu_passes.is_empty() {
+            let total: f32 = self.gpu_passes.iter().map(|p| p.1).sum();
+            let parts: Vec<String> = self
+                .gpu_passes
+                .iter()
+                .map(|(name, ms)| format!("{name} {ms:.2}"))
+                .collect();
+            lines.push((
+                format!("gpu passes {} = {total:.2} ms", parts.join("  ")),
+                color::TEXT,
+            ));
+        }
         let clock = s
             .cpu_mhz
             .map_or_else(String::new, |[cur, max]| format!("   cpu {cur}/{max} MHz"));
@@ -200,8 +229,14 @@ impl StatsView {
                 "pending_uploads": self.pending_uploads,
                 "draw_calls": self.draw_calls,
                 "drawn_sections": self.drawn_sections,
+                "drawn_quads": self.drawn_quads,
                 "render_distance": self.render_distance,
             },
+            "gpu_passes_ms": self
+                .gpu_passes
+                .iter()
+                .map(|(name, ms)| (name.clone(), json!(ms)))
+                .collect::<serde_json::Map<String, Value>>(),
             "thermal": {
                 "status": s.thermal_status.map(thermal_name),
                 "headroom": s.thermal_headroom,

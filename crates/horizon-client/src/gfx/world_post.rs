@@ -180,10 +180,15 @@ impl Post {
         })
     }
 
-    /// Draw the scaled world onto `screen`.
-    pub fn finish(&self, encoder: &mut wgpu::CommandEncoder, screen: &wgpu::TextureView) {
+    /// Draw the scaled world onto `screen` (`timing`: the pass's timestamps, in a timed frame).
+    pub fn finish(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        timing: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
         let Some(target) = &self.target else { return };
-        self.finish_with(encoder, screen, &target.group);
+        self.finish_with(encoder, screen, &target.group, timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -192,6 +197,7 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
+        timing: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: screen,
@@ -205,6 +211,7 @@ impl Post {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon post"),
             color_attachments: &attachments,
+            timestamp_writes: timing,
             ..Default::default()
         });
         pass.set_pipeline(if self.antialias {

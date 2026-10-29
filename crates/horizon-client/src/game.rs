@@ -12080,7 +12080,12 @@ impl Game<'_> {
         };
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
-                renderer.set_pass_timing(self.debug);
+                // The frame's passes are timed for the F3 overlay and the Stats overlay.
+                renderer.set_pass_timing(
+                    self.debug
+                        || self.settings.horizon.overlay
+                            == horizon_client::graphics::Overlay::Stats,
+                );
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),

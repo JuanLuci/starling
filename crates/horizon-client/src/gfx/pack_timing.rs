@@ -1,5 +1,6 @@
-//! GPU time of each pass of a shader pack, of either kind: shown in the F3 overlay while it is
-//! open, and logged every `REPORT` timed frames with `HORIZON_SHADER_PACK_TIMING=1`. One frame
+//! GPU time of each pass of a shader pack, of either kind, or of the vanilla frame
+//! (`for_frame`): shown in the F3 overlay while it is open, and logged every `REPORT` timed
+//! frames with `HORIZON_SHADER_PACK_TIMING=1` (the frame's: whenever it is timed). One frame
 //! at a time is timed, and the CPU never waits for it: its timestamps are resolved in a later
 //! frame, once the GPU has finished it (Metal resolves them without waiting for the passes that
 //! write them), then read back when mapped. The next frame after that is timed again.
@@ -42,6 +43,8 @@ pub struct PassTiming {
     /// `mark`'s pipeline, for the target format it was made for.
     marker: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     reports: usize,
+    /// Whose passes these are, for the log: a shader pack's, or the frame's.
+    kind: &'static str,
 }
 
 impl PassTiming {
@@ -80,7 +83,17 @@ impl PassTiming {
             log: Self::logging(),
             marker: None,
             reports: 0,
+            kind: "shader pack",
         })
+    }
+
+    /// A timer for the vanilla frame's own passes (world, hand, HUD...), which logs its medians
+    /// while it runs: the Stats overlay's `gpu passes` line, and a record in the log.
+    pub fn for_frame(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+        let mut timing = Self::new(device, queue)?;
+        timing.kind = "frame";
+        timing.log = true;
+        Some(timing)
     }
 
     /// Whether `HORIZON_SHADER_PACK_TIMING` asks for timing without the F3 overlay.
@@ -244,7 +257,8 @@ impl PassTiming {
                 .map(|(n, ms)| format!("{n} {ms:.3}"))
                 .collect();
             log::info!(
-                "shader pack GPU time per pass (median ms of the last {WINDOW} timed frames): {} = {total:.3}",
+                "{} GPU time per pass (median ms of the last {WINDOW} timed frames): {} = {total:.3}",
+                self.kind,
                 parts.join(", ")
             );
         }
