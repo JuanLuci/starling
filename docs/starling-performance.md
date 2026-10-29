@@ -130,6 +130,9 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
+- `exp/window-scale` (02:50 UTC, CI disparada): a ideia 1 do dono: a opção "Window Scale" faz o
+  swapchain (e os buffers da janela) menor que a tela; o compositor do Android amplia de graça, a
+  HUD inclusive. Toques reescalados pra superfície. Só compila/roda aqui; a escala só age no Android.
 - `exp/one-pass-hud` (02:37 UTC, CI disparada): a mão em primeira pessoa, os efeitos de tela (vinheta)
   e a HUD desenham no fim do pass do mundo (ou do pass de cópia a <100%), com "resets" de
   profundidade por draw em tela cheia, em vez de 3 passes com load/store da tela. Conferido no
@@ -169,6 +172,15 @@ os números de GPU daqui não representam a Adreno.
    abrir o inventário de sobrevivência (a prévia do jogador tem profundidade própria); abrir o menu
    de pausa (blur: cai no caminho antigo); testar também com resolução 50% (a HUD vai no pass de
    cópia). Se a economia for grande (>1 ms), é o candidato mais forte a entrar no `android`.
+4. **`exp/window-scale`** (ideia 1) — build da CI disparada 02:50 UTC. Opções → Gráficos (nível
+   avançado) → Display → **Window Scale** (novo, 25–100%, padrão 100). Medir na ilha, Quality: (a)
+   Resolution Scale 50% + Window Scale 100% (o jeito atual) e (b) Resolution Scale 100% + Window
+   Scale 50%; também 75%/75%. Anotar `gpu` total e `gpu passes` (em (b) não há `post`). Conferir
+   que os toques caem onde se toca (hotbar, botões, menus), que a HUD fica legível (o compositor
+   amplia tudo), rotação da tela e voltar do segundo plano. Risco conhecido: o teclado virtual e
+   campos de texto (o inset do teclado vem em pixels da tela), e a tela de carregamento continua
+   em tamanho cheio. Nunca rodou num aparelho: se o toque sair deslocado ou a imagem não
+   preencher a tela, é bug deste ramo, não da ideia.
 
 ### Entradas
 
@@ -276,3 +288,20 @@ os números de GPU daqui não representam a Adreno.
   lavapipe a 100% e 50% (jogo, inventário criativo, inventário de sobrevivência com prévia), overlay
   mostrando só `world` (ou `world` + `post`), nenhum erro de validação do wgpu no log.
   CI disparada 02:37 UTC.
+- 02:50 UTC: **`exp/window-scale` pronto e enviado** (ideia 1; em cima de `exp/pass-timing`). Como
+  funciona: `graphics.rs` ganha `window_scale` (25–100, `windowScale:` no `horizon-graphics.txt`,
+  slider "Window Scale" em Display); `Game::sync_window_scale` (a cada quadro e ao aplicar opções)
+  redimensiona a superfície do renderer pra `inner_size × escala`; `Resized`/`resumed` idem; os
+  eventos `Touch`/`CursorMoved` são reescalados na entrada de `window_event` pela razão
+  superfície/janela; `touch_size`, o scroll da lista de mundos e a HUD usam o tamanho da superfície.
+  Sem patch no winit: o wgpu-hal (vendorizado) passa `config.extent` direto ao `vkCreateSwapchainKHR`
+  (`third_party/wgpu-hal/src/vulkan/swapchain/native.rs`), e o loader Vulkan do Android chama
+  `native_window_set_buffers_dimensions` com esse extent, que o SurfaceFlinger escala pra tela.
+  Conferido no AOSP (`libs/gui/BufferQueueProducer.cpp`, `NATIVE_WINDOW_WIDTH` →
+  `mCore->mDefaultWidth`) que `ANativeWindow_getWidth` (o `inner_size()` do winit) continua
+  devolvendo o tamanho da janela, não o do buffer: sem realimentação da escala. Diferença pro fork:
+  ele patcha o winit (`set_render_size` + escala de input dentro do winit) e pega a tela pelo
+  `MonitorHandle`; aqui é tudo no `game.rs`. Validado: build, fmt, 19 testes (`graphics`,
+  `stats_overlay`), smoke run no desktop (escala inativa, quadro igual). **Não testado em aparelho.**
+  Escolha conservadora: padrão 100% (nada muda sem mexer na opção); a tela de carregamento
+  (`Loading`) fica sem escala de propósito (seu renderer é refeito no tamanho certo pelo `Game`).
