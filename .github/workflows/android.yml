@@ -21,6 +21,10 @@ on:
         description: Build as a release does (release key, fast profile) without publishing, to install over a release; kept a day
         type: boolean
         default: false
+      native_mods:
+        description: A test with these native mods of native-mods/ compiled in (ids, separated by spaces), by native_build.sh
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -95,8 +99,26 @@ jobs:
           HORIZON_ANDROID_KEY_ALIAS: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.release_key) && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
-        # Releases with the fast profile (fewer codegen units: a little quicker in game).
-        run: python packaging/android/build_apk.py ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.release_key) && '--profile fast' || '' }} ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
+          MODS: ${{ inputs.native_mods }}
+          PROFILE: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.release_key) && 'fast' || 'quick' }}
+        # Releases with the fast profile (fewer codegen units: a little quicker in game). With native mods, the APK
+        # native_build.sh makes, named after them.
+        run: |
+          if [ -z "$MODS" ]; then
+            python packaging/android/build_apk.py --profile "$PROFILE" ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
+            exit 0
+          fi
+          bundles=()
+          for id in $MODS; do
+            [[ "$id" =~ ^[a-z0-9][a-z0-9_-]*$ && -f "native-mods/$id/mixins/$id/horizon-mixin.toml" ]] || \
+              { echo "$id is not a mod of native-mods/"; exit 1; }
+            bundles+=("native-mods/$id/mixins/$id")
+          done
+          bash packaging/android/native_build.sh . "$RUNNER_TEMP/native" "${bundles[@]}"
+          mkdir -p target/android
+          for apk in "$RUNNER_TEMP"/native/starling-*.apk; do
+            cp "$apk" "target/android/$(basename "${apk%.apk}")-$(echo $MODS | tr ' ' '-').apk"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: starling-apk
