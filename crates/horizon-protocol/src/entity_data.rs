@@ -519,6 +519,7 @@ mod tests {
                     count: 3,
                     added: Vec::new(),
                     removed: vec![7],
+                    wire: Default::default(),
                 })),
             ),
             (

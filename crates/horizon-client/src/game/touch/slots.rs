@@ -682,7 +682,7 @@ impl Game<'_> {
             if share > 0 {
                 let mut shown = stack.clone();
                 shown.count = (there.map_or(0, |s| s.count) + share).min(max);
-                self.draw_slot_item(batch, None, usize::MAX, Some(shown), x, y);
+                self.draw_slot_item(batch, None, usize::MAX, &Some(shown), x, y);
             }
         }
     }
@@ -708,7 +708,7 @@ impl Game<'_> {
                 batch,
                 None,
                 usize::MAX,
-                Some(slide.stack.clone()),
+                &Some(slide.stack.clone()),
                 ox + x,
                 oy + y,
             );
