@@ -4,8 +4,11 @@
 //! This module is the backend-free part: positional buttons, the action
 //! bindings, deadzones and the look curve, button edges from successive pad
 //! states, and `horizon-controller.txt`, kept next to `options.txt` so that
-//! file stays exactly vanilla's. The game reads the pads with gilrs.
+//! file stays exactly vanilla's. The game reads the pads with gilrs, and on Android from the
+//! system's events ([`android`]).
 use std::{collections::BTreeMap, fs, path::Path};
+
+pub mod android;
 
 pub const FILE: &str = "horizon-controller.txt";
 
