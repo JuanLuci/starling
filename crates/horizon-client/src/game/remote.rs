@@ -334,6 +334,10 @@ const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
 /// whatever inserting their columns costs, up to a column still decoding:
 /// the packets after a slow machine's chunks don't wait on its frames.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+/// What a frame spends on an overdue backlog's chunk packets on a phone: there one frame
+/// taking the whole backlog after a teleport was a visible hitch (a 214 ms frame on the POCO
+/// F6 Pro); four times a frame's usual share still drains it in a few frames.
+const OVERDUE_CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(4);
 /// A gap in the ticks or movement sent to the server worth a log line (an old server's
 /// anticheat behind ViaVersion counts on one each tick, and a reminder every 20).
 const GAP_LOGGED: Duration = Duration::from_millis(1100);
@@ -1270,8 +1274,9 @@ impl Game<'_> {
     /// client's packet processor), in order. Chunk packets get
     /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
     /// the next chunk packet on wait for the next frame, unless they have
-    /// already waited `BACKLOG_LIMIT`. A chunk packet still decoding holds
-    /// back what follows it.
+    /// already waited `BACKLOG_LIMIT` (then all of them go, or on a phone
+    /// `OVERDUE_CHUNK_PACKETS_PER_FRAME` of them). A chunk packet still
+    /// decoding holds back what follows it.
     pub(super) fn poll_remote(&mut self) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
             return Ok(());
@@ -1293,10 +1298,15 @@ impl Game<'_> {
         let overdue = r
             .backlog_since
             .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
+        let budget = match overdue {
+            false => CHUNK_PACKETS_PER_FRAME,
+            true if cfg!(target_os = "android") => OVERDUE_CHUNK_PACKETS_PER_FRAME,
+            true => Duration::MAX,
+        };
         let mut chunks = Duration::ZERO;
         while let Some(item) = events.pop_front() {
             let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
+            if chunk && chunks >= budget {
                 events.push_front(item);
                 break;
             }
