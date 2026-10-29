@@ -121,3 +121,23 @@ Nothing there cuts the terrain's GPU work (no LOD rings, no merged faces). What 
   island in a world the owner has.
 - The Azure build VM (`starling-build`) builds and checks in a few minutes (`try_ref.sh`, see the
   project notes); deallocate it after use.
+
+## Log (sessão noturna de 2026-10-29, agente autônomo)
+
+Anotações em ordem de trabalho; cada hipótese tem mudança, medida e conclusão assim que existem.
+Máquina do agente: Linux x86-64, 4 núcleos, sem GPU (lavapipe). Nada aqui é tempo de GPU do celular:
+os números de GPU daqui não representam a Adreno.
+
+### Resumo do que está pronto
+
+(em andamento: atualizado a cada anotação)
+
+### Para o dono testar no celular
+
+(nenhum ramo pronto ainda)
+
+### Entradas
+
+- 01:46 UTC: início. Lido o documento, o renderizador (`gfx.rs` `draw_frame`, `terrain.wgsl`,
+  `world_post.rs`, `hud.rs`, `flat.rs`, `mesher.rs`) e `android.yml`. Build `--profile fast` do cliente
+  iniciado na máquina do agente (sem cache: demora).
