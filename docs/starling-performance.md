@@ -181,3 +181,26 @@ os números de GPU daqui não representam a Adreno.
   instalado, jars oficiais do 26.3 baixados só aqui (não commitados; `research-lock.json` ganhou
   localmente o sha1 do JSON de versão republicado por Mojang, `5df1795e…`, sem commit), e
   `horizon-prepare` gerou `.local/horizon-client/26.3`.
+
+- 03:15 UTC: **medida na máquina do agente (lavapipe, mundo novo seed 1234, distância 16, 1920x1080,
+  criativo, no spawn, ramo `exp/pass-timing`)** — só contagens, não tempos de GPU:
+
+  | Direção (yaw) | Seções desenhadas | Quads desenhados | Draw calls |
+  |---|---|---|---|
+  | 0 | 603 | 293k | 85 |
+  | 90 | 421 | 262k | 18 |
+  | 180 | 489 | 400k | 36 |
+  | 270 | 590 | 387k | 126 |
+
+  Ou seja ~450–700 quads por seção desenhada (já sem as faces viradas pro lado oposto, que o
+  `sides.rs` deixa fora). Pras ~880 seções da ilha do dono isso dá uns **400–600 mil quads
+  (1,6–2,4 M vértices, 40–60 MB de vértices + 10–15 MB de índices por passagem)**. A 6 ms isso é
+  bem abaixo do que a memória do celular entrega: a geometria não é limitada por largura de banda
+  de vértices. Estimativa pra Adreno 740 (binning + render, ~1 G triângulos/s): 1–3 ms. **Conclusão:
+  a maior parte dos ~6 ms "independentes da resolução do mundo" provavelmente não é geometria, e sim
+  os passes em resolução cheia da tela (mão, HUD, cópia do `world_post`), cujos load/store de 18 MB
+  a varredura de resolução nunca mudou.** Isso muda a ordem das ideias: medir por pass primeiro
+  (`exp/pass-timing`), depois fundir passes (`exp/one-pass-hud`), depois o céu; greedy meshing e
+  LOD em anéis ficam pra depois (ganho máximo ~1–2 ms mesmo cortando metade dos quads).
+  Os números de draw calls aqui (18–126) incluem o occlusion culling de desktop (duas fases), que
+  no Android está desligado.
