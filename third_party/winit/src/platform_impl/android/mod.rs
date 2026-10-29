@@ -34,6 +34,15 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
 
+/// Horizon's patch: the app's hook (`platform::android::set_input_hook`), which sees each input
+/// event before this backend turns it into window events.
+static INPUT_HOOK: std::sync::OnceLock<crate::platform::android::InputHook> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_input_hook(hook: crate::platform::android::InputHook) {
+    let _ = INPUT_HOOK.set(hook);
+}
+
 /// Returns the minimum `Option<Duration>`, taking into account that `None`
 /// equates to an infinite timeout, not a zero timeout (so can't just use
 /// `Option::min`)
@@ -371,6 +380,10 @@ impl<T: 'static> EventLoop<T> {
     where
         F: FnMut(event::Event<T>, &RootAEL),
     {
+        // Horizon's patch: what the app's hook answers goes no further.
+        if let Some(status) = INPUT_HOOK.get().and_then(|hook| hook(event)) {
+            return status;
+        }
         let mut input_status = InputStatus::Handled;
         match event {
             InputEvent::MotionEvent(motion_event) => {
