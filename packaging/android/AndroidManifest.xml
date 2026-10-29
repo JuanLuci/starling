@@ -82,6 +82,9 @@
             android:theme="@style/Starling.Game"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|density|screenSize|smallestScreenSize|layoutDirection|colorMode|fontWeightAdjustment|grammaticalGender">
             <meta-data android:name="android.app.lib_name" android:value="horizon_android" />
+            <!-- Hands over to a build with native mods when the activity loaded one
+                 (android_lib.rs). -->
+            <meta-data android:name="android.app.func_name" android:value="starling_on_create" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

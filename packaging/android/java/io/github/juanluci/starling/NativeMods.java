@@ -1,0 +1,92 @@
+package io.github.juanluci.starling;
+
+import android.content.Context;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+
+/**
+ * The game with native mods (game/native_builds.rs): a build of this version's game library with
+ * the player's native mods compiled in, downloaded to files/native/KEY/ and chosen by
+ * files/native/current. StarlingActivity loads it in place of the APK's own library. A build made
+ * for another version is never loaded (after an update it waits for its rebuild), and one that
+ * stopped twice before its first frame is set aside, with a notice the game shows.
+ */
+final class NativeMods {
+    private NativeMods() {}
+
+    static final String LIBRARY = "libhorizon_android.so";
+    /** Starts that ended before the first frame, after which the build is set aside. */
+    private static final int TRIES = 2;
+
+    private static File dir(Context context) {
+        return new File(context.getFilesDir(), "native");
+    }
+
+    /**
+     * The chosen build's library for this `version` (the APK's versionName), or null to play the
+     * APK's own; counts the start, which `started` ends.
+     */
+    static File chosen(Context context, String version) {
+        File dir = dir(context);
+        String key = read(new File(dir, "current"));
+        if (key == null || key.isEmpty() || key.contains("/") || key.startsWith(".")) {
+            return null;
+        }
+        File build = new File(dir, key);
+        File library = new File(build, LIBRARY);
+        if (!library.isFile() || version == null || !version.equals(read(new File(build, "for")))) {
+            return null;
+        }
+        File starts = new File(dir, "starts");
+        int count = 0;
+        try {
+            count = Integer.parseInt(String.valueOf(read(starts)));
+        } catch (NumberFormatException e) {
+            // None counted.
+        }
+        if (count >= TRIES) {
+            setAside(dir, "The build with native mods closed twice before it showed, so "
+                    + "Starling started without it.");
+            return null;
+        }
+        write(starts, Integer.toString(count + 1));
+        return library;
+    }
+
+    /** The game showed its first frame: the build started. */
+    static void started(Context context) {
+        new File(dir(context), "starts").delete();
+    }
+
+    /** The build could not be loaded: set aside, saying why. */
+    static void failed(Context context, String why) {
+        setAside(dir(context), "The build with native mods could not be loaded (" + why
+                + "), so Starling started without it.");
+    }
+
+    private static void setAside(File dir, String notice) {
+        new File(dir, "current").delete();
+        new File(dir, "starts").delete();
+        write(new File(dir, "notice"), notice);
+    }
+
+    /** A small text file's trimmed contents, null when it cannot be read. */
+    private static String read(File file) {
+        try {
+            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8).trim();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static void write(File file, String text) {
+        try {
+            file.getParentFile().mkdirs();
+            Files.write(file.toPath(), text.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // Best effort: the count or notice is lost.
+        }
+    }
+}

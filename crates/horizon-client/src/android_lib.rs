@@ -40,6 +40,57 @@ extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onStorage(
     }
 }
 
+/// NativeActivity's entry point (the manifest's `android.app.func_name`): the game of this
+/// library, or of the build with native mods StarlingActivity loaded in its place
+/// (`STARLING_GAME_LIBRARY`, NativeMods.java). The activity loaded that build first, for its Java
+/// native methods; dlopen finds it loaded, so the activity and the game share one library.
+///
+/// # Safety
+///
+/// NativeActivity's call: an `ANativeActivity` and its saved state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn starling_on_create(
+    activity: *mut std::ffi::c_void,
+    saved: *mut std::ffi::c_void,
+    saved_size: usize,
+) {
+    unsafe extern "C" {
+        /// android-activity's entry point, which runs `android_main`.
+        fn ANativeActivity_onCreate(
+            activity: *mut std::ffi::c_void,
+            saved: *mut std::ffi::c_void,
+            saved_size: usize,
+        );
+    }
+    type OnCreate = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize);
+    let own: OnCreate = ANativeActivity_onCreate;
+    if let Some(path) = std::env::var_os("STARLING_GAME_LIBRARY") {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(path.as_bytes()).unwrap_or_default();
+        // SAFETY: NUL-terminated names; RTLD_NOW (2). The symbol is android-activity's entry
+        // point in a build of this same source, so it has the signature declared above.
+        let entry = unsafe {
+            let build = dlopen(path.as_ptr(), 2);
+            if build.is_null() {
+                std::ptr::null_mut()
+            } else {
+                dlsym(build, c"ANativeActivity_onCreate".as_ptr())
+            }
+        };
+        if !entry.is_null() && entry != own as *mut std::ffi::c_void {
+            // SAFETY: see above.
+            let entry = unsafe { std::mem::transmute::<*mut std::ffi::c_void, OnCreate>(entry) };
+            return unsafe { entry(activity, saved, saved_size) };
+        }
+        logcat(
+            log::Level::Error,
+            "the build with native mods has no entry point: playing the APK's own game",
+        );
+    }
+    // SAFETY: NativeActivity's own arguments, passed on.
+    unsafe { own(activity, saved, saved_size) }
+}
+
 /// Run `f` with the activity, on the calling thread (attached to the VM for the call). None
 /// before the game starts, or when the call threw (the exception is logged and cleared).
 fn with_activity<R>(

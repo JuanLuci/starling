@@ -24,6 +24,8 @@ import android.view.inputmethod.InputMethodManager;
 import android.view.WindowManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.system.ErrnoException;
+import android.system.Os;
 import java.io.File;
 import java.net.InetAddress;
 import java.util.List;
@@ -44,12 +46,35 @@ import javax.crypto.spec.GCMParameterSpec;
  * file picker, the clipboard, the keyboard's editor (TextMirror), the browser and the keystore.
  */
 public final class StarlingActivity extends NativeActivity {
-    static {
-        // Registers the library with this class loader, so the native methods below resolve.
+    private static final int PICK_FILE = 1;
+
+    /** The build with native mods loaded in place of the APK's library (android_lib.rs). */
+    private static final String GAME_LIBRARY = "STARLING_GAME_LIBRARY";
+
+    /**
+     * Loads the game library with this class loader, so the native methods resolve: a build with
+     * native mods when one is chosen (NativeMods), else the APK's own. NativeActivity then loads
+     * the APK's library, whose entry point (starling_on_create, android_lib.rs) hands over to the
+     * build named by GAME_LIBRARY, the very library loaded here.
+     */
+    private void loadGame() {
+        File build = NativeMods.chosen(this, versionName());
+        if (build != null) {
+            try {
+                Os.setenv(GAME_LIBRARY, build.getPath(), true);
+                System.load(build.getPath());
+                return;
+            } catch (UnsatisfiedLinkError | ErrnoException e) {
+                try {
+                    Os.unsetenv(GAME_LIBRARY);
+                } catch (ErrnoException ignored) {
+                    // Nothing was set.
+                }
+                NativeMods.failed(this, e.getMessage());
+            }
+        }
         System.loadLibrary("horizon_android");
     }
-
-    private static final int PICK_FILE = 1;
 
     /** The keyboard's height in window pixels, 0 when it is hidden (android_lib.rs). */
     private static native void onImeHeight(int pixels);
@@ -75,6 +100,7 @@ public final class StarlingActivity extends NativeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        loadGame();
         // Before super.onCreate starts the game's thread, which reads it first thing.
         onStorage(sharedFolder(this));
         super.onCreate(savedInstanceState);
@@ -219,6 +245,7 @@ public final class StarlingActivity extends NativeActivity {
 
     /** The game drew its first frame: let the window show. */
     public void firstFrame() {
+        NativeMods.started(this);
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
