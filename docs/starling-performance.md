@@ -130,6 +130,10 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
+- `exp/one-pass-hud` (02:37 UTC, CI disparada): a mão em primeira pessoa, os efeitos de tela (vinheta)
+  e a HUD desenham no fim do pass do mundo (ou do pass de cópia a <100%), com "resets" de
+  profundidade por draw em tela cheia, em vez de 3 passes com load/store da tela. Conferido no
+  desktop a 100% e a 50% (jogo, inventário criativo, inventário de sobrevivência com a prévia 3D).
 - `exp/sky-after-terrain` (02:25 UTC, CI disparada): o céu, sol, lua, estrelas e disco escuro desenham
   depois do terreno opaco, no plano distante com teste de profundidade; o shader do céu roda só nos
   pixels sem terreno. Conferido visualmente no desktop (dia, pôr do sol, noite, sol, lua).
@@ -158,6 +162,13 @@ os números de GPU daqui não representam a Adreno.
    que céu, sol, lua, estrelas e o nascer/pôr do sol aparecem iguais (aqui no desktop apareceram).
    Vale também uma cena olhando pro céu (muito céu visível) e uma olhando pro chão (nenhum): a
    economia aparece na segunda.
+3. **`exp/one-pass-hud`** — build da CI disparada 02:37 UTC. Mesma cena e configurações do item 1.
+   Comparar o `gpu` total com o item 1: no item 1 a linha `gpu passes` tem world + hand + effects +
+   hud; aqui só `world` (tudo dentro dele). A diferença é o custo dos loads/stores de tela dos três
+   passes. Conferir: mão, vinheta (cantos escurecidos), barra de vida/fome, hotbar, mira, chat;
+   abrir o inventário de sobrevivência (a prévia do jogador tem profundidade própria); abrir o menu
+   de pausa (blur: cai no caminho antigo); testar também com resolução 50% (a HUD vai no pass de
+   cópia). Se a economia for grande (>1 ms), é o candidato mais forte a entrar no `android`.
 
 ### Entradas
 
@@ -250,3 +261,18 @@ os números de GPU daqui não representam a Adreno.
   Hipótese do ganho: 0,3–0,8 ms a 100% numa cena com metade da tela coberta por terreno; zero numa
   cena só de céu. Risco: shader packs do formato `shaders/` (`pack_draws_sky`) não mudam; os packs
   nativos do Horizon continuam desenhando o céu antes.
+- 02:37 UTC: **`exp/one-pass-hud` pronto e enviado** (commit `eeb8ef4c`, em cima de `exp/pass-timing`).
+  Hipótese H-passes: numa GPU por blocos cada pass que carrega e guarda a tela custa ~18 MB pra cada
+  lado a 3200x1440; o quadro vanilla tinha 4 passes na tela (mundo, mão, efeitos/vinheta, HUD) =
+  3 loads + 4 stores ≈ 130 MB/quadro, 2–3 ms se a compressão UBWC não ajudar (terreno comprime mal;
+  o céu da cena "só céu" comprime bem, o que explicaria os 2,4 ms de lá). Mudança: novo
+  `gfx/depth_reset.rs` (draw em tela cheia que escreve só profundidade, com `override DEPTH`);
+  `draw_over_world` desenha mão (após reset pro plano distante), efeitos e HUD no fim do pass do
+  mundo a 100%, ou no pass de cópia do `world_post` a <100% (que ganhou o depth da janela); todos os
+  pipelines de HUD, efeitos e cópia ganharam estado de profundidade (`Always`, sem escrita; a prévia
+  3D `LessEqual` com escrita após reset de 1.0 com scissor). Caminho antigo mantido quando há shader
+  pack com post, HDR, contorno de entidades, blur de menu, mira 3D ou tela de título.
+  Validado: build, fmt, 35 testes (`hud`, `gfx::tests`, `stats_overlay`, `world_post`), capturas no
+  lavapipe a 100% e 50% (jogo, inventário criativo, inventário de sobrevivência com prévia), overlay
+  mostrando só `world` (ou `world` + `post`), nenhum erro de validação do wgpu no log.
+  CI disparada 02:37 UTC.
