@@ -141,3 +141,43 @@ os números de GPU daqui não representam a Adreno.
 - 01:46 UTC: início. Lido o documento, o renderizador (`gfx.rs` `draw_frame`, `terrain.wgsl`,
   `world_post.rs`, `hud.rs`, `flat.rs`, `mesher.rs`) e `android.yml`. Build `--profile fast` do cliente
   iniciado na máquina do agente (sem cache: demora).
+
+- 02:40 UTC: **o que o renderizador faz hoje a 100% de resolução** (lido em `gfx.rs` `draw_frame`,
+  `hud.rs` `draw_range`, `world_post.rs`): o mundo desenha direto na tela (sem alvo intermediário:
+  `world_post.prepare` devolve `None` a 100% sem FXAA). Os passes na tela por quadro são: "Horizon
+  world" (clear → store), "First-person hand" (load da cor + clear da profundidade), "Screen effects"
+  (só com efeito ativo), "3d crosshair" (só com a mira 3D), e a HUD em 1 ou 2 passes (`draw_range`
+  antes e depois do blur de menu; cada prévia 3D com `Blend::Depth` vira um pass próprio, mas isso só
+  acontece na prévia do jogador no inventário, não no jogo normal). Numa GPU por blocos (Adreno) cada
+  pass com `LoadOp::Load` custa descarregar e recarregar a tela inteira (3200x1440x4 B = 18 MB por
+  load ou store; UBWC comprime o céu bem e o terreno mal). Hipótese H-passes: mão + HUD custam 1–2 ms
+  dos ~6 ms "independentes da resolução do mundo" (são dependentes da resolução da *tela*, que a
+  varredura não mudou). Precisa de medida por pass no celular: é o ramo `exp/pass-timing`.
+- 02:40 UTC: **o céu desenha antes do terreno**, em tela cheia, sem teste de profundidade (`fs_sky`,
+  pipeline "Sky" com `depth_test false`), e o terreno cobre a maior parte depois. `sky_along_ray` por
+  pixel faz `atan2`, `cos`, `sqrt`, divisões (e 16 interseções de triângulos ao nascer/pôr do sol).
+  Hipótese H-sky: desenhar o céu depois do terreno opaco com teste de profundidade no plano distante
+  (reverse-Z: clear 0.0, `GreaterEqual`) roda o shader só nos pixels sem terreno. Ganho estimado
+  pequeno (0,3–0,8 ms), custo de código pequeno. Ramo `exp/sky-after-terrain` (a fazer).
+- 02:40 UTC: **vértice do terreno** (`mesher.rs` `TerrainVertex`, `gfx.rs` `TERRAIN_ATTRIBUTES`):
+  24 bytes = pos f32x3 (12) + uv u16x2 (4) + layer u16 (2) + light u16 (2) + cor u32 (4). Índices
+  u32 (6 por quad = 24 B/quad). Os "flat draws" desenham um draw por página da arena. A posição em
+  3 x u16 (1/256 de bloco, com folga para modelos que saem do bloco) daria 18 → 20 B (−17%);
+  chegar a 16 B exige empacotar layer com a posição ou perder precisão de UV/luz. Sodium usa 20 B
+  (formato compacto) e versões recentes 16 B. Hipótese H-vértice: só vale se a busca de vértices for
+  o gargalo; decido depois de ver a contagem de quads real (o overlay não mostra quads hoje; o ramo
+  `exp/pass-timing` acrescenta).
+- 02:40 UTC: **fork Vasysik/horizon-android** (clonado só na máquina do agente): a resolução pelo
+  buffer da janela vive em `crates/horizon-client/src/android/display.rs` e depende de um **winit
+  modificado** (`third_party/winit`, patch de ~100 linhas no backend Android: `set_render_size`
+  chama `ANativeWindow_setBuffersGeometry`, e `set_native_input_scale` reescala as coordenadas de
+  toque, que o Android entrega em pixels da tela). O Starling usa o winit 0.30.13 do crates.io sem
+  patch. Implementar a ideia 1 aqui exige ou vendorizar o winit com o mesmo patch, ou chamar
+  `ANativeWindow_setBuffersGeometry` direto pelo handle da janela e reescalar os toques em
+  `android_lib.rs`. Os orçamentos por quadro do fork: `gfx/upload_budget.rs` (uploads de malhas:
+  2–8 ms, 8 MiB por quadro no Android) e `game/remote.rs` (pacotes de chunk atrasados: 4 ms por
+  quadro no Android em vez de 1 ms).
+- 02:40 UTC: máquina do agente pronta pra rodar o cliente: lavapipe (llvmpipe) instalado, Java 25
+  instalado, jars oficiais do 26.3 baixados só aqui (não commitados; `research-lock.json` ganhou
+  localmente o sha1 do JSON de versão republicado por Mojang, `5df1795e…`, sem commit), e
+  `horizon-prepare` gerou `.local/horizon-client/26.3`.
