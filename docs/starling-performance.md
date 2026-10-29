@@ -130,11 +130,25 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
-(em andamento: atualizado a cada anotação)
+- `exp/pass-timing` (02:17 UTC, CI disparada com a chave de release): o overlay Stats mostra o tempo
+  de GPU de cada pass do quadro (world, post, hand, effects, hud) e a contagem de quads desenhados;
+  o `latest.log` recebe a mesma linha a cada 30 quadros medidos. É a ferramenta de medida dos
+  outros ramos: todos os ramos abaixo são feitos em cima dele.
+- Conclusão parcial (02:13 UTC): a geometria das ~880 seções é só ~400–600 mil quads; o suspeito
+  principal dos ~6 ms fixos passou a ser o número de passes em resolução cheia (mundo, mão,
+  efeitos/vinheta, HUD: 4 passes, 3 loads + 4 stores de 18 MB cada numa GPU por blocos).
 
 ### Para o dono testar no celular
 
-(nenhum ramo pronto ainda)
+1. **`exp/pass-timing`** — build da CI disparada 02:17 UTC (`gh run list -R JuanLuci/starling
+   --workflow android.yml`, artifact `starling-apk`, some em 1 dia). O que medir: a mesma cena da
+   ilha, Quality (distância 16), resolução 100%, sem nuvens, overlay Stats (toque com três dedos).
+   Anotar a linha `gpu passes` (world/hand/effects/hud, em ms) e `draw calls N (S sections, Q quads)`.
+   Repetir a 25% de resolução (aparece `post`). O log `latest.log` traz a linha
+   `frame GPU time per pass` com as medianas, dá pra copiar em vez de fotografar.
+   O que a leitura decide: se `hand + effects + hud` somarem mais de ~1,5 ms, o ramo
+   `exp/one-pass-hud` é o próximo a instalar; se `world` a 25% ficar bem acima de 3 ms, a geometria
+   (greedy/LOD/vértice menor) volta a valer.
 
 ### Entradas
 
@@ -204,3 +218,14 @@ os números de GPU daqui não representam a Adreno.
   LOD em anéis ficam pra depois (ganho máximo ~1–2 ms mesmo cortando metade dos quads).
   Os números de draw calls aqui (18–126) incluem o occlusion culling de desktop (duas fases), que
   no Android está desligado.
+- 02:17 UTC: **`exp/pass-timing` pronto e enviado** (commit `0f27b689`, em cima de `android`). Mudança:
+  `gfx/pack_timing.rs` ganha `PassTiming::for_frame`; `draw_frame` cria esse timer quando o overlay
+  Stats ou o F3 estão abertos (sem shader pack rodando) e carimba `timestamp_writes` nos passes
+  "world" (+ "world 2" após o occlusion culling de desktop), "post", "hand", "effects", "crosshair" e
+  "hud" (cada pass de `HudRenderer::draw_range`); `stats_overlay.rs` mostra `gpu passes ... = total ms`
+  e `draw calls N (S sections, Q quads)`; `perf` devolve `gpu_passes_ms` e `drawn_quads`. Validado:
+  compila (fast), `cargo fmt`, `clippy -D warnings` no crate (com `-A clippy::manual_range_contains`,
+  um lint que o toolchain 1.97 daqui dispara em `horizon-world/src/worldgen/aquifer/noise_based.rs:450`,
+  pré-existente no `android`), 401 testes Python OK; os testes unitários do crate rodam. Conferido no
+  desktop com lavapipe que a linha aparece e os números fazem sentido (world 82 ms, hand 7, hud 1,8 —
+  tempos de software, sem valor). CI: `android.yml` com `release_key=true` disparada 02:17 UTC.
