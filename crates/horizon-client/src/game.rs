@@ -9257,12 +9257,22 @@ impl Game<'_> {
                     return Ok(());
                 }
                 world_content::Entry::Missing(missing) => {
-                    return Err(format!(
-                        "This world plays with {}, which did not load: turn it on in Options > \
-                         Mods, or put it back in the mods folder",
+                    // Not opened (a save would turn their blocks into air): the title says why.
+                    let message = format!(
+                        "This world plays with {}, which did not load. Put it back in the mods \
+                         folder or turn it on in Options > Mods, then open the world again.",
                         world_content::names(&missing)
-                    )
-                    .into());
+                    );
+                    log::warn!("Horizon: {folder}: {message}");
+                    let saves = std::env::current_dir()?.join("saves");
+                    let title = self
+                        .title
+                        .get_or_insert_with(|| Title::new(saves, &self.options.resources));
+                    title.mode = horizon_client::title::Mode::Error {
+                        message,
+                        return_to: Box::new(horizon_client::title::Mode::Main),
+                    };
+                    return Ok(());
                 }
             }
         } else {

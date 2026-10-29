@@ -77,6 +77,24 @@ fn enabled() -> BTreeSet<String> {
         .unwrap_or_else(PoisonError::into_inner)
         .clone()
 }
+
+/// The mods adding blocks or items in the mods folder, on or off: a world needing one that is
+/// not there is not worth starting again for.
+fn installed_cell() -> &'static Mutex<Option<BTreeSet<String>>> {
+    static INSTALLED: OnceLock<Mutex<Option<BTreeSet<String>>>> = OnceLock::new();
+    INSTALLED.get_or_init(Default::default)
+}
+pub(super) fn set_installed(ids: BTreeSet<String>) {
+    *installed_cell()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(ids);
+}
+fn installed() -> Option<BTreeSet<String>> {
+    installed_cell()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
 pub(super) fn running() -> BTreeSet<String> {
     running_cell()
         .lock()
@@ -138,6 +156,7 @@ pub(super) fn entry(folder: &str) -> Entry {
         folder,
         kept.clone().unwrap_or_else(enabled),
         &running(),
+        installed().as_ref(),
         next_start(),
         || {
             if kept.is_none() {
@@ -151,12 +170,19 @@ fn decide(
     folder: &str,
     set: BTreeSet<String>,
     running: &BTreeSet<String>,
+    installed: Option<&BTreeSet<String>>,
     next: Option<&NextStart>,
     keep: impl FnOnce(),
 ) -> Entry {
     if set == *running {
         keep();
         return Entry::Open;
+    }
+    // Not in the mods folder at all: starting again would not bring it.
+    if let Some(installed) = installed
+        && !set.is_subset(installed)
+    {
+        return Entry::Missing(set.difference(installed).cloned().collect());
     }
     if next.is_some_and(|n| n.world == folder && n.content == set) {
         Entry::Missing(set.difference(running).cloned().collect())
@@ -221,11 +247,11 @@ mod tests {
     fn a_world_with_another_set_starts_again_once() {
         let (create, none) = (set(&["create"]), set(&[]));
         assert_eq!(
-            decide("w", create.clone(), &create, None, || {}),
+            decide("w", create.clone(), &create, None, None, || {}),
             Entry::Open
         );
         assert_eq!(
-            decide("w", none.clone(), &create, None, || {}),
+            decide("w", none.clone(), &create, None, None, || {}),
             Entry::Restart(none.clone())
         );
         // Started again for it, and Create still did not load: never open without it.
@@ -234,12 +260,25 @@ mod tests {
             content: create.clone(),
         };
         assert_eq!(
-            decide("w", create.clone(), &none, Some(&next), || {}),
+            decide("w", create.clone(), &none, None, Some(&next), || {}),
             Entry::Missing(create.clone())
         );
         // Another world after that start is a restart of its own.
         assert_eq!(
-            decide("v", create.clone(), &none, Some(&next), || {}),
+            decide("v", create.clone(), &none, None, Some(&next), || {}),
+            Entry::Restart(create)
+        );
+    }
+
+    #[test]
+    fn a_mod_not_in_the_folder_is_not_started_again_for() {
+        let (create, none) = (set(&["create"]), set(&[]));
+        assert_eq!(
+            decide("w", create.clone(), &none, Some(&none), None, || {}),
+            Entry::Missing(create.clone())
+        );
+        assert_eq!(
+            decide("w", create.clone(), &none, Some(&create), None, || {}),
             Entry::Restart(create)
         );
     }
@@ -247,9 +286,9 @@ mod tests {
     #[test]
     fn a_world_keeps_its_set_only_when_it_opens() {
         let mut kept = false;
-        decide("w", set(&["create"]), &set(&[]), None, || kept = true);
+        decide("w", set(&["create"]), &set(&[]), None, None, || kept = true);
         assert!(!kept);
-        decide("w", set(&[]), &set(&[]), None, || kept = true);
+        decide("w", set(&[]), &set(&[]), None, None, || kept = true);
         assert!(kept);
     }
 
