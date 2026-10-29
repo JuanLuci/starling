@@ -40,6 +40,16 @@ loop iteration next to winit's events.
 - The pad last touched is the active one. Several pads are not merged.
 - `horizon-ctl pad ...` injects a virtual pad (buttons, sticks, triggers) into
   a running game, for tests without hardware.
+- On Android (Starling) gilrs has no backend: the game takes Android's own
+  key and joystick events for the pad (`KEYCODE_BUTTON_*`, the D-pad, the
+  axes X/Y, Z/RZ, HAT_X/HAT_Y, LTRIGGER or BRAKE, RTRIGGER or GAS) before
+  winit sees them, through an input hook in the vendored winit
+  (`third_party/winit`, `crates/horizon-client/src/android_lib.rs`); the
+  mapping is `gamepad/android.rs`. The pad's maker picks the glyphs, and it
+  vibrates through Android's `InputDevice` vibrators. A mouse and a keyboard
+  play as on a computer (the mouse captured for mouse look), and the touch
+  controls hide while one of them or a controller is in use, coming back with
+  the next touch (`input_mode.rs`).
 
 ## Default mapping
 

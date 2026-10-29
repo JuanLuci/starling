@@ -14,8 +14,13 @@ import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CombinedVibration;
 import android.os.Environment;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.DocumentsContract;
+import android.view.InputDevice;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -43,7 +48,8 @@ import javax.crypto.spec.GCMParameterSpec;
  * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
  * process with the activity, since the game's event loop cannot start twice in one process.
  * The game calls the public methods from its own thread (android_lib.rs): the file manager, the
- * file picker, the clipboard, the keyboard's editor (TextMirror), the browser and the keystore.
+ * file picker, the clipboard, the keyboard's editor (TextMirror), the browser, the keystore, the
+ * mouse's capture and the controllers' makers and motors.
  */
 public final class StarlingActivity extends NativeActivity {
     private static final int PICK_FILE = 1;
@@ -81,6 +87,12 @@ public final class StarlingActivity extends NativeActivity {
 
     /** The game folder in shared storage, or null to keep it in the app's own files. */
     private static native void onStorage(String folder);
+
+    /** Android took back the pointer the game had captured (android_lib.rs). */
+    private static native void onPointerCaptureLost();
+
+    /** The game holds the pointer (capturePointer); on the UI thread only. */
+    private boolean pointerWanted;
 
     private ClipboardManager clipboard;
 
@@ -163,6 +175,84 @@ public final class StarlingActivity extends NativeActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             hideSystemBars();
+        }
+    }
+
+    /**
+     * Capture the mouse for the game's mouse look, or let it go (the game's MouseHandler.grabMouse
+     * and releaseMouse): captured, its pointer hides and its moves come to the game as relative
+     * motion, through NativeActivity's input queue like every other event.
+     */
+    public void capturePointer(final boolean capture) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                pointerWanted = capture;
+                View decor = getWindow().getDecorView();
+                if (capture) {
+                    decor.requestPointerCapture();
+                } else {
+                    decor.releasePointerCapture();
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onPointerCaptureChanged(boolean hasCapture) {
+        super.onPointerCaptureChanged(hasCapture);
+        // Lost while the game holds it (the window's focus went): the game lets go too.
+        if (!hasCapture && pointerWanted) {
+            pointerWanted = false;
+            onPointerCaptureLost();
+        }
+    }
+
+    /** A controller's maker (its USB vendor id), for the game's button pictures; 0 unknown. */
+    public int padVendor(int deviceId) {
+        InputDevice device = InputDevice.getDevice(deviceId);
+        return device == null ? 0 : device.getVendorId();
+    }
+
+    /** A controller's name, for the game's log; null once it is gone. */
+    public String padName(int deviceId) {
+        InputDevice device = InputDevice.getDevice(deviceId);
+        return device == null ? null : device.getName();
+    }
+
+    /**
+     * Vibrate a controller for `millis` ms, its heavy motor at `strong` and its light one at
+     * `weak` (0 to 255, 0 still): each of its motors from Android 12, before that its one
+     * vibrator at the stronger. A pad without motors stays still.
+     */
+    @SuppressWarnings("deprecation")
+    public void vibratePad(int deviceId, int millis, int strong, int weak) {
+        InputDevice device = InputDevice.getDevice(deviceId);
+        if (device == null || millis <= 0) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager motors = device.getVibratorManager();
+            int[] ids = motors.getVibratorIds();
+            CombinedVibration.ParallelCombination all = CombinedVibration.startParallel();
+            boolean any = false;
+            for (int i = 0; i < ids.length; i++) {
+                // A pad's first motor is its heavy one (the evdev rumble's strong magnitude).
+                int level = Math.min(i == 0 ? strong : weak, 255);
+                if (level > 0) {
+                    all.addVibrator(ids[i], VibrationEffect.createOneShot(millis, level));
+                    any = true;
+                }
+            }
+            if (any) {
+                motors.vibrate(all.combine());
+            }
+            return;
+        }
+        Vibrator motor = device.getVibrator();
+        int level = Math.min(Math.max(strong, weak), 255);
+        if (motor.hasVibrator() && level > 0) {
+            motor.vibrate(VibrationEffect.createOneShot(millis, level));
         }
     }
 

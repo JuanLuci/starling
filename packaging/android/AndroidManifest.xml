@@ -3,7 +3,8 @@
      LauncherActivity (java/), in a process of its own, takes files opened with or shared to
      Starling and restarts the game when it asks; StarlingActivity is NativeActivity plus the
      system bars, the keyboard height, the file manager, picker, clipboard and the Starling
-     folder's setting, and the process ending with the activity. The libraries are extracted at
+     folder's setting, the mouse's capture, the controllers' motors, and the process ending with
+     the activity. The libraries are extracted at
      install: the Java launchers that prepare the game files on the phone run from there. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="@APPLICATION_ID@">
@@ -22,6 +23,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- A controller's motors (StarlingActivity.vibratePad): hits, explosions, a totem. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application

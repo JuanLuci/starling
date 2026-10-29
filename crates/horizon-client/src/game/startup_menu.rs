@@ -609,6 +609,12 @@ impl Loading {
             } else {
                 self.menu.physical_keys.remove(&key);
             }
+            // Android's winit sends no ModifiersChanged: the held keys make them, as in Game.
+            #[cfg(target_os = "android")]
+            {
+                self.menu.modifiers =
+                    horizon_client::input_mode::held_modifiers(&self.menu.physical_keys);
+            }
         }
         match event {
             WindowEvent::CloseRequested => {

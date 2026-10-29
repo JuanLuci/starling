@@ -10,6 +10,7 @@ mod text_mirror;
 
 use super::{Game, Screen, mod_widgets::ModFace};
 use horizon_client::gamepad::ServerStick;
+use horizon_client::input_mode::InputMode;
 use horizon_client::{
     Result,
     gamepad::Button as Pad,
@@ -46,7 +47,8 @@ pub(super) struct Touch {
     pointer: touch::TouchPointer,
     /// The finger on a slot and the stack it picked (slots.rs).
     slots: slots::SlotTouch,
-    /// A touch was seen: draw the controls (always on Android).
+    /// A touch was seen (`has_touch`). The controls show while the input mode is the touch
+    /// screen: from the start on Android, from this first touch elsewhere (game/input_mode.rs).
     seen: bool,
     /// The controls were live last frame (the playing screen).
     live: bool,
@@ -365,9 +367,10 @@ pub(super) fn draw_editor(
 }
 
 impl Game<'_> {
-    /// The player plays with a touch screen: always on Android, elsewhere once a touch was seen.
+    /// The player plays with a touch screen: a touch was seen, and on Android no keyboard, mouse
+    /// or controller took over since (game/input_mode.rs).
     pub(super) fn has_touch(&self) -> bool {
-        self.touch.seen
+        self.touch.seen && self.touch_shown()
     }
     fn touch_playing(&self) -> bool {
         self.screen == Screen::Playing
@@ -454,6 +457,8 @@ impl Game<'_> {
             // Mods read the touch screen from this first finger on (`mobile.has-touch`).
             self.refresh_mod_snapshot();
         }
+        // The touch controls come back with a touch after a keyboard, a mouse or a controller.
+        self.input_used(InputMode::Touch);
         self.last_input = Instant::now();
         // The offer of the Starling folder, over the title, takes the touches while it shows.
         #[cfg(target_os = "android")]
@@ -591,7 +596,7 @@ impl Game<'_> {
                 Some(text.map_or_else(LayoutConfig::default, |t| LayoutConfig::from_json(&t)));
         }
         // The mods' buttons, where the player put them (or their mods do).
-        if self.touch.seen || cfg!(target_os = "android") {
+        if self.touch_shown() {
             let (faces, offered): (Vec<_>, Vec<_>) = self
                 .mod_touch_buttons()
                 .into_iter()
@@ -655,8 +660,7 @@ impl Game<'_> {
                 self.touch.ime_seen = false;
             }
         }
-        let keyboard =
-            (self.touch.seen || cfg!(target_os = "android")) && self.touch.wanted && self.focused;
+        let keyboard = self.touch_shown() && self.touch.wanted && self.focused;
         // On Android the keyboard's editor shows it (text_mirror.rs).
         #[cfg(target_os = "android")]
         if self.window.is_some() {
@@ -858,7 +862,7 @@ impl Game<'_> {
     /// The controls over the HUD while playing (or the layout editor), the close button over
     /// screens.
     pub(super) fn draw_touch(&self, batch: &mut HudBatch) {
-        if !(self.touch.seen || cfg!(target_os = "android")) {
+        if !self.touch_shown() {
             return;
         }
         let (playing, closable) = (self.touch_playing(), self.touch_closable());
@@ -990,7 +994,8 @@ impl Game<'_> {
         ui.finish();
     }
 
-    /// Let go of everything the fingers held (the app went to the background).
+    /// Let go of everything the fingers held (the app went to the background, or the player took
+    /// up a keyboard, a mouse or a controller).
     pub(super) fn touch_release_all(&mut self) {
         let actions = self.touch.controls.reset();
         self.touch_apply(actions);
@@ -1013,7 +1018,7 @@ impl Game<'_> {
     }
     /// Whether the chat bar shows: the chat open on a touch screen.
     fn chat_bar_shown(&self) -> bool {
-        self.screen == Screen::Chat && (self.touch.seen || cfg!(target_os = "android"))
+        self.screen == Screen::Chat && self.touch_shown()
     }
     /// The chat bar's buttons in GUI pixels (x, y, w, h): at the right, just above the text
     /// field (lifted with it over the keyboard).

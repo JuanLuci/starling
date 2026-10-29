@@ -1,12 +1,13 @@
-//! Controllers through gilrs (Horizon's own; docs/controllers.md): the
-//! active pad's state each loop iteration, its button edges dispatched as
-//! the vanilla key mappings they are bound to, the left stick as an analog
-//! move vector and the right stick turning the view. `horizon-ctl pad`
-//! injects a virtual pad on top of the real one.
+//! Controllers through gilrs, or Android's events on a phone (Horizon's own;
+//! docs/controllers.md): the active pad's state each loop iteration, its
+//! button edges dispatched as the vanilla key mappings they are bound to, the
+//! left stick as an analog move vector and the right stick turning the view.
+//! `horizon-ctl pad` injects a virtual pad on top of the real one.
 use super::{Game, Screen};
 use horizon_client::{
     Result,
     gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Rumble},
+    input_mode::InputMode,
     keybinds::{KeyBinds, key_code, mouse_button},
     mouse::Rotation,
 };
@@ -25,8 +26,8 @@ pub(super) const HELP: &[&str] = &[
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
-    /// The real controllers and the DualSense's output.
-    #[cfg(feature = "controllers")]
+    /// The real controllers and the DualSense's output, or Android's controllers.
+    #[cfg(any(feature = "controllers", target_os = "android"))]
     devices: hardware::Devices,
     /// The virtual pad of `horizon-ctl pad`.
     injected: PadState,
@@ -60,9 +61,15 @@ pub(super) struct Pads {
 #[cfg(feature = "controllers")]
 mod hardware;
 
+/// Android's controllers, from the system's events: gilrs (the `controllers` feature) has no
+/// Android backend.
+#[cfg(all(target_os = "android", not(feature = "controllers")))]
+#[path = "pad/android.rs"]
+mod hardware;
+
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
-#[cfg(not(feature = "controllers"))]
+#[cfg(not(any(feature = "controllers", target_os = "android")))]
 mod hardware {
     use super::{super::Game, Pads};
     use horizon_client::gamepad::{PadState, Pulse, Rumble};
@@ -128,6 +135,7 @@ impl Game<'_> {
         }
         if state.active(&self.settings.controller) {
             self.last_input = Instant::now();
+            self.input_used(InputMode::Pad);
             self.pad.in_use = true;
         }
         let state = state.merge(&self.pad.touch);
@@ -284,13 +292,19 @@ impl Game<'_> {
         self.key_pressed(KeyCode::Escape)
     }
 
-    /// The left stick as the move vector, while playing.
+    /// The left stick as the move vector, while playing. Controllers off leave the touch
+    /// controls' stick, which plays through the pad.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
         let settings = &self.settings.controller;
-        if !settings.enabled || self.pad_in_menu() || !self.pad_focused() {
+        if self.pad_in_menu() || !self.pad_focused() {
             return None;
         }
-        gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
+        let stick = if settings.enabled {
+            self.pad.state.left
+        } else {
+            self.pad.touch.left
+        };
+        gamepad::move_vector(stick, settings.move_deadzone)
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).
