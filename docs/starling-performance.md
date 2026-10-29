@@ -130,6 +130,9 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
+- `exp/sky-after-terrain` (02:25 UTC, CI disparada): o céu, sol, lua, estrelas e disco escuro desenham
+  depois do terreno opaco, no plano distante com teste de profundidade; o shader do céu roda só nos
+  pixels sem terreno. Conferido visualmente no desktop (dia, pôr do sol, noite, sol, lua).
 - `exp/pass-timing` (02:17 UTC, CI disparada com a chave de release): o overlay Stats mostra o tempo
   de GPU de cada pass do quadro (world, post, hand, effects, hud) e a contagem de quads desenhados;
   o `latest.log` recebe a mesma linha a cada 30 quadros medidos. É a ferramenta de medida dos
@@ -149,6 +152,12 @@ os números de GPU daqui não representam a Adreno.
    O que a leitura decide: se `hand + effects + hud` somarem mais de ~1,5 ms, o ramo
    `exp/one-pass-hud` é o próximo a instalar; se `world` a 25% ficar bem acima de 3 ms, a geometria
    (greedy/LOD/vértice menor) volta a valer.
+2. **`exp/sky-after-terrain`** — build da CI disparada 02:25 UTC. Mesma cena e configurações do
+   item 1 (o ramo inclui o overlay de passes). Comparar `gpu` total e a linha `gpu passes` (world)
+   com o item 1: a diferença é o custo do céu nos pixels que o terreno cobre. Conferir de relance
+   que céu, sol, lua, estrelas e o nascer/pôr do sol aparecem iguais (aqui no desktop apareceram).
+   Vale também uma cena olhando pro céu (muito céu visível) e uma olhando pro chão (nenhum): a
+   economia aparece na segunda.
 
 ### Entradas
 
@@ -229,3 +238,15 @@ os números de GPU daqui não representam a Adreno.
   pré-existente no `android`), 401 testes Python OK; os testes unitários do crate rodam. Conferido no
   desktop com lavapipe que a linha aparece e os números fazem sentido (world 82 ms, hand 7, hud 1,8 —
   tempos de software, sem valor). CI: `android.yml` com `release_key=true` disparada 02:17 UTC.
+- 02:25 UTC: **`exp/sky-after-terrain` pronto e enviado** (commit `f613a4ce`, em cima de
+  `exp/pass-timing`). Mudança: pipelines "Sky" e "Dark disc" com teste de profundidade
+  (`GreaterEqual`, sem escrita); `vs_stars` e um novo `vs_sky_entity` (corpos celestes e céu do End)
+  forçam `clip.z = 0` (plano distante no reverse-Z); o bloco do céu sai de antes dos draws das seções
+  pra depois deles (antes das entidades), nos dois caminhos (flat e indireto, com e sem culling). O
+  panorama do título e o céu de um shader pack nativo (sem teste de profundidade) ficam onde estavam.
+  Validado: build, `cargo fmt`, testes `gfx::tests` (18, inclui a validação de todos os WGSL) e
+  `stats_overlay`; capturas no lavapipe de dia, pôr do sol (faixa alaranjada atrás das colinas), noite
+  (estrelas só onde não há terreno), sol (disco + brilho) e lua. CI disparada 02:25 UTC.
+  Hipótese do ganho: 0,3–0,8 ms a 100% numa cena com metade da tela coberta por terreno; zero numa
+  cena só de céu. Risco: shader packs do formato `shaders/` (`pack_draws_sky`) não mudam; os packs
+  nativos do Horizon continuam desenhando o céu antes.
