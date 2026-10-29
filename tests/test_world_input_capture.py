@@ -60,8 +60,10 @@ class WorldInputCaptureTests(unittest.TestCase):
 use std::cell::Cell;
 #[derive(Clone, Copy, PartialEq)]
 enum Screen { Playing, Paused, Inventory, Chat }
-enum CursorGrabMode { Locked, Confined, None }
 mod winit {
+    pub mod window {
+        pub enum CursorGrabMode { Locked, Confined, None }
+    }
     pub mod dpi {
         #[derive(Clone, Copy)]
         pub struct PhysicalPosition<T> { pub x: T, pub y: T }
@@ -73,6 +75,7 @@ mod winit {
     }
 }
 use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::window::CursorGrabMode;
 struct HudBatch { scale: f32 }
 impl HudBatch { fn new(_size: [u32; 2]) -> Self { Self { scale: 2.0 } } }
 struct Config { width: u32, height: u32 }
