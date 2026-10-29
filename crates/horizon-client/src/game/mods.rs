@@ -127,10 +127,6 @@ pub(super) struct ModsState {
     pub(super) recipes: Option<(String, Arc<dyn horizon_mods::RecipeCatalog>)>,
     /// Horizon's capability `recipes`'s tables, made once a mod reads them.
     pub(super) horizon_recipes: Option<Arc<horizon_mods::Recipes>>,
-    /// The recipe book's known displays, and the book's version they are of.
-    pub(super) known_recipes: (Option<u64>, Arc<[i32]>),
-    /// Horizon's capability `ui`'s item panel beside container screens.
-    pub(super) browser: super::mod_browser::Browser,
     /// Extras that are official mods now, being installed.
     pub(super) moved: super::moved_extras::MovedState,
     /// Playing at the last frame, for `mod_input_frame`.
@@ -484,6 +480,10 @@ impl Game<'_> {
         let dir = Self::options_path().with_file_name(mod_list::DIR);
         let dev = self.mods.dev.clone();
         let enabled = self.settings.mods.enabled.clone();
+        // A native mod of the same id (one built into this game) takes over.
+        let mut native = Vec::new();
+        self.native_mods(&mut native);
+        let native: Vec<String> = native.into_iter().map(|n| n.id).collect();
         let cache = horizon_client::logging::cache_dir().join("compiled-mods");
         let runs = self.mod_runs();
         let load = move || {
@@ -496,7 +496,10 @@ impl Game<'_> {
                 .filter_map(|p| horizon_mods::Package::read(p).ok())
                 .map(|p| p.manifest.id)
                 .collect();
-            let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
+            let on = |id: &str| {
+                (enabled.contains(id) || dev_ids.iter().any(|d| d == id))
+                    && !native.iter().any(|n| n == id)
+            };
             Mods::load_cached_for(runs, &paths, on, vanilla_command, Some(&cache))
         };
         // A server's game has no frames to put them in place in: its server mods start here,
@@ -670,6 +673,7 @@ impl Game<'_> {
                         problem,
                         dev: false,
                         has_settings: false,
+                        native: None,
                     };
                 };
                 // What it may do first: the row cuts long descriptions.
@@ -688,9 +692,11 @@ impl Game<'_> {
                     problem,
                     dev: dev.contains(&e.path),
                     has_settings: e.has_ui_settings(),
+                    native: None,
                 }
             })
             .collect();
+        self.list_native_mods();
     }
     /// The chat's tree after the running mods changed.
     fn sync_mod_commands(&mut self) {
@@ -721,8 +727,8 @@ impl Game<'_> {
                 .then(|| tree.with_mod_commands(names))
         });
     }
-    /// `/command` typed in chat on a server: true when a mod owns it and the server has no
-    /// command of that name.
+    /// `/command` typed in chat on a server: true when a client mod (native or WebAssembly) owns
+    /// it and the server has no command of that name.
     pub(super) fn remote_mod_command(&mut self, command: &str) -> bool {
         let name = command.split_whitespace().next().unwrap_or_default();
         let server_has = self
@@ -730,7 +736,7 @@ impl Game<'_> {
             .as_ref()
             .and_then(|r| r.commands.as_ref())
             .is_some_and(|tree| tree.find(name).is_some());
-        !server_has && self.mod_command(command)
+        !server_has && self.client_mod_command(command)
     }
     /// On a server, tells it the mods' payload channels (`minecraft:register`, NUL-separated),
     /// so its plugins send on them.
@@ -1473,8 +1479,7 @@ impl Game<'_> {
         if !self.mods.mods.wants_raycast() {
             return None;
         }
-        let eye = self.eye_position()?;
-        let dir = super::view_vector(self.yaw, self.pitch);
+        let (eye, dir) = self.aim()?;
         let reach = f64::from(horizon_mods::RAYCAST_MAX);
         let (pos, point, state) = match self.clip_ray(eye, dir, reach) {
             Some(hit) => (

@@ -52,6 +52,14 @@ pub fn open_uri(uri: &str) {
     if horizon_client::platform::open_link(uri).is_some() {
         return;
     }
+    // URLs need Windows' registered protocol handler, not Explorer's path
+    // handling. ShellExecute also preserves the URL as one Unicode value,
+    // without interpolating its query string into a command interpreter.
+    #[cfg(windows)]
+    if let Err(error) = open::that_detached(uri) {
+        log::warn!("Horizon: could not open URI {uri}: {error}");
+    }
+    #[cfg(not(windows))]
     open_folder(Path::new(uri));
 }
 /// The resource root to load from, given the vanilla root, the selection and

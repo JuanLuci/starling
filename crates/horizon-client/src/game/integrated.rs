@@ -31,7 +31,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering},
-        mpsc::{Receiver, Sender, TryRecvError, channel, sync_channel},
+        mpsc::{Receiver, Sender, channel, sync_channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -174,8 +174,10 @@ enum Publish {
 /// of the connection and the world's name, or why it failed.
 type Ready = std::result::Result<(Pipe, String), String>;
 
-/// A server thread opening its world (`open_integrated`), joined by `poll_integrated` once it
-/// says it can be.
+/// An integrated server loading its world: the window keeps drawing its
+/// loading screen and joins once the server is ready, as vanilla's client
+/// does while its server prepares (`Minecraft.doWorldLoad`), instead of
+/// waiting for it frozen for the whole load.
 pub(super) struct Starting {
     handle: Integrated,
     ready: Receiver<Ready>,
@@ -210,8 +212,8 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|s| s.published().is_some())
     }
-    /// `Minecraft.doWorldLoad`: start the server thread on the world, wait
-    /// until it can be joined, then join it through memory.
+    /// `Minecraft.doWorldLoad`: start the server thread on the world; the
+    /// window joins it through memory once it is ready (`poll_integrated_start`).
     pub(super) fn open_integrated(
         &mut self,
         folder: &str,
@@ -293,24 +295,40 @@ impl Game<'_> {
         };
         // The window goes on drawing "Opening world" and taking input while the server loads the
         // world (seconds on a phone, whose system ends an app that keeps a touch unanswered for
-        // five): `poll_integrated` joins it once it can be.
+        // five): `poll_integrated_start` joins it once it can be.
         self.integrated_starting = Some(Starting {
             handle,
             ready,
             player,
         });
+        // Harnesses, control scripts and runs without a window go on with the world open.
+        if self.window.is_none() || super::synchronous_startup(&self.options) {
+            while self.integrated_starting.is_some() {
+                self.poll_integrated_start()?;
+                if self.integrated_starting.is_some() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
         Ok(())
     }
 
-    /// Joins the world `open_integrated` started once its server says it can be.
-    pub(super) fn poll_integrated(&mut self) -> Result<()> {
+    /// The starting server's answer, polled each frame: joined once it is ready.
+    pub(super) fn poll_integrated_start(&mut self) -> Result<()> {
         let Some(starting) = &self.integrated_starting else {
             return Ok(());
         };
-        let ready = match starting.ready.try_recv() {
-            Ok(ready) => ready,
-            Err(TryRecvError::Empty) => return Ok(()),
-            Err(TryRecvError::Disconnected) => Err("the integrated server stopped".to_owned()),
+        let (pipe, world_name) = match starting.ready.try_recv() {
+            Ok(Ok(ready)) => ready,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
+            Ok(Err(e)) => {
+                self.integrated_starting = None;
+                return Err(e.into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.integrated_starting = None;
+                return Err("the integrated server stopped".into());
+            }
         };
         let Some(Starting {
             mut handle, player, ..
@@ -318,7 +336,6 @@ impl Game<'_> {
         else {
             return Ok(());
         };
-        let (pipe, world_name) = ready?;
         handle.world_name = world_name;
         self.connect_local(pipe, &player)?;
         self.integrated = Some(handle);
@@ -474,6 +491,8 @@ impl Game<'_> {
             self.lan = Some(host);
         }
         std::thread::sleep(Duration::from_millis(100));
+        // ServerPlayer.disconnect: nobody is left in a bed.
+        self.free_player_beds()?;
         self.save_game()?;
         self.lan_close(false);
         self.save.flush()?;

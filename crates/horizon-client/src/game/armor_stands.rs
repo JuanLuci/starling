@@ -2,7 +2,7 @@
 //! falling, `interactAt` equipment swaps by clicked height, the two-hit break
 //! of `hurtServer` (creative breaks at once), and `ArmorStandRenderer` with
 //! the default pose, the hit wobble and humanoid armor layers.
-use super::{Game, view_vector};
+use super::Game;
 use horizon_client::{
     custom_armor::{ArmorAtlas, layer_look},
     entities::ArmorStand,
@@ -16,6 +16,18 @@ use horizon_core::{
     random::RandomSource,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
+/// `EquipmentLayerRenderer.getColorForLayer`: a dyeable layer (one with a
+/// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
+/// colour (RGB); any other layer none, dyed or not: `layer_look` draws it white,
+/// and picks a pack's custom armour by this colour.
+fn layer_rgb(undyed: Option<u32>, stack: Option<&ItemStack>) -> Option<u32> {
+    let dyed = stack
+        .and_then(|s| s.data())
+        .and_then(|d| d.dyed_color)
+        .map(|c| c as u32 & 0xFF_FFFF);
+    undyed.map(|undyed| dyed.unwrap_or(undyed))
+}
 
 /// Armor stand models and the humanoid layers of every equipment asset.
 pub(super) struct ArmorStandAssets {
@@ -105,12 +117,11 @@ impl Game<'_> {
         &self,
         armor: &[Option<ItemStack>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
-        self.armor_layers(armor.each_ref().map(|s| {
-            s.as_ref().map(|s| {
-                let asset = self.worn_asset(s);
-                (asset, Some(s), s.data().and_then(|d| d.dyed_color))
-            })
-        }))
+        self.armor_layers(
+            armor
+                .each_ref()
+                .map(|s| s.as_ref().map(|s| (self.worn_asset(s), Some(s)))),
+        )
     }
     /// The equipment asset `stack` draws when worn: its own `equippable`'s (a server's custom
     /// armour), else its item's.
@@ -126,24 +137,30 @@ impl Game<'_> {
     /// (`extra.head` .. `extra.feet`).
     pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<(&Part, [f32; 4], u32)> {
         let e = &m.extra;
-        let worn = [&e.head, &e.chest, &e.legs, &e.feet];
-        self.armor_layers(std::array::from_fn(|i| {
-            worn[i].as_deref().map(|item| {
-                let asset = e.armor_assets[i].as_deref().map(str::to_owned).or_else(|| {
+        // The stacks (a server's) carry the dye, the trim and their own equipment asset.
+        let worn = [
+            (&e.head, e.armor[0].as_ref()),
+            (&e.chest, e.armor[1].as_ref()),
+            (&e.legs, e.armor[2].as_ref()),
+            (&e.feet, e.armor[3].as_ref()),
+        ];
+        self.armor_layers(worn.map(|(item, stack)| {
+            item.as_deref().map(|item| {
+                let asset = stack.and_then(ItemStack::equippable_asset).or_else(|| {
                     self.res
                         .items()
                         .get(item)
                         .and_then(|i| i.equip_asset.clone())
                 });
-                (asset, None, e.armor_dyes[i])
+                (asset, stack)
             })
         }))
     }
-    /// The layers of the armour `worn` (each piece's equipment asset, its stack when known,
-    /// for trims, and its dye colour), head to feet.
+    /// The layers of the armour `worn` (each piece's equipment asset, and its stack when known,
+    /// for its dye colour and trim), head to feet.
     fn armor_layers(
         &self,
-        worn: [Option<(Option<String>, Option<&ItemStack>, Option<i32>)>; 4],
+        worn: [Option<(Option<String>, Option<&ItemStack>)>; 4],
     ) -> Vec<(&Part, [f32; 4], u32)> {
         let assets = &self.armor_stand_assets;
         // The shaders' GameTime: the part of the day gone.
@@ -153,7 +170,7 @@ impl Game<'_> {
             .into_iter()
             .zip(["helmet", "chestplate", "leggings", "boots"])
         {
-            let Some((Some(asset), stack, dye)) = item else {
+            let Some((Some(asset), stack)) = item else {
                 continue;
             };
             let kind = if layer == "leggings" {
@@ -171,12 +188,9 @@ impl Game<'_> {
             ) else {
                 continue;
             };
-            // EquipmentLayerRenderer.getColorForLayer: a dyeable layer in its dye colour, else
-            // as undyed.
-            let rgb = undyed.map(|c| dye.map_or(c, |d| d as u32 & 0xFF_FFFF));
             let (uv, color) = layer_look(
                 assets.atlases.get(texture),
-                rgb,
+                layer_rgb(*undyed, stack),
                 [r.u0, r.v0, r.u1, r.v1],
                 day,
             );
@@ -205,6 +219,7 @@ impl Game<'_> {
             .armor
             .iter()
             .chain(guests.flat_map(|g| g.armor.iter()))
+            .chain(self.mobs.iter().flat_map(|m| m.extra.armor.iter()))
             .zip(
                 ["helmet", "chestplate", "leggings", "boots"]
                     .into_iter()
@@ -353,8 +368,7 @@ impl Game<'_> {
     }
     /// The armor stand under the crosshair, its distance and the hit point.
     pub(super) fn armor_stand_hit(&self) -> Option<(usize, f64, [f64; 3])> {
-        let eye = self.eye_position()?;
-        let dir = view_vector(self.yaw, self.pitch);
+        let (eye, dir) = self.aim()?;
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, a) in self.armor_stands.iter().enumerate() {
@@ -490,6 +504,25 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
+        // The stand's box and id, before the hit may remove it.
+        let (area, id) = (self.armor_stands[i].bounds(), self.armor_stands[i].id);
+        let (_, _, _, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let hurt = self.punch_armor_stand(i);
+        if hurt {
+            self.attack_effects(
+                area,
+                Some(id as i32),
+                super::mace::Spared::Stand(id),
+                magic.then_some(id as i32),
+            );
+            self.swing_arm();
+        }
+        hurt
+    }
+    /// `ArmorStand.hurtServer` for a player's attack (also a sweep's): a
+    /// creative player breaks it, otherwise the first hit wobbles it and a
+    /// second within five ticks breaks it.
+    pub(super) fn punch_armor_stand(&mut self, i: usize) -> bool {
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
         let at = [at.x, at.y, at.z];
@@ -690,8 +723,7 @@ impl Game<'_> {
                 else {
                     continue;
                 };
-                let dye = stack.data().and_then(|d| d.dyed_color);
-                let rgb = undyed.map(|c| dye.map_or(c, |d| d as u32 & 0xFF_FFFF));
+                let rgb = layer_rgb(*undyed, Some(stack));
                 let (uv, color) = layer_look(assets.atlases.get(texture.as_str()), rgb, uv, day);
                 // ArmorStandRenderer's HumanoidArmorLayer: the armour glint
                 // when `stack.hasFoil()`, as on a living entity.
@@ -982,5 +1014,26 @@ mod burn_drop_tests {
         let (pos, drops) = burnt_armor_stand_equipment(stand);
         assert_eq!(pos, [-1, 5, 0]);
         assert_eq!(drops, vec![kept]);
+    }
+}
+#[cfg(test)]
+mod layer_color_tests {
+    use super::*;
+    #[test]
+    fn a_dyed_stack_overrides_the_undyed_leather_colour() {
+        let layer_color = |undyed: Option<u32>, stack: Option<&ItemStack>| {
+            layer_look(None, layer_rgb(undyed, stack), [0.0; 4], 0.0).1
+        };
+        let mut dyed = ItemStack::new("minecraft:leather_helmet", 1);
+        dyed.data_mut().dyed_color = Some(0x1E_90FF);
+        // Dyed blue, R and B swapped into the renderer's order, opaque.
+        assert_eq!(layer_color(Some(0xA06540), Some(&dyed)), 0xFFFF_901E);
+        // An undyed stack keeps the asset's brown.
+        let plain = ItemStack::new("minecraft:leather_helmet", 1);
+        assert_eq!(layer_color(Some(0xA06540), Some(&plain)), 0xFF40_65A0);
+        // No dye and no undyed colour: white.
+        assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
+        // A layer that isn't dyeable stays white even on a dyed stack.
+        assert_eq!(layer_color(None, Some(&dyed)), 0xFFFF_FFFF);
     }
 }

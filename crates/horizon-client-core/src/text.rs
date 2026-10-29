@@ -52,12 +52,14 @@ pub enum ClickEvent {
     /// plugin's [Accept], Paper's click callbacks).
     RunCommand(String),
     CopyToClipboard(String),
-    /// `show_dialog`: a `minecraft:dialog` id, or the dialog itself as JSON.
-    ShowDialog(String),
-    /// `custom`: back to the server (ServerboundCustomClickActionPacket), its payload as JSON.
+    /// `ClickEvent.ShowDialog`: a `minecraft:dialog` registry id, or the
+    /// dialog itself as the component carried it.
+    ShowDialog(horizon_world::nbt::Tag),
+    /// `ClickEvent.Custom`: back to the server (ServerboundCustomClickActionPacket), with
+    /// its payload as the component carried it.
     Custom {
         id: String,
-        payload: Option<String>,
+        payload: Option<horizon_world::nbt::Tag>,
     },
     /// A local file to open with the system handler.
     /// Only allow this in locally constructed messages, never server/LAN text.
@@ -570,18 +572,16 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
             ClickEvent::RunCommand(command) => {
                 json!({ "action": "run_command", "command": command })
             }
+            // ClickEvent.ShowDialog.CODEC: the dialog the server sent it with.
+            ClickEvent::ShowDialog(dialog) => json!({
+                "action": "show_dialog",
+                "dialog": crate::scoreboard::tag_to_json(dialog),
+            }),
             ClickEvent::OpenFile(path) => json!({ "action": "open_file", "path": path }),
-            ClickEvent::ShowDialog(dialog) => {
-                let dialog = serde_json::from_str::<serde_json::Value>(dialog)
-                    .ok()
-                    .filter(serde_json::Value::is_object)
-                    .unwrap_or_else(|| dialog.as_str().into());
-                json!({ "action": "show_dialog", "dialog": dialog })
-            }
             ClickEvent::Custom { id, payload } => {
                 let mut event = json!({ "action": "custom", "id": id });
-                if let Some(p) = payload.as_ref().and_then(|p| serde_json::from_str(p).ok()) {
-                    event["payload"] = p;
+                if let Some(p) = payload {
+                    event["payload"] = crate::scoreboard::tag_to_json(p);
                 }
                 event
             }

@@ -202,12 +202,15 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
             Some("suggest_command") => text("command").map(C::SuggestCommand),
             Some("run_command") => text("command").map(C::RunCommand),
             Some("copy_to_clipboard") => text("value").map(C::CopyToClipboard),
+            // ClickEvent.ShowDialog.CODEC: a `minecraft:dialog` registry id or
+            // the dialog itself; the server may send it (isAllowedFromServer).
             Some("show_dialog") => e
                 .get("dialog")
-                .map(|d| C::ShowDialog(d.as_str().map_or_else(|| d.to_string(), str::to_owned))),
+                .map(|dialog| C::ShowDialog(crate::scoreboard::json_to_tag(dialog))),
+            // ClickEvent.Custom.CODEC: an id and an optional payload, sent back as it came.
             Some("custom") => text("id").map(|id| C::Custom {
                 id,
-                payload: e.get("payload").map(Value::to_string),
+                payload: e.get("payload").map(crate::scoreboard::json_to_tag),
             }),
             _ => None,
         };
