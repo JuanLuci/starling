@@ -27,6 +27,10 @@ pub struct Hooks {
     pub library_dir: fn() -> Option<PathBuf>,
     /// A file the app carries (the APK's `assets/`), whole; None when it has none of the name.
     pub asset: fn(&str) -> Option<Vec<u8>>,
+    /// Keep the game running in the foreground while it waits for `reason` (`line` says so in
+    /// the system's notification), or let that reason go: a phone may cut a background app's
+    /// internet, or end it, while the player signs in in the browser.
+    pub keep_working: fn(&str, &str, bool),
 }
 
 static HOOKS: OnceLock<Hooks> = OnceLock::new();
@@ -60,6 +64,13 @@ pub fn clipboard_get() -> Option<Option<String>> {
 /// The platform's clipboard: None without one registered.
 pub fn clipboard_set(text: &str) -> Option<bool> {
     HOOKS.get().map(|h| (h.clipboard_set)(text))
+}
+
+/// Holds the game in the foreground for `reason` (or lets it go); nothing without a platform.
+pub fn keep_working(reason: &str, line: &str, on: bool) {
+    if let Some(h) = HOOKS.get() {
+        (h.keep_working)(reason, line, on);
+    }
 }
 
 /// The platform's browser on `url`: None without one registered (the desktop shows the link).

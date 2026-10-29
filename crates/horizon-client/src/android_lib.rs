@@ -237,6 +237,25 @@ fn dns_servers() -> Vec<std::net::SocketAddr> {
     .unwrap_or_default()
 }
 
+/// The foreground service for `reason`, by StarlingActivity.keepWorking (WorkService.java).
+fn keep_working(reason: &str, line: &str, on: bool) {
+    with_activity(|env, activity| {
+        let reason = env.new_string(reason)?;
+        let line = env.new_string(line)?;
+        env.call_method(
+            activity,
+            "keepWorking",
+            "(Ljava/lang/String;Ljava/lang/String;Z)V",
+            &[
+                jni::objects::JValue::Object(&reason),
+                jni::objects::JValue::Object(&line),
+                jni::objects::JValue::Bool(u8::from(on)),
+            ],
+        )
+        .map(drop)
+    });
+}
+
 /// The system's browser on an https:// page, by StarlingActivity.openLink.
 fn open_link(url: &str) -> bool {
     with_activity(|env, activity| {
@@ -929,6 +948,7 @@ fn android_main(app: AndroidApp) {
         open: open_secret,
         library_dir,
         asset,
+        keep_working,
     });
     horizon_protocol::set_name_servers(dns_servers);
     logging::init(&home, "Render thread");

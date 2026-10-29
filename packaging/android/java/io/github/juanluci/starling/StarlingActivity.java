@@ -354,6 +354,15 @@ public final class StarlingActivity extends NativeActivity {
         return false;
     }
 
+    /**
+     * Keeps the process in the foreground (WorkService) while the game waits for `reason`
+     * (the sign-in in the browser, a download), with `line` in its notification; `on` false lets
+     * that reason go.
+     */
+    public void keepWorking(String reason, String line, boolean on) {
+        WorkService.hold(this, reason, line, on);
+    }
+
     /** The system's browser on an https:// page (the Microsoft sign-in); false where none can. */
     public boolean openLink(String url) {
         if (!url.startsWith("https://")) {

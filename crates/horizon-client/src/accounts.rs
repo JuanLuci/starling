@@ -251,6 +251,22 @@ fn keep_renewing() {
     });
 }
 
+/// The platform keeps the game in the foreground while this lives (Android's WorkService): the
+/// sign-in waits on the browser, a download on the network, and a phone may cut a background
+/// app's internet or end it meanwhile.
+struct KeepWorking(&'static str);
+impl KeepWorking {
+    fn new(reason: &'static str, line: &str) -> Self {
+        crate::platform::keep_working(reason, line, true);
+        Self(reason)
+    }
+}
+impl Drop for KeepWorking {
+    fn drop(&mut self) {
+        crate::platform::keep_working(self.0, "", false);
+    }
+}
+
 /// Start signing in: the device code arrives in [`state`] as [`State::Code`]; when the player
 /// is done there, the account is kept and the game plays as it.
 pub fn sign_in() {
@@ -263,7 +279,10 @@ pub fn sign_in() {
         s.state = State::Starting;
     }
     let sign_in = SignIn::start(Endpoints::live(), store(), dir());
+    // Asked for now, while the game is in front: Android refuses it from the background.
+    let working = KeepWorking::new("sign-in", "Waiting for your Microsoft sign-in");
     std::thread::spawn(move || {
+        let _working = working;
         let result = loop {
             if cancel.load(Ordering::Relaxed) {
                 sign_in.cancel();
@@ -334,7 +353,9 @@ pub fn download_files() {
         s.files = Files::Checking;
         s.files_cancel = Some(cancel.clone());
     }
+    let working = KeepWorking::new("files", "Downloading the game files");
     std::thread::spawn(move || {
+        let _working = working;
         let result = (|| {
             let ep = Endpoints::live();
             let (_, secrets) = starling_account::session(&ep, store().as_ref(), &dir())?

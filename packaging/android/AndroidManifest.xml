@@ -17,6 +17,11 @@
     <!-- The update prompt hands the release it downloaded to Android's installer, which asks the
          player first. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- WorkService: the game stays in the foreground while the player signs in in the browser
+         or the game files download, which many phones would otherwise cut off the internet. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application
@@ -90,6 +95,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name="io.github.juanluci.starling.WorkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- The downloaded update, for the installer only (UpdateProvider). -->
         <provider
             android:name="io.github.juanluci.starling.UpdateProvider"
