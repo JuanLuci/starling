@@ -896,6 +896,7 @@ mod tests {
             imports: Default::default(),
             audio: None,
             sound_registry: None,
+            suspended: false,
         }
     }
 
