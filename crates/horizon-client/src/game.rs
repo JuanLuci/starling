@@ -129,6 +129,8 @@ mod moved_extras;
 mod moving_pistons;
 mod music;
 mod names;
+#[cfg(target_os = "android")]
+mod native_builds;
 mod native_hooks;
 mod native_panel;
 mod native_panel_recipes;
@@ -1883,6 +1885,8 @@ struct Game<'a> {
     files_offer: files_offer::FilesOffer,
     #[cfg(target_os = "android")]
     update_offer: update_offer::UpdateOffer,
+    #[cfg(target_os = "android")]
+    native_builds: native_builds::NativeBuilds,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
@@ -6146,6 +6150,7 @@ impl Game<'_> {
         {
             self.draw_files_offer(&mut batch);
             self.draw_update_offer(&mut batch);
+            self.draw_native_builds(&mut batch);
         }
         // Over the keyboard's lift: the note stays at the top.
         self.draw_imports(&mut batch);
@@ -14037,6 +14042,7 @@ impl ApplicationHandler for Game<'_> {
         {
             self.poll_files_offer();
             self.poll_update_offer();
+            self.poll_native_builds();
         }
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
@@ -14448,6 +14454,8 @@ impl<'a> Game<'a> {
             files_offer: Default::default(),
             #[cfg(target_os = "android")]
             update_offer: Default::default(),
+            #[cfg(target_os = "android")]
+            native_builds: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             recipe_tables: Default::default(),
