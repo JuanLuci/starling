@@ -125,6 +125,7 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
 mod animate;
 mod arena;
 mod cull;
+pub(crate) mod depth_reset;
 mod end_sky;
 mod flat;
 mod hdr;
@@ -610,6 +611,9 @@ pub struct Renderer {
     /// The vanilla frame's passes timed on the GPU (`pass_timing`), while no shader pack's
     /// timer runs: world, post, hand, effects, HUD.
     frame_timing: Option<pack_timing::PassTiming>,
+    /// Writes the far plane (0) over the screen's depth: the first-person hand then draws in
+    /// the world's own pass (`draw_over_world`), as it did in a pass of its own that cleared it.
+    depth_reset_far: wgpu::RenderPipeline,
     /// The entity vertices Horizon draws itself while a shader pack draws the others.
     pack_entity_rest: Vec<Vertex>,
     /// Set 1 of the cloud pipeline, for a shader pack's `gbuffers_clouds`.
@@ -2508,7 +2512,14 @@ impl Renderer {
                     cull_mode: None,
                     ..Default::default()
                 },
-                depth_stencil: None,
+                // The pass carries the screen's depth (`draw_over_world`).
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &screen_shader,
@@ -2663,6 +2674,12 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
+        let depth_reset_far = depth_reset::pipeline(
+            &device,
+            config.format.remove_srgb_suffix(),
+            0.0,
+            "Hand depth reset",
+        );
         Ok(Self {
             instance,
             adapter,
@@ -2799,6 +2816,7 @@ impl Renderer {
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
             frame_timing: None,
+            depth_reset_far,
             pack_entity_rest: Vec::new(),
             cloud_bindings,
             pack_weather: None,
@@ -2826,6 +2844,43 @@ impl Renderer {
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
+    /// What draws over the world, in the pass that ends on the screen (`over_world_in_pass`):
+    /// the first-person hand after a depth reset to the far plane, the screen effects, then the
+    /// whole HUD. `hand_base`: the hand's first vertex in the entity buffer; `size`: the
+    /// screen's.
+    fn draw_over_world(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &Frame,
+        hand_quads: u32,
+        hand_base: u32,
+        size: [u32; 2],
+    ) {
+        if hand_quads > 0 {
+            pass.set_pipeline(&self.depth_reset_far);
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&self.entity_pipeline);
+            pass.set_bind_group(0, &self.hand_group, &[]);
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+            pass.draw_indexed(0..hand_quads * 6, (hand_base * 4) as i32, 0..1);
+        }
+        if !frame.screen.is_empty() {
+            pass.set_bind_group(0, &self.entity_group, &[]);
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
+            for (i, quad) in frame.screen.iter().enumerate() {
+                let blend = match quad.blend {
+                    crate::screen_effects::Blend::Alpha => 0,
+                    crate::screen_effects::Blend::Vignette => 4,
+                };
+                pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
+                pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+            }
+        }
+        self.hud
+            .draw_in(pass, frame.hud, size, 0..frame.hud.vertices.len() as u32);
+    }
     fn draw_outline(&self, pass: &mut wgpu::RenderPass<'_>, edges: u32, high_contrast: bool) {
         pass.set_vertex_buffer(0, self.outline.slice(..));
         if high_contrast {
@@ -4758,6 +4813,21 @@ impl Renderer {
             [self.config.width, self.config.height],
             pack_reads_world,
         );
+        let menu_blur = frame
+            .menu_blur
+            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
+        // What draws over the world (the hand, the screen effects, the HUD) draws in the pass
+        // that ends on the screen (the world's own, or the resolution-scale copy's), after
+        // depth resets, rather than in a pass each: a tiled GPU then loads and stores the screen
+        // once. Not where something between them needs a pass of its own (a shader pack's
+        // post, HDR's copy of the world, entity outlines, the menu blur, the debug crosshair),
+        // nor on the title screen.
+        let over_world_in_pass = !frame.title
+            && !pack_reads_world
+            && self.hdr.is_none()
+            && menu_blur.is_none()
+            && !self.entity_outline.active()
+            && frame.debug_crosshair.is_empty();
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
@@ -5180,6 +5250,34 @@ impl Renderer {
                     0..1,
                 );
             }
+            if over_world_in_pass && scaled.is_none() {
+                self.draw_over_world(
+                    &mut pass,
+                    frame,
+                    hand_quads,
+                    world_quads + additive_quads,
+                    [self.config.width, self.config.height],
+                );
+            }
+        }
+        if over_world_in_pass
+            && scaled.is_some()
+            && let Some(group) = self.world_post.group()
+        {
+            let mut pass = self.world_post.begin_finish(
+                &mut encoder,
+                &view_target,
+                &self.depth,
+                group,
+                self.frame_timing.as_mut().and_then(|t| t.writes("post")),
+            );
+            self.draw_over_world(
+                &mut pass,
+                frame,
+                hand_quads,
+                world_quads + additive_quads,
+                [self.config.width, self.config.height],
+            );
         }
         if let Some((color, depth)) = &scaled
             && pack_post
@@ -5285,17 +5383,18 @@ impl Renderer {
                 size,
                 native.timing.as_mut(),
             );
-        } else if scaled.is_some() {
+        } else if scaled.is_some() && !over_world_in_pass {
             self.world_post.finish(
                 &mut encoder,
                 &view_target,
+                &self.depth,
                 self.frame_timing.as_mut().and_then(|t| t.writes("post")),
             );
         }
         if let Some(hdr) = &self.hdr {
             hdr.keep_world(&mut encoder);
         }
-        if hand_quads > 0 && !pack_draws_hand {
+        if hand_quads > 0 && !pack_draws_hand && !over_world_in_pass {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &view_target,
                 resolve_target: None,
@@ -5336,7 +5435,7 @@ impl Renderer {
             &self.entity_group,
             &self.indices,
         );
-        if !frame.screen.is_empty() {
+        if !frame.screen.is_empty() && !over_world_in_pass {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &view_target,
                 resolve_target: None,
@@ -5350,6 +5449,15 @@ impl Renderer {
                 label: Some("Screen effects"),
                 color_attachments: &attachments,
                 timestamp_writes: self.frame_timing.as_mut().and_then(|t| t.writes("effects")),
+                // The pipelines name the screen's depth; nothing here tests it.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 ..Default::default()
             });
             pass.set_bind_group(0, &self.entity_group, &[]);
@@ -5399,19 +5507,18 @@ impl Renderer {
             let first = debug_depth + debug_top;
             pass.draw(0..4, first..first + crosshair);
         }
-        let menu_blur = frame
-            .menu_blur
-            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
-        self.hud.draw_range(
-            &mut encoder,
-            &view_target,
-            &self.depth,
-            frame.hud,
-            [self.config.width, self.config.height],
-            0..blur_at,
-            self.frame_timing.as_mut(),
-        );
+        if !over_world_in_pass {
+            self.hud.draw_range(
+                &mut encoder,
+                &view_target,
+                &self.depth,
+                frame.hud,
+                [self.config.width, self.config.height],
+                0..blur_at,
+                self.frame_timing.as_mut(),
+            );
+        }
         if let Some(radius) = menu_blur {
             let format = self.config.format;
             let device = &self.device;
@@ -5427,15 +5534,17 @@ impl Renderer {
                     radius,
                 );
         }
-        self.hud.draw_range(
-            &mut encoder,
-            &view_target,
-            &self.depth,
-            frame.hud,
-            [self.config.width, self.config.height],
-            blur_at..frame.hud.vertices.len() as u32,
-            self.frame_timing.as_mut(),
-        );
+        if !over_world_in_pass {
+            self.hud.draw_range(
+                &mut encoder,
+                &view_target,
+                &self.depth,
+                frame.hud,
+                [self.config.width, self.config.height],
+                blur_at..frame.hud.vertices.len() as u32,
+                self.frame_timing.as_mut(),
+            );
+        }
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }

@@ -1342,6 +1342,8 @@ pub struct HudRenderer {
     depth_pipeline: wgpu::RenderPipeline,
     vignette_pipeline: wgpu::RenderPipeline,
     end_portal_pipeline: wgpu::RenderPipeline,
+    /// Writes depth 1 (a model preview's clear value) over its scissor rectangle.
+    depth_reset: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     buffer: wgpu::Buffer,
@@ -1464,10 +1466,16 @@ impl HudRenderer {
                     })],
                 },
                 primitive: Default::default(),
-                depth_stencil: depth.then_some(wgpu::DepthStencilState {
+                // Every HUD pipeline names the screen's depth, so that the HUD draws in the
+                // world's own pass (gfx.rs `draw_over_world`); only model previews test it.
+                depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    depth_write_enabled: Some(depth),
+                    depth_compare: Some(if depth {
+                        wgpu::CompareFunction::LessEqual
+                    } else {
+                        wgpu::CompareFunction::Always
+                    }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -1552,6 +1560,7 @@ impl HudRenderer {
             "fs_end_portal",
             false,
         );
+        let depth_reset = crate::gfx::depth_reset::pipeline(device, format, 1.0, "HUD depth reset");
         let capacity = 1 << 16;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("HUD vertices"),
@@ -1569,6 +1578,7 @@ impl HudRenderer {
             depth_pipeline,
             vignette_pipeline,
             end_portal_pipeline,
+            depth_reset,
             group,
             uniform,
             buffer,
@@ -1716,8 +1726,9 @@ impl HudRenderer {
             None,
         );
     }
-    /// Draw part of the prepared batch, preserving its blend/depth runs. `timing`: the frame's
-    /// pass timer, which stamps each pass drawn here as `hud`.
+    /// Draw part of the prepared batch in a pass of its own over `target` (with `depth`, the
+    /// screen's), preserving its blend/depth runs. `timing`: the frame's pass timer, which
+    /// stamps the pass as `hud`.
     pub fn draw_range(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1740,58 +1751,63 @@ impl HudRenderer {
                 store: wgpu::StoreOp::Store,
             },
         })];
-        let runs = batch.runs_in(vertices);
-        let mut at = 0;
-        while at < runs.len() {
-            let clip = match runs[at].1 {
-                Blend::Depth(clip) => Some(clip),
-                _ => None,
-            };
-            let end = if clip.is_some() {
-                at + 1
-            } else {
-                runs[at..]
-                    .iter()
-                    .position(|(_, b)| matches!(b, Blend::Depth(_)))
-                    .map_or(runs.len(), |n| at + n)
-            };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("HUD"),
-                color_attachments: &attachments,
-                timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("hud")),
-                depth_stencil_attachment: clip.map(|_| wgpu::RenderPassDepthStencilAttachment {
-                    view: depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("HUD"),
+            color_attachments: &attachments,
+            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("hud")),
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
                 }),
-                ..Default::default()
-            });
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.set_vertex_buffer(0, self.buffer.slice(..));
-            if let Some([x, y, w, h]) = clip {
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        self.draw_in(&mut pass, batch, size, vertices);
+    }
+    /// Draw part of the prepared batch into `pass`, over a `size` target with a Depth32Float
+    /// attachment (the world's pass, or `draw_range`'s), preserving its blend/depth runs: a
+    /// model preview resets the depth of its scissor rectangle (`depth_reset`) before it
+    /// draws, as the pass of its own it used to get cleared it.
+    pub fn draw_in(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        batch: &HudBatch,
+        size: [u32; 2],
+        vertices: std::ops::Range<u32>,
+    ) {
+        if vertices.is_empty() || size.contains(&0) {
+            return;
+        }
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.set_vertex_buffer(0, self.buffer.slice(..));
+        for (range, blend) in batch.runs_in(vertices) {
+            if let Blend::Depth([x, y, w, h]) = blend {
                 let (x, y) = (x.min(size[0]), y.min(size[1]));
                 let (w, h) = (w.min(size[0] - x), h.min(size[1] - y));
                 if w == 0 || h == 0 {
-                    at = end;
                     continue;
                 }
                 pass.set_scissor_rect(x, y, w, h);
+                pass.set_pipeline(&self.depth_reset);
+                pass.draw(0..3, 0..1);
+                pass.set_pipeline(&self.depth_pipeline);
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.draw(range, 0..1);
+                pass.set_scissor_rect(0, 0, size[0], size[1]);
+                continue;
             }
-            for (range, blend) in &runs[at..end] {
-                pass.set_pipeline(match blend {
-                    Blend::Alpha => &self.pipeline,
-                    Blend::Invert => &self.invert_pipeline,
-                    Blend::Additive => &self.additive_pipeline,
-                    Blend::Depth(_) => &self.depth_pipeline,
-                    Blend::Vignette => &self.vignette_pipeline,
-                    Blend::EndPortal => &self.end_portal_pipeline,
-                });
-                pass.draw(range.clone(), 0..1);
-            }
-            at = end;
+            pass.set_pipeline(match blend {
+                Blend::Alpha => &self.pipeline,
+                Blend::Invert => &self.invert_pipeline,
+                Blend::Additive => &self.additive_pipeline,
+                Blend::Depth(_) => &self.depth_pipeline,
+                Blend::Vignette => &self.vignette_pipeline,
+                Blend::EndPortal => &self.end_portal_pipeline,
+            });
+            pass.draw(range, 0..1);
         }
     }
 }

@@ -65,7 +65,15 @@ impl Post {
                     buffers: &[],
                 },
                 primitive: Default::default(),
-                depth_stencil: None,
+                // The pass carries the screen's depth: the hand and HUD draw after the copy
+                // in it (gfx.rs `draw_over_world`).
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -157,6 +165,11 @@ impl Post {
             .map(|t| (t.color.clone(), t.depth.clone()))
     }
 
+    /// The bindings of the world's own target, when it has one (`begin_finish`).
+    pub fn group(&self) -> Option<&wgpu::BindGroup> {
+        self.target.as_ref().map(|t| &t.group)
+    }
+
     /// The size of the world's own target, when it has one.
     pub fn size(&self) -> Option<[u32; 2]> {
         self.target.as_ref().map(|t| t.size)
@@ -180,15 +193,17 @@ impl Post {
         })
     }
 
-    /// Draw the scaled world onto `screen` (`timing`: the pass's timestamps, in a timed frame).
+    /// Draw the scaled world onto `screen` (`depth`: the screen's; `timing`: the pass's
+    /// timestamps, in a timed frame).
     pub fn finish(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
         timing: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let Some(target) = &self.target else { return };
-        self.finish_with(encoder, screen, &target.group, timing);
+        self.finish_with(encoder, screen, depth, &target.group, timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -196,9 +211,23 @@ impl Post {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
         group: &wgpu::BindGroup,
         timing: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        self.begin_finish(encoder, screen, depth, group, timing);
+    }
+
+    /// Begin the pass that draws the scaled world onto `screen`, and draw it: the pass goes on
+    /// for whatever draws over the world (the screen's `depth`, cleared to the far plane, 0).
+    pub fn begin_finish<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        group: &wgpu::BindGroup,
+        timing: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) -> wgpu::RenderPass<'e> {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: screen,
             resolve_target: None,
@@ -211,6 +240,14 @@ impl Post {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon post"),
             color_attachments: &attachments,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: timing,
             ..Default::default()
         });
@@ -221,5 +258,6 @@ impl Post {
         });
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
+        pass
     }
 }
