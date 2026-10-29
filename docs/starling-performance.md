@@ -130,6 +130,11 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
+(Estado em 02:58 UTC, quando o limite semanal do dono acabou. Cinco ramos `exp/` enviados, cada um
+com APK da CI (chave de release, `android.yml`, artifact `starling-apk`, some em 1 dia): pass-timing
+✓, sky-after-terrain ✓, one-pass-hud ✓, window-scale e frame-budget em build. Ramo
+`exp/greedy-stats` (estimativa de greedy meshing, só desktop) compilado mas sem medida ainda.)
+
 - `exp/frame-budget` (~02:55 UTC, CI disparada): engasgos: no Android os presets limitam as malhas
   enviadas por quadro (24 seções / 4 MiB) e um backlog atrasado de chunks ganha 4 ms por quadro
   em vez de ir todo num quadro (como o fork faz). Sem efeito fora do Android.
