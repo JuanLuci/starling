@@ -11,6 +11,7 @@ horizon-prepare makes from the player's own copy are made on the phone, or copie
     python3 packaging/android/build_apk.py --no-build      # package the library built last
     python3 packaging/android/build_apk.py --install       # and adb install it
     python3 packaging/android/build_apk.py --zip           # and a zip of it to send
+    python3 packaging/android/build_apk.py --dev           # Starling Dev, beside the release
 
 Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
 NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (javac, keytool,
@@ -30,6 +31,10 @@ HERE = Path(__file__).resolve().parent
 
 APPLICATION_ID = "io.github.juanluci.starling"
 LABEL = "Starling"
+# --dev: an app of its own, installed beside the release (which a build signed with another key
+# cannot install over), with its own folder (StarlingActivity.sharedFolder: StarlingDev) and its
+# own sign-in and game files.
+DEV_SUFFIX = ".dev"
 VERSION_NAME = "0.1.3"
 VERSION_CODE = 5
 MIN_SDK = 26  # AAudio (cpal)
@@ -179,11 +184,13 @@ def compile_java(build_tools, android_jar, out):
     return dex / "classes.dex"
 
 
-def link_resources(aapt2, android_jar, out, assets):
+def link_resources(aapt2, android_jar, out, assets, dev):
     """The manifest, the launcher icon, the themes and `assets`, compiled and linked into
     `out/base.apk`."""
     manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
-    manifest = manifest.replace("@APPLICATION_ID@", APPLICATION_ID).replace("@LABEL@", LABEL)
+    application_id = APPLICATION_ID + DEV_SUFFIX if dev else APPLICATION_ID
+    label = LABEL + " Dev" if dev else LABEL
+    manifest = manifest.replace("@APPLICATION_ID@", application_id).replace("@LABEL@", label)
     (out / "AndroidManifest.xml").write_text(manifest, encoding="utf-8")
     res = out / "res"
     shutil.rmtree(res, ignore_errors=True)
@@ -262,6 +269,10 @@ def main():
     parser.add_argument(
         "--keep-symbols", action="store_true", help="ship the library unstripped (backtraces)"
     )
+    parser.add_argument(
+        "--dev", action="store_true",
+        help=f"Starling Dev ({APPLICATION_ID}{DEV_SUFFIX}), installed beside the release",
+    )
     args = parser.parse_args()
 
     sdk = sdk_dir()
@@ -288,14 +299,14 @@ def main():
     else:
         run(ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, built)
 
-    link_resources(tool(build_tools, "aapt2"), android_jar, out, assets(out))
+    link_resources(tool(build_tools, "aapt2"), android_jar, out, assets(out), args.dev)
     dex = compile_java(build_tools, android_jar, out)
     libraries = build_launchers(ndk, out)
     libraries[library.name] = library
     add_code(out / "base.apk", libraries, dex, out / "unsigned.apk")
     aligned = out / "aligned.apk"
     run(tool(build_tools, "zipalign"), "-P", "16", "-f", "4", out / "unsigned.apk", aligned)
-    apk = out / f"starling-{VERSION_NAME}-{ABI}.apk"
+    apk = out / f"starling{'-dev' if args.dev else ''}-{VERSION_NAME}-{ABI}.apk"
     sign(build_tools, aligned, apk, out)
     print(apk)
     if args.zip:

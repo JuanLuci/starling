@@ -40,7 +40,7 @@
             android:name="io.github.juanluci.starling.LauncherActivity"
             android:exported="true"
             android:process=":launcher"
-            android:taskAffinity="io.github.juanluci.starling.launcher"
+            android:taskAffinity="@APPLICATION_ID@.launcher"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
