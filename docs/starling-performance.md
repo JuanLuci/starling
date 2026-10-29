@@ -85,6 +85,25 @@ spikes, not looked into yet.
 4. **The pixels**: whether the full-screen sky (`sky_along_ray` per pixel) or the water costs more
    than it should; a lower default resolution on phones (Bedrock does that).
 
+## What another Android fork does (Vasysik/horizon-android, MIT, read 2026-10-29)
+
+Nothing there cuts the terrain's GPU work (no LOD rings, no merged faces). What differs from Starling:
+
+- **Public APKs use the release profile** (opt-level 3, ThinLTO, codegen-units 1; commit 44998be5),
+  where Starling's releases use `fast`.
+- **No 60 fps cap on phones**: it has no `apply_mobile_defaults`, so a phone starts with Horizon's
+  defaults. With this and LTO, its "144 fps against 60-70" needs no faster renderer.
+- **Whole-frame resolution by the window's buffer** (`android/display.rs`, commit b302a6e9): the
+  native window's buffer itself is made smaller (presets 100/85/75/67/50/25, default 100), so Android's
+  compositor scales it to the screen in its hardware and the GPU draws everything smaller, the HUD too.
+  Starling's resolution scale renders the world smaller, then upscales it on the GPU to 3200x1440 and
+  draws the HUD at full size: part of the ~6 ms that do not follow the resolution may be that.
+- **Bounded per-frame work against spikes**: overdue chunk packets get at most 4 ms a frame on
+  Android instead of the whole burst at once (`game/remote.rs` `poll_remote`, commit 57723c4d), and
+  mesh uploads have a per-frame budget (2 to 8 ms, 8 MiB; `gfx/upload_budget.rs`, commit 4f9f4f8e).
+- An experimental OpenGL ES backend for old phones (compatibility, not speed); no ADPF and no
+  `ANativeWindow_setFrameRate`.
+
 ## How to try a change on the phone
 
 - **A test APK that installs over the release** (keeps the phone's data): push a branch, then
