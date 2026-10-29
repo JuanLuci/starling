@@ -130,6 +130,9 @@ os números de GPU daqui não representam a Adreno.
 
 ### Resumo do que está pronto
 
+- `exp/frame-budget` (~02:55 UTC, CI disparada): engasgos: no Android os presets limitam as malhas
+  enviadas por quadro (24 seções / 4 MiB) e um backlog atrasado de chunks ganha 4 ms por quadro
+  em vez de ir todo num quadro (como o fork faz). Sem efeito fora do Android.
 - `exp/window-scale` (02:50 UTC, CI disparada): a ideia 1 do dono: a opção "Window Scale" faz o
   swapchain (e os buffers da janela) menor que a tela; o compositor do Android amplia de graça, a
   HUD inclusive. Toques reescalados pra superfície. Só compila/roda aqui; a escala só age no Android.
@@ -181,6 +184,17 @@ os números de GPU daqui não representam a Adreno.
    campos de texto (o inset do teclado vem em pixels da tela), e a tela de carregamento continua
    em tamanho cheio. Nunca rodou num aparelho: se o toque sair deslocado ou a imagem não
    preencher a tela, é bug deste ramo, não da ideia.
+5. **`exp/frame-budget`** (ideia 6, engasgos) — build da CI disparada ~02:55 UTC. Não muda o `gpu`
+   médio; o que medir é o `1% low` e o `worst` do overlay. Protocolo: mesma ilha, Quality; (a)
+   parado 20 s olhando a mesma direção (linha de base), (b) andar/voar em linha reta por 30 s pra
+   carregar chunks novos, (c) teleporte (`/tp` a 500 blocos) e esperar carregar. Anotar `1% low` e
+   `worst` ao fim de cada etapa, com a release 0.1.2 (ou o ramo `exp/pass-timing`) e com este ramo.
+   O que muda: no celular os presets passam a limitar a 24 seções / 4 MiB de malhas enviadas por
+   quadro (antes: sem limite; o Horizon já tinha as opções Chunk Updates / Upload Budget, só que
+   zeradas), e um backlog atrasado de pacotes de chunk ganha 4 ms por quadro em vez de entrar todo
+   num quadro só. Se o `worst` cair e o `1% low` subir no (b) e (c), vale; se nada mudar, os
+   engasgos vêm de outro lugar (tick do servidor, GC de chunks, meshing) e aí só com o `perf`
+   do Android (simpleperf) ou spans no log.
 
 ### Entradas
 
@@ -305,3 +319,15 @@ os números de GPU daqui não representam a Adreno.
   `stats_overlay`), smoke run no desktop (escala inativa, quadro igual). **Não testado em aparelho.**
   Escolha conservadora: padrão 100% (nada muda sem mexer na opção); a tela de carregamento
   (`Loading`) fica sem escala de propósito (seu renderer é refeito no tamanho certo pelo `Game`).
+- 02:55 UTC: **`exp/frame-budget` pronto** (ideia 6; em cima de `exp/pass-timing`). O que achei: todos
+  os presets (`apply_preset`) e os defaults de celular (`apply_mobile_defaults`) zeram
+  `chunkUpdates` e `uploadBudgetKiB`, ou seja, **sem limite de malhas enviadas por quadro**: depois
+  de um teleporte ou de uma leva de chunks, dezenas de seções (50–500 KB cada) entram num quadro só
+  (`game.rs` ~12610, `renderer.upload`). E em `game/remote.rs` `poll_remote`, pacotes de chunk que
+  esperaram 50 ms (`BACKLOG_LIMIT`) são todos aplicados no quadro seguinte "custe o que custar" (é
+  de propósito, pra não atrasar o que vem atrás deles); o fork limita isso a 4 ms por quadro no
+  Android. Mudança: `graphics::mobile_upload_budget()` = (24, 4096) no Android e (0, 0) fora, usado
+  pelos presets e pelos defaults de celular; `OVERDUE_CHUNK_PACKETS_PER_FRAME = 4 ms` no Android.
+  Trade-off anotado: um backlog grande drena em mais quadros (4× mais rápido que um quadro normal),
+  e os pacotes atrás dele esperam esses quadros. Não dá pra medir engasgo aqui (lavapipe: 150 ms
+  por quadro). Validado: build, fmt; testes `graphics`/`remote` e smoke run em andamento.
