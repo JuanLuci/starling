@@ -325,7 +325,16 @@ impl Game<'_> {
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
                 Event::ModSettings(i) => self.open_mod_ui(i, true),
-                Event::NativeButton(i, b) => self.native_settings_event(i, b),
+                Event::NativeButton(i, b) => {
+                    // Android: the Native mods row's button opens its card (native_builds.rs).
+                    #[cfg(target_os = "android")]
+                    let card = self.native_builds_button(i);
+                    #[cfg(not(target_os = "android"))]
+                    let card = false;
+                    if !card {
+                        self.native_settings_event(i, b);
+                    }
+                }
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
             }
         }

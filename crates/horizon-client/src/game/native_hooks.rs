@@ -501,9 +501,6 @@ impl Game<'_> {
     /// Options > Mods' rows for the native mods, after the others.
     pub(super) fn list_native_mods(&mut self) {
         let mut mods = Vec::new();
-        // Android: the row that chooses a build with native mods (native_builds.rs), first.
-        #[cfg(target_os = "android")]
-        mods.push(super::native_builds::row());
         self.native_mods(&mut mods);
         // A WebAssembly mod of the same id doesn't run (`start_mods`): the
         // native row stands for it, and alone toggles its `mod.<id>` line.
@@ -514,10 +511,6 @@ impl Game<'_> {
         for m in mods {
             let mut buttons = Vec::new();
             self.native_settings(&m.id, &mut buttons);
-            #[cfg(target_os = "android")]
-            if m.id == super::native_builds::ID {
-                buttons.push(super::native_builds::OPEN.into());
-            }
             let page = NativePage {
                 keys: m.keys,
                 buttons,
@@ -541,11 +534,6 @@ impl Game<'_> {
         let Some(id) = self.settings.mods.installed.get(i).map(|m| m.id.clone()) else {
             return;
         };
-        #[cfg(target_os = "android")]
-        if id == super::native_builds::ID {
-            self.open_native_builds();
-            return;
-        }
         self.native_settings_click(&id, button);
         let mut buttons = Vec::new();
         self.native_settings(&id, &mut buttons);

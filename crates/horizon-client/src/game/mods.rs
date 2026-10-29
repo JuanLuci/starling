@@ -693,6 +693,8 @@ impl Game<'_> {
             })
             .collect();
         self.list_native_mods();
+        #[cfg(target_os = "android")]
+        self.list_native_builds_row();
     }
     /// The chat's tree after the running mods changed.
     fn sync_mod_commands(&mut self) {

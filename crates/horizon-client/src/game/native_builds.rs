@@ -26,20 +26,9 @@ const REQUEST: &str = "https://github.com/JuanLuci/starling/issues/new?template=
 const LIBRARY: &str = "libhorizon_android.so";
 /// Rows of builds the card shows.
 const SHOWN: usize = 4;
-/// Options > Mods' row that opens the card (native_hooks.rs, `list_native_mods`), and its button.
-pub(super) const ID: &str = "starling-native-builds";
-pub(super) const OPEN: &str = "Choose a build...";
-
-pub(super) fn row() -> super::native_hooks::NativeMod {
-    super::native_hooks::NativeMod {
-        id: ID.into(),
-        title: "Native mods".into(),
-        description: "This game with native mods compiled in, built by GitHub: choose a build, \
-                      or play without."
-            .into(),
-        keys: Vec::new(),
-    }
-}
+/// Options > Mods' row that opens the card, after the native mods' own rows: a native mod's page
+/// with one button. (Not in native_hooks.rs, which keeps no `cfg`.)
+const ID: &str = "starling-native-builds";
 
 /// A build for this version in the native-builds release.
 #[derive(Clone, PartialEq)]
@@ -241,6 +230,43 @@ fn density(w: f32, h: f32) -> f32 {
 }
 
 impl Game<'_> {
+    /// Options > Mods' Native mods row, put back after `list_native_mods` made the native rows.
+    pub(super) fn list_native_builds_row(&mut self) {
+        let installed = &mut self.settings.mods.installed;
+        installed.retain(|row| row.id != ID);
+        installed.push(horizon_client::mod_list::Installed {
+            id: ID.into(),
+            title: "Native mods".into(),
+            description: "This game with native mods compiled in, built by GitHub: choose a \
+                          build, or play without."
+                .into(),
+            summary: String::new(),
+            config: None,
+            problem: None,
+            dev: false,
+            has_settings: false,
+            native: Some(horizon_client::mod_list::NativePage {
+                keys: Vec::new(),
+                buttons: vec!["Choose a build...".into()],
+            }),
+        });
+    }
+
+    /// A button of the native mod page `i` of Options > Mods: true when it was the Native mods
+    /// row's, which opens the card.
+    pub(super) fn native_builds_button(&mut self, i: usize) -> bool {
+        let ours = self
+            .settings
+            .mods
+            .installed
+            .get(i)
+            .is_some_and(|row| row.id == ID);
+        if ours {
+            self.open_native_builds();
+        }
+        ours
+    }
+
     /// Shows the card: the builds for this version, looked up now.
     pub(super) fn open_native_builds(&mut self) {
         let Some((version, _)) = crate::app_version() else {
