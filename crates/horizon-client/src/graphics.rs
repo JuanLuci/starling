@@ -497,8 +497,9 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
     g.preset = preset;
     g.cave_culling = true;
     g.animated_textures = true;
-    g.chunk_updates = 0;
-    g.upload_budget_kib = 0;
+    // A phone's frame keeps a bound on the meshes it uploads (a burst of them after a
+    // teleport or a chunk load otherwise lands in one frame); a desktop takes them as they come.
+    (g.chunk_updates, g.upload_budget_kib) = mobile_upload_budget();
     g.sky = true;
     g.fog = true;
     g.weather = true;
@@ -512,6 +513,17 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
 /// at 12 the ticks of a few hundred mobs made every third frame late. Clouds cost the GPU
 /// 1.7 ms of a frame at any distance, fancy leaves are overdraw on tiled GPUs, and animated
 /// textures are mixed on the CPU each frame.
+/// The meshed sections a frame uploads at most, and the bytes (KiB): bounded on phones, where
+/// one frame taking a whole burst of meshes is a visible hitch (the 1% low), unbounded elsewhere
+/// (0: no limit). The Horizon settings `Chunk Updates` and `Upload Budget` change them.
+pub fn mobile_upload_budget() -> (u32, u32) {
+    if cfg!(target_os = "android") {
+        (24, 4096)
+    } else {
+        (0, 0)
+    }
+}
+
 pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::settings::Settings) {
     use crate::system_stats::Tier;
     let high = tier == Tier::High;
@@ -537,6 +549,7 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
     s.graphics_preset = "custom".into();
     let g = &mut s.horizon;
     g.preset = Preset::Custom;
+    (g.chunk_updates, g.upload_budget_kib) = mobile_upload_budget();
     g.resolution_scale = match tier {
         Tier::High => 100,
         Tier::Mid => 85,

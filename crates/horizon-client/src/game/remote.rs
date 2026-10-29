@@ -326,6 +326,8 @@ pub(super) struct Remote {
 /// time the player crossed a chunk border at 32 chunks; they decode on the
 /// chunk decoder's thread now, and the frame only inserts them.
 const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
+/// What a frame spends on an overdue backlog's chunk packets on a phone (`poll_remote`).
+const OVERDUE_CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(4);
 /// Events that have waited this long are all handled in the next frame,
 /// whatever inserting their columns costs, up to a column still decoding:
 /// the packets after a slow machine's chunks don't wait on its frames.
@@ -1276,10 +1278,22 @@ impl Game<'_> {
         let overdue = r
             .backlog_since
             .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
+        // An overdue backlog goes through in one frame, whatever it takes; on a phone that
+        // frame is a visible hitch, so there it gets `OVERDUE_CHUNK_PACKETS_PER_FRAME` a frame
+        // instead (more than a frame's usual share, so the backlog still drains).
+        let budget = if overdue {
+            if cfg!(target_os = "android") {
+                OVERDUE_CHUNK_PACKETS_PER_FRAME
+            } else {
+                Duration::MAX
+            }
+        } else {
+            CHUNK_PACKETS_PER_FRAME
+        };
         let mut chunks = Duration::ZERO;
         while let Some(item) = events.pop_front() {
             let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
+            if chunk && chunks >= budget {
                 events.push_front(item);
                 break;
             }
