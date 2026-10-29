@@ -15,6 +15,8 @@ struct Mock {
     xerr: Option<u64>,
     owns_game: bool,
     no_profile: bool,
+    /// Paths whose next request is dropped without an answer, once each (a network cut).
+    drop: Vec<&'static str>,
     /// Every request: method, path and body.
     log: Vec<(String, String, String)>,
 }
@@ -159,6 +161,10 @@ fn serve(mock: Arc<Mutex<Mock>>) -> Endpoints {
             let (status, text) = {
                 let mut m = mock.lock().unwrap();
                 m.log.push((method.clone(), path.clone(), body.clone()));
+                if let Some(i) = m.drop.iter().position(|p| *p == path) {
+                    m.drop.remove(i);
+                    continue;
+                }
                 route(&mut m, &method, &path, &auth, &body)
             };
             let _ = write!(
@@ -249,6 +255,36 @@ fn the_whole_chain() {
     );
     assert!(!format!("{secrets:?}").contains("mc-token"));
     assert!(!format!("{code:?}").contains("dev-1"));
+}
+
+#[test]
+fn a_network_cut_while_the_player_is_in_the_browser_does_not_end_the_sign_in() {
+    // A phone cuts the app's network in the background: two polls and the Xbox step get no
+    // answer, and are asked again.
+    let (m, ep) = mock(|m| {
+        m.pending = 1;
+        m.drop = vec!["/ms/token", "/ms/token", "/xbl"];
+    });
+    let code = device_code(&ep, "test-client").unwrap();
+    let ms = wait_for_sign_in(&ep, "test-client", &code, &|| false).unwrap();
+    let (account, _) = while_unreachable(|| finish_sign_in(&ep, ms.clone()), &|| false).unwrap();
+    assert_eq!(account.name, "Notch");
+    let count = |path: &str| {
+        m.lock()
+            .unwrap()
+            .log
+            .iter()
+            .filter(|(_, p, _)| p == path)
+            .count()
+    };
+    // Dropped, dropped, pending, the tokens; Xbox dropped once, then answered.
+    assert_eq!((count("/ms/token"), count("/xbl")), (4, 2));
+    // A refusal is not asked again.
+    let (_, ep) = mock(|m| m.xerr = Some(2148916233));
+    let code = device_code(&ep, "test-client").unwrap();
+    let ms = wait_for_sign_in(&ep, "test-client", &code, &|| false).unwrap();
+    let error = while_unreachable(|| finish_sign_in(&ep, ms.clone()), &|| false).unwrap_err();
+    assert!(!unreachable(&error), "{error}");
 }
 
 #[test]

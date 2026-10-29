@@ -82,6 +82,50 @@ pub(crate) fn transport_detail(t: &ureq::Transport) -> String {
     detail
 }
 
+/// How `send` starts an error of the network itself (no answer at all), as against a refusal.
+const UNREACHABLE: &str = "Could not reach ";
+
+/// Whether `error` (from `send`) is the network failing, worth asking again: a phone cuts an
+/// app's network in the background (battery and data savers, a maker's own restrictions) while
+/// the player signs in in the browser, and the lookup fails then (`dns failed: ... No address
+/// associated with hostname`).
+fn unreachable(error: &str) -> bool {
+    error.starts_with(UNREACHABLE)
+}
+
+/// Between two tries of a step the network failed for.
+const RETRY_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(3)
+};
+
+/// How long the steps after Microsoft's tokens are tried again while the network fails.
+const RETRY_FOR: Duration = Duration::from_secs(120);
+
+/// `step` again, every `RETRY_WAIT`, while the network fails, for up to `RETRY_FOR`; any other
+/// error at once. `cancelled` stops the waiting.
+fn while_unreachable<T>(
+    mut step: impl FnMut() -> Result<T, String>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<T, String> {
+    let give_up = std::time::Instant::now() + RETRY_FOR;
+    loop {
+        match step() {
+            Err(e) if unreachable(&e) && std::time::Instant::now() < give_up => {
+                let until = std::time::Instant::now() + RETRY_WAIT;
+                while std::time::Instant::now() < until {
+                    if cancelled() {
+                        return Err("Sign-in cancelled.".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 /// One request's result: the status and the JSON body (empty when there is none). Transport
 /// errors name the service and what went wrong, never the URL's query or the request.
 fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u16, Value), String> {
@@ -95,7 +139,7 @@ fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u1
         Err(ureq::Error::Status(_, r)) => r,
         Err(ureq::Error::Transport(t)) => {
             return Err(format!(
-                "Could not reach {service} ({}). Check your internet connection.",
+                "{UNREACHABLE}{service} ({}). Check your internet connection.",
                 transport_detail(&t)
             ));
         }
@@ -143,6 +187,7 @@ impl std::fmt::Debug for DeviceCode {
 }
 
 /// The Microsoft tokens; the access token only lasts for the Xbox step.
+#[derive(Clone)]
 pub struct MsTokens {
     access: String,
     refresh: String,
@@ -234,7 +279,9 @@ fn ms_tokens(status: u16, v: &Value) -> Result<MsTokens, String> {
 }
 
 /// Wait for the player to finish in the browser, polling as asked, until the code expires or
-/// `cancelled` says stop.
+/// `cancelled` says stop. A poll the network failed for is asked again at the next interval: the
+/// app waits in the background meanwhile, where a phone may cut its network, and the poll after
+/// the player comes back gets the tokens.
 pub fn wait_for_sign_in(
     ep: &Endpoints,
     client_id: &str,
@@ -242,6 +289,7 @@ pub fn wait_for_sign_in(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<MsTokens, String> {
     let mut interval = code.interval;
+    let mut lost = None;
     loop {
         let until = std::time::Instant::now() + Duration::from_secs(interval);
         while std::time::Instant::now() < until {
@@ -251,12 +299,14 @@ pub fn wait_for_sign_in(
             std::thread::sleep(Duration::from_millis(100));
         }
         if now() > code.expires_at {
-            return Err("The sign-in code expired. Start again.".into());
+            return Err(lost.unwrap_or_else(|| "The sign-in code expired. Start again.".into()));
         }
-        match poll(ep, client_id, code)? {
-            Poll::Pending => {}
-            Poll::SlowDown => interval += 5,
-            Poll::Done(tokens) => return Ok(tokens),
+        match poll(ep, client_id, code) {
+            Ok(Poll::Pending) => {}
+            Ok(Poll::SlowDown) => interval += 5,
+            Ok(Poll::Done(tokens)) => return Ok(tokens),
+            Err(e) if unreachable(&e) => lost = Some(e),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -690,10 +740,12 @@ impl SignIn {
                 let client_id = client_id().ok_or("Microsoft sign-in has no app configured.")?;
                 let code = device_code(&ep, &client_id)?;
                 set(SignInState::Code(code.clone()));
-                let ms = wait_for_sign_in(&ep, &client_id, &code, &|| {
-                    thread_cancel.load(Ordering::Relaxed)
-                })?;
-                let (account, secrets) = finish_sign_in(&ep, ms)?;
+                let cancelled = || thread_cancel.load(Ordering::Relaxed);
+                let ms = wait_for_sign_in(&ep, &client_id, &code, &cancelled)?;
+                // The player may still be in the browser: Xbox, XSTS and Minecraft too are asked
+                // again while the network fails.
+                let (account, secrets) =
+                    while_unreachable(|| finish_sign_in(&ep, ms.clone()), &cancelled)?;
                 let mut accounts = Accounts::load(&dir);
                 accounts.add(store.as_ref(), account.clone(), &secrets)?;
                 accounts.save(&dir)?;
