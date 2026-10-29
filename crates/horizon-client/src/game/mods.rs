@@ -398,12 +398,16 @@ pub(super) fn content_root(
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
     let mut mods: Vec<ContentMod> = Vec::new();
+    let mut enabled_tied = std::collections::BTreeSet::new();
     for path in &paths {
         let Ok(package) = Package::read(path) else {
             continue;
         };
         let m = &package.manifest;
         let tied = m.capabilities.contains(&Capability::Registries);
+        if tied && (enabled.contains(&m.id) || dev.contains(path)) {
+            enabled_tied.insert(m.id.clone());
+        }
         let on = match registries {
             Some(set) if tied => set.contains(&m.id),
             _ => enabled.contains(&m.id),
@@ -437,6 +441,7 @@ pub(super) fn content_root(
         .map(|m| m.id.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    super::world_content::set_enabled(enabled_tied);
     // The world-tied ones: what adds blocks or items.
     let tied: std::collections::BTreeSet<String> = mods
         .iter()

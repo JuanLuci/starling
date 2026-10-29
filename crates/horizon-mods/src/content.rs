@@ -331,9 +331,16 @@ impl Content {
             }
         }
         let mut ids = BTreeSet::new();
+        // One reader for every declaration: a packaged mod's archive opened per file read its
+        // whole index each time (Create's 900 declarations in 10,000 files: half a minute on a
+        // phone, at every start).
+        let mut reader = match &self.source {
+            Source::Dir(root) => FileReader::Dir(root),
+            Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
+        };
         for (block, name) in blocks {
             let file: BlockFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             check_block(&file).map_err(|e| format!("{name}: {e}"))?;
             if file.item {
                 ids.insert(block.clone());
@@ -347,7 +354,7 @@ impl Content {
         }
         for (item, name) in items {
             let file: ItemFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if !vanilla_id(&file.template) {
                 return Err(format!(
                     "{name}: template {:?} is not a vanilla item (minecraft:...)",

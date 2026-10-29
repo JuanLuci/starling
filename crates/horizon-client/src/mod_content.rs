@@ -1338,6 +1338,14 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
     };
     let mut parts = vec!["horizon mod content 1".to_owned()];
     parts.push(meta(&std::env::current_exe()?)?);
+    // On Android the program is the system's app_process: the game is the APK's library, or the
+    // build with native mods loaded in its place.
+    let library = std::env::var_os("STARLING_GAME_LIBRARY")
+        .map(PathBuf::from)
+        .or_else(|| crate::platform::library_dir().map(|d| d.join("libhorizon_android.so")));
+    if let Some(library) = library.filter(|p| p.is_file()) {
+        parts.push(meta(&library)?);
+    }
     let base = std::path::absolute(base)?;
     parts.push(
         String::from_utf8_lossy(&fs::read(base.join("horizon-resources.json"))?).into_owned(),

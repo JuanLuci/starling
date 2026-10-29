@@ -59,6 +59,24 @@ pub(super) fn set_running(ids: BTreeSet<String>) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = ids;
 }
+
+/// The mods adding blocks or items that Options > Mods turns on (`mods::content_root` keeps it):
+/// the set every world played with before worlds kept their own.
+fn enabled_cell() -> &'static Mutex<BTreeSet<String>> {
+    static ENABLED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    ENABLED.get_or_init(Default::default)
+}
+pub(super) fn set_enabled(ids: BTreeSet<String>) {
+    *enabled_cell()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = ids;
+}
+fn enabled() -> BTreeSet<String> {
+    enabled_cell()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
 pub(super) fn running() -> BTreeSet<String> {
     running_cell()
         .lock()
@@ -103,7 +121,7 @@ pub(super) fn record(folder: &str, mods: &BTreeSet<String>) -> bool {
 /// What opening world `folder` needs.
 #[derive(Debug, PartialEq)]
 pub(super) enum Entry {
-    /// It plays with the running set (or has none yet: it takes the running one).
+    /// It plays with the running set.
     Open,
     /// Start again with this set, then enter it.
     Restart(BTreeSet<String>),
@@ -112,22 +130,38 @@ pub(super) enum Entry {
     Missing(BTreeSet<String>),
 }
 
+/// A world that keeps no set yet played with the mods Options > Mods turns on (worlds kept none
+/// before): that set is its own, kept once it opens with it.
 pub(super) fn entry(folder: &str) -> Entry {
-    let running = running();
-    match recorded(folder) {
-        Some(set) if set != running => {
-            let retried = next_start().is_some_and(|n| n.world == folder && n.content == set);
-            if retried {
-                Entry::Missing(set.difference(&running).cloned().collect())
-            } else {
-                Entry::Restart(set)
+    let kept = recorded(folder);
+    decide(
+        folder,
+        kept.clone().unwrap_or_else(enabled),
+        &running(),
+        next_start(),
+        || {
+            if kept.is_none() {
+                record(folder, &running());
             }
-        }
-        Some(_) => Entry::Open,
-        None => {
-            record(folder, &running);
-            Entry::Open
-        }
+        },
+    )
+}
+
+fn decide(
+    folder: &str,
+    set: BTreeSet<String>,
+    running: &BTreeSet<String>,
+    next: Option<&NextStart>,
+    keep: impl FnOnce(),
+) -> Entry {
+    if set == *running {
+        keep();
+        return Entry::Open;
+    }
+    if next.is_some_and(|n| n.world == folder && n.content == set) {
+        Entry::Missing(set.difference(running).cloned().collect())
+    } else {
+        Entry::Restart(set)
     }
 }
 
@@ -181,6 +215,42 @@ mod tests {
         std::fs::write(&file, serde_json::json!({ "mods": ["create"] }).to_string()).unwrap();
         assert_eq!(read_set(&file), Some(set(&["create"])));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_world_with_another_set_starts_again_once() {
+        let (create, none) = (set(&["create"]), set(&[]));
+        assert_eq!(
+            decide("w", create.clone(), &create, None, || {}),
+            Entry::Open
+        );
+        assert_eq!(
+            decide("w", none.clone(), &create, None, || {}),
+            Entry::Restart(none.clone())
+        );
+        // Started again for it, and Create still did not load: never open without it.
+        let next = NextStart {
+            world: "w".into(),
+            content: create.clone(),
+        };
+        assert_eq!(
+            decide("w", create.clone(), &none, Some(&next), || {}),
+            Entry::Missing(create.clone())
+        );
+        // Another world after that start is a restart of its own.
+        assert_eq!(
+            decide("v", create.clone(), &none, Some(&next), || {}),
+            Entry::Restart(create)
+        );
+    }
+
+    #[test]
+    fn a_world_keeps_its_set_only_when_it_opens() {
+        let mut kept = false;
+        decide("w", set(&["create"]), &set(&[]), None, || kept = true);
+        assert!(!kept);
+        decide("w", set(&[]), &set(&[]), None, || kept = true);
+        assert!(kept);
     }
 
     #[test]
