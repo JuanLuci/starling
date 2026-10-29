@@ -42,7 +42,7 @@ pub(super) fn row() -> super::native_hooks::NativeMod {
 }
 
 /// A build for this version in the native-builds release.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Build {
     /// `v0.1.4__wrench`: its assets' names, and its folder here.
     name: String,
