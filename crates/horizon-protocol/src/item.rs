@@ -1332,7 +1332,8 @@ mod tests {
             w.f32(5.0);
         });
         raw_round_trip(component::MINIMUM_ATTACK_CHARGE, |w| w.f32(0.9));
-        raw_round_trip(component::BASE_COLOR, |w| w.varint(11));
+        // A shield's base colour, read as its dye id (upstream's Component::Int).
+        typed_round_trip(component::BASE_COLOR, |w| w.varint(11));
         raw_round_trip(component::PAINTING_VARIANT, |w| w.varint(4));
         raw_round_trip(component::TOOLTIP_STYLE, |w| w.string("minecraft:fancy"));
         raw_round_trip(component::ATTACK_ANIMATION, |w| {

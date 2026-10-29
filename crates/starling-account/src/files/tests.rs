@@ -240,6 +240,12 @@ fn a_file_that_is_not_the_listed_one_is_refused() {
 fn starlings_pins_are_the_research_lock() {
     let pins = Pins::starling();
     assert_eq!(pins.version, "26.3");
-    assert_eq!(pins.manifests.len(), 4);
+    // The pinned version JSON, then every republished one the lock accepts (Horizon adds them).
+    let lock: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../research-lock.json")).unwrap();
+    let accepted = lock["minecraft"]["accepted_manifest_sha1"]
+        .as_array()
+        .map_or(0, Vec::len);
+    assert_eq!(pins.manifests.len(), 1 + accepted);
     assert!(pins.client_sha1.len() == 40 && pins.server_sha1.len() == 40);
 }

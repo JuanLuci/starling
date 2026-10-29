@@ -178,10 +178,6 @@ impl ModsState {
     pub(super) fn remote_dispatcher(&self) -> Option<&Dispatcher> {
         self.remote_tree.as_ref()
     }
-    /// Whether a mod runs: the chat keeps its lines for them.
-    pub(super) fn running(&self) -> bool {
-        self.mods.is_running()
-    }
     /// Whether a mod draws a HUD panel or a corner panel.
     pub(super) fn has_panels(&self) -> bool {
         self.mods.panels().next().is_some() || self.mods.corner_panels().next().is_some()
