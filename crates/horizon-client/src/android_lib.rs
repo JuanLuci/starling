@@ -1178,6 +1178,18 @@ pub(crate) fn frame_hint(cpu: std::time::Duration, fps_limit: i32) {
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
+    // winit's event loop is made once a process. Android can start a new activity in a process
+    // the game is ending (a restart into a world with other mods did: "EventLoop can't be
+    // recreated", reported as a crash): end it at once, and the activity's next start is fresh.
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        logcat(
+            log::Level::Info,
+            "a second start in a process the game ran in: ending it",
+        );
+        // SAFETY: ends the process at once, as the end of the first run does.
+        unsafe { _exit(0) }
+    }
     horizon_client::telemetry::mark_start();
     // The app's own files: resources, caches, the import inbox, test arguments.
     let private: PathBuf = app

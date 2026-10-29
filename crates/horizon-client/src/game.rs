@@ -15640,9 +15640,14 @@ struct Loading {
     audio: Option<Audio>,
     /// The sound events, read on a thread of their own from the start.
     sound_registry: Option<JoinHandle<horizon_client::sound_events::SoundRegistry>>,
+    /// The window is in the background (Android): the game waits for it to take over, since
+    /// its renderer needs the window's surface (one asked for meanwhile, as a screen recorder's
+    /// prompt over the app, ended the start).
+    suspended: bool,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.suspended = false;
         if let Some(window) = &self.window {
             // Back from the background (Android), as Game::resumed.
             let size = window.inner_size();
@@ -15704,6 +15709,7 @@ impl Loading {
     /// The window is going away (Android): its surface goes with it, and the log is flushed
     /// before the system may end the process.
     fn suspended(&mut self) {
+        self.suspended = true;
         if let Some(r) = &mut self.renderer {
             r.suspend();
         }
@@ -16106,7 +16112,9 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                match if loading.menu.reload_packs {
+                // A window in the background has no surface for the game's renderer: the
+                // loaded resources wait for it to come back.
+                match if loading.menu.reload_packs || loading.suspended {
                     None
                 } else {
                     loading.loaded.take()
@@ -16192,6 +16200,7 @@ fn run_loading(
         imports: Default::default(),
         audio: None,
         sound_registry,
+        suspended: false,
     };
     let mut app = App::Loading(Box::new(loading));
     let result = event_loop()?.run_app(&mut app);
