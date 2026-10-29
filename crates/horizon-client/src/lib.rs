@@ -138,6 +138,7 @@ pub use horizon_client_core::text;
 pub use horizon_client_input::clipboard;
 pub use horizon_client_input::gamepad;
 pub use horizon_client_input::input;
+pub use horizon_client_input::input_mode;
 pub use horizon_client_input::interaction_input;
 pub use horizon_client_input::key_names;
 pub use horizon_client_input::keybinds;

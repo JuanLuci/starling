@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
+exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/winit"]
 members = [
     "crates/horizon-core",
     "crates/horizon-dualsense",
@@ -73,8 +73,15 @@ large_enum_variant = "allow"
 # Metal backend's lookup of the CoreGraphics HDR colour space names, which handed
 # CoreGraphics a symbol's address as the string and crashed HDR output on macOS.
 # Drop this and the folder once a wgpu release has both fixes.
+#
+# winit 0.30.13 with an input hook on Android (`winit::platform::android::set_input_hook`): its
+# Android backend makes touches of a controller's sticks and a mouse's buttons and drops the
+# rest (hover, the wheel, the buttons' own events), and the app never sees the raw events.
+# Starling takes those there (crates/horizon-client/src/android_lib.rs). A few lines in the
+# backend, marked "Horizon's patch"; nothing changes on the other platforms.
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
+winit = { path = "third_party/winit" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.

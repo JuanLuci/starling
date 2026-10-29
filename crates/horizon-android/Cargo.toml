@@ -49,7 +49,7 @@ audio = ["horizon-client/audio"]
 # Named by the game module's cfgs too (the code mods' input, render and frame hooks): always on.
 mods = ["horizon-client/mods"]
 # Named by the game module's cfgs. Never on here: gilrs has no Android backend and hidapi does not
-# build for it, so phones get the touch controls and `horizon-ctl pad`'s virtual pad.
+# build for it, so phones read their controllers from Android's own events (game/pad/android.rs).
 controllers = []
 
 [lints]

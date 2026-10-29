@@ -79,6 +79,7 @@ mod growth;
 mod hand;
 mod imports;
 mod initial_spawn;
+mod input_mode;
 mod integrated;
 mod item_draw;
 mod item_particles;
@@ -299,7 +300,7 @@ use winit::{
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window, WindowId},
+    window::{Window, WindowId},
 };
 
 #[derive(Clone)]
@@ -1579,6 +1580,9 @@ struct Game<'a> {
     pad: pad::Pads,
     /// The touch controls (game/touch.rs).
     touch: touch::Touch,
+    /// What the player plays with: the touch controls show while it is the touch screen
+    /// (game/input_mode.rs).
+    input_mode: horizon_client::input_mode::InputMode,
     frames: u64,
     /// `item_level` for one frame, game time, day time and dimension.
     item_level_cache: std::cell::RefCell<
@@ -5852,6 +5856,18 @@ impl Game<'_> {
             }
         }
     }
+    /// The mouse's raw motion (`DeviceEvent::MouseMotion`, or Android's from the input hook):
+    /// MouseHandler.onMove with the pointer grabbed, applied once per frame.
+    fn grabbed_mouse_motion(&mut self, x: f64, y: f64) {
+        if self.pending_save.is_none()
+            && self.captured
+            && self.focused
+            && self.screen == Screen::Playing
+        {
+            self.mouse.on_move(0.0, 0.0, x, y, true, true);
+            self.last_input = Instant::now();
+        }
+    }
     /// `Minecraft.pause`: a single-player game with a pausing screen open.
     fn pauses_game(&self) -> bool {
         self.has_singleplayer_server()
@@ -5907,13 +5923,30 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
+        let scale = HudBatch::new(size).scale;
+        let was_grabbed = self.captured;
+        // Android grabs the mouse as the activity's pointer capture, which comes a moment later
+        // (a loss the system makes comes back: game/input_mode.rs). Only a mouse player asks:
+        // a finger or a controller plays without it.
+        #[cfg(target_os = "android")]
+        {
+            if capture {
+                self.mouse.set_ignore_first_move();
+            }
+            self.captured =
+                capture && self.input_mode == horizon_client::input_mode::InputMode::KeyboardMouse;
+            if self.captured != was_grabbed {
+                crate::capture_pointer(self.captured);
+            }
+        }
+        #[cfg(not(target_os = "android"))]
         let centre =
             winit::dpi::PhysicalPosition::new(f64::from(size[0]) / 2.0, f64::from(size[1]) / 2.0);
+        #[cfg(not(target_os = "android"))]
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
-        let scale = HudBatch::new(size).scale;
-        let was_grabbed = self.captured;
+        #[cfg(not(target_os = "android"))]
         if capture {
             self.mouse.set_ignore_first_move();
             // macOS warps by re-associating the mouse with the pointer,
@@ -5923,8 +5956,8 @@ impl Game<'_> {
             #[cfg(target_os = "macos")]
             warp(window);
             self.captured = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined))
                 .is_ok();
             #[cfg(not(target_os = "macos"))]
             if self.captured && self.focused {
@@ -5940,12 +5973,12 @@ impl Game<'_> {
                 if self.focused {
                     warp(window);
                 }
-                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
                 if self.focused {
                     warp(window);
                 }
             } else {
-                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
             }
             self.captured = false;
         }
@@ -13034,6 +13067,14 @@ impl ApplicationHandler for Game<'_> {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = m.state();
         }
+        // Android's winit sends no ModifiersChanged: the held keys make them.
+        #[cfg(target_os = "android")]
+        if matches!(
+            &event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Focused(false)
+        ) {
+            self.modifiers = horizon_client::input_mode::held_modifiers(&self.physical_keys);
+        }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
@@ -14006,15 +14047,8 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if self.pending_save.is_none()
-            && self.captured
-            && self.focused
-            && self.screen == Screen::Playing
-            && let DeviceEvent::MouseMotion { delta: (x, y) } = event
-        {
-            // MouseHandler.onMove with the pointer grabbed; applied once per frame.
-            self.mouse.on_move(0.0, 0.0, x, y, true, true);
-            self.last_input = Instant::now();
+        if let DeviceEvent::MouseMotion { delta: (x, y) } = event {
+            self.grabbed_mouse_motion(x, y);
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -14065,6 +14099,9 @@ impl ApplicationHandler for Game<'_> {
         if self.pending_save.is_some() {
             return;
         }
+        // The mouse and the keyboard as Android's input hook saw them (game/input_mode.rs).
+        #[cfg(target_os = "android")]
+        self.android_input_frame(event_loop);
         self.touch_frame(event_loop);
         self.poll_imports();
         self.poll_mods();
@@ -14285,6 +14322,7 @@ impl<'a> Game<'a> {
             last_input: now,
             pad: Default::default(),
             touch: Default::default(),
+            input_mode: horizon_client::input_mode::InputMode::first(cfg!(target_os = "android")),
             frames: 0,
             item_level_cache: Default::default(),
             world_frames: 0,

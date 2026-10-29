@@ -610,6 +610,285 @@ pub(crate) fn hide_text_mirror() {
     });
 }
 
+/// Controllers, the mouse and the keyboard: what winit's Android backend makes touches of or drops
+/// (a pad's sticks become a finger, its buttons unknown keys; the mouse's hover, wheel and buttons
+/// are lost), taken from each input event before it does (`set_input_hook`, third_party/winit).
+mod input {
+    use horizon_client::{
+        gamepad::{
+            PadState,
+            android::{self as pad, AndroidPads, Axes},
+        },
+        input_mode,
+    };
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use winit::event::MouseButton;
+    use winit::platform::android::activity::{
+        InputStatus,
+        input::{Axis, InputEvent, KeyAction, KeyEvent, MotionAction, MotionEvent},
+    };
+
+    /// `InputDevice.SOURCE_MOUSE` and `SOURCE_MOUSE_RELATIVE` (the captured pointer's) without
+    /// their class bits.
+    const SOURCE_MOUSE: u32 = 0x2000;
+    const SOURCE_MOUSE_RELATIVE: u32 = 0x0002_0000;
+    /// `MotionEvent.BUTTON_PRIMARY`, `_SECONDARY` and `_TERTIARY`. The back and forward buttons
+    /// are left to Android, which makes the Back and Forward keys of them.
+    const BUTTONS: [(u32, MouseButton); 3] = [
+        (1, MouseButton::Left),
+        (2, MouseButton::Right),
+        (4, MouseButton::Middle),
+    ];
+    /// The most mouse events kept for a game that is not reading them (a save on quit).
+    const MOUSE_QUEUE: usize = 512;
+
+    /// What a mouse did, for the game's next loop iteration (game/input_mode.rs).
+    pub(crate) enum MouseEvent {
+        /// The pointer moved to this window position, in pixels.
+        Moved(f64, f64),
+        Button(MouseButton, bool),
+        /// The wheel, in lines: winit's `LineDelta` (right and up positive).
+        Wheel(f32, f32),
+        /// How far the mouse went, in pixels, right and down positive: the view turns by it
+        /// while the game holds the pointer.
+        Motion(f64, f64),
+    }
+
+    struct Mouse {
+        /// The game reads the mouse's events (from its first loop iteration): before, the loading
+        /// screen gets them as winit makes them, as a finger.
+        taken: bool,
+        events: Vec<MouseEvent>,
+        buttons: u32,
+        at: Option<(f32, f32)>,
+    }
+
+    static PADS: Mutex<AndroidPads> = Mutex::new(AndroidPads::new());
+    static MOUSE: Mutex<Mouse> = Mutex::new(Mouse {
+        taken: false,
+        events: Vec::new(),
+        buttons: 0,
+        at: None,
+    });
+    /// A physical keyboard's key went down since the game last asked.
+    static KEYBOARD_USED: AtomicBool = AtomicBool::new(false);
+
+    /// The hook: the events taken are answered as handled; the others go on to winit.
+    pub(super) fn hook(event: &InputEvent<'_>) -> Option<InputStatus> {
+        match event {
+            InputEvent::KeyEvent(key) => key_input(key),
+            InputEvent::MotionEvent(motion) => motion_input(motion),
+            _ => None,
+        }
+    }
+
+    fn key_input(key: &KeyEvent<'_>) -> Option<InputStatus> {
+        let source: u32 = key.source().into();
+        let code = u32::from(key.key_code()) as i32;
+        let down = match key.action() {
+            KeyAction::Down => true,
+            KeyAction::Up => false,
+            _ => return None,
+        };
+        if let Some(button) = pad::pad_key(source, code) {
+            let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
+            pads.key(key.device_id(), button, down);
+            return Some(InputStatus::Handled);
+        }
+        // winit turns it into a key event as on a computer; this only notes the keyboard in use.
+        if down && input_mode::android_keyboard(source, key.device_id(), key.scan_code(), code) {
+            KEYBOARD_USED.store(true, Ordering::Relaxed);
+        }
+        None
+    }
+
+    fn motion_input(motion: &MotionEvent<'_>) -> Option<InputStatus> {
+        let source: u32 = motion.source().into();
+        if pad::joystick(source) {
+            if motion.pointer_count() > 0 {
+                let pointer = motion.pointer_at_index(0);
+                let axis = |a| pointer.axis_value(a);
+                let axes = Axes {
+                    x: axis(Axis::X),
+                    y: axis(Axis::Y),
+                    z: axis(Axis::Z),
+                    rz: axis(Axis::Rz),
+                    hat_x: axis(Axis::HatX),
+                    hat_y: axis(Axis::HatY),
+                    ltrigger: axis(Axis::Ltrigger),
+                    rtrigger: axis(Axis::Rtrigger),
+                    brake: axis(Axis::Brake),
+                    gas: axis(Axis::Gas),
+                };
+                let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
+                pads.motion(motion.device_id(), axes);
+            }
+            return Some(InputStatus::Handled);
+        }
+        let relative = source & SOURCE_MOUSE_RELATIVE != 0;
+        if source & SOURCE_MOUSE == 0 && !relative {
+            return None;
+        }
+        let mut mouse = MOUSE.lock().unwrap_or_else(|e| e.into_inner());
+        if !mouse.taken {
+            return None;
+        }
+        if motion.pointer_count() == 0 {
+            return Some(InputStatus::Handled);
+        }
+        let mut events = Vec::new();
+        let pointer = motion.pointer_at_index(0);
+        if !relative && motion.action() != MotionAction::HoverExit {
+            let at = (pointer.x(), pointer.y());
+            if mouse.at != Some(at) {
+                mouse.at = Some(at);
+                events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
+            }
+        }
+        // How far the mouse went, the moves batched into the event before it too: captured, its
+        // x and y; free, its RELATIVE_X and RELATIVE_Y (the pointer's own, accelerated), which
+        // turn the view while the game holds a pointer Android has not captured (yet).
+        let (x, y) = if relative {
+            (Axis::X, Axis::Y)
+        } else {
+            (Axis::RelativeX, Axis::RelativeY)
+        };
+        let (mut dx, mut dy) = (pointer.axis_value(x), pointer.axis_value(y));
+        for earlier in pointer.history() {
+            dx += earlier.axis_value(x);
+            dy += earlier.axis_value(y);
+        }
+        if dx != 0.0 || dy != 0.0 {
+            events.push(MouseEvent::Motion(f64::from(dx), f64::from(dy)));
+        }
+        if motion.action() == MotionAction::Scroll {
+            let right = pointer.axis_value(Axis::Hscroll);
+            let up = pointer.axis_value(Axis::Vscroll);
+            if right != 0.0 || up != 0.0 {
+                // winit's wheel moves the content: right is negative.
+                events.push(MouseEvent::Wheel(-right, up));
+            }
+        }
+        let buttons = motion.button_state().0;
+        for (bit, button) in BUTTONS {
+            if (buttons ^ mouse.buttons) & bit != 0 {
+                events.push(MouseEvent::Button(button, buttons & bit != 0));
+            }
+        }
+        mouse.buttons = buttons;
+        if mouse.events.len() + events.len() <= MOUSE_QUEUE {
+            mouse.events.append(&mut events);
+        }
+        Some(InputStatus::Handled)
+    }
+
+    /// The active controller's device id and state, `None` before one was used.
+    pub(crate) fn pad_state() -> Option<(i32, PadState)> {
+        PADS.lock().unwrap_or_else(|e| e.into_inner()).active()
+    }
+
+    /// The mouse's events since the last call; the game reads the mouse from the first.
+    pub(crate) fn take_mouse_events() -> Vec<MouseEvent> {
+        let mut mouse = MOUSE.lock().unwrap_or_else(|e| e.into_inner());
+        mouse.taken = true;
+        std::mem::take(&mut mouse.events)
+    }
+
+    /// Whether a physical keyboard's key went down since the last call.
+    pub(crate) fn keyboard_used() -> bool {
+        KEYBOARD_USED.swap(false, Ordering::Relaxed)
+    }
+}
+
+pub(crate) use input::{MouseEvent, keyboard_used, pad_state, take_mouse_events};
+
+/// Android took the captured pointer back while the game held it (StarlingActivity).
+static POINTER_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `StarlingActivity.onPointerCaptureLost`, called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onPointerCaptureLost(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    POINTER_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether Android took the captured pointer back since the last call (focus lost, the system's
+/// own shortcut).
+pub(crate) fn pointer_capture_lost() -> bool {
+    POINTER_LOST.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Capture the mouse for the game's mouse look, or let it go (StarlingActivity.capturePointer):
+/// captured, its moves come as relative motion and its pointer hides.
+pub(crate) fn capture_pointer(capture: bool) {
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "capturePointer",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(u8::from(capture))],
+        )
+        .map(drop)
+    });
+}
+
+/// A controller's maker, its USB vendor id (StarlingActivity.padVendor), for its button pictures.
+pub(crate) fn pad_vendor(device: i32) -> Option<u16> {
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "padVendor",
+            "(I)I",
+            &[jni::objects::JValue::Int(device)],
+        )?
+        .i()
+    })
+    .and_then(|vendor| u16::try_from(vendor).ok())
+    .filter(|vendor| *vendor != 0)
+}
+
+/// A controller's name (StarlingActivity.padName), for the log; `None` once it is gone.
+pub(crate) fn pad_name(device: i32) -> Option<String> {
+    with_activity(|env, activity| {
+        let name = env
+            .call_method(
+                activity,
+                "padName",
+                "(I)Ljava/lang/String;",
+                &[jni::objects::JValue::Int(device)],
+            )?
+            .l()?;
+        if name.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(String::from(env.get_string(&name.into())?)))
+    })
+    .flatten()
+}
+
+/// Vibrate a controller for `millis` ms, its heavy motor at `strong` and its light one at `weak`
+/// (0 to 255): StarlingActivity.vibratePad.
+pub(crate) fn vibrate_pad(device: i32, millis: i32, strong: i32, weak: i32) {
+    use jni::objects::JValue;
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "vibratePad",
+            "(IIII)V",
+            &[
+                JValue::Int(device),
+                JValue::Int(millis),
+                JValue::Int(strong),
+                JValue::Int(weak),
+            ],
+        )
+        .map(drop)
+    });
+}
+
 /// The activity, for the event loop (`EventLoopBuilderExtAndroid::with_android_app`).
 pub(crate) fn android_app() -> AndroidApp {
     APP.get().expect("android_main sets the app first").clone()
@@ -967,6 +1246,7 @@ fn android_main(app: AndroidApp) {
     horizon_client::preparer::put_shader_pack(&home);
     // The saved Microsoft sign-in renews while the game loads.
     horizon_client::accounts::resume();
+    winit::platform::android::set_input_hook(input::hook);
     if let Err(error) = game::run() {
         log::error!("Horizon: {error}");
         crash::report_error(&home, "client", &*error);

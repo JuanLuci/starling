@@ -1911,14 +1911,23 @@ impl OptionsUi {
                     ),
                     None,
                 )];
-                // A phone reads no controllers yet (crates/horizon-android builds without them):
-                // only what the touch controls play through stays.
+                // A phone reads its controllers through Android (game/pad/android.rs): the
+                // DualSense's own output (its triggers and lightbar) and Steam's keyboard are
+                // the computer's only.
                 let opts: &[Opt] = if cfg!(target_os = "android") {
                     &[
+                        Opt::PadEnabled,
+                        Opt::PadVibration,
+                        Opt::PadLookSensitivity,
                         Opt::PadToggleSneak,
                         Opt::PadServerStick,
                         Opt::PadStickPrompt,
+                        Opt::PadInvertX,
+                        Opt::PadInvertY,
                         Opt::PadMoveDeadzone,
+                        Opt::PadLookDeadzone,
+                        Opt::PadGlyphs,
+                        Opt::PadMenuNav,
                     ]
                 } else {
                     &[

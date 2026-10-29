@@ -6,6 +6,7 @@
 pub mod clipboard;
 pub mod gamepad;
 pub mod input;
+pub mod input_mode;
 pub mod interaction_input;
 pub mod key_names;
 pub mod keybinds;
