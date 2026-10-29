@@ -164,6 +164,9 @@ struct SkyOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) ndc: vec2<f32>,
 }
+// Clip z 0 is the far plane (reverse-Z: the depth buffer clears to 0): drawn after the
+// opaque terrain with a GreaterEqual depth test, the sky only shades the pixels no terrain
+// covered (gfx.rs, the sky after the section draws).
 @vertex fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     let p = vec2(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1));
     var out: SkyOut;

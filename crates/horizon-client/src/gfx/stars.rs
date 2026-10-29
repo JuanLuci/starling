@@ -118,10 +118,12 @@ impl Stars {
                 cull_mode: None,
                 ..Default::default()
             },
+            // Drawn after the opaque terrain, on the far plane (vs_stars): only where the
+            // depth buffer still holds its clear value, 0.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),

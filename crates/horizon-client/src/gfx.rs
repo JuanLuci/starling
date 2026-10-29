@@ -1476,6 +1476,11 @@ impl Renderer {
             true,
             Some(alpha_blend),
         );
+        // The sky, the dark disc, the celestial bodies and the stars draw after the opaque
+        // terrain, on the far plane (clip z 0): the depth test keeps them to the pixels no
+        // terrain covered, so a full-screen sky shades only the sky that shows. (Drawn first
+        // and untested, as vanilla does, the sky shaded every pixel and the terrain covered
+        // most of them.)
         let sky = pipeline(
             "Sky",
             "vs_sky",
@@ -1484,7 +1489,7 @@ impl Renderer {
             tri,
             None,
             false,
-            false,
+            true,
             None,
         );
         let dark_disc = pipeline(
@@ -1495,7 +1500,7 @@ impl Renderer {
             tri,
             None,
             false,
-            false,
+            true,
             Some(alpha_blend),
         );
         let lines = pipeline(
@@ -2243,7 +2248,8 @@ impl Renderer {
             layout: Some(&entity_layout),
             vertex: wgpu::VertexState {
                 module: &entity_shader,
-                entry_point: Some("vs_entity"),
+                // On the far plane: drawn after the opaque terrain (as the sky).
+                entry_point: Some("vs_sky_entity"),
                 compilation_options: Default::default(),
                 buffers: &entity_vertex,
             },
@@ -2254,7 +2260,7 @@ impl Renderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -4878,44 +4884,22 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
-            if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
-                if !frame.title && frame.skybox && !pack_draws_sky && !native_sky_pass {
-                    match self
-                        .native
-                        .as_ref()
-                        .and_then(|n| Some((n.sky.as_ref()?, &n.frame)))
-                    {
-                        Some((sky, native)) => sky.draw(&mut pass, native),
-                        None => {
-                            pass.set_pipeline(&self.sky);
-                            pass.draw(0..3, 0..1);
-                        }
-                    }
-                }
-                if frame.title {
-                    self.panorama.draw(&mut pass);
-                    pass.set_bind_group(0, &self.group, &[]);
-                } else if celestial_vertices > 0 || frame.end_sky {
-                    pass.set_pipeline(&self.celestial_pipeline);
-                    pass.set_bind_group(0, &self.entity_group, &[]);
-                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    if frame.end_sky {
-                        self.end_sky.draw(&mut pass);
-                    }
-                    if celestial_vertices > 0 && !pack_draws_celestial {
-                        pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-                        pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
-                    }
-                    pass.set_bind_group(0, &self.group, &[]);
-                }
-                if !frame.title && frame.stars.is_some() && !pack_draws_sky {
-                    self.stars.draw(&mut pass);
-                    pass.set_bind_group(0, &self.group, &[]);
-                }
-                if !frame.title && frame.dark_disc && !pack_draws_sky {
-                    pass.set_pipeline(&self.dark_disc);
-                    pass.draw(0..3, 0..1);
-                }
+            // The title's panorama, and the sky of one of Horizon's own packs (its pipeline
+            // has no depth test), before the terrain; vanilla's sky after it, below.
+            let native_sky = self
+                .native
+                .as_ref()
+                .and_then(|n| Some((n.sky.as_ref()?, &n.frame)));
+            if frame.title {
+                self.panorama.draw(&mut pass);
+                pass.set_bind_group(0, &self.group, &[]);
+            } else if sky_visible
+                && frame.skybox
+                && !pack_draws_sky
+                && !native_sky_pass
+                && let Some((sky, native)) = native_sky
+            {
+                sky.draw(&mut pass, native);
             }
             match self
                 .flat
@@ -4994,6 +4978,37 @@ impl Renderer {
                         None => self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws),
                     }
                 }
+            }
+            // The sky after the opaque terrain, on the far plane with a depth test: the
+            // full-screen sky shades only the pixels the terrain left (SkyRenderer draws it
+            // first; the picture is the same, as nothing drawn so far is translucent).
+            if !frame.title && sky_visible && (frame.skybox || frame.end_sky) {
+                if frame.skybox && !pack_draws_sky && !native_sky_pass && native_sky.is_none() {
+                    pass.set_pipeline(&self.sky);
+                    pass.draw(0..3, 0..1);
+                }
+                if celestial_vertices > 0 || frame.end_sky {
+                    pass.set_pipeline(&self.celestial_pipeline);
+                    pass.set_bind_group(0, &self.entity_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if frame.end_sky {
+                        self.end_sky.draw(&mut pass);
+                    }
+                    if celestial_vertices > 0 && !pack_draws_celestial {
+                        pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
+                        pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                    }
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.stars.is_some() && !pack_draws_sky {
+                    self.stars.draw(&mut pass);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.dark_disc && !pack_draws_sky {
+                    pass.set_pipeline(&self.dark_disc);
+                    pass.draw(0..3, 0..1);
+                }
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             if entity_quads > 0 {
                 pass.set_pipeline(&self.entity_pipeline);
