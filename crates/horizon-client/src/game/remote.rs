@@ -659,12 +659,12 @@ impl Game<'_> {
             carried: None,
             abilities: None,
             loaded_sent: false,
-                waiting_ticks: 0,
-                setbacks: 0,
-                player_attributes: Vec::new(),
-                // What the configuration phase sent (net.rs).
-                sent_info: horizon_protocol::packets::configuration::ClientInformation::new(view),
-                predictions: Default::default(),
+            waiting_ticks: 0,
+            setbacks: 0,
+            player_attributes: Vec::new(),
+            // What the configuration phase sent (net.rs).
+            sent_info: horizon_protocol::packets::configuration::ClientInformation::new(view),
+            predictions: Default::default(),
             menu: None,
             menu_title: None,
             state_id: 0,
@@ -7423,9 +7423,6 @@ fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
 
 /// The view distance a client asks for: its render distance, which Horizon
 /// lets go past vanilla's 32 (a vanilla server still caps it at its own).
-impl Game<'_> {
-}
-
 fn client_view_distance(render_distance: i32) -> i8 {
     render_distance.clamp(2, i32::from(i8::MAX)) as i8
 }

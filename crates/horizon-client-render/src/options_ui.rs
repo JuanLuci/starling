@@ -2638,9 +2638,7 @@ impl OptionsUi {
                 let folder = match page {
                     Page::Mods => Some(("Open Mod Folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("Open Pack Folder", Act::OpenShaderPackFolder)),
-                    Page::Skin if self.skin_page => {
-                        Some(("Open Skin Folder", Act::OpenSkinFolder))
-                    }
+                    Page::Skin if self.skin_page => Some(("Open Skin Folder", Act::OpenSkinFolder)),
                     _ => None,
                 };
                 if let Some((label, act)) = folder {

@@ -115,9 +115,9 @@ mod mob_gear;
 mod mob_sounds;
 mod mod_creative;
 mod mod_input;
-mod mod_recipe_catalog;
 #[cfg(feature = "mods")]
 mod mod_panel;
+mod mod_recipe_catalog;
 mod mod_render;
 mod mod_ui;
 mod mod_widgets;
