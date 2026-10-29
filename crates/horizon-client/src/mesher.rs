@@ -6,6 +6,7 @@
 mod fluid;
 mod lighting;
 mod sides;
+pub mod stats;
 use crate::{
     assets::{Assets, RenderAssets},
     biome::Biomes,
