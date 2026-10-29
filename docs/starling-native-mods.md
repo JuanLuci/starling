@@ -50,8 +50,8 @@ the issue, builds, publishes and comments; the card finds the build afterwards.
 
 ## Where it builds
 
-- **GitHub's runners** always work: public repositories' Actions are free. A build from nothing takes about 30 to 40
-  minutes there (fast profile, 3 jobs with swap, as `android.yml`'s release).
+- **GitHub's runners** always work: public repositories' Actions are free. Not timed there yet; `android.yml`'s
+  release, the same profile with 3 jobs and swap, takes about 12 minutes.
 - **The build VM until 2026-11-21**, when set up: the repository variable `STARLING_VM` = `on` and Azure's federated
   login (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`). A run starts the VM, builds on its
   self-hosted runner (label `starling-vm`), and deallocates it when no other build waits. On the 21st, or without the
@@ -82,6 +82,20 @@ credit. Started per build it costs cents a build.
 - **The library is checked** against the SHA-256 in its JSON, both from the `native-builds` release, which only this
   repository's workflows write.
 
-## Status
+## Status (2026-10-29)
 
-Written 2026-10-29. See the "Tested" lines in the commit log of this file's changes.
+Tried:
+
+- **Wrench's rules**: its 8 tests pass (`rustc --edition 2024 --test runtime.rs`).
+- **The build on the VM**, Starling `f2da8d3` with the Wrench: horizon-mixins applied it (4 injections, 2 modules),
+  the game's `use_item` starts with its hook, its text is in the library, which exports both `starling_on_create` and
+  `ANativeActivity_onCreate`, with no warning from the mod. From an empty build folder (8 vCPUs): 252 s with the quick
+  profile, 225 s with fast (311 crates; horizon-mixins built once before, in about a minute). The fast library is 64
+  MB stripped, the APK with it 33 MB.
+- **The workflow on GitHub** (a dispatch for 0.1.3): the request, the runner, the tag's checkout, horizon-mixins and
+  the script ran; the build stopped at `E_TARGET_NOT_FOUND` for `native_mods`, as it must: 0.1.3 has no hook points.
+  **0.1.4 is the first version that builds**; nothing was published.
+- **CI** builds the APK with the loader and the card.
+
+Not tried yet: anything on a phone (the start through `starling_on_create`, the card, the download, the swap, the
+Wrench in a world), the VM's runner and Azure login, a player's issue.
