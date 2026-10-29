@@ -4981,10 +4981,12 @@ mod tests {
         use winit::keyboard::KeyCode;
         let atlas = atlas();
         let mut s = Settings::default();
-        let mut ui = OptionsUi::default();
         // The game's own options; on the stack without `push`, which reads the page from beside
         // options.txt.
-        ui.skin_page = true;
+        let mut ui = OptionsUi {
+            skin_page: true,
+            ..Default::default()
+        };
         ui.stack.push(Page::Skin);
         ui.skin.saved = "Player00042".into();
         ui.skin.name.set_value("Player00042");

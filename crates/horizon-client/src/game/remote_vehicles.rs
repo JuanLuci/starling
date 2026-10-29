@@ -77,8 +77,8 @@ impl Game<'_> {
     /// The nearest interaction entity the view hits within the player's entity interaction range:
     /// its id and how far along the view.
     pub(super) fn interaction_hit(&self) -> Option<(u32, f64)> {
-        let eye = self.eye_position()?;
-        let dir = view_vector(self.yaw, self.pitch);
+        // The crosshair's one ray, as every other target's (`aim`).
+        let (eye, dir) = self.aim()?;
         let reach = if self.creative { 5.0 } else { 3.0 };
         self.interactions
             .iter()
