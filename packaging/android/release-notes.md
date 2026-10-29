@@ -1,24 +1,19 @@
-**Starling 0.1.2: your name and your skin.**
+**Starling 0.1.3: signing in works when your phone cuts background apps off the internet.**
 
 ## Install
 
-- **On 0.1.0.1 or 0.1.1:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
-- **On 0.1.0, or new here:** download **`starling-0.1.2-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
+- **On 0.1.0.1 or later:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
+- **On 0.1.0, or new here:** download **`starling-0.1.3-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
 
 > Installed a test build from GitHub Actions? Uninstall it first: test builds are signed with another key. Worlds kept in the `Starling` folder stay where they are.
 
-## What's new
+## What's fixed
 
-- **Your name and your skin**, in **Options > Skin Customization**: the name you play with in your worlds (3 to 16 letters, digits or `_`), and a skin from your files (**Choose a File...**, or a PNG in `Starling/skins`), classic or slim. Open a skin PNG with Starling and it is put on at once. Signed in with a Microsoft account, servers still see your account's name and skin.
-- **You on the title screen**: your player stands beside the menu with your skin and your name; tap it to change them.
-- **Ely.by skins**: playing without a Microsoft account, you wear the skin your name has on [ely.by](https://ely.by) (when you chose no file), and on offline servers players the server gives no skin show the one their name has there, as offline launchers do. Starling asks ely.by for those names; turn it off with **Ely.by Skins** in Skin Customization.
-- **The Starling folder, asked first**: the setup offers to keep your worlds, packs and logs in a `Starling` folder any file manager opens, before you sign in.
-- **High refresh rates**: with Max Framerate on Unlimited, Starling asks Android for your screen's fastest refresh rate instead of letting it hold the game at 60 Hz.
-- **Back from another app**: coming back to Starling from the browser after signing in, from the file picker or from any other app no longer leaves a black screen (it came with 0.1.1).
+- **Signing in no longer stops with "Could not reach Microsoft (dns failed ...)"** after you entered the code in the browser. While you sign in there, Starling waits in the background, and many phones cut a background app's internet (battery and data savers, the maker's own restrictions): the first answer it missed ended the sign-in. Now it keeps asking until you come back, and the steps after it (Xbox, Minecraft) are tried again too.
 
 ## Known issues
 
-- Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed, and the message now says why.
+- Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed, and the message says why.
 - Bedrock's buttons show from the start after the one that downloads them.
 - Tested on a POCO F6 Pro (Adreno 740) and by a player on a vivo X200s (Immortalis-G925, a Mali GPU: about 100 fps); other Mali phones are untested so far.
 - Servers that require signed chat (secure chat) refuse messages for now.

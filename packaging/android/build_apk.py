@@ -30,8 +30,8 @@ HERE = Path(__file__).resolve().parent
 
 APPLICATION_ID = "io.github.juanluci.starling"
 LABEL = "Starling"
-VERSION_NAME = "0.1.2"
-VERSION_CODE = 4
+VERSION_NAME = "0.1.3"
+VERSION_CODE = 5
 MIN_SDK = 26  # AAudio (cpal)
 TARGET_SDK = 35
 PLATFORM = 36

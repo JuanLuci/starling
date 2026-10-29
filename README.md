@@ -24,7 +24,7 @@
 
 ## Download
 
-**[Starling v0.1.2](https://github.com/JuanLuci/starling/releases/latest)**: download `starling-0.1.2-arm64-v8a.apk` from [the releases page](https://github.com/JuanLuci/starling/releases) and open it on the phone (Android asks you to allow installing apps from your browser or file manager). Already on v0.1.0.1 or later? Starling offers it on its title screen, downloads it and has Android install it (Update, Tomorrow or No); from v0.1.0, install it over by hand once.
+**[Starling v0.1.3](https://github.com/JuanLuci/starling/releases/latest)**: download `starling-0.1.3-arm64-v8a.apk` from [the releases page](https://github.com/JuanLuci/starling/releases) and open it on the phone (Android asks you to allow installing apps from your browser or file manager). Already on v0.1.0.1 or later? Starling offers it on its title screen, downloads it and has Android install it (Update, Tomorrow or No); from v0.1.0, install it over by hand once.
 
 **You need** a 64-bit phone with Android 8 or newer and Vulkan, about 2 GB free, and a Microsoft account that owns Minecraft: Java Edition. No computer: on the first start Starling signs you in, downloads the game's files from Mojang's servers and prepares them on the phone, once (79 seconds on a POCO F6 Pro, longer on slower phones). Go fishing or change the settings while it works.
 
