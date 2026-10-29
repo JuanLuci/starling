@@ -399,10 +399,7 @@ impl Game<'_> {
     }
 
     pub(super) fn touch_size(&self) -> [u32; 2] {
-        self.window.as_ref().map_or([1, 1], |w| {
-            let s = w.inner_size();
-            [s.width.max(1), s.height.max(1)]
-        })
+        self.surface_size()
     }
 
     fn touch_layout(&self) -> Layout {

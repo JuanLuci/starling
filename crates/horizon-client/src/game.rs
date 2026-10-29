@@ -11599,6 +11599,7 @@ impl Game<'_> {
         Ok(())
     }
     fn render(&mut self) -> Result<bool> {
+        self.sync_window_scale();
         if let Some(loader) = &self.world_loader {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
@@ -12699,13 +12700,86 @@ impl Game<'_> {
         }
     }
 }
+impl Game<'_> {
+    /// The window's size in the pixels the game draws, lays out and reads touches in. On
+    /// Android that is the window's own buffer, `window_scale` percent of the screen
+    /// (graphics.rs): the game draws into it and the system scales it up. Elsewhere the window.
+    fn scaled_size(&self, size: winit::dpi::PhysicalSize<u32>) -> [u32; 2] {
+        let scale = if cfg!(target_os = "android") {
+            f64::from(self.settings.horizon.window_scale.clamp(25, 100)) / 100.0
+        } else {
+            1.0
+        };
+        [size.width, size.height].map(|v| ((f64::from(v) * scale).round() as u32).max(1))
+    }
+    /// The size the game's layout and touches use: the renderer's surface, else the window's
+    /// (`scaled_size`).
+    pub(crate) fn surface_size(&self) -> [u32; 2] {
+        match (&self.renderer, &self.window) {
+            (Some(r), _) if r.config.width > 0 && r.config.height > 0 => {
+                [r.config.width, r.config.height]
+            }
+            (_, Some(w)) => self.scaled_size(w.inner_size()),
+            _ => [1, 1],
+        }
+    }
+    /// Gives the renderer's surface the size `window_scale` asks for, when it has another (the
+    /// setting changed, the renderer came from the loading screen at the window's size).
+    pub(crate) fn sync_window_scale(&mut self) {
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        let Some(window) = &self.window else { return };
+        let [w, h] = self.scaled_size(window.inner_size());
+        if let Some(r) = &mut self.renderer
+            && !r.suspended
+            && !r.detached
+            && (r.config.width, r.config.height) != (w, h)
+        {
+            log::info!("Horizon: the window's buffer is {w}x{h} (window scale)");
+            r.resize(w, h);
+        }
+    }
+    /// Touch and pointer positions come in the screen's pixels: scaled to the surface's.
+    fn scale_pointer_event(&self, event: WindowEvent) -> WindowEvent {
+        let Some(window) = &self.window else {
+            return event;
+        };
+        let [sw, sh] = self.surface_size();
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 || (sw, sh) == (size.width, size.height) {
+            return event;
+        }
+        let (sx, sy) = (
+            f64::from(sw) / f64::from(size.width),
+            f64::from(sh) / f64::from(size.height),
+        );
+        match event {
+            WindowEvent::Touch(touch) => WindowEvent::Touch(winit::event::Touch {
+                location: winit::dpi::PhysicalPosition::new(
+                    touch.location.x * sx,
+                    touch.location.y * sy,
+                ),
+                ..touch
+            }),
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(position.x * sx, position.y * sy),
+            },
+            other => other,
+        }
+    }
+}
 impl ApplicationHandler for Game<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
             // Back from the background (Android): the same window, a new native surface.
-            let size = window.inner_size();
+            let [width, height] = self.scaled_size(window.inner_size());
             if let Some(r) = &mut self.renderer
-                && let Err(e) = r.resume(size.width, size.height)
+                && let Err(e) = r.resume(width, height)
             {
                 log::warn!("Horizon: the window's surface did not come back: {e}");
             }
@@ -12759,6 +12833,7 @@ impl ApplicationHandler for Game<'_> {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        let event = self.scale_pointer_event(event);
         // The focus goes first when the game leaves the screen (home, the recent apps, a call),
         // before the window, and the system may end the process from then on: the world is saved
         // at once, as Bedrock does.
@@ -12885,8 +12960,9 @@ impl ApplicationHandler for Game<'_> {
                     }
                 }
                 WindowEvent::Resized(size) => {
+                    let [width, height] = self.scaled_size(size);
                     if let Some(r) = &mut self.renderer {
-                        r.resize(size.width, size.height);
+                        r.resize(width, height);
                     }
                 }
                 WindowEvent::RedrawRequested => {
@@ -12910,8 +12986,9 @@ impl ApplicationHandler for Game<'_> {
                     self.begin_closing_save(true)?;
                 }
                 WindowEvent::Resized(size) => {
+                    let [width, height] = self.scaled_size(size);
                     if let Some(r) = &mut self.renderer {
-                        r.resize(size.width, size.height);
+                        r.resize(width, height);
                     }
                     self.observe_fullscreen();
                 }
@@ -12995,12 +13072,12 @@ impl ApplicationHandler for Game<'_> {
                     } else if let Some(title) = &mut self.title
                         && self.screen != Screen::Win
                     {
+                        // The renderer's surface (`surface_size`; `title` borrows self).
                         let size = self
-                            .window
+                            .renderer
                             .as_ref()
-                            .map(|w| w.inner_size())
-                            .unwrap_or_default();
-                        let batch = HudBatch::new([size.width, size.height]);
+                            .map_or([1, 1], |r| [r.config.width.max(1), r.config.height.max(1)]);
+                        let batch = HudBatch::new(size);
                         title.scroll_worlds(d, self.cursor, (batch.width, batch.height));
                     }
                     if self.screen == Screen::Playing

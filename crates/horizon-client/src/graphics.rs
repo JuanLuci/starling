@@ -260,6 +260,10 @@ pub struct Graphics {
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
+    /// Android: the window's own buffer as a percentage of the screen (25..=100). Below 100 the
+    /// game draws everything, HUD included, into a smaller buffer and the system's compositor
+    /// scales it up to the screen (no pass of the game's), as Bedrock and the Vasysik fork do.
+    pub window_scale: u32,
     /// FXAA over the world.
     pub fxaa: bool,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
@@ -316,6 +320,7 @@ impl Default for Graphics {
             workers: 0,
             overlay: Overlay::Off,
             resolution_scale: 100,
+            window_scale: 100,
             fxaa: false,
             hdr: false,
             hdr_paper_white: 200,
@@ -371,6 +376,7 @@ impl Graphics {
                 }
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(25, 200),
+                "windowScale" => g.window_scale = number(g.window_scale).clamp(25, 100),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => g.hdr_paper_white = number(g.hdr_paper_white).clamp(80, 480),
@@ -398,7 +404,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nwindowScale:{}\nfxaa:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -423,6 +429,7 @@ impl Graphics {
                 Overlay::Stats => "stats",
             },
             self.resolution_scale,
+            self.window_scale,
             bool_text(self.fxaa),
             bool_text(self.hdr),
             self.hdr_paper_white,
@@ -597,6 +604,7 @@ mod tests {
             workers: 6,
             overlay: Overlay::Graph,
             resolution_scale: 75,
+            window_scale: 50,
             fxaa: true,
             hdr: true,
             hdr_paper_white: 240,

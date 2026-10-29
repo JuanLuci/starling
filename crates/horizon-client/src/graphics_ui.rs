@@ -35,6 +35,7 @@ pub enum H {
     Workers,
     Overlay,
     ResolutionScale,
+    WindowScale,
     Antialiasing,
     Hdr,
     HdrPaperWhite,
@@ -219,6 +220,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "World pixels per screen pixel. Below 100% is faster on the GPU.",
             ),
             h(
+                H::WindowScale,
+                High,
+                "Android: window pixels per screen pixel, HUD included; the system scales it up.",
+            ),
+            h(
                 H::Antialiasing,
                 Medium,
                 "FXAA smooths jagged edges of the world; slightly softer image.",
@@ -341,6 +347,7 @@ impl H {
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 25.0) / 175.0),
+            H::WindowScale => Some((g.window_scale as f32 - 25.0) / 75.0),
             H::HdrPaperWhite => Some((g.hdr_paper_white as f32 - 80.0) / 400.0),
             H::HdrPeak => Some((g.hdr_peak as f32 - 200.0) / 1800.0),
             _ => None,
@@ -383,6 +390,7 @@ impl H {
                 n => labelled("Worker Threads", n),
             },
             H::ResolutionScale => labelled("Resolution Scale", format!("{}%", g.resolution_scale)),
+            H::WindowScale => labelled("Window Scale", format!("{}%", g.window_scale)),
             H::Antialiasing => labelled("Anti-aliasing", if g.fxaa { "FXAA" } else { "Off" }),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrPaperWhite => labelled("Paper White", format!("{} nits", g.hdr_paper_white)),
@@ -410,6 +418,7 @@ impl H {
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (25.0 + (v * 35.0).round() * 5.0) as u32,
+            H::WindowScale => g.window_scale = (25.0 + (v * 15.0).round() * 5.0) as u32,
             H::HdrPaperWhite => g.hdr_paper_white = (80.0 + (v * 40.0).round() * 10.0) as u32,
             H::HdrPeak => g.hdr_peak = (200.0 + (v * 36.0).round() * 50.0) as u32,
             _ => {}
