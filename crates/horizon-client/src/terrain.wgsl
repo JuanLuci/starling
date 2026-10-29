@@ -142,7 +142,8 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
-    if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    // EXPERIMENT (exp/opaque-terrain, never merged): no alpha cutout at all, to measure what the
+    // early depth test is worth on a phone's GPU when no solid draw may discard.
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
     // may shine. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.0, in.emission > 0u);
