@@ -4,10 +4,18 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -31,6 +39,7 @@ public final class LauncherActivity extends Activity {
         final int after = intent == null ? 0 : intent.getIntExtra(AFTER, 0);
         Uri file = handedFile(intent);
         if (after != 0) {
+            showRestarting();
             new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -74,6 +83,48 @@ public final class LauncherActivity extends Activity {
         game.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(game);
         finish();
+        // Straight into the game's black first frame, no window animation between.
+        overridePendingTransition(0, 0);
+    }
+
+    /**
+     * While the game starts again (a world whose mods are not the running ones): a screen of its
+     * own, black, landscape and without bars as the game is, so the phone does not show what is
+     * under this see-through activity between the two processes, as if the game had closed.
+     */
+    @SuppressWarnings("deprecation")
+    private void showRestarting() {
+        // Android 8.0 refuses an orientation to a see-through activity (it throws).
+        if (Build.VERSION.SDK_INT != Build.VERSION_CODES.O) {
+            try {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            } catch (IllegalStateException e) {
+                // As it is, then.
+            }
+        }
+        TextView text = new TextView(this);
+        text.setText("Opening the world with its mods…");
+        text.setTextColor(0xFFFFFFFF);
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        text.setGravity(Gravity.CENTER);
+        text.setBackgroundColor(0xFF000000);
+        setContentView(text);
+        View decor = getWindow().getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController bars = decor.getWindowInsetsController();
+            if (bars != null) {
+                bars.hide(WindowInsets.Type.systemBars());
+                bars.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
     }
 
     /** The file an "Open with" or a share hands to Horizon, if any. */

@@ -487,6 +487,8 @@ public final class StarlingActivity extends NativeActivity {
             @Override
             public void run() {
                 finish();
+                // Straight to the launcher's restart screen, no window animation between.
+                overridePendingTransition(0, 0);
             }
         });
     }
