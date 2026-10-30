@@ -64,6 +64,17 @@ pub struct CuboidModel {
     pub textures: BTreeMap<String, TextureSlot>,
     pub elements: Option<Vec<Option<Element>>>,
     pub display: Option<ItemTransforms>,
+    /// NeoForge's OBJ loader (mods' blocks): the mesh file it names; its faces, once read beside
+    /// the model (`mesh`), are drawn with the elements.
+    pub obj: Option<ObjSource>,
+    pub mesh: Option<std::sync::Arc<Vec<crate::obj::MeshFace>>>,
+}
+/// The OBJ file of a `neoforge:obj` model: `<ns>:<path to the .obj>` and whether its UVs' v is
+/// upside down.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjSource {
+    pub model: String,
+    pub flip_v: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
@@ -192,6 +203,24 @@ impl CuboidModel {
             .get("display")
             .map(|r| ItemTransforms::decode(r))
             .transpose()?;
+        // NeoForge's OBJ models: the mesh is read beside the model (`mesh`); the model itself is
+        // where the geometry is, with no elements of its own.
+        let loader = obj.get("loader").map(|r| primitive_string(r)).transpose()?;
+        let source = match (loader.as_deref(), obj.get("model")) {
+            (Some(l), Some(model)) if l.ends_with(":obj") => Some(ObjSource {
+                model: primitive_string(model)?,
+                flip_v: obj
+                    .get("flip_v")
+                    .map(|r| boolean(r))
+                    .transpose()?
+                    .unwrap_or(false),
+            }),
+            _ => None,
+        };
+        let elements = match (&source, elements) {
+            (Some(_), None) => Some(Vec::new()),
+            (_, elements) => elements,
+        };
         Ok(Self {
             parent,
             ambient_occlusion,
@@ -199,6 +228,8 @@ impl CuboidModel {
             textures,
             elements,
             display,
+            obj: source,
+            mesh: None,
         })
     }
 }

@@ -211,6 +211,31 @@ fn bake_elements(
             )?);
         }
     }
+    // NeoForge's OBJ meshes: block-unit corners and unit-atlas UVs as they are, a material
+    // `#slot` of the model's or a texture by name; no cull face, so they always draw.
+    for face in model.mesh() {
+        let material = match face.texture.starts_with('#') {
+            true => model.material(&face.texture)?.cloned(),
+            false => identifier(&face.texture).ok().map(|sprite| Material {
+                sprite,
+                force_translucent: false,
+            }),
+        };
+        let positions = face.positions.map(|v| transform.position(v));
+        output.push(ModelQuad {
+            positions,
+            uv: face.uv.map(|uv| uv.map(|value| 0.0 + value)),
+            facing: facing(&positions).unwrap_or(Direction::Up),
+            cull: None,
+            material: material.unwrap_or(Material {
+                sprite: "minecraft:missingno".to_owned(),
+                force_translucent: false,
+            }),
+            tint_index: -1,
+            shade_direction_override: None,
+            light_emission: 0,
+        });
+    }
     Ok(output)
 }
 /// `FaceBakery.bakeQuad` for a quad with explicit corners and unit-atlas UVs
