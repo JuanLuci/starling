@@ -1244,6 +1244,8 @@ impl Game<'_> {
         diffuse: bool,
         out: &mut Vec<Vertex>,
     ) {
+        // `PoseStack.Pose.transformNormal`'s matrix, once for every face.
+        let normals = glam::Mat3::from_mat4(m).inverse().transpose();
         for face in &model.faces {
             let Some(s) = self
                 .pack
@@ -1253,21 +1255,21 @@ impl Game<'_> {
             else {
                 continue;
             };
-            use horizon_assets::model::Direction as D;
-            let shade: u32 = match face.quad.facing {
-                D::Up => 255,
-                D::Down => 127,
-                D::North | D::South => 204,
-                D::West | D::East => 153,
-            };
+            let n = (normals * horizon_client::item_render::direction_vector(face.quad.facing))
+                .normalize_or_zero();
             let color = if diffuse {
                 u32::MAX
             } else {
+                // The terrain's shade of the face as it points now, so a turning part's faces
+                // darken and lighten as they go round: 1 up, 0.5 down, 0.8 north and south, 0.6
+                // east and west, blended between (a face that does not turn keeps its own).
+                let s = n.x * n.x * 0.6
+                    + n.y * n.y * if n.y > 0.0 { 1.0 } else { 0.5 }
+                    + n.z * n.z * 0.8;
+                let shade = ((s * 255.0 + 0.001) as u32).min(255);
                 0xFF00_0000 | shade << 16 | shade << 8 | shade
             };
             let normal = if diffuse {
-                use horizon_client::item_render::{direction_vector, transform_normal};
-                let n = transform_normal(m, direction_vector(face.quad.facing));
                 let n = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
                 [n[0], n[1], n[2], 127]
             } else {

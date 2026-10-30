@@ -71,6 +71,13 @@ impl Part {
             extra: kinetic.extra.clone(),
         })
     }
+    /// A cogwheel's teeth (Create's models: 8 and 16, one along each axis at no turn).
+    fn teeth(&self) -> f32 {
+        match self.kind {
+            KineticPart::LargeCogwheel => 16.0,
+            _ => 8.0,
+        }
+    }
     /// A cogwheel's radius in blocks; 0 for parts that do not mesh.
     pub fn radius(&self) -> f32 {
         match self.kind {
@@ -301,6 +308,49 @@ pub fn solve(
         .collect()
 }
 
+/// Every part's turn when the world's clock began, in degrees, so meshed cogwheels' teeth go into
+/// each other's gaps as they turn: a small one beside another half a tooth (22.5 degrees) from it,
+/// a large one diagonal to a small one half of its own tooth (11.25). Parts on one axle keep one
+/// turn; each separate set of parts starts at 0 from its least position.
+pub fn phases(parts: &HashMap<[i32; 3], Arc<Part>>) -> HashMap<[i32; 3], f32> {
+    let mut starts: Vec<[i32; 3]> = parts.keys().copied().collect();
+    starts.sort();
+    let mut phase = HashMap::new();
+    for start in starts {
+        if phase.contains_key(&start) {
+            continue;
+        }
+        phase.insert(start, 0.0);
+        let mut queue = VecDeque::from([start]);
+        while let Some(p) = queue.pop_front() {
+            let (a, c) = (&parts[&p], phase[&p]);
+            for (q, _) in links(parts, p, a) {
+                if phase.contains_key(&q) {
+                    continue;
+                }
+                let b = &parts[&q];
+                let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                let meshed =
+                    a.radius() > 0.0 && b.radius() > 0.0 && b.axis == a.axis && d[a.axis] == 0;
+                phase.insert(q, if meshed { mesh_phase(a, b, d, c) } else { c });
+                queue.push_back(q);
+            }
+        }
+    }
+    phase
+}
+
+/// The turn of cogwheel `b`, `d` from `a` in `a`'s plane, that meshes with `a` at turn `a_turn`:
+/// with angles in the plane about the axis (from its next axis to the one after, as the turn
+/// goes), a tooth of `a` pointing at `b` faces a gap of `b`. Where they touch, both move alike
+/// as they turn (speeds the other way by their radii, as their teeth's counts), so it holds.
+fn mesh_phase(a: &Part, b: &Part, d: [i32; 3], a_turn: f32) -> f32 {
+    let (u, v) = ((a.axis + 1) % 3, (a.axis + 2) % 3);
+    let toward = (d[v] as f32).atan2(d[u] as f32).to_degrees();
+    let (pa, pb) = (360.0 / a.teeth(), 360.0 / b.teeth());
+    (toward + 180.0 - pb * (0.5 - (toward - a_turn) / pa)).rem_euclid(pb)
+}
+
 /// The axis (0 x, 1 y, 2 z) and speed about its positive direction a model turning at face `f`
 /// of a part whose speed there is `s` outwards turns at.
 pub fn at_face(f: [i32; 3], s: f32) -> (usize, f32) {
@@ -470,6 +520,37 @@ mod tests {
         fast.insert([0, 0, 0], large("y"));
         fast.insert([1, 0, 1], cog("y"));
         assert_eq!(solve(&fast, &HashMap::new())[&[1, 0, 1]], -MAX_RPM);
+    }
+
+    #[test]
+    fn meshed_teeth_go_into_the_gaps() {
+        let mut parts = HashMap::new();
+        parts.insert([0, 0, 0], cog("y"));
+        parts.insert([1, 0, 0], cog("y"));
+        parts.insert([0, 1, 0], cog("y"));
+        parts.insert([-1, 0, 1], large("y"));
+        let p = phases(&parts);
+        // Beside it: half a tooth off; on the same axle: as it is.
+        assert!(((p[&[1, 0, 0]] - p[&[0, 0, 0]]).rem_euclid(45.0) - 22.5).abs() < 1e-3);
+        assert_eq!(p[&[0, 1, 0]], p[&[0, 0, 0]]);
+        // And the teeth stay in the gaps as they turn (each at its speed: the neighbour the other
+        // way, the large one half as fast): a tooth of one pointing at the other means a gap of
+        // the other pointing back, at any time.
+        let meets = |a: [i32; 3], b: [i32; 3], speed_b: f32, t: f32| {
+            let (pa, pb) = (&parts[&a], &parts[&b]);
+            let (ta, tb) = (p[&a] + 16.0 * t, p[&b] + speed_b * t);
+            // In the plane about y: z, then x.
+            let toward = ((b[0] - a[0]) as f32)
+                .atan2((b[2] - a[2]) as f32)
+                .to_degrees();
+            let teeth =
+                (toward - ta) / (360.0 / pa.teeth()) + (toward + 180.0 - tb) / (360.0 / pb.teeth());
+            (teeth.rem_euclid(1.0) - 0.5).abs() < 1e-3
+        };
+        for t in [0.0f32, 0.7, 3.3, 51.0] {
+            assert!(meets([0, 0, 0], [1, 0, 0], -16.0, t), "beside, at {t}");
+            assert!(meets([0, 0, 0], [-1, 0, 1], -8.0, t), "diagonal, at {t}");
+        }
     }
 
     #[test]

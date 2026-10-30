@@ -1165,26 +1165,27 @@ impl Game<'_> {
                     }
                 }
             }
-            // Breaking under the finger (tap to interact): a ring around it that fills as the
-            // block cracks.
-            if let (Some(p), true, false) = (
-                self.touch_aim_point(),
-                self.touch.controls.holding(),
-                self.touch.hold_uses,
-            ) {
-                let progress = self
-                    .mining
-                    .as_ref()
-                    .map_or(0.0, |m| m.progress.clamp(0.0, 1.0));
-                let (ring, dot) = (layout.unit * 0.55, layout.unit * 0.07);
-                const DOTS: usize = 24;
-                for i in 0..DOTS {
-                    let turn = i as f32 / DOTS as f32;
-                    let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                    let c = [p[0] + ring * angle.cos(), p[1] + ring * angle.sin()];
-                    let lit = turn < progress;
-                    let fill = color::with_alpha(color::WHITE, if lit { 0.9 } else { 0.3 });
-                    circle(&mut ui, c, dot, fill);
+            // Where the finger aims (tap to interact), as Horizon Android's (Vasysik, MIT): a
+            // white ring outlined dark, and while it breaks a block, a whole disc growing inside
+            // it to the rim as the block cracks (its size, never its angle, shows the progress).
+            if let Some(p) = self.touch_aim_point() {
+                let rgba = horizon_client::hud::rgba;
+                let gui = ui.batch.scale;
+                let radius = 16.0 * gui;
+                ring_of(
+                    &mut ui,
+                    Shape::Round,
+                    p,
+                    radius + 0.7 * gui,
+                    rgba(0, 0, 0, 110),
+                );
+                ring_of(&mut ui, Shape::Round, p, radius, rgba(255, 255, 255, 210));
+                let breaking = self.touch.controls.holding() && !self.touch.hold_uses;
+                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress);
+                let inner = (radius - 1.5 * gui).max(0.0) * progress.clamp(0.0, 1.0);
+                if breaking && inner > 0.0 {
+                    circle(&mut ui, p, inner, rgba(255, 255, 255, 90));
+                    ring_of(&mut ui, Shape::Round, p, inner, rgba(255, 255, 255, 220));
                 }
             }
             let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);
