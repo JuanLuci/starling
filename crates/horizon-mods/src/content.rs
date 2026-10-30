@@ -113,7 +113,15 @@ pub struct Kinetic {
     /// handle).
     #[serde(default)]
     pub extra: Option<String>,
+    /// The way `extra` is made pointing (`north`...), when it is not made as the block's own
+    /// model: it is turned from there to the state's `facing` (Create's crank handle points
+    /// north, its block up).
+    #[serde(default)]
+    pub extra_facing: Option<String>,
 }
+
+/// The directions a kinetic model may be made pointing.
+pub const DIRECTIONS: [&str; 6] = ["down", "up", "north", "south", "west", "east"];
 
 /// A kinetic part: what it joins and how.
 #[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -482,6 +490,12 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         if !model(&k.half) || !model(&k.extra) {
             return Err("kinetic half and extra name models as <namespace>:<path>".into());
         }
+        if k.extra_facing
+            .as_deref()
+            .is_some_and(|f| !DIRECTIONS.contains(&f))
+        {
+            return Err("kinetic extra_facing is down, up, north, south, west or east".into());
+        }
     }
     Ok(())
 }
@@ -603,6 +617,19 @@ capabilities = ["registries"]
         assert!(refused(
             r#"{"template":"minecraft:oak_log","kinetic":{"part":"gearbox","half":"shaft_half"}}"#
         ));
+        assert!(refused(
+            r#"{"template":"minecraft:lightning_rod","kinetic":{"part":"crank","extra_facing":"in"}}"#
+        ));
+        let crank: BlockFile = serde_json::from_str(
+            r#"{"template":"minecraft:lightning_rod","kinetic":{"part":"crank",
+                "extra":"create:block/hand_crank/handle","extra_facing":"north"}}"#,
+        )
+        .unwrap();
+        assert!(check_block(&crank).is_ok());
+        assert_eq!(
+            crank.kinetic.unwrap().extra_facing.as_deref(),
+            Some("north")
+        );
         // A part the game does not know is not read at all.
         let unknown = r#"{"template":"minecraft:iron_chain","kinetic":{"part":"flywheel"}}"#;
         assert!(serde_json::from_str::<BlockFile>(unknown).is_err());

@@ -37,6 +37,9 @@ pub struct Part {
     pub spins: bool,
     pub half: Option<String>,
     pub extra: Option<String>,
+    /// The quarter turns that point `extra` at the state's facing, when it is made pointing
+    /// elsewhere than the block's own model (None: the blockstate's turns).
+    pub extra_turns: Option<[u8; 3]>,
 }
 
 impl Part {
@@ -65,6 +68,10 @@ impl Part {
                 None => (axis_of(direction(facing?)?), [0; 3]),
             },
         };
+        let extra_turns = match (kinetic.extra_facing.as_deref(), facing) {
+            (Some(made), Some(facing)) => Some(turns_from(direction(made)?, direction(facing)?)),
+            _ => None,
+        };
         Some(Part {
             kind: kinetic.part,
             axis,
@@ -73,6 +80,7 @@ impl Part {
             spins: kinetic.spins,
             half: kinetic.half.clone(),
             extra: kinetic.extra.clone(),
+            extra_turns,
         })
     }
     /// A cogwheel's teeth (Create's models: 8 and 16, one along each axis at no turn).
@@ -365,14 +373,28 @@ pub fn at_face(f: [i32; 3], s: f32) -> (usize, f32) {
 /// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
 /// south at face `f`.
 pub fn turns_to(f: [i32; 3]) -> [u8; 3] {
-    match f {
-        [0, 0, 1] => [0, 0, 0],
-        [-1, 0, 0] => [0, 1, 0],
-        [0, 0, -1] => [0, 2, 0],
-        [1, 0, 0] => [0, 3, 0],
-        [0, 1, 0] => [1, 0, 0],
-        _ => [3, 0, 0],
+    turns_from([0, 0, 1], f)
+}
+
+/// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
+/// `made` at `f`: the first of x then y, as a variant turns its model (x first, each quarter
+/// taking south up and south west).
+pub fn turns_from(made: [i32; 3], f: [i32; 3]) -> [u8; 3] {
+    let x = |[a, b, c]: [i32; 3]| [a, c, -b];
+    let y = |[a, b, c]: [i32; 3]| [-c, b, a];
+    for tx in 0..4u8 {
+        let mut v = made;
+        for _ in 0..tx {
+            v = x(v);
+        }
+        for ty in 0..4u8 {
+            if v == f {
+                return [tx, ty, 0];
+            }
+            v = y(v);
+        }
     }
+    [0; 3]
 }
 
 #[cfg(test)]
@@ -386,8 +408,41 @@ mod tests {
             spins: true,
             half: None,
             extra: None,
+            extra_facing: None,
         };
         Arc::new(Part::new(&kinetic, axis, facing).unwrap())
+    }
+
+    #[test]
+    fn turns_point_a_model_from_the_way_it_is_made() {
+        // From south, as the shaft ends are made.
+        let faces = [
+            ([0, 0, 1], [0, 0, 0]),
+            ([-1, 0, 0], [0, 1, 0]),
+            ([0, 0, -1], [0, 2, 0]),
+            ([1, 0, 0], [0, 3, 0]),
+            ([0, 1, 0], [1, 0, 0]),
+            ([0, -1, 0], [3, 0, 0]),
+        ];
+        for (face, turns) in faces {
+            assert_eq!(turns_to(face), turns);
+        }
+        // Create's crank handle is made pointing north, its block up: a crank facing up turns
+        // the handle up, one facing east only about y.
+        let kinetic = Kinetic {
+            part: KineticPart::Crank,
+            rpm: 32.0,
+            spins: true,
+            half: None,
+            extra: Some("create:block/hand_crank/handle".into()),
+            extra_facing: Some("north".into()),
+        };
+        let up = Part::new(&kinetic, None, Some("up")).unwrap();
+        assert_eq!(up.extra_turns, Some([3, 0, 0]));
+        let east = Part::new(&kinetic, None, Some("east")).unwrap();
+        assert_eq!(east.extra_turns, Some([0, 1, 0]));
+        // Without it, the blockstate's turns.
+        assert_eq!(shaft("x").extra_turns, None);
     }
     fn shaft(axis: &str) -> Arc<Part> {
         part(KineticPart::Shaft, Some(axis), None, 0.0)

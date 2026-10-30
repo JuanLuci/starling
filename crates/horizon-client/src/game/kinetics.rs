@@ -184,8 +184,25 @@ impl Game<'_> {
                 continue;
             }
             let at = glam::Mat4::from_translation((corner - camera).as_vec3());
-            let light = self.world.light(pos[0], pos[1], pos[2]);
-            let light = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            // The brightest of its block and the six beside it, sky and block light apart: a
+            // part on a solid template (a crushing wheel's, a flywheel's) has none of its own.
+            const AROUND: [[i32; 3]; 7] = [
+                [0, 0, 0],
+                [1, 0, 0],
+                [-1, 0, 0],
+                [0, 1, 0],
+                [0, -1, 0],
+                [0, 0, 1],
+                [0, 0, -1],
+            ];
+            let (sky, block) = AROUND
+                .into_iter()
+                .map(|d| {
+                    self.world
+                        .light(pos[0] + d[0], pos[1] + d[1], pos[2] + d[2])
+                })
+                .fold((0, 0), |(s, b), l| (s.max(l >> 4), b.max(l & 15)));
+            let light = (u32::from(sky) * 16) | ((u32::from(block) * 16) << 8);
             let speed = self.kinetics.speeds.get(pos).copied().unwrap_or(0.0);
             let phase = self.kinetics.phases.get(pos).copied().unwrap_or(0.0);
             // Shaft-like parts turn about their axis; the rest by their face's sign.
@@ -197,13 +214,17 @@ impl Game<'_> {
             let Ok(models) = catalog.collect_seeded(*state, 0) else {
                 continue;
             };
+            let start = out.len();
             if part.spins {
                 for (_, model) in &models {
                     self.baked_model_vertices(model, at * own, light, false, out);
                 }
             }
             if let Some(extra) = &part.extra {
-                let turns = models.first().map_or([0; 3], |(v, _)| v.rotations);
+                let turns = part
+                    .extra_turns
+                    .or_else(|| models.first().map(|(v, _)| v.rotations))
+                    .unwrap_or([0; 3]);
                 if let Some(model) = catalog.partial(extra, [turns[0], turns[1], 0]) {
                     self.baked_model_vertices(model, at * own, light, false, out);
                 }
@@ -219,6 +240,23 @@ impl Game<'_> {
                     self.baked_model_vertices(model, at * end, light, false, out);
                 }
             }
+            cull_back_faces(out, start);
         }
     }
+}
+
+/// Drops the quads of `out[from..]` facing away from the camera (at the origin), as the
+/// terrain's culled faces: the entity pass draws both sides, and a part's open side (a crank's
+/// hollow base) would show its faces' backs against the shaft beside it.
+fn cull_back_faces(out: &mut Vec<Vertex>, from: usize) {
+    let mut kept = from;
+    for quad in (from..out.len()).step_by(4) {
+        let p = |i: usize| glam::Vec3::from_array(out[quad + i].pos);
+        let normal = (p(1) - p(0)).cross(p(2) - p(0));
+        if normal == glam::Vec3::ZERO || normal.dot(p(0)) < 0.0 {
+            out.copy_within(quad..quad + 4, kept);
+            kept += 4;
+        }
+    }
+    out.truncate(kept);
 }
