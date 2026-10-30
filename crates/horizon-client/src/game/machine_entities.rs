@@ -42,6 +42,7 @@ pub(super) enum Kind {
     Press,
     Mixer,
     Saw,
+    Funnel,
 }
 
 impl Kind {
@@ -51,6 +52,7 @@ impl Kind {
             (Some(Machine::Basin), _) => Kind::Basin,
             (Some(Machine::Belt), _) => Kind::Belt,
             (Some(Machine::Burner), _) => Kind::Burner,
+            (Some(Machine::Funnel), _) => Kind::Funnel,
             (_, Some(KineticPart::Millstone)) => Kind::Millstone,
             (_, Some(KineticPart::Press)) => Kind::Press,
             (_, Some(KineticPart::Mixer)) => Kind::Mixer,
@@ -67,7 +69,7 @@ impl Kind {
             Kind::Basin => 18,
             Kind::Millstone => 10,
             Kind::Saw => super::saws::SLOTS,
-            Kind::Press | Kind::Mixer | Kind::Belt | Kind::Burner => 0,
+            Kind::Press | Kind::Mixer | Kind::Belt | Kind::Burner | Kind::Funnel => 0,
         }
     }
     /// Its tanks: a basin's two inputs then two outputs (its SmartFluidTankBehaviours).

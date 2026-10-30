@@ -569,6 +569,95 @@ impl Game<'_> {
         }
         rest
     }
+    /// Starling (Create's funnels): the item handler at `pos` seen from `face` taking `stack`
+    /// (`ItemHandlerHelper.insertItemStacked`): a machine's (processing.rs) or a container's as a
+    /// hopper fills it. None when nothing there holds items; else what did not go in.
+    pub(super) fn inventory_insert(
+        &mut self,
+        pos: [i32; 3],
+        face: Direction,
+        stack: ItemStack,
+    ) -> Option<Option<ItemStack>> {
+        if let Some(rest) = self.machine_insert(pos, stack.clone()) {
+            return Some(rest);
+        }
+        let view = self.containers().view((pos[0], pos[1], pos[2]), false)?;
+        Some(self.add_item(None, &view, stack, Some(face)))
+    }
+
+    /// Starling (Create's funnels): `ItemHelper.extract` up to `max` of the first item the
+    /// handler at `pos` gives from `face` (`ExtractionCountMode.UPTO`). None when nothing there
+    /// holds items; else what came out, if anything.
+    pub(super) fn inventory_extract(
+        &mut self,
+        pos: [i32; 3],
+        face: Direction,
+        max: u32,
+    ) -> Option<Option<ItemStack>> {
+        if self.machine_kind(pos).is_some() {
+            let mut out: Option<ItemStack> = None;
+            while out.as_ref().is_none_or(|o| o.count < max) {
+                let Some(Some(one)) = self.machine_take_one(pos) else {
+                    break;
+                };
+                match &mut out {
+                    Some(o) if o.same_item_same_components(&one) => o.count += 1,
+                    Some(_) => {
+                        // Another item: back where it came from.
+                        let _ = self.machine_insert(pos, one);
+                        break;
+                    }
+                    None => out = Some(one),
+                }
+            }
+            return Some(out);
+        }
+        let view = self.containers().view((pos[0], pos[1], pos[2]), false)?;
+        let mut out: Option<ItemStack> = None;
+        for slot in view.slots_for_face(Some(face)) {
+            let Some(stack) = self.containers().get(&view, slot).cloned() else {
+                continue;
+            };
+            if !self.containers().can_take(&view, slot, &stack, face) {
+                continue;
+            }
+            if out
+                .as_ref()
+                .is_some_and(|o| !o.same_item_same_components(&stack))
+            {
+                continue;
+            }
+            let have = out.as_ref().map_or(0, |o| o.count);
+            let limit = max.min(self.containers().max_stack(&stack));
+            let n = stack.count.min(limit.saturating_sub(have));
+            if n == 0 {
+                break;
+            }
+            let Some(target) = self.slot_mut_at(&view, slot) else {
+                continue;
+            };
+            if let Some(current) = target.as_mut() {
+                current.count -= n;
+                if current.count == 0 {
+                    *target = None;
+                }
+            }
+            match &mut out {
+                Some(o) => o.count += n,
+                None => {
+                    out = Some(ItemStack {
+                        count: n,
+                        ..stack.clone()
+                    })
+                }
+            }
+        }
+        if out.is_some() {
+            self.view_changed(&view);
+        }
+        Some(out)
+    }
+
     /// Remove one item from a slot (`removeItem(slot, 1)`).
     fn take_one(&mut self, view: &View, slot: usize) -> Option<ItemStack> {
         let target = self.slot_mut_at(view, slot)?;

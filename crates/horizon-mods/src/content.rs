@@ -251,6 +251,10 @@ pub enum Machine {
     /// Burns fuel and heats the basin above it, its state's `blaze` saying how much (Create's
     /// blaze burner).
     Burner,
+    /// Faces away from the inventory behind it: puts what comes in at its open side into it, or
+    /// (its state's `extracting`) takes items out and drops them; `powered` pauses it (Create's
+    /// funnels; a `brass` one takes up to a stack at a time).
+    Funnel,
 }
 
 #[derive(Debug, Deserialize)]

@@ -47,6 +47,8 @@ pub(super) struct Machines {
     pub(super) fan_depots: HashMap<[i32; 3], (super::fans::Processing, i32)>,
     /// The belts and their items (belts.rs).
     pub(super) belts: super::belts::Belts,
+    /// Each extracting funnel's ticks until it extracts again (funnels.rs).
+    pub(super) funnels: HashMap<[i32; 3], i32>,
     /// Drills, crushing wheels and controllers at the last look, for the log.
     counts: (usize, usize, usize),
 }
@@ -623,6 +625,7 @@ impl Game<'_> {
         let here = |pos: &[i32; 3]| entities.binary_search_by_key(pos, |(p, _)| *p).is_ok();
         m.timers.retain(|pos, _| here(pos));
         m.works.retain(|pos, _| here(pos));
+        m.funnels.retain(|pos, _| here(pos));
         m.entities = entities;
     }
 

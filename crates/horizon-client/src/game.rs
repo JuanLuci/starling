@@ -73,6 +73,7 @@ mod fov;
 mod frames;
 mod friends;
 mod functions;
+mod funnels;
 mod game_mode;
 mod gamemode_switcher;
 mod ghasts;

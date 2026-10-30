@@ -100,6 +100,8 @@ impl Game<'_> {
                     let along = self.axis_along_first(pos, facing, flat);
                     vec![if along { "true" } else { "false" }]
                 }
+                // FunnelBlock: extracting unless they sneak.
+                "extracting" => vec![if ctx.sneaking { "false" } else { "true" }],
                 // SawBlock: upright, and the player facing south or east.
                 "flipped" => {
                     let upright = s
@@ -121,9 +123,13 @@ impl Game<'_> {
                 }
             }
         }
-        let Some(new) = registry.id(&s) else {
+        let Some(mut new) = registry.id(&s) else {
             return state;
         };
+        // A funnel over a belt is the belt's funnel.
+        if let Some(funnel) = self.belt_funnel_for(pos, new, ctx.sneaking) {
+            new = funnel;
+        }
         if new != state {
             let at = BlockPos::new(pos[0], pos[1], pos[2]);
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, new, 3));

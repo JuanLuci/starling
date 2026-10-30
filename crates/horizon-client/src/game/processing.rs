@@ -111,6 +111,7 @@ impl Game<'_> {
                 Kind::Mixer => self.tick_mixer(pos, speed),
                 Kind::Burner => self.tick_burner(pos),
                 Kind::Saw => self.tick_saw(pos, speed),
+                Kind::Funnel => self.tick_funnel(pos),
                 Kind::Belt => {}
             }
         }
@@ -570,6 +571,7 @@ impl Game<'_> {
             Some(Kind::Basin) => held.is_none_or(|s| s.item.ends_with("bucket")),
             Some(Kind::Belt) => held.is_none(),
             Some(Kind::Saw) => self.saw_takes(pos, held),
+            Some(Kind::Funnel) => self.funnel_takes(pos, face, held),
             // Fuel (BlazeBurnerBlock.useItemOn).
             Some(Kind::Burner) => held.is_some_and(|h| {
                 self.res
@@ -594,6 +596,7 @@ impl Game<'_> {
             Some(Kind::Belt) => self.use_belt(pos),
             Some(Kind::Burner) => self.use_burner(pos),
             Some(Kind::Saw) => self.use_saw(pos),
+            Some(Kind::Funnel) => self.use_funnel(pos, face),
             _ => false,
         }
     }
