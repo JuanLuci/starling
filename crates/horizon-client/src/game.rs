@@ -187,6 +187,7 @@ mod render_tick;
 mod respawn_anchor;
 mod saves_control;
 mod saving;
+mod saws;
 mod scoreboard;
 mod screens;
 mod sculk;

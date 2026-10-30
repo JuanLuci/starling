@@ -84,7 +84,7 @@ pub(super) fn insert_stacked(
 }
 
 impl Game<'_> {
-    fn machine_sound(&mut self, pos: [i32; 3], sound: &str, volume: f32, pitch: f32) {
+    pub(super) fn machine_sound(&mut self, pos: [i32; 3], sound: &str, volume: f32, pitch: f32) {
         self.level_events.push(LevelEvent::Sound {
             pos: horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
             sound: sound.into(),
@@ -110,14 +110,16 @@ impl Game<'_> {
                 Kind::Basin => self.tick_basin(pos),
                 Kind::Mixer => self.tick_mixer(pos, speed),
                 Kind::Burner => self.tick_burner(pos),
+                Kind::Saw => self.tick_saw(pos, speed),
                 Kind::Belt => {}
             }
         }
     }
 
-    /// `SharedDepotBlockMethods.onLanded`, `MillstoneBlock.updateEntityAfterFallOn`: an item
-    /// lying on the machine's top goes in, as much as fits.
-    fn catch_on_top(&mut self, pos: [i32; 3], kind: Kind, top: f64) {
+    /// `SharedDepotBlockMethods.onLanded`, `MillstoneBlock.updateEntityAfterFallOn`,
+    /// `SawBlock.updateEntityAfterFallOn`: an item lying on the machine's top goes in, as much
+    /// as fits.
+    pub(super) fn catch_on_top(&mut self, pos: [i32; 3], kind: Kind, top: f64) {
         let lo = [f64::from(pos[0]), f64::from(pos[2])];
         let y = f64::from(pos[1]) + top;
         let found = self.dropped.iter().position(|d| {
@@ -135,6 +137,7 @@ impl Game<'_> {
         let rest = match kind {
             Kind::Depot => self.depot_insert(pos, stack.clone()),
             Kind::Millstone => self.millstone_insert(pos, stack.clone()),
+            Kind::Saw => self.saw_insert(pos, stack.clone()),
             _ => Some(stack.clone()),
         };
         match rest {
@@ -505,6 +508,7 @@ impl Game<'_> {
             Kind::Depot => Some(self.depot_insert(at, stack)),
             Kind::Millstone => Some(self.millstone_insert(at, stack)),
             Kind::Basin => Some(self.basin_insert(at, stack)),
+            Kind::Saw => Some(self.saw_insert(at, stack)),
             _ => None,
         }
     }
@@ -529,6 +533,8 @@ impl Game<'_> {
             }
             Kind::Millstone => MILL_OUTPUTS.collect(),
             Kind::Basin => super::basins::OUTPUTS.collect(),
+            // ProcessingInventory.extractItem: nothing comes out of a saw.
+            Kind::Saw => Vec::new(),
             _ => return None,
         };
         for slot in slots {
@@ -563,6 +569,7 @@ impl Game<'_> {
             // An empty hand or a bucket (BasinBlock.useItemOn).
             Some(Kind::Basin) => held.is_none_or(|s| s.item.ends_with("bucket")),
             Some(Kind::Belt) => held.is_none(),
+            Some(Kind::Saw) => self.saw_takes(pos, held),
             // Fuel (BlazeBurnerBlock.useItemOn).
             Some(Kind::Burner) => held.is_some_and(|h| {
                 self.res
@@ -586,6 +593,7 @@ impl Game<'_> {
             Some(Kind::Basin) => self.use_basin(pos),
             Some(Kind::Belt) => self.use_belt(pos),
             Some(Kind::Burner) => self.use_burner(pos),
+            Some(Kind::Saw) => self.use_saw(pos),
             _ => false,
         }
     }

@@ -382,6 +382,10 @@ impl Game<'_> {
             if part.kind == KineticPart::Belt {
                 self.belt_segment_geometry(*state, part, at, own, light, out);
             }
+            // A saw's blade (SawRenderer.renderBlade).
+            if part.kind == KineticPart::Saw {
+                self.saw_blade_geometry(*state, *pos, part, at, light, out);
+            }
             // A press's head, a mixer's pole and head, as far down as their work has them
             // (MechanicalPressRenderer, MechanicalMixerRenderer); a mixer's head turns.
             if part.head.is_some() || part.pole.is_some() {
@@ -580,6 +584,159 @@ impl Game<'_> {
         }
     }
 
+    /// `SawRenderer.renderBlade`: the blade running, reversed or still (`part.models`: the
+    /// horizontal ones, then the vertical ones, in that order), made facing south and turned to
+    /// the saw's facing; an upright one along x a quarter turn more.
+    fn saw_blade_geometry(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+        part: &Part,
+        at: glam::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let Some(props) = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .map(|s| &s.properties)
+        else {
+            return;
+        };
+        let Some(facing) = props.get("facing").and_then(|f| kinetics::direction(f)) else {
+            return;
+        };
+        let speed = self.kinetics.speeds.get(&pos).copied().unwrap_or(0.0);
+        let running = if speed > 0.0 {
+            0
+        } else if speed < 0.0 {
+            1
+        } else {
+            2
+        };
+        let upright = facing[1] != 0;
+        let Some(model) = part.models.get(running + if upright { 3 } else { 0 }) else {
+            return;
+        };
+        let mut turns = kinetics::turns_from([0, 0, 1], facing);
+        if upright && props.get("axis_along_first").map(String::as_str) == Some("true") {
+            // rotateCentered(90°, UP): three of a variant's quarter turns.
+            turns[1] = (turns[1] + 3) % 4;
+        }
+        let catalog = &self.pack.render.model_catalog;
+        if let Some(model) = catalog.partial(model, [turns[0], turns[1], 0]) {
+            self.baked_model_vertices(model, at, light, false, out);
+        }
+    }
+
+    /// `SawRenderer.renderItems`: what a saw facing up holds, on its way across it as it cuts
+    /// (the input over the first half, the results over the second).
+    fn saw_item_geometry(&self, pos: [i32; 3], camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        use super::saws::{CUT, IDLE, SCALE};
+        use horizon_assets::item_model::DisplayContext;
+        use horizon_client::block_entity_render::vertex_light;
+        let corner = glam::DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+        if (corner + glam::DVec3::splat(0.5)).distance(camera) > DRAW_DISTANCE / 2.0 {
+            return;
+        }
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let Some(props) = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .map(|s| &s.properties)
+        else {
+            return;
+        };
+        if props.get("facing").map(String::as_str) != Some("up") {
+            return;
+        }
+        let e = super::machine_entities::read(&self.world, pos, Kind::Saw);
+        if e.stacks().next().is_none() {
+            return;
+        }
+        let along_z = props.get("axis_along_first").map(String::as_str) != Some("true");
+        let speed = self.kinetics.speeds.get(&pos).copied().unwrap_or(0.0);
+        // Its time left, run on from when the server last said (at its speed over 24).
+        let elapsed = (self.world.game_time - e.since) as f32;
+        let per_tick = speed.abs().clamp(SCALE as f32, (128 * SCALE) as f32);
+        let remaining = ((e.timer as f32 - elapsed * per_tick) / SCALE as f32).max(0.0);
+        let duration = e.work as f32 / SCALE as f32;
+        let partial = self.clock.fraction() as f32;
+        let mut offset = if duration != 0.0 && e.running != IDLE {
+            remaining / duration
+        } else {
+            0.0
+        };
+        if duration != 0.0 && e.running != IDLE {
+            let processing = (speed.abs() / 32.0).clamp(1.0, 128.0);
+            offset = (offset + ((-partial + 0.5) * processing) / duration).clamp(0.125, 1.0);
+            if e.running != CUT {
+                offset += 1.0;
+            }
+            offset /= 2.0;
+        }
+        if speed == 0.0 {
+            offset = 0.5;
+        }
+        if (speed < 0.0) ^ along_z {
+            offset = 1.0 - offset;
+        }
+        let outputs = e.items.iter().skip(1).flatten().count();
+        let light = vertex_light(self.world.light(pos[0], pos[1] + 1, pos[2]));
+        let mut base = glam::Mat4::from_translation((corner - camera).as_vec3());
+        if along_z {
+            base *= glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        }
+        base *= glam::Mat4::from_translation(glam::Vec3::new(
+            if outputs <= 1 { 0.5 } else { 0.25 },
+            0.0,
+            offset,
+        ));
+        base *= glam::Mat4::from_translation(glam::Vec3::new(
+            if along_z { -1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        ));
+        let start = out.len();
+        let mut rendered = 0;
+        for (i, stack) in e.items.iter().enumerate() {
+            let Some(stack) = stack else {
+                continue;
+            };
+            let model = self.resolve_item(stack, DisplayContext::Fixed, None, 0);
+            if model.is_empty() {
+                continue;
+            }
+            let block = self
+                .res
+                .items()
+                .get(&stack.item)
+                .is_some_and(|it| it.block.is_some());
+            let mut pose = base
+                * glam::Mat4::from_translation(glam::Vec3::new(
+                    0.0,
+                    if block { 0.925 } else { 13.0 / 16.0 },
+                    0.0,
+                ));
+            if i > 0 && outputs > 1 {
+                pose *= glam::Mat4::from_translation(glam::Vec3::new(
+                    0.5 / (outputs - 1) as f32 * rendered as f32,
+                    0.0,
+                    0.0,
+                ));
+            }
+            pose *= glam::Mat4::from_scale(glam::Vec3::splat(0.5))
+                * glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+            self.submit_item_world(&model, pose, light, out);
+            rendered += 1;
+        }
+        cull_back_faces(out, start);
+    }
+
     /// How far down the mixer at `pos` has its head and pole (blocks), and how far its head has
     /// turned (degrees): `getRenderedHeadOffset` and `getRenderedHeadRotationSpeed`, from its
     /// run since the server last said where it was.
@@ -643,6 +800,10 @@ impl Game<'_> {
         for (pos, kind) in &self.kinetics.machines {
             if *kind == Kind::Basin {
                 self.basin_item_geometry(*pos, camera, out);
+                continue;
+            }
+            if *kind == Kind::Saw {
+                self.saw_item_geometry(*pos, camera, out);
                 continue;
             }
             if *kind != Kind::Depot {
@@ -777,6 +938,7 @@ fn own_way(part: &Part) -> (usize, f32) {
         KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
             kinetics::at_face(part.face, 1.0)
         }
+        KineticPart::Saw if part.face != [0; 3] => kinetics::at_face(part.face, 1.0),
         _ => (part.axis, 1.0),
     }
 }

@@ -373,6 +373,8 @@ struct NewItem {
     rename: Rename,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    /// Its burn time (0: none), where it says.
+    fuel: Option<u32>,
 }
 
 struct Plan<'a> {
@@ -513,6 +515,7 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
+                    fuel: b.decl.fuel,
                 });
             }
         }
@@ -522,6 +525,7 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
+                    fuel: i.fuel,
                 });
             }
         }
@@ -641,6 +645,19 @@ impl<'a> Plan<'a> {
                         Rarity::Epic => "epic",
                     };
                     v.set("minecraft:rarity", J::Str(r.into()));
+                }
+                // Its own burn time, else its template's.
+                match i.fuel {
+                    Some(0) => {
+                        if let J::Obj(o) = &mut v {
+                            o.retain(|(k, _)| k != "minecraft:cooking_fuel");
+                        }
+                    }
+                    Some(n) => v.set(
+                        "minecraft:cooking_fuel",
+                        J::Obj(vec![("burn_time".into(), J::Num(n.into()))]),
+                    ),
+                    None => {}
                 }
             }
             map.set(&i.rename.to, v);

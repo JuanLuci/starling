@@ -418,6 +418,16 @@ impl Spin {
             }
             KineticPart::Millstone => (1, vec![unit(1, -1)]),
             KineticPart::Mixer => (1, Vec::new()),
+            // SawBlock: sideways, through its back; up or down, across it.
+            KineticPart::Saw if facing?[1] == 0 => {
+                let back = facing?.map(|v| -v);
+                (axis_of(back), vec![back])
+            }
+            KineticPart::Saw => {
+                let first = props.get("axis_along_first").map(String::as_str) == Some("true");
+                let axis = if first { 0 } else { 2 };
+                (axis, vec![unit(axis, 1), unit(axis, -1)])
+            }
             _ => {
                 let axis = by_name.or_else(|| facing.map(axis_of))?;
                 (axis, vec![unit(axis, 1), unit(axis, -1)])

@@ -74,6 +74,17 @@ impl Part {
                 };
                 (axis_of(face), face)
             }
+            // SawBlock: sideways, a drill's back; up or down, across it (set where it loads, by
+            // its `axis_along_first`).
+            KineticPart::Saw => {
+                let facing = direction(facing?)?;
+                if facing[1] == 0 {
+                    let face = facing.map(|v| -v);
+                    (axis_of(face), face)
+                } else {
+                    (2, [0; 3])
+                }
+            }
             // Cogwheels about y whatever their state says.
             KineticPart::Millstone | KineticPart::Mixer => (1, [0; 3]),
             // A belt's pulley across it, level (a sideways belt's is set upright where it loads).
@@ -164,6 +175,10 @@ impl Part {
             KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
                 vec![(self.face, self.face[self.axis] as f32)]
             }
+            KineticPart::Saw if self.face != [0; 3] => {
+                vec![(self.face, self.face[self.axis] as f32)]
+            }
+            KineticPart::Saw => vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)],
         }
     }
     /// Whether it is a source: a motor always, a crank while turned.
@@ -212,6 +227,14 @@ impl KineticTable {
                             part.axis = 1;
                         }
                     }
+                    // DirectionalAxisKineticBlock.getRotationAxis, facing up or down.
+                    if part.kind == KineticPart::Saw && part.face == [0; 3] {
+                        part.axis = if prop("axis_along_first") == Some("true") {
+                            0
+                        } else {
+                            2
+                        };
+                    }
                     Arc::new(part)
                 });
             }
@@ -248,13 +271,16 @@ impl KineticTable {
         *self.machines.get(state.0 as usize)?
     }
     /// Whether a state keeps a block entity of its machine's (its items, its work): a declared
-    /// machine, or a millstone, a press or a mixer.
+    /// machine, or a millstone, a press, a mixer or a saw.
     pub fn keeps_entity(&self, state: BlockStateId) -> bool {
         self.machine(state).is_some()
             || self.get(state).is_some_and(|p| {
                 matches!(
                     p.kind,
-                    KineticPart::Millstone | KineticPart::Press | KineticPart::Mixer
+                    KineticPart::Millstone
+                        | KineticPart::Press
+                        | KineticPart::Mixer
+                        | KineticPart::Saw
                 )
             })
     }

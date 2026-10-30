@@ -59,9 +59,10 @@ fn prepared() -> Option<PathBuf> {
 }
 
 /// A content mod folder: a full block, a door and an item-less glass from
-/// templates, an item, a vanilla tag addition and a language file.
+/// templates, items (two burning other than their template), a vanilla tag addition and a
+/// language file.
 fn ruby_mod(dir: &Path) -> ContentMod {
-    let files: [(&str, &str); 8] = [
+    let files: [(&str, &str); 10] = [
         (
             "horizon-mod.toml",
             "id = \"ruby\"\nname = \"Ruby\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
@@ -82,6 +83,15 @@ fn ruby_mod(dir: &Path) -> ContentMod {
         (
             "data/ruby/horizon/item/ruby.json",
             r#"{"template": "minecraft:diamond", "max_stack_size": 16, "rarity": "rare"}"#,
+        ),
+        // A stick's copy that does not burn, and one that burns longer.
+        (
+            "data/ruby/horizon/item/ruby_rod.json",
+            r#"{"template": "minecraft:stick", "fuel": 0}"#,
+        ),
+        (
+            "data/ruby/horizon/item/ruby_coal.json",
+            r#"{"template": "minecraft:stick", "fuel": 1600}"#,
         ),
         // Carried-over tags name blocks left out and other mods' ids too.
         (
@@ -252,6 +262,14 @@ fn content_root_loads_with_every_table() {
     assert_eq!(ruby_block.block, Some(ruby));
     let gem = &items.items["ruby:ruby"];
     assert_eq!(gem.max_stack, 16);
+    // `fuel` takes the template's burn time away or sets its own.
+    assert!(items.items["minecraft:stick"].fuel.is_some());
+    assert!(items.items["ruby:ruby_rod"].fuel.is_none());
+    let coal = items.items["ruby:ruby_coal"]
+        .fuel
+        .as_ref()
+        .map(|f| f.0.as_u64());
+    assert_eq!(coal, Some(Some(1600)));
     assert!(!items.items.contains_key("ruby:ruby_glass"));
     let pickaxe = &items.block_tags["minecraft:mineable/pickaxe"];
     assert!(pickaxe.contains("ruby:ruby_block"));

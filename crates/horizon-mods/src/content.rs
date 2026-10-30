@@ -228,6 +228,11 @@ pub enum KineticPart {
     /// A mechanical belt's segment (Create's belt): its pulleys (at its ends) join the shafts at
     /// their sides and turn together, and it carries items along.
     Belt,
+    /// Create's mechanical saw: facing sideways, turned through its back, it cuts the block it
+    /// faces as a drill does (only wood, leaves and plants) and the whole tree above it; facing
+    /// up or down, an axle across it (its state's `axis_along_first`), and facing up it cuts the
+    /// items put on it (cutting and stonecutting recipes).
+    Saw,
 }
 
 /// What a block with work of its own keeps and does (Starling: Create's machines,
@@ -262,6 +267,8 @@ struct BlockFile {
     machine: Option<Machine>,
     #[serde(default)]
     states: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    #[serde(default)]
+    fuel: Option<u32>,
 }
 fn yes() -> bool {
     true
@@ -287,6 +294,9 @@ pub struct Block {
     /// take the template's behaviour and facts, each from the template's state sharing most of
     /// its properties.
     pub states: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    /// How long its item burns in a furnace, in ticks (0: not at all, whatever its template's
+    /// does).
+    pub fuel: Option<u32>,
 }
 
 /// The most states a block may declare of its own.
@@ -307,6 +317,7 @@ struct ItemFile {
     template: String,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    fuel: Option<u32>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -318,6 +329,8 @@ pub struct Item {
     pub template: String,
     pub max_stack_size: Option<u8>,
     pub rarity: Option<Rarity>,
+    /// How long it burns in a furnace, in ticks (0: not at all, whatever its template does).
+    pub fuel: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -636,6 +649,7 @@ impl Content {
                 kinetic: file.kinetic,
                 machine: file.machine,
                 states: file.states,
+                fuel: file.fuel,
             });
         }
         for (item, name) in items {
@@ -658,6 +672,7 @@ impl Content {
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
+                fuel: file.fuel,
             });
         }
         Ok(())
@@ -855,6 +870,7 @@ capabilities = ["registries"]
                 kinetic: None,
                 machine: None,
                 states: None,
+                fuel: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");

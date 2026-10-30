@@ -27,6 +27,8 @@ pub(super) struct MachineEntity {
     pub(super) fluids: Vec<Option<(String, i32)>>,
     /// A belt's items, on its start (`Belt`; belts.rs).
     pub(super) belt: Vec<super::belts::Transported>,
+    /// Which of its recipes for the item it holds it took last (`RecipeIndex`): a saw's.
+    pub(super) recipe: i32,
 }
 
 /// What a machine is, from its block's state: a declared machine or a kinetic part with work.
@@ -39,6 +41,7 @@ pub(super) enum Kind {
     Millstone,
     Press,
     Mixer,
+    Saw,
 }
 
 impl Kind {
@@ -51,16 +54,19 @@ impl Kind {
             (_, Some(KineticPart::Millstone)) => Kind::Millstone,
             (_, Some(KineticPart::Press)) => Kind::Press,
             (_, Some(KineticPart::Mixer)) => Kind::Mixer,
+            (_, Some(KineticPart::Saw)) => Kind::Saw,
             _ => return None,
         })
     }
     /// Its slots: a depot's held stack then its 8 outputs (DepotBehaviour's processing output
-    /// buffer), a basin's 9 inputs then 9 outputs, a millstone's input then its 9 outputs.
+    /// buffer), a basin's 9 inputs then 9 outputs, a millstone's input then its 9 outputs, a
+    /// saw's input then what it was cut into (ProcessingInventory).
     pub(super) fn slots(self) -> usize {
         match self {
             Kind::Depot => 9,
             Kind::Basin => 18,
             Kind::Millstone => 10,
+            Kind::Saw => super::saws::SLOTS,
             Kind::Press | Kind::Mixer | Kind::Belt | Kind::Burner => 0,
         }
     }
@@ -108,6 +114,7 @@ impl MachineEntity {
             work: int(tag, "Work") as i32,
             fluids,
             belt: super::belts::read_items(tag),
+            recipe: int(tag, "RecipeIndex") as i32,
         }
     }
     fn tag(&self, id: &str, pos: [i32; 3]) -> Tag {
@@ -137,6 +144,7 @@ impl MachineEntity {
             ("Work", Tag::Int(self.work)),
             ("Fluids", Tag::List(fluids)),
             ("Belt", super::belts::items_tag(&self.belt)),
+            ("RecipeIndex", Tag::Int(self.recipe)),
         ])
     }
     /// What it holds, slot by slot, the empty ones left out.
@@ -234,6 +242,7 @@ mod tests {
             work: 7,
             fluids: vec![None, Some(("minecraft:water".into(), 250))],
             belt: Vec::new(),
+            recipe: 3,
         };
         let tag = entity.tag("create:depot", [1, 64, -3]);
         assert!(is_machine_tag(&tag));

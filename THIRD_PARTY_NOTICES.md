@@ -12,12 +12,14 @@ Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 `crates/horizon-client/src/game/kinetic_machines.rs` ports
 [Create](https://github.com/Creators-of-Create/Create) 6.0.10's mechanical drill and crushing
 wheels (BlockBreakingKineticBlockEntity, DrillBlockEntity, CrushingWheelBlock and
-CrushingWheelControllerBlockEntity), and `processing.rs`, `basins.rs`, `fans.rs` and `belts.rs`
+CrushingWheelControllerBlockEntity) and the recipes Create makes as the game loads
+(RuntimeDataGenerator), and `processing.rs`, `basins.rs`, `fans.rs`, `belts.rs` and `saws.rs`
 beside it its depot, millstone, mechanical press, basin, mechanical mixer, blaze burner, encased
-fan and mechanical belt (DepotBehaviour, MillstoneBlockEntity, PressingBehaviour, BasinRecipe,
-MechanicalMixerBlockEntity, BlazeBurnerBlockEntity, AirCurrent, FanProcessing, BeltInventory,
-BeltConnectorItem and their renderers), with `horizon_client::kinetics`'s water wheel
-(WaterWheelBlockEntity), by The Create Team, whose code is under the MIT license
+fan, mechanical belt and mechanical saw (DepotBehaviour, MillstoneBlockEntity, PressingBehaviour,
+BasinRecipe, MechanicalMixerBlockEntity, BlazeBurnerBlockEntity, AirCurrent, FanProcessing,
+BeltInventory, BeltConnectorItem, SawBlockEntity, TreeCutter and their renderers), with
+`horizon_client::kinetics`'s water wheel (WaterWheelBlockEntity) and `own_states.rs`'s placement
+(DirectionalAxisKineticBlock), by The Create Team, whose code is under the MIT license
 (`licenses/create-MIT.txt`). Create's assets are All Rights Reserved; none are in this
 repository: a shared port fetches them from Modrinth on the player's device.
 

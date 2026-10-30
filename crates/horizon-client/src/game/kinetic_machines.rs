@@ -76,13 +76,20 @@ struct Controller {
 
 /// The types of Create's processing recipes the machines use: one item in, results with chances
 /// (`create:<type>`).
-const RECIPE_TYPES: [&str; 5] = ["crushing", "milling", "pressing", "splashing", "haunting"];
+const RECIPE_TYPES: [&str; 6] = [
+    "crushing",
+    "milling",
+    "pressing",
+    "splashing",
+    "haunting",
+    "cutting",
+];
 
 /// Create's processing recipes the content root holds, by type, each's first ingredient's
-/// items (a tag's, as the items list it) to the recipe.
+/// items (a tag's, as the items list it) to its recipes, in the order they were read.
 #[derive(Default)]
 pub(super) struct Recipes {
-    by_type: HashMap<&'static str, HashMap<Arc<str>, Arc<Recipe>>>,
+    by_type: HashMap<&'static str, HashMap<Arc<str>, Vec<Arc<Recipe>>>>,
 }
 
 pub(super) struct Recipe {
@@ -94,10 +101,14 @@ pub(super) struct Recipe {
 
 impl Recipes {
     /// `data/<namespace>/recipe/<type>/**.json` of the content root. Recipes with conditions
-    /// (other mods' compat) are left out; of two for one item, the first read stays.
+    /// (other mods' compat) are left out; of two for one item, the first read is the one most
+    /// machines use. With Create's, the ones it makes as the game loads (RuntimeDataGenerator).
     pub(super) fn load(root: &Path, items: &horizon_client::items::Items) -> Self {
         let tag = |t: &str| items.item_tag_order.get(t).cloned().unwrap_or_default();
-        let out = Self::read(root, &tag);
+        let mut out = Self::read(root, &tag);
+        if !out.by_type.is_empty() {
+            out.add_generated(&items.registry_order);
+        }
         if !out.by_type.is_empty() {
             let counts: Vec<String> = RECIPE_TYPES
                 .iter()
@@ -137,20 +148,48 @@ impl Recipes {
                         else {
                             continue;
                         };
-                        let recipe = Arc::new(recipe);
-                        let map = out.by_type.entry(kind).or_default();
-                        for input in inputs {
-                            map.entry(input).or_insert_with(|| recipe.clone());
-                        }
+                        out.add(kind, inputs, recipe);
                     }
                 }
             }
         }
         out
     }
-    /// The recipe of `kind` (`pressing`...) for `item`.
+    fn add(&mut self, kind: &'static str, inputs: Vec<Arc<str>>, recipe: Recipe) {
+        let recipe = Arc::new(recipe);
+        let map = self.by_type.entry(kind).or_default();
+        for input in inputs {
+            map.entry(input).or_default().push(recipe.clone());
+        }
+    }
+    /// `RuntimeDataGenerator.insertIntoPack` over the items there are (`registry`): cutting
+    /// recipes for every wood (its logs and woods stripped, then planks, the planks into
+    /// stairs, slabs, fences, gates, doors, trapdoors, plates, buttons and signs) and splashing
+    /// for every concrete powder, each made once.
+    fn add_generated(&mut self, registry: &[Arc<str>]) {
+        let known: std::collections::HashSet<&str> = registry.iter().map(|i| &**i).collect();
+        let mut made = std::collections::HashSet::new();
+        for (kind, from, to, count) in generated_recipes(registry, &|id| known.contains(id)) {
+            if !made.insert((from.clone(), to.clone())) {
+                continue;
+            }
+            let recipe = Recipe {
+                time: if kind == "cutting" { 50.0 } else { 100.0 },
+                results: vec![(to.into(), count, 1.0)],
+            };
+            self.add(kind, vec![from.into()], recipe);
+        }
+    }
+    /// The first recipe of `kind` (`pressing`...) for `item`.
     pub(super) fn find(&self, kind: &str, item: &str) -> Option<&Recipe> {
-        self.by_type.get(kind)?.get(item).map(|r| &**r)
+        self.find_all(kind, item).first().map(|r| &**r)
+    }
+    /// Every recipe of `kind` for `item`, in the order they were read.
+    pub(super) fn find_all(&self, kind: &str, item: &str) -> &[Arc<Recipe>] {
+        self.by_type
+            .get(kind)
+            .and_then(|m| m.get(item))
+            .map_or(&[], Vec::as_slice)
     }
     /// The crusher's: crushing, then milling.
     fn crushing(&self, item: &str) -> Option<&Recipe> {
@@ -221,6 +260,155 @@ impl Recipe {
     }
 }
 
+/// The wood types RuntimeDataGenerator's patterns end on (and `wood` right after a letter, as
+/// Botania's livingwood).
+const WOOD_TYPES: [&str; 5] = ["_log", "_wood", "_stem", "_hyphae", "_block"];
+
+fn word(s: &str) -> bool {
+    s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// A wood type ending `path` from `from` on, the wood's name before it: the shortest type, so
+/// the longest name, as `(\w*)(_log|...|(?<!_)wood)$` matches.
+fn wood_type_at_end(path: &str, from: usize) -> Option<(&str, &'static str)> {
+    (from..=path.len()).rev().find_map(|g| {
+        let rest = &path[g..];
+        let kind = WOOD_TYPES.into_iter().find(|t| rest == *t).or_else(|| {
+            (rest == "wood" && (g == 0 || !path[..g].ends_with('_'))).then_some("wood")
+        })?;
+        Some((&path[from..g], kind))
+    })
+}
+
+/// `STRIPPED_WOODS_PREFIX_REGEX`: a variant prefix, `stripped_`, the wood's name and its type
+/// (Rust's regex has no look-behind; the patterns are by hand, for ids of word characters).
+fn stripped_prefix(path: &str) -> Option<(&str, &str, &'static str)> {
+    if !word(path) {
+        return None;
+    }
+    path.match_indices("stripped_").find_map(|(i, _)| {
+        let (name, kind) = wood_type_at_end(path, i + "stripped_".len())?;
+        Some((&path[..i], name, kind))
+    })
+}
+
+/// `STRIPPED_WOOD_SUFFIX_REGEX`: the wood's name, its type, then `_stripped` with variant
+/// suffixes around it (joined, as the generator joins them).
+fn stripped_suffix(path: &str) -> Option<(&str, &'static str, String)> {
+    if !word(path) {
+        return None;
+    }
+    (0..=path.len()).rev().find_map(|t| {
+        let rest = &path[t..];
+        let kind = WOOD_TYPES
+            .into_iter()
+            .find(|k| rest.starts_with(k))
+            .or_else(|| {
+                (rest.starts_with("wood") && (t == 0 || !path[..t].ends_with('_')))
+                    .then_some("wood")
+            })?;
+        let after = &rest[kind.len()..];
+        let k = after.rfind("_stripped")?;
+        let variant = format!("{}{}", &after[..k], &after[k + "_stripped".len()..]);
+        Some((&path[..t], kind, variant))
+    })
+}
+
+/// `NON_STRIPPED_WOODS_REGEX`: a wood with no stripped kind, its name and type (anything after
+/// the type that does not end in `_stripped` is a variant).
+fn non_stripped(path: &str) -> Option<(&str, &'static str)> {
+    if path.starts_with("stripped_") || !path.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+        return None;
+    }
+    (1..path.len()).rev().find_map(|t| {
+        let rest = &path[t..];
+        let kind = WOOD_TYPES.into_iter().find(|k| {
+            rest.starts_with(k) && (*k != "_block" || !path[..t].ends_with("bioshroom"))
+        })?;
+        let after = &rest[kind.len()..];
+        (after.is_empty() || !after.ends_with("_stripped")).then_some((&path[..t], kind))
+    })
+}
+
+/// `RuntimeDataGenerator.cuttingRecipes` and `washingRecipes` for every item of `registry`
+/// (`exists` says whether an item is there): each recipe's type, input, result and count.
+fn generated_recipes(
+    registry: &[Arc<str>],
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<(&'static str, String, String, u32)> {
+    let mut out = Vec::new();
+    for id in registry {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        let at = |p: &str| format!("{ns}:{p}");
+        let found = if let Some((prefix, name, kind)) = stripped_prefix(path) {
+            Some((prefix, name, kind, String::new(), false))
+        } else if let Some((name, kind, variant)) = stripped_suffix(path) {
+            Some(("", name, kind, variant, false))
+        } else if !exists(&at(&format!("stripped_{path}")))
+            && !exists(&at(&format!("{path}_stripped")))
+        {
+            non_stripped(path).map(|(name, kind)| ("", name, kind, String::new(), true))
+        } else {
+            None
+        };
+        if let Some((prefix, name, kind, suffix, no_stripped)) = found {
+            let base = if kind == "wood" {
+                format!("{name}wood")
+            } else {
+                name.to_owned()
+            };
+            let planks = at(&format!("{base}_planks"));
+            let count = if kind.contains("block") { 3 } else { 6 };
+            let mut wood = |from: &str, to: String, n: u32| {
+                if exists(&to) {
+                    out.push(("cutting", from.to_owned(), to, n));
+                }
+            };
+            if !no_stripped {
+                let unstripped = at(&format!("{prefix}{name}{kind}{suffix}"));
+                if exists(&unstripped) {
+                    wood(&unstripped, id.to_string(), 1);
+                }
+                wood(id, planks.clone(), count);
+            } else if exists(&planks) {
+                // A tag of its own in Create; the item alone here.
+                wood(id, planks.clone(), count);
+            }
+            if !path.contains("_wood") && !path.contains("_hyphae") && exists(&planks) {
+                for (made, n) in [
+                    ("stairs", 1),
+                    ("slab", 2),
+                    ("fence", 1),
+                    ("fence_gate", 1),
+                    ("door", 1),
+                    ("trapdoor", 1),
+                    ("pressure_plate", 1),
+                    ("button", 1),
+                    ("sign", 1),
+                ] {
+                    wood(&planks, at(&format!("{base}_{made}")), n);
+                }
+            }
+        }
+        // ConcretePowderBlock's concrete.
+        if let Some(concrete) = path.strip_suffix("_concrete_powder") {
+            let to = at(&format!("{concrete}_concrete"));
+            if exists(&to) {
+                out.push(("splashing", id.to_string(), to, 1));
+            }
+        }
+    }
+    out
+}
+
+/// A part that breaks the block it faces: a drill, a saw facing sideways (`SawBlockEntity.
+/// shouldRun`).
+fn breaker(part: &Part) -> bool {
+    part.kind == KineticPart::Drill || (part.kind == KineticPart::Saw && part.face != [0; 3])
+}
+
 fn add(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -267,7 +455,7 @@ impl Game<'_> {
             .machines
             .parts
             .iter()
-            .filter(|(_, p)| p.kind == KineticPart::Drill)
+            .filter(|(_, p)| breaker(p))
             .filter_map(|(pos, _)| Some((*pos, *self.machines.speeds.get(pos)?)))
             .filter(|(_, s)| *s != 0.0)
             .collect();
@@ -396,10 +584,7 @@ impl Game<'_> {
             .values()
             .filter(|p| p.kind == KineticPart::CrushingWheel)
             .count();
-        let drills = parts
-            .values()
-            .filter(|p| p.kind == KineticPart::Drill)
-            .count();
+        let drills = parts.values().filter(|p| breaker(p)).count();
         let counts = (drills, wheels, found.len());
         if counts != self.machines.counts {
             log::info!(
@@ -427,7 +612,7 @@ impl Game<'_> {
                 .speed = speed;
         }
         m.drills
-            .retain(|pos, _| parts.get(pos).is_some_and(|p| p.kind == KineticPart::Drill));
+            .retain(|pos, _| parts.get(pos).is_some_and(|p| breaker(p)));
         let ids: std::collections::HashSet<u32> = self.dropped.iter().map(|d| d.id).collect();
         m.bypass.retain(|id, _| ids.contains(id));
         super::fans::forget(&mut m.fan_items, &ids);
@@ -448,6 +633,7 @@ impl Game<'_> {
         let Some(part) = self.machines.parts.get(&pos) else {
             return Ok(());
         };
+        let saw = part.kind == KineticPart::Saw;
         // Its face is its back: it breaks the block the other way.
         let breaking = add(pos, part.face.map(|v| -v));
         let lazy = self.world.game_time % LAZY_TICKS == 0;
@@ -483,7 +669,9 @@ impl Game<'_> {
         );
         let air = state == self.world.air
             || matches!(&*facts.name, "minecraft:cave_air" | "minecraft:void_air");
-        if air || liquid || hardness < 0.0 {
+        // SawBlockEntity.canBreak: a saw only what it saws.
+        let unsawable = saw && !self.sawable(state);
+        if air || liquid || hardness < 0.0 || unsawable {
             if progress != 0 {
                 if let Some(d) = self.machines.drills.get_mut(&pos) {
                     d.progress = 0;
@@ -501,7 +689,12 @@ impl Game<'_> {
                 d.wait = -1;
             }
             self.drill_cracks(breaker, breaking, -1);
-            return self.drill_break(breaking, state);
+            self.drill_break(breaking, state)?;
+            // SawBlockEntity.onBlockBroken: the tree (or the plant) it stood under falls too.
+            if saw {
+                self.fell_tree(pos, breaking, state)?;
+            }
+            return Ok(());
         }
         if let Some(d) = self.machines.drills.get_mut(&pos) {
             d.progress = progress;
@@ -742,5 +935,76 @@ mod tests {
         assert_eq!(cross(unit(2, 1), [1, 0, 0]), [0, 1, 0]);
         // From the other wheel, the side is -x and its speed's sign the other: the same way.
         assert_eq!(scale(cross(unit(2, 1), [-1, 0, 0]), -1), [0, 1, 0]);
+    }
+
+    #[test]
+    fn woods_are_found_as_the_generators_patterns_find_them() {
+        assert_eq!(
+            stripped_prefix("stripped_oak_log"),
+            Some(("", "oak", "_log"))
+        );
+        assert_eq!(
+            stripped_prefix("stripped_dark_oak_wood"),
+            Some(("", "dark_oak", "_wood"))
+        );
+        assert_eq!(
+            stripped_prefix("stripped_livingwood"),
+            Some(("", "living", "wood"))
+        );
+        assert_eq!(stripped_prefix("oak_log"), None);
+        assert_eq!(
+            stripped_suffix("maple_log_stripped"),
+            Some(("maple", "_log", String::new()))
+        );
+        assert_eq!(non_stripped("bone_block"), Some(("bone", "_block")));
+        assert_eq!(non_stripped("bioshroom_block"), None);
+        assert_eq!(non_stripped("stripped_oak_log"), None);
+    }
+
+    #[test]
+    fn every_wood_and_concrete_powder_gets_its_recipes() {
+        let registry: Vec<Arc<str>> = [
+            "oak_log",
+            "stripped_oak_log",
+            "oak_wood",
+            "stripped_oak_wood",
+            "oak_planks",
+            "oak_slab",
+            "oak_stairs",
+            "crimson_stem",
+            "stripped_crimson_stem",
+            "crimson_planks",
+            "bamboo_block",
+            "stripped_bamboo_block",
+            "bamboo_planks",
+            "bone_block",
+            "red_concrete_powder",
+            "red_concrete",
+        ]
+        .into_iter()
+        .map(|p| Arc::from(format!("minecraft:{p}")))
+        .collect();
+        let known: std::collections::HashSet<&str> = registry.iter().map(|i| &**i).collect();
+        let made = generated_recipes(&registry, &|id| known.contains(id));
+        let has = |kind: &str, from: &str, to: &str, n: u32| {
+            made.iter().any(|(k, f, t, c)| {
+                *k == kind
+                    && *f == format!("minecraft:{from}")
+                    && *t == format!("minecraft:{to}")
+                    && *c == n
+            })
+        };
+        assert!(has("cutting", "oak_log", "stripped_oak_log", 1));
+        assert!(has("cutting", "stripped_oak_log", "oak_planks", 6));
+        assert!(has("cutting", "oak_wood", "stripped_oak_wood", 1));
+        assert!(has("cutting", "stripped_oak_wood", "oak_planks", 6));
+        assert!(has("cutting", "oak_planks", "oak_slab", 2));
+        assert!(has("cutting", "oak_planks", "oak_stairs", 1));
+        assert!(has("cutting", "stripped_crimson_stem", "crimson_planks", 6));
+        assert!(has("cutting", "stripped_bamboo_block", "bamboo_planks", 3));
+        assert!(has("splashing", "red_concrete_powder", "red_concrete", 1));
+        // Nothing for a block that is no wood, nor for items not there (oak doors).
+        assert!(!made.iter().any(|(_, f, _, _)| f.ends_with("bone_block")));
+        assert!(!made.iter().any(|(_, _, t, _)| t.ends_with("oak_door")));
     }
 }

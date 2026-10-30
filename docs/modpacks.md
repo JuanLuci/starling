@@ -296,9 +296,16 @@ two blocks below (`create:mixing`, shapeless crafting, fluids, heat); a `fan` bl
 items along its current and water, lava, fire and soul fire in it wash, blast, smoke and haunt
 them (game/processing.rs, basins.rs, fans.rs). A `water_wheel` is a source the water flowing past
 it turns, 8 RPM; a `clutch` breaks and a `gearshift` reverses its axle while powered. `head` and
-`pole` name the models a press or a mixer moves down as it works. The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
-implements and the harnesses already check. Items work the same way (`"template":
-"minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on).
+`pole` name the models a press or a mixer moves down as it works. A `saw` facing sideways cuts the
+wood, leaves and plants it faces as a drill does and fells the tree above; facing up it is an
+axle across it (its `axis_along_first`) cutting the items put on it (`create:cutting`, the
+stonecutter's recipes, and the wood recipes Create makes as the game loads), its `models` the
+blade's: sideways running, reversed and still, then upright (game/saws.rs). The build gathers
+the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon
+already implements and the harnesses already check. Items work the same way (`"template":
+"minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on); `fuel` (an item's, or a
+block's for its item) is how long it burns in a furnace, in ticks, 0 for not at all, where the
+template's would be wrong (a plain item copied from a stick burns as a stick otherwise).
 
 How the game loads them, without touching vanilla's path:
 

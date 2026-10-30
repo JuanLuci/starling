@@ -477,11 +477,7 @@ impl Game<'_> {
         } else {
             -1
         });
-        let takes = matches!(
-            self.machine_kind(past),
-            Some(Kind::Depot | Kind::Millstone | Kind::Basin | Kind::Belt)
-        ) || self.crusher_at(past);
-        if takes {
+        if self.takes_from_belt(past) {
             return Ending::Insert;
         }
         let facts = self
@@ -495,9 +491,26 @@ impl Game<'_> {
         }
     }
 
+    /// Whether what is at `at` takes items from a belt (`DirectBeltInputBehaviour`): a depot, a
+    /// millstone, a basin, a belt, a saw facing up, crushing wheels.
+    pub(super) fn takes_from_belt(&self, at: [i32; 3]) -> bool {
+        match self.machine_kind(at) {
+            Some(Kind::Depot | Kind::Millstone | Kind::Basin | Kind::Belt) => true,
+            Some(Kind::Saw) => {
+                let state = self.world.block(at[0], at[1], at[2]);
+                self.pack
+                    .assets
+                    .registry
+                    .state(state)
+                    .is_some_and(|s| s.properties.get("facing").map(String::as_str) == Some("up"))
+            }
+            _ => self.crusher_at(at),
+        }
+    }
+
     /// `DirectBeltInputBehaviour.handleInsertion` of what is at `at`, from a belt going `facing`:
     /// what did not go in.
-    fn belt_insert_into(
+    pub(super) fn belt_insert_into(
         &mut self,
         at: [i32; 3],
         facing: [i32; 3],
