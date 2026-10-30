@@ -41,7 +41,8 @@ pub struct Part {
 
 impl Part {
     /// A declared part on a state with these `axis` and `facing` properties; None when the
-    /// state has not the one its part needs.
+    /// state has not the one its part needs. A shaft-like part with no `axis` turns about its
+    /// facing's (a water wheel).
     pub fn new(kinetic: &Kinetic, axis: Option<&str>, facing: Option<&str>) -> Option<Self> {
         let by_name = |a: &str| match a {
             "x" => Some(0),
@@ -59,7 +60,10 @@ impl Part {
                 };
                 (axis_of(face), face)
             }
-            _ => (by_name(axis?)?, [0; 3]),
+            _ => match axis {
+                Some(axis) => (by_name(axis)?, [0; 3]),
+                None => (axis_of(direction(facing?)?), [0; 3]),
+            },
         };
         Some(Part {
             kind: kinetic.part,
@@ -418,6 +422,12 @@ mod tests {
         parts.insert([0, 0, 0], motor("west", 16.0));
         parts.insert([-1, 0, 0], shaft("x"));
         assert_eq!(solve(&parts, &HashMap::new())[&[-1, 0, 0]], -16.0);
+        // A shaft-like part with only a facing (a water wheel) is an axle along it.
+        let wheel = part(KineticPart::Shaft, None, Some("west"), 0.0);
+        assert_eq!(wheel.axis, 0);
+        parts.insert([-2, 0, 0], wheel);
+        parts.insert([-3, 0, 0], shaft("x"));
+        assert_eq!(solve(&parts, &HashMap::new())[&[-3, 0, 0]], -16.0);
     }
 
     #[test]
