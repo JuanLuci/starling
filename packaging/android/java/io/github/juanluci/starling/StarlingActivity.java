@@ -8,6 +8,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
@@ -255,6 +259,93 @@ public final class StarlingActivity extends NativeActivity {
         int level = Math.min(Math.max(strong, weak), 255);
         if (motor.hasVibrator() && level > 0) {
             motor.vibrate(VibrationEffect.createOneShot(millis, level));
+        }
+    }
+
+    /** The sensors, for the gyroscope the touch controls can aim with. */
+    private SensorManager sensors;
+    /** What the gyroscope turned since the game last took it: radians about the device's own x
+     *  and y (those of its natural portrait). */
+    private final float[] gyroTurned = new float[2];
+    /** The last gyroscope event's time (ns), 0 before the first one since it started. */
+    private long gyroLast;
+    private final SensorEventListener gyroListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            long last = gyroLast;
+            gyroLast = event.timestamp;
+            float seconds = (event.timestamp - last) * 1e-9f;
+            // The first event, or one after a gap: nothing to integrate over.
+            if (last == 0 || seconds <= 0 || seconds > 0.1f) {
+                return;
+            }
+            synchronized (gyroTurned) {
+                gyroTurned[0] += event.values[0] * seconds;
+                gyroTurned[1] += event.values[1] * seconds;
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
+
+    /** Start or stop listening to the gyroscope; false when the phone has none. */
+    public boolean gyroscope(boolean on) {
+        if (sensors == null) {
+            sensors = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        }
+        Sensor gyro = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (gyro == null) {
+            return false;
+        }
+        if (on) {
+            gyroLast = 0;
+            // Every 5 ms (200 Hz, the most an app gets without asking for more): a frame at
+            // 120 fps still has a turn to take.
+            sensors.registerListener(gyroListener, gyro, 5000);
+        } else {
+            sensors.unregisterListener(gyroListener);
+        }
+        synchronized (gyroTurned) {
+            gyroTurned[0] = 0;
+            gyroTurned[1] = 0;
+        }
+        return true;
+    }
+
+    /** What the gyroscope turned since the last call (radians about the device's x and y) and
+     *  the display's rotation (Surface.ROTATION_*); it counts again from there. */
+    @SuppressWarnings("deprecation")
+    public float[] takeGyro() {
+        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        synchronized (gyroTurned) {
+            float[] taken = {gyroTurned[0], gyroTurned[1], rotation};
+            gyroTurned[0] = 0;
+            gyroTurned[1] = 0;
+            return taken;
+        }
+    }
+
+    /**
+     * Buzz the phone itself for `millis` ms at its default strength: the touch controls'
+     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still.
+     */
+    @SuppressWarnings("deprecation")
+    public void vibrate(int millis) {
+        if (millis <= 0) {
+            return;
+        }
+        Vibrator motor;
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager motors =
+                (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            motor = motors == null ? null : motors.getDefaultVibrator();
+        } else {
+            motor = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+        if (motor != null && motor.hasVibrator()) {
+            motor.vibrate(VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }
 

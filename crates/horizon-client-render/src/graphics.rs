@@ -545,6 +545,8 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
     };
     s.cutout_leaves = high;
     s.weather_radius = if high { 5 } else { 3 };
+    // Bedrock's touch default: the stick walks up a block without the jump button.
+    s.auto_jump = true;
     s.graphics_preset = "custom".into();
     let g = &mut s.horizon;
     g.preset = Preset::Custom;
@@ -581,12 +583,13 @@ mod tests {
         );
         assert!(low.horizon.resolution_scale < high.horizon.resolution_scale);
         assert!(!low.horizon.animated_textures && high.horizon.animated_textures);
+        // Auto-Jump on, as on Bedrock's touch screens.
+        assert!(low.auto_jump && high.auto_jump);
         // What the options screens read back.
         let file = high.to_file();
-        assert_eq!(
-            crate::settings::Settings::from_file(file).render_distance,
-            10
-        );
+        let back = crate::settings::Settings::from_file(file);
+        assert_eq!(back.render_distance, 10);
+        assert!(back.auto_jump);
     }
 
     #[test]

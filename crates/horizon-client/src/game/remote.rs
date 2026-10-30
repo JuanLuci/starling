@@ -5598,6 +5598,7 @@ impl Game<'_> {
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
         self.mods_block_broken(pos, state);
+        self.touch_vibrate(super::touch::BREAK_BUZZ);
         // BlockStatePredictionHandler.retainKnownServerState.
         let at = self.player.as_ref().map(|p| p.position);
         if let Some(r) = self.remote.as_mut() {

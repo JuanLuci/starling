@@ -38,6 +38,10 @@ pub(super) const HELP: &[&str] = &[
 
 /// How long a tap holds the use trigger: vanilla samples input once a tick.
 const USE_PULSE: Duration = Duration::from_millis(60);
+/// How long the phone buzzes when the player breaks a block, and when a held finger splits a
+/// stack (milliseconds).
+pub(super) const BREAK_BUZZ: u32 = 25;
+const SPLIT_BUZZ: u32 = 15;
 /// The layout's file, beside options.txt.
 pub(super) const LAYOUT_FILE: &str = "touch-layout.json";
 
@@ -60,6 +64,8 @@ pub(super) struct Touch {
     tapped: Option<(Instant, [f32; 2])>,
     /// The press held on the view uses (a mob, the air) rather than breaks.
     hold_uses: bool,
+    /// The gyroscope is listened to (the layout aims with it and the controls play).
+    gyro_on: bool,
     /// The on-screen keyboard was asked for.
     keyboard: bool,
     /// The keyboard is wanted over the text field shown now: a typing screen opened, or a tap
@@ -357,9 +363,11 @@ pub(super) fn draw_editor(
     for (action, c, r) in LayoutEditor::bar(w, h) {
         let fill = match action {
             EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
-            EditorAction::Reset | EditorAction::Movement | EditorAction::Interact => {
-                color::with_alpha(color::BG, 0.85)
-            }
+            EditorAction::Reset
+            | EditorAction::Movement
+            | EditorAction::Interact
+            | EditorAction::Vibrate
+            | EditorAction::Gyro => color::with_alpha(color::BG, 0.85),
         };
         circle(ui, c, r, fill);
         let text = match action {
@@ -374,6 +382,10 @@ pub(super) fn draw_editor(
             },
             // What a tap and a press act on: what is touched, or the crosshair's.
             EditorAction::Interact => config.interact.label(),
+            EditorAction::Vibrate if config.vibrate => "Vib on",
+            EditorAction::Vibrate => "Vib off",
+            EditorAction::Gyro if config.gyro => "Gyro on",
+            EditorAction::Gyro => "Gyro off",
         };
         label(ui, c, r, text, ink(1.0));
     }
@@ -511,6 +523,64 @@ impl Game<'_> {
     }
     pub(super) fn touch_hides_outline(&self) -> bool {
         self.touch_taps() && self.touch_aim_point().is_none()
+    }
+
+    /// A short buzz of the phone (Bedrock's "Vibrate when breaking blocks" and "when splitting
+    /// items"): while the touch screen plays and the layout leaves vibration on.
+    pub(super) fn touch_vibrate(&self, millis: u32) {
+        let on = self.touch.config.as_ref().is_none_or(|c| c.vibrate);
+        if !on || !self.has_touch() {
+            return;
+        }
+        #[cfg(target_os = "android")]
+        crate::vibrate(millis);
+        #[cfg(not(target_os = "android"))]
+        let _ = millis;
+    }
+
+    /// Once a frame: aiming by turning the phone, while the layout asks for it and the touch
+    /// controls play (the sensor is listened to only then). Its turn goes on the view as the
+    /// mouse's would (`Entity.turn`).
+    fn touch_gyro(&mut self) {
+        let wanted = self.touch.live
+            && self.touch.editor.is_none()
+            && self.has_touch()
+            && self.player.is_some()
+            && self.touch.config.as_ref().is_some_and(|c| c.gyro);
+        #[cfg(target_os = "android")]
+        {
+            if wanted != self.touch.gyro_on {
+                // A phone without a gyroscope says so; it is not asked again until the next change.
+                let started = crate::gyroscope(wanted);
+                self.touch.gyro_on = wanted;
+                if wanted && !started {
+                    log::info!("Horizon: no gyroscope to aim with");
+                }
+            }
+            if !wanted {
+                return;
+            }
+            let Some([x, y, rotation]) = crate::take_gyro() else {
+                return;
+            };
+            let [yaw, pitch] = touch::gyro_turn([x, y], rotation as i32);
+            if yaw == 0.0 && pitch == 0.0 {
+                return;
+            }
+            let mut turn = horizon_client::mouse::Rotation {
+                x_rot: self.pitch,
+                y_rot: self.yaw,
+                x_rot_o: self.pitch,
+                y_rot_o: self.yaw,
+            };
+            turn.turn(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
+            self.yaw = turn.y_rot;
+            self.pitch = turn.x_rot;
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.touch.gyro_on = wanted;
+        }
     }
 
     fn touch_layout_path() -> Result<std::path::PathBuf> {
@@ -732,6 +802,7 @@ impl Game<'_> {
         if self.touch.tapped.is_some_and(|(t, _)| now >= t) {
             self.touch.tapped = None;
         }
+        self.touch_gyro();
         // The on-screen keyboard (its keys arrive as key events; on Android an editor behind it
         // holds the field, text_mirror.rs). The screens made for typing
         // (chat, sign, book, command block) open it with them; the other text fields on a tap on
@@ -916,6 +987,23 @@ impl Game<'_> {
                     self.physical_keys.remove(&KeyCode::F3);
                     self.debug_key(KeyCode::F3, KeyAction::Release);
                 }
+                // A combination's key pressed and let go while F3 is held: KeyboardHandler runs it,
+                // and F3's release then leaves the debug screen as it was.
+                Action::DebugCombo(i) => {
+                    let binding = touch::DEBUG_COMBOS[i].0;
+                    if let Some(key) =
+                        horizon_client::keybinds::key_code(self.settings.keys.get(binding))
+                    {
+                        self.physical_keys.insert(key);
+                        self.debug_key(key, KeyAction::Press);
+                        self.physical_keys.remove(&key);
+                        self.debug_key(key, KeyAction::Release);
+                    }
+                }
+                Action::Press(Button::Pick) => self.pad.touch_tap(Pad::DPadLeft),
+                // Held as the pad's View (key.playerlist) while the finger is on it.
+                Action::Press(Button::Players) => self.pad.touch_hold(Pad::Select, true),
+                Action::Release(Button::Players) => self.pad.touch_hold(Pad::Select, false),
                 Action::Release(_) => {}
                 Action::Tap(p) => {
                     let now = Instant::now();
@@ -1113,6 +1201,14 @@ impl Game<'_> {
                     None => label(&mut ui, *c, *r, &face.label, ink(*a)),
                 }
             }
+            // F3 held: its combinations, for another finger or the F3 finger sliding onto one.
+            if self.touch.controls.held(Button::Debug) {
+                for (i, c, half) in layout.debug_chips() {
+                    let shape = Shape::Wide(half[0] / half[1]);
+                    plate_of(&mut ui, shape, c, half[1], color::with_alpha(color::BG, 0.85));
+                    label(&mut ui, c, half[1] * 1.6, touch::DEBUG_COMBOS[i].1, ink(1.0));
+                }
+            }
             // The mods' buttons, lit while held.
             for (i, c, r, a, shape) in &layout.extra {
                 let extra = self.touch.config.as_ref().and_then(|c| c.extra.get(*i));
@@ -1143,6 +1239,11 @@ impl Game<'_> {
         self.touch_apply(actions);
         // No window events here: the screen gets them back when the app returns.
         let _ = self.touch.pointer.cancel();
+        // The gyroscope rests in the background; the next frame that aims listens again.
+        #[cfg(target_os = "android")]
+        if std::mem::take(&mut self.touch.gyro_on) {
+            crate::gyroscope(false);
+        }
         // The system put the keyboard away: ask for it again when the chat is back.
         self.touch.keyboard = false;
     }

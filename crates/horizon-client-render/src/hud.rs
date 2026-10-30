@@ -406,6 +406,22 @@ const TOUCH_SPRITES: &[(&str, &[u8])] = &[
         include_bytes!("../../horizon-client/assets/touch/pause_pressed.png"),
     ),
     (
+        "pick",
+        include_bytes!("../../horizon-client/assets/touch/pick.png"),
+    ),
+    (
+        "pick_pressed",
+        include_bytes!("../../horizon-client/assets/touch/pick_pressed.png"),
+    ),
+    (
+        "players",
+        include_bytes!("../../horizon-client/assets/touch/players.png"),
+    ),
+    (
+        "players_pressed",
+        include_bytes!("../../horizon-client/assets/touch/players_pressed.png"),
+    ),
+    (
         "sneak",
         include_bytes!("../../horizon-client/assets/touch/sneak.png"),
     ),

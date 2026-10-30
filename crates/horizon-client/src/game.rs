@@ -4148,6 +4148,7 @@ impl Game<'_> {
             return Ok(());
         }
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
+        self.touch_vibrate(touch::BREAK_BUZZ);
         // ServerPlayerGameMode.destroyBlock.
         let state = self.world.block(pos[0], pos[1], pos[2]);
         self.mods_block_broken(pos, state);

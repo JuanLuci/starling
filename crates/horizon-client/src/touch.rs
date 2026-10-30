@@ -46,12 +46,30 @@ pub enum Button {
     Camera,
     /// key.command: the chat with a slash.
     Command,
-    /// key.debug.overlay (F3): held as the key, so a tap shows or hides the debug screen.
+    /// key.debug.overlay (F3): held as the key, so a tap shows or hides the debug screen. While
+    /// it is held, its combinations ([`DEBUG_COMBOS`]) show beside it.
     Debug,
+    /// key.pickItem: the block (or mob) in view into the hand (Bedrock's Pick Block button).
+    Pick,
+    /// key.playerlist, held: the list of the server's players.
+    Players,
 }
 
+/// F3's combinations offered while the F3 button is held: the key binding pressed with it and
+/// what the chip says.
+pub const DEBUG_COMBOS: [(&str, &str); 8] = [
+    ("key.debug.showChunkBorders", "Chunks"),
+    ("key.debug.showHitboxes", "Hitboxes"),
+    ("key.debug.showAdvancedTooltips", "Tooltips"),
+    ("key.debug.copyLocation", "Copy pos"),
+    ("key.debug.reloadResourcePacks", "Packs"),
+    ("key.debug.clearChat", "Clear chat"),
+    ("key.debug.spectate", "Spectate"),
+    ("key.debug.switchGameMode", "Modes"),
+];
+
 impl Button {
-    pub const ALL: [Button; 12] = [
+    pub const ALL: [Button; 14] = [
         Button::Jump,
         Button::Sneak,
         Button::Inventory,
@@ -64,6 +82,8 @@ impl Button {
         Button::Camera,
         Button::Command,
         Button::Debug,
+        Button::Pick,
+        Button::Players,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -79,6 +99,8 @@ impl Button {
             Button::Camera => "Cam",
             Button::Command => "/",
             Button::Debug => "F3",
+            Button::Pick => "Pick",
+            Button::Players => "List",
         }
     }
     /// Its name in touch-layout.json.
@@ -96,6 +118,8 @@ impl Button {
             Button::Camera => "camera",
             Button::Command => "command",
             Button::Debug => "debug",
+            Button::Pick => "pick",
+            Button::Players => "players",
         }
     }
     /// Only for aiming the crosshair: tap to interact has no Attack and Use buttons (Bedrock's
@@ -238,6 +262,14 @@ const fn place(x: f32, y: f32, size: f32) -> Place {
     }
 }
 
+/// A button off until the player turns it on in the editor (as Bedrock's optional ones).
+const fn place_off(x: f32, y: f32, size: f32) -> Place {
+    Place {
+        show: Show::Off,
+        ..place(x, y, size)
+    }
+}
+
 /// The lowest opacity the editor sets: an invisible control is a ghost.
 pub const MIN_OPACITY: f32 = 0.1;
 /// The smallest a control gets, and a mod's button (a keybind's is as tall as a vanilla button,
@@ -305,6 +337,28 @@ pub struct LayoutConfig {
     pub interact: Interact,
     /// The stick stays where it rests ([`Layout::fixed_stick`]).
     pub fixed_stick: bool,
+    /// The phone buzzes a moment when a block breaks and when a stack is split (Bedrock's
+    /// "Vibrate when breaking blocks" and "when splitting items", both on by default).
+    pub vibrate: bool,
+    /// Turning the phone turns the view too ([`gyro_turn`]), as PojavLauncher's gyroscope.
+    pub gyro: bool,
+}
+
+/// The view's turn, in degrees right and down, for what the gyroscope turned (radians about
+/// the device's own x and y, those of its natural portrait) on a display at `rotation`
+/// (Surface.ROTATION_0..3: 1 with the phone's top to the left). The phone is a window on the
+/// world: turned left about the screen's up, the view turns left; its top tilted toward the
+/// player (its back to the sky), the view looks up.
+pub fn gyro_turn(turned: [f32; 2], rotation: i32) -> [f32; 2] {
+    let [x, y] = turned;
+    // Rotation about the screen's right and up axes.
+    let (right, up) = match rotation.rem_euclid(4) {
+        0 => (x, y),
+        1 => (-y, x),
+        2 => (-x, -y),
+        _ => (y, -x),
+    };
+    [-up.to_degrees(), -right.to_degrees()]
 }
 
 impl Default for LayoutConfig {
@@ -327,12 +381,16 @@ impl Default for LayoutConfig {
                 (Button::Debug, place(0.57, 0.0833, 0.45)),
                 (Button::Drop, place(0.711, 0.951, 0.4)),
                 (Button::Offhand, place(0.289, 0.951, 0.4)),
+                (Button::Pick, place_off(0.83, 0.4, 0.5)),
+                (Button::Players, place_off(0.36, 0.0833, 0.45)),
             ],
             extra: Vec::new(),
             opacity: 1.0,
             sneak: SneakMode::Toggle,
             interact: Interact::Tap,
             fixed_stick: false,
+            vibrate: true,
+            gyro: false,
         }
     }
 }
@@ -383,6 +441,8 @@ impl LayoutConfig {
             .and_then(Interact::from_id)
             .unwrap_or_default();
         config.fixed_stick = value["anchor"].as_str() == Some("fixed");
+        config.vibrate = value["vibrate"].as_bool().unwrap_or(true);
+        config.gyro = value["gyro"].as_bool().unwrap_or(false);
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
@@ -433,6 +493,8 @@ impl LayoutConfig {
             "sneak": self.sneak.id(),
             "interact": self.interact.id(),
             "anchor": if self.fixed_stick { "fixed" } else { "floating" },
+            "vibrate": self.vibrate,
+            "gyro": self.gyro,
             "stick": entry(&self.stick),
             "buttons": buttons,
             "mods": mods,
@@ -519,6 +581,8 @@ pub enum Action {
     Slot(usize),
     /// Three fingers landing together: show or hide the Stats overlay.
     ToggleStats,
+    /// A chip beside the held F3 button: F3 with that combination ([`DEBUG_COMBOS`]).
+    DebugCombo(usize),
 }
 
 /// Fingers landing within this of each other count as one three-finger tap.
@@ -658,6 +722,38 @@ impl Layout {
         let len = (dx * dx + dy * dy).sqrt().max(1e-6);
         let k = len.min(r) / len;
         ([x + dx * k, y + dy * k], [dx * k / r, -dy * k / r], len)
+    }
+    /// The chips of F3's combinations ([`DEBUG_COMBOS`]), shown while the F3 button is held:
+    /// two rows of pills under it (over it near the bottom), kept on the screen. Each: its
+    /// combination, centre, and half width and height.
+    pub fn debug_chips(&self) -> Vec<(usize, [f32; 2], [f32; 2])> {
+        let Some(&(_, c, r, _)) = self.buttons.iter().find(|(b, ..)| *b == Button::Debug) else {
+            return Vec::new();
+        };
+        let u = self.unit;
+        let (half, step) = ([0.95 * u, 0.34 * u], [2.05 * u, 0.85 * u]);
+        let columns = DEBUG_COMBOS.len().div_ceil(2);
+        let width = step[0] * columns as f32;
+        let left = (c[0] - width / 2.0).clamp(0.0, (self.width - width).max(0.0)) + step[0] / 2.0;
+        let below = c[1] + r + 0.25 * u + half[1];
+        let downward = below + step[1] + half[1] <= self.height;
+        (0..DEBUG_COMBOS.len())
+            .map(|i| {
+                let (col, row) = ((i % columns) as f32, (i / columns) as f32);
+                let y = if downward {
+                    below + row * step[1]
+                } else {
+                    c[1] - r - 0.25 * u - half[1] - row * step[1]
+                };
+                (i, [left + col * step[0], y], half)
+            })
+            .collect()
+    }
+    fn debug_chip_at(&self, p: [f32; 2]) -> Option<usize> {
+        self.debug_chips()
+            .into_iter()
+            .find(|(_, c, h)| (p[0] - c[0]).abs() <= h[0] && (p[1] - c[1]).abs() <= h[1] * 1.2)
+            .map(|(i, ..)| i)
     }
     /// Whether `p` presses the close button.
     pub fn close_at(&self, p: [f32; 2]) -> bool {
@@ -813,7 +909,12 @@ impl TouchControls {
         let mut out = Vec::new();
         match phase {
             TouchPhase::Started => {
-                let role = if let Some(button) = layout.button_at(p) {
+                let combo = layout.debug_chip_at(p).filter(|_| self.held(Button::Debug));
+                let role = if let Some(i) = combo {
+                    // Another finger on a combination while F3 is held.
+                    out.push(Action::DebugCombo(i));
+                    Role::Spent
+                } else if let Some(button) = layout.button_at(p) {
                     // Pause acts when it lifts: a long press is the layout editor.
                     if button != Button::Pause {
                         out.push(Action::Press(button));
@@ -945,6 +1046,13 @@ impl TouchControls {
                     return out;
                 };
                 let (_, role) = self.fingers.remove(i);
+                // The F3 finger slid onto a combination: it is pressed before F3 lets go.
+                if matches!(role, Role::Button(Button::Debug, _))
+                    && phase == TouchPhase::Ended
+                    && let Some(combo) = layout.debug_chip_at(p)
+                {
+                    out.push(Action::DebugCombo(combo));
+                }
                 out.extend(self.lift(role, phase == TouchPhase::Ended, now));
             }
         }
@@ -1097,6 +1205,10 @@ pub enum EditorAction {
     Movement,
     /// Tap to interact or aim the crosshair ([`Interact`]).
     Interact,
+    /// The phone buzzing or not ([`LayoutConfig::vibrate`]).
+    Vibrate,
+    /// Aiming by turning the phone or not ([`LayoutConfig::gyro`]).
+    Gyro,
 }
 
 /// The layout editor: drag a control to move it; the one last touched gets chips to make it
@@ -1115,16 +1227,18 @@ pub struct LayoutEditor {
 const SIZE_STEP: f32 = 0.1;
 
 impl LayoutEditor {
-    /// Done, the movement control, the interaction mode and Reset, near the top centre, under the
-    /// row of buttons the default layout puts there.
-    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 4] {
+    /// Done, the movement control, the interaction mode, vibration, the gyroscope and Reset,
+    /// near the top centre, under the row of buttons the default layout puts there.
+    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 6] {
         let u = unit(width, height);
         let at = |x: f32| [width / 2.0 + x * u, 2.6 * u];
         [
-            (EditorAction::Done, at(-2.1), 0.6 * u),
-            (EditorAction::Movement, at(-0.7), 0.6 * u),
-            (EditorAction::Interact, at(0.7), 0.6 * u),
-            (EditorAction::Reset, at(2.1), 0.6 * u),
+            (EditorAction::Done, at(-3.35), 0.6 * u),
+            (EditorAction::Movement, at(-2.01), 0.6 * u),
+            (EditorAction::Interact, at(-0.67), 0.6 * u),
+            (EditorAction::Vibrate, at(0.67), 0.6 * u),
+            (EditorAction::Gyro, at(2.01), 0.6 * u),
+            (EditorAction::Reset, at(3.35), 0.6 * u),
         ]
     }
 
@@ -1259,6 +1373,12 @@ impl LayoutEditor {
                             Some(true) => Some(false),
                             Some(false) => None,
                         };
+                    }
+                    if action == EditorAction::Vibrate {
+                        config.vibrate = !config.vibrate;
+                    }
+                    if action == EditorAction::Gyro {
+                        config.gyro = !config.gyro;
                     }
                     if action == EditorAction::Interact {
                         config.interact = config.interact.next();
@@ -2158,6 +2278,84 @@ mod tests {
         assert!(!Layout::from_config(&aim, w, h, 6.0).tap);
         assert!(has(&aim, Button::Attack) && has(&aim, Button::Use));
         assert_eq!(LayoutConfig::from_json(&aim.to_json()), aim);
+        // Pick Block and the player list wait in the editor, off; vibration is on.
+        assert!(!has(&tap, Button::Pick) && !has(&tap, Button::Players));
+        let shown = |c: &LayoutConfig, b: Button| {
+            LayoutEditor::targets(c, w, h)
+                .iter()
+                .any(|(t, p, ..)| *t == Target::Button(b) && p.show == Show::Off)
+        };
+        assert!(shown(&tap, Button::Pick) && shown(&tap, Button::Players));
+        assert!(tap.vibrate);
+        let quiet = LayoutConfig {
+            vibrate: false,
+            ..LayoutConfig::default()
+        };
+        assert_eq!(LayoutConfig::from_json(&quiet.to_json()), quiet);
+    }
+
+    #[test]
+    fn the_gyroscope_turns_the_view_as_the_phone_turns_on_any_side() {
+        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        let quarter = std::f32::consts::FRAC_PI_2;
+        // Landscape, top to the left (ROTATION_90): the screen's up is the device's x. Turned
+        // left a quarter about it: the view turns 90 degrees left.
+        assert!(close(gyro_turn([quarter, 0.0], 1), [-90.0, 0.0]));
+        // The other landscape (ROTATION_270): the screen's up is the device's -x.
+        assert!(close(gyro_turn([-quarter, 0.0], 3), [-90.0, 0.0]));
+        // Top tilted toward the player about the screen's right (the device's -y at 90):
+        // looking up.
+        assert!(close(gyro_turn([0.0, -quarter], 1), [0.0, -90.0]));
+        assert!(close(gyro_turn([0.0, quarter], 3), [0.0, -90.0]));
+        // Portrait as it is.
+        assert!(close(gyro_turn([0.0, quarter], 0), [-90.0, 0.0]));
+        let gyro = LayoutConfig {
+            gyro: true,
+            ..LayoutConfig::default()
+        };
+        assert!(!LayoutConfig::default().gyro);
+        assert_eq!(LayoutConfig::from_json(&gyro.to_json()), gyro);
+    }
+
+    #[test]
+    fn f3_held_offers_its_combinations_to_a_finger_or_a_slide() {
+        let (l, now) = (layout(), Instant::now());
+        let f3 = l
+            .buttons
+            .iter()
+            .find(|(b, ..)| *b == Button::Debug)
+            .unwrap()
+            .1;
+        let chips = l.debug_chips();
+        assert_eq!(chips.len(), DEBUG_COMBOS.len());
+        // Under the button (it is at the top), on the screen, none over another.
+        assert!(chips.iter().all(|(_, c, h)| c[1] > f3[1]
+            && c[0] - h[0] >= 0.0
+            && c[0] + h[0] <= l.width));
+        let mut t = TouchControls::default();
+        // A chip is nothing while F3 is not held (the finger turns the view there).
+        let hitboxes = chips[1].1;
+        assert!(!t
+            .event(&l, 1, TouchPhase::Started, hitboxes, now)
+            .contains(&Action::DebugCombo(1)));
+        t.event(&l, 1, TouchPhase::Ended, hitboxes, now + HOLD);
+        // Held: a second finger on a chip presses that combination.
+        assert_eq!(
+            t.event(&l, 2, TouchPhase::Started, f3, now),
+            vec![Action::Press(Button::Debug)]
+        );
+        assert_eq!(
+            t.event(&l, 3, TouchPhase::Started, hitboxes, now),
+            vec![Action::DebugCombo(1)]
+        );
+        assert!(t.event(&l, 3, TouchPhase::Ended, hitboxes, now).is_empty());
+        // The F3 finger slid onto a chip: the combination, then F3 lets go.
+        let chunks = chips[0].1;
+        t.event(&l, 2, TouchPhase::Moved, chunks, now);
+        assert_eq!(
+            t.event(&l, 2, TouchPhase::Ended, chunks, now),
+            vec![Action::DebugCombo(0), Action::Release(Button::Debug)]
+        );
     }
 
     #[test]

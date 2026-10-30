@@ -487,6 +487,45 @@ pub(crate) fn ime_height() -> u32 {
     IME_HEIGHT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Start or stop listening to the gyroscope (StarlingActivity.gyroscope); false when the phone
+/// has none.
+pub(crate) fn gyroscope(on: bool) -> bool {
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "gyroscope",
+            "(Z)Z",
+            &[jni::objects::JValue::Bool(u8::from(on))],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
+/// What the gyroscope turned since the last call (radians about the device's x and y) and the
+/// display's rotation (StarlingActivity.takeGyro). Asked every frame, so its array goes with a
+/// local frame of its own.
+pub(crate) fn take_gyro() -> Option<[f32; 3]> {
+    with_activity(|env, activity| {
+        env.with_local_frame(4, |env| {
+            let turned = env.call_method(activity, "takeGyro", "()[F", &[])?.l()?;
+            let turned = jni::objects::JFloatArray::from(turned);
+            let mut out = [0.0f32; 3];
+            env.get_float_array_region(&turned, 0, &mut out)?;
+            Ok(out)
+        })
+    })
+}
+
+/// A short buzz of the phone (StarlingActivity.vibrate): the touch controls' feedback.
+pub(crate) fn vibrate(millis: u32) {
+    let millis = jni::objects::JValue::Int(millis.min(1000) as i32);
+    with_activity(|env, activity| {
+        env.call_method(activity, "vibrate", "(I)V", &[millis])
+            .map(drop)
+    });
+}
+
 /// What the keyboard's editor (TextMirror.java) did, for the game thread to apply in order
 /// (game/touch/text_mirror.rs).
 pub(crate) enum MirrorEvent {

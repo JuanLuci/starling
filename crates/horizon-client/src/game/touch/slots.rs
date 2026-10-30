@@ -318,6 +318,7 @@ impl Game<'_> {
             down.held = true;
         }
         self.touch_pick(event_loop, id, device, slot, true);
+        self.touch_vibrate(super::SPLIT_BUZZ);
     }
 
     /// A tap at `at`: on a slot (`Some`) or outside the window.
