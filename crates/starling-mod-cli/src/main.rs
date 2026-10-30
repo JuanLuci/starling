@@ -42,6 +42,10 @@
 //! `assets/minecraft`): the pretend world gets its items and its font's text widths.
 //! `--png <dir>` also draws each step that drew something to `<dir>/step<N>.png` (its path in the
 //! step's line), with that folder's font and sprites, or plain shapes without one.
+//!
+//! `starling-mod blocks <content mod> --resources <dir> --out <dir>` draws a content mod's blocks
+//! on contact sheets and says what the game would draw wrong (blocks.rs).
+mod blocks;
 mod creative;
 mod recipes;
 mod render;
@@ -62,7 +66,8 @@ use std::{
 };
 
 const USAGE: &str = "usage: starling-mod run <mod folder or .hmod> [--scenario <file.json>] \
-    [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>] [--watch]";
+    [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>] [--watch]\n       \
+    starling-mod blocks <content mod> --resources <dir> --out <dir> [--only <text>] [--tile <px>]";
 
 fn main() -> ExitCode {
     log::set_logger(&JSON_LOG).expect("the only logger");
@@ -70,6 +75,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
+        Some("blocks") => blocks::blocks(&args[1..]),
         _ => Err(USAGE.into()),
     };
     // The JavaScript engine ran on quick code: its full code is kept for the next run.

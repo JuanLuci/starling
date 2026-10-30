@@ -120,31 +120,14 @@ impl ParsedModels {
     }
 }
 
-/// A `neoforge:obj` model with its mesh: the OBJ file it names (`<ns>:<path>.obj` under
-/// `assets/<ns>/`) and the MTL that names its materials' texture slots, beside it or by
-/// identifier. A mesh that does not read leaves the model without faces, logged.
+/// A `neoforge:obj` model with its mesh, its OBJ and MTL files read under `root`
+/// (`horizon_assets::obj::read_mesh`). A mesh that does not read leaves the model without faces,
+/// logged.
 fn with_mesh(root: &Path, name: &str, mut model: CuboidModel) -> CuboidModel {
-    use horizon_assets::obj;
     let Some(source) = &model.obj else {
         return model;
     };
-    let file = |id: &str| {
-        let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-        root.join(format!("assets/{namespace}/{path}"))
-    };
-    let read = || -> Result<Vec<obj::MeshFace>> {
-        let path = file(&source.model);
-        let text = fs::read_to_string(&path)?;
-        let materials = obj::material_library(&text)
-            .and_then(|lib| match lib.contains(':') {
-                true => fs::read_to_string(file(lib)).ok(),
-                false => fs::read_to_string(path.with_file_name(lib)).ok(),
-            })
-            .map(|mtl| obj::materials(&mtl))
-            .unwrap_or_default();
-        Ok(obj::parse(&text, &materials, source.flip_v)?)
-    };
-    match read() {
+    match horizon_assets::obj::read_mesh(source, |path| fs::read_to_string(root.join(path)).ok()) {
         Ok(faces) => model.mesh = Some(Arc::new(faces)),
         Err(e) => log::warn!("Horizon: model {name}'s OBJ mesh {}: {e}", source.model),
     }

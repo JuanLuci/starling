@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 horizon-mods = { path = "../horizon-mods", features = ["runtime"] }
+horizon-assets = { path = "../horizon-assets" }
 serde_json = "1.0.151"
 log = "0.4"
 png = "0.18"

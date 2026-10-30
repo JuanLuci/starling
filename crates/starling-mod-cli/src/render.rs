@@ -17,7 +17,7 @@ pub struct Image {
 }
 
 impl Image {
-    fn new(width: u32, height: u32, fill: [u8; 4]) -> Self {
+    pub(crate) fn new(width: u32, height: u32, fill: [u8; 4]) -> Self {
         let pixels = fill.repeat((width * height) as usize);
         Image {
             width,
@@ -25,12 +25,12 @@ impl Image {
             pixels,
         }
     }
-    fn get(&self, x: u32, y: u32) -> [u8; 4] {
+    pub(crate) fn get(&self, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * self.width + x) * 4) as usize;
         self.pixels[i..i + 4].try_into().expect("four bytes")
     }
     /// `color` over the pixel at `x`, `y` (alpha blending), when inside.
-    fn blend(&mut self, x: i64, y: i64, color: [u8; 4]) {
+    pub(crate) fn blend(&mut self, x: i64, y: i64, color: [u8; 4]) {
         if x < 0
             || y < 0
             || x >= i64::from(self.width)
@@ -148,7 +148,7 @@ impl Resources {
     }
     /// `assets/<ns>/textures/<path>.png` and its nine-slice border: the resources', else the
     /// mod's own.
-    fn texture(&mut self, id: &str) -> Option<Rc<(Image, Option<u32>)>> {
+    pub(crate) fn texture(&mut self, id: &str) -> Option<Rc<(Image, Option<u32>)>> {
         let (root, own) = (self.root.clone(), self.own.clone());
         self.textures
             .entry(id.to_owned())
@@ -502,6 +502,17 @@ impl Canvas<'_> {
             ly += if i == 0 { 12.0 } else { 10.0 };
         }
     }
+}
+
+/// `text` in the game's font (8 pixels high), shadowed, on `image` at `x`, `y`.
+pub(crate) fn label(image: Image, res: &mut Resources, x: f32, y: f32, text: &str) -> Image {
+    let mut canvas = Canvas {
+        image,
+        res,
+        poses: vec![(0.0, 0.0, 1.0)],
+    };
+    canvas.text(x, y, text, 0xFFFFFF, true);
+    canvas.image
 }
 
 /// `ops` drawn on a `width` by `height` GUI at `scale`, over a dark backdrop.

@@ -33,6 +33,33 @@ pub fn materials(mtl: &str) -> HashMap<String, String> {
     out
 }
 
+/// The faces of a `neoforge:obj` model's mesh: its OBJ file (`<ns>:<path>.obj`, at
+/// `assets/<ns>/<path>`) and the MTL naming its materials' slots, beside it or by identifier,
+/// each read by `read` from its path (`assets/...`). A missing MTL leaves each material a slot of
+/// its own name.
+pub fn read_mesh(
+    source: &crate::model::ObjSource,
+    read: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<MeshFace>> {
+    let path = |id: &str| {
+        let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+        format!("assets/{namespace}/{path}")
+    };
+    let file = path(&source.model);
+    let text = read(&file).ok_or_else(|| error("OBJ file not found"))?;
+    let materials = material_library(&text)
+        .and_then(|lib| match lib.contains(':') {
+            true => read(&path(lib)),
+            false => read(&match file.rsplit_once('/') {
+                Some((dir, _)) => format!("{dir}/{lib}"),
+                None => lib.to_owned(),
+            }),
+        })
+        .map(|mtl| materials(&mtl))
+        .unwrap_or_default();
+    parse(&text, &materials, source.flip_v)
+}
+
 /// The `mtllib` an OBJ file names, if any.
 pub fn material_library(obj: &str) -> Option<&str> {
     obj.lines()
@@ -137,6 +164,18 @@ mod tests {
         // A material the MTL does not name is a slot of its own name; five corners, three faces.
         assert_eq!(faces[2].texture, "#other");
         assert!(parse("f 1 2 3\n", &HashMap::new(), false).is_err());
+        // Read beside each other: the MTL in the OBJ's folder.
+        let files = HashMap::from([
+            ("assets/horizon/models/block/wheel.obj", obj),
+            ("assets/horizon/models/block/wheel.mtl", mtl),
+        ]);
+        let source = crate::model::ObjSource {
+            model: "horizon:models/block/wheel.obj".into(),
+            flip_v: true,
+        };
+        let read = |path: &str| files.get(path).map(|s| s.to_string());
+        assert_eq!(read_mesh(&source, read).unwrap(), faces);
+        assert!(read_mesh(&source, |_| None).is_err());
     }
 
     #[test]

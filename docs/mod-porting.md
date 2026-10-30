@@ -205,6 +205,22 @@ reason. Made to be read by a program: an agent can change the mod, run it and re
 A phone's GUI is about 533 by 240 GUI pixels: try `"gui": {"width": 533, "height": 240}` before
 calling a layout done.
 
+### A content mod's blocks: `starling-mod blocks`
+
+```
+starling-mod blocks <content mod .hmod or folder> --resources <dir> --out <dir> \
+    [--only <text>] [--tile <pixels>]
+```
+
+Draws every block the mod declares on contact sheets (`<dir>/blocks-NN.png`, 48 tiles a page),
+its models baked as the game bakes them (parents, composite and OBJ models, the blockstate's
+turns; a pane or a wall alone), and a kinetic part a second time turned an eighth of a turn with
+its extra model and shaft ends. Its JSON lines say what would draw wrong: `missing-model`,
+`unresolved-slot`, `missing-texture`, `mesh` (an OBJ that does not read), `nothing-drawn` (a
+model only the mod's code builds: Create's copycats) and `fighting-faces` (two textures in one
+place: they flicker). Look at the pages before taking a block to the phone. Light and the blocks
+around are the world's: the PC client (`horizon-ctl`) shows those.
+
 In the game: `--dev-mod <folder or .hmod>` on the PC client reloads the mod when it changes;
 `horizon-ctl` drives the game (`touch tap X Y` puts a finger on it, `screenshot`, `state`). On a
 phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into

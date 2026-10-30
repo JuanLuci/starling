@@ -123,6 +123,46 @@ pub struct Kinetic {
 /// The directions a kinetic model may be made pointing.
 pub const DIRECTIONS: [&str; 6] = ["down", "up", "north", "south", "west", "east"];
 
+/// `north`... as a unit vector.
+pub fn direction(name: &str) -> Option<[i32; 3]> {
+    Some(match name {
+        "north" => [0, 0, -1],
+        "south" => [0, 0, 1],
+        "west" => [-1, 0, 0],
+        "east" => [1, 0, 0],
+        "down" => [0, -1, 0],
+        "up" => [0, 1, 0],
+        _ => return None,
+    })
+}
+
+/// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
+/// south at face `f`: a kinetic part's `half`.
+pub fn turns_to(f: [i32; 3]) -> [u8; 3] {
+    turns_from([0, 0, 1], f)
+}
+
+/// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
+/// `made` at `f`: the first of x then y, as a variant turns its model (x first, each quarter
+/// taking south up and south west).
+pub fn turns_from(made: [i32; 3], f: [i32; 3]) -> [u8; 3] {
+    let x = |[a, b, c]: [i32; 3]| [a, c, -b];
+    let y = |[a, b, c]: [i32; 3]| [-c, b, a];
+    for tx in 0..4u8 {
+        let mut v = made;
+        for _ in 0..tx {
+            v = x(v);
+        }
+        for ty in 0..4u8 {
+            if v == f {
+                return [tx, ty, 0];
+            }
+            v = y(v);
+        }
+    }
+    [0; 3]
+}
+
 /// A kinetic part: what it joins and how.
 #[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
