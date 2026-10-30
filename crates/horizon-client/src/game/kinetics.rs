@@ -25,6 +25,10 @@ const REFRESH: Duration = Duration::from_secs(2);
 const CRANK_HOLD: Duration = Duration::from_millis(150);
 /// Parts farther from the camera than this (blocks) are not drawn.
 const DRAW_DISTANCE: f64 = 96.0;
+/// How fast a part's drawn speed follows its network's (ticks for it to come about two thirds
+/// of the way): a network that stops or starts slows and speeds up in a moment instead of at
+/// once. Every part of a network follows alike, so meshed teeth stay in their gaps.
+const EASE_TICKS: f64 = 4.0;
 
 #[derive(Default)]
 pub(super) struct Kinetics {
@@ -32,8 +36,14 @@ pub(super) struct Kinetics {
     parts: HashMap<[i32; 3], (BlockStateId, Arc<Part>)>,
     /// What each turns at, its own way (kinetics.rs): only those a source reaches.
     speeds: HashMap<[i32; 3], f32>,
-    /// Each part's turn at the clock's start (degrees): meshed teeth go into the gaps.
+    /// What each is drawn turning at, following `speeds` (EASE_TICKS).
+    shown: HashMap<[i32; 3], f32>,
+    /// Each part's turn when the parts last changed (degrees): meshed teeth go into the gaps.
     phases: HashMap<[i32; 3], f32>,
+    /// How far each has turned its own way since (degrees, within a turn), as of the clock
+    /// `at` (ticks): a part that stops stays where it is.
+    run: HashMap<[i32; 3], f32>,
+    at: f64,
     /// The world as it was last looked over: its block revision, its chunks, when.
     seen: Option<(u64, u64, Instant)>,
     /// The crank the player turns, its speed outwards, and until when.
@@ -57,8 +67,8 @@ impl Game<'_> {
             let since = now.duration_since(at);
             ((revision, chunks) != world && since >= RESCAN) || since >= REFRESH
         });
+        let changed = stale && self.find_kinetic_parts();
         if stale {
-            self.find_kinetic_parts();
             self.kinetics.seen = Some((world.0, world.1, now));
         }
         if stale || crank {
@@ -75,8 +85,50 @@ impl Game<'_> {
                 .map(|(p, (_, part))| (*p, part.clone()))
                 .collect();
             self.kinetics.speeds = kinetics::solve(&parts, &turned);
-            if stale {
-                self.kinetics.phases = kinetics::phases(&parts);
+            if changed {
+                // Each part's turn now, those joining meshed with those already turning.
+                let k = &mut self.kinetics;
+                let known = k
+                    .phases
+                    .iter()
+                    .filter_map(|(p, phase)| {
+                        let (_, part) = k.parts.get(p)?;
+                        let run = k.run.get(p).copied().unwrap_or(0.0);
+                        Some((*p, phase + own_way(part).1 * run))
+                    })
+                    .collect();
+                k.phases = kinetics::phases_from(&parts, &known);
+                k.run.clear();
+                k.shown.retain(|p, _| k.parts.contains_key(p));
+            }
+        }
+        self.advance_kinetics();
+    }
+
+    /// Each part's drawn speed a frame nearer its network's, and how far it turned since the last
+    /// frame at it, by the clock the world draws at.
+    fn advance_kinetics(&mut self) {
+        let clock = self.world.game_time as f64 + self.clock.fraction();
+        let k = &mut self.kinetics;
+        let dt = (clock - k.at).clamp(0.0, 20.0);
+        k.at = clock;
+        if dt == 0.0 {
+            return;
+        }
+        let follow = (1.0 - (-dt / EASE_TICKS).exp()) as f32;
+        for p in k.parts.keys() {
+            let target = k.speeds.get(p).copied().unwrap_or(0.0);
+            let shown = k.shown.entry(*p).or_insert(0.0);
+            let before = *shown;
+            *shown += (target - *shown) * follow;
+            if shown.abs() < 1e-3 && target == 0.0 {
+                *shown = 0.0;
+            }
+            // The turn over the frame at the mean of its speeds then and now.
+            let turned = (before + *shown) / 2.0 * DEGREES_PER_TICK * dt as f32;
+            if turned != 0.0 {
+                let run = k.run.entry(*p).or_insert(0.0);
+                *run = (*run + turned).rem_euclid(360.0);
             }
         }
     }
@@ -120,11 +172,11 @@ impl Game<'_> {
     }
 
     /// Every kinetic part in the loaded chunks near the player, from the sections whose palette
-    /// may hold one.
-    fn find_kinetic_parts(&mut self) {
+    /// may hold one. True when they are not the ones there were.
+    fn find_kinetic_parts(&mut self) -> bool {
         let table = self.res.kinetics();
         let Some(player) = &self.player else {
-            return;
+            return false;
         };
         let reach = REACH.min(self.settings.render_distance.max(2));
         let (pcx, pcz) = (
@@ -156,26 +208,31 @@ impl Game<'_> {
                 }
             }
         }
+        let old = &self.kinetics.parts;
+        let changed = parts.len() != old.len()
+            || parts
+                .iter()
+                .any(|(p, (state, _))| old.get(p).map(|(s, _)| s) != Some(state));
         self.kinetics.parts = parts;
+        changed
     }
 
     /// The turning models: a part's own (shafts, cogwheels, a crank), the shaft ends at a
     /// gearbox's and a motor's faces, a crank's handle; each about its axis through the block's
-    /// middle, by its speed since the world began.
-    pub(super) fn kinetic_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+    /// middle, as far as it has turned (advance_kinetics).
+    pub(super) fn kinetic_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         if self.kinetics.parts.is_empty() {
             return;
         }
         let catalog = &self.pack.render.model_catalog;
-        let ticks = self.world.game_time as f64 + alpha;
-        // Turned about `axis` at `rpm` from `phase` (degrees), about the block's middle.
-        let turn = |axis: usize, rpm: f32, phase: f32| {
-            let degrees = (f64::from(phase) + f64::from(rpm) * f64::from(DEGREES_PER_TICK) * ticks)
-                .rem_euclid(360.0);
+        // Turned about `axis` `factor` times its run from `phase` (degrees), about the block's
+        // middle.
+        let turn = |axis: usize, factor: f32, phase: f32, run: f32| {
+            let degrees = (phase + factor * run).rem_euclid(360.0);
             let mut unit = glam::Vec3::ZERO;
             unit[axis] = 1.0;
             glam::Mat4::from_translation(glam::Vec3::splat(0.5))
-                * glam::Mat4::from_axis_angle(unit, (degrees as f32).to_radians())
+                * glam::Mat4::from_axis_angle(unit, degrees.to_radians())
                 * glam::Mat4::from_translation(glam::Vec3::splat(-0.5))
         };
         for (pos, (state, part)) in &self.kinetics.parts {
@@ -203,14 +260,10 @@ impl Game<'_> {
                 })
                 .fold((0, 0), |(s, b), l| (s.max(l >> 4), b.max(l & 15)));
             let light = (u32::from(sky) * 16) | ((u32::from(block) * 16) << 8);
-            let speed = self.kinetics.speeds.get(pos).copied().unwrap_or(0.0);
+            let run = self.kinetics.run.get(pos).copied().unwrap_or(0.0);
             let phase = self.kinetics.phases.get(pos).copied().unwrap_or(0.0);
-            // Shaft-like parts turn about their axis; the rest by their face's sign.
-            let own = match part.kind {
-                KineticPart::Motor | KineticPart::Crank => kinetics::at_face(part.face, speed),
-                _ => (part.axis, speed),
-            };
-            let own = turn(own.0, own.1, phase);
+            let (axis, factor) = own_way(part);
+            let own = turn(axis, factor, phase, run);
             let Ok(models) = catalog.collect_seeded(*state, 0) else {
                 continue;
             };
@@ -236,12 +289,21 @@ impl Game<'_> {
                     };
                     // As the shaft joined there turns: about its axis, by the end's factor.
                     let axis = face.iter().position(|c| *c != 0).unwrap_or(1);
-                    let end = turn(axis, speed * k, phase);
+                    let end = turn(axis, k, phase, run);
                     self.baked_model_vertices(model, at * end, light, false, out);
                 }
             }
             cull_back_faces(out, start);
         }
+    }
+}
+
+/// The axis a part's own model turns about and how its run turns there: a shaft-like part's
+/// about its axis, a motor's and a crank's by their face's sign.
+fn own_way(part: &Part) -> (usize, f32) {
+    match part.kind {
+        KineticPart::Motor | KineticPart::Crank => kinetics::at_face(part.face, 1.0),
+        _ => (part.axis, 1.0),
     }
 }
 

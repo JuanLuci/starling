@@ -8592,7 +8592,7 @@ impl Game<'_> {
         }
         self.mark_entity(out.len(), "");
         self.moving_piston_geometry(camera, alpha, &mut out);
-        self.kinetic_geometry(camera, alpha, &mut out);
+        self.kinetic_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:tnt");
         self.tnt_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:painting");

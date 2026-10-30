@@ -314,14 +314,23 @@ pub fn solve(
 /// a large one diagonal to a small one half of its own tooth (11.25). Parts on one axle keep one
 /// turn; each separate set of parts starts at 0 from its least position.
 pub fn phases(parts: &HashMap<[i32; 3], Arc<Part>>) -> HashMap<[i32; 3], f32> {
+    phases_from(parts, &HashMap::new())
+}
+
+/// [`phases`], each separate set of parts starting from one of `known` (a part's turn now) when
+/// it holds one: parts already turning keep their turn, and a part joining them meshes with them.
+pub fn phases_from(
+    parts: &HashMap<[i32; 3], Arc<Part>>,
+    known: &HashMap<[i32; 3], f32>,
+) -> HashMap<[i32; 3], f32> {
     let mut starts: Vec<[i32; 3]> = parts.keys().copied().collect();
-    starts.sort();
+    starts.sort_by_key(|p| (!known.contains_key(p), *p));
     let mut phase = HashMap::new();
     for start in starts {
         if phase.contains_key(&start) {
             continue;
         }
-        phase.insert(start, 0.0);
+        phase.insert(start, known.get(&start).copied().unwrap_or(0.0));
         let mut queue = VecDeque::from([start]);
         while let Some(p) = queue.pop_front() {
             let (a, c) = (&parts[&p], phase[&p]);
@@ -578,6 +587,16 @@ mod tests {
             assert!(meets([0, 0, 0], [1, 0, 0], -16.0, t), "beside, at {t}");
             assert!(meets([0, 0, 0], [-1, 0, 1], -8.0, t), "diagonal, at {t}");
         }
+        // From turns already there: the one that has one keeps it, and the others mesh with it
+        // as they did, a whole tooth's turns apart at most.
+        let from = phases_from(&parts, &HashMap::from([([1, 0, 0], p[&[1, 0, 0]] + 45.0)]));
+        assert_eq!(from[&[1, 0, 0]], p[&[1, 0, 0]] + 45.0);
+        let whole_teeth = |a: f32, b: f32, tooth: f32| {
+            let r = (a - b).rem_euclid(tooth);
+            r.min(tooth - r) < 1e-3
+        };
+        assert!(whole_teeth(from[&[0, 0, 0]], p[&[0, 0, 0]], 45.0));
+        assert!(whole_teeth(from[&[-1, 0, 1]], p[&[-1, 0, 1]], 22.5));
     }
 
     #[test]
