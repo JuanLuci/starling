@@ -84,6 +84,7 @@ mod integrated;
 mod item_draw;
 mod item_particles;
 mod jukebox;
+mod kinetics;
 mod lan;
 mod lan_actions;
 mod lan_attributes;
@@ -1242,6 +1243,8 @@ struct WorldRest {
     /// `SpinAttackEffectModel` (Riptide's spinning boxes).
     spin_attack: Option<horizon_client::mobs::Part>,
     stations: horizon_client::stations::StationData,
+    /// Content mods' kinetic parts, by state.
+    kinetics: horizon_client::kinetics::KineticTable,
 }
 
 impl Resources {
@@ -1259,6 +1262,9 @@ impl Resources {
     }
     fn items(&self) -> &Items {
         &self.rest().items
+    }
+    fn kinetics(&self) -> &horizon_client::kinetics::KineticTable {
+        &self.rest().kinetics
     }
     fn recipes(&self) -> &Recipes {
         &self.rest().recipes
@@ -1788,6 +1794,8 @@ struct Game<'a> {
     waypoints: horizon_client::locator_bar::ClientWaypoints,
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
+    /// The kinetic parts near the player and their speeds (game/kinetics.rs).
+    kinetics: kinetics::Kinetics,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
     boats: Vec<boats::Boat>,
@@ -4327,6 +4335,14 @@ impl Game<'_> {
         } else {
             self.pick()
         };
+        // A content mod's crank takes the use: held, it turns (game/kinetics.rs), and nothing is
+        // placed against it.
+        if block_hit
+            .as_ref()
+            .is_some_and(|h| self.kinetic_crank_at(h.pos))
+        {
+            return Ok(Some(Hand::Main));
+        }
         let hands = match guest {
             Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand)) => {
                 vec![hand]
@@ -8576,6 +8592,7 @@ impl Game<'_> {
         }
         self.mark_entity(out.len(), "");
         self.moving_piston_geometry(camera, alpha, &mut out);
+        self.kinetic_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:tnt");
         self.tnt_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:painting");
@@ -13931,6 +13948,7 @@ impl ApplicationHandler for Game<'_> {
                     self.extras_retry()?;
                     self.apply_mouse_look();
                     self.pad_look(elapsed.as_secs_f32());
+                    self.kinetics_frame();
                     self.advance_flight();
                     let ticked = Instant::now();
                     let rendered = self.render()?;
@@ -14478,6 +14496,7 @@ impl<'a> Game<'a> {
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
             locator_camera: None,
+            kinetics: Default::default(),
             experience_display: Default::default(),
             boats: Vec::new(),
             boat_models: prepared.boat_models,
@@ -15212,7 +15231,14 @@ fn load_world_rest(
     let animate =
         horizon_client::animate_tick::AnimateTables::load(root, registry_owner.registry, biomes)?;
     let fog = horizon_client::fog::FogTables::load(root, biomes);
+    // Content mods' kinetic blocks (none without them): their networks (game/kinetics.rs).
+    let kinetics = horizon_client::kinetics::KineticTable::load(root, registry_owner.registry)
+        .unwrap_or_else(|e| {
+            log::warn!("Horizon: kinetic parts not loaded: {e}");
+            Default::default()
+        });
     Ok(WorldRest {
+        kinetics,
         stations,
         items,
         recipes,

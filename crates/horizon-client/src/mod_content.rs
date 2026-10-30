@@ -441,6 +441,9 @@ impl<'a> Plan<'a> {
         if let Some(s) = &p.sounds {
             row.set("sound", self.sounds[s].clone());
         }
+        if let Some(s) = &p.render_shape {
+            row.set("render_shape", J::Str(s.clone()));
+        }
     }
 
     /// Adds each new block's copy of the template's entry to a map by name.
@@ -1222,6 +1225,16 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             overlay.write(&own, &fs::read(&vanilla)?)?;
         }
     }
+    // The blocks' kinetic parts, by block id: the game's networks (kinetics.rs) and the models
+    // it turns (the model catalog bakes those no blockstate names).
+    let kinetic: BTreeMap<&str, &horizon_mods::content::Kinetic> = mods
+        .iter()
+        .flat_map(|m| &m.content.blocks)
+        .filter_map(|b| Some((b.id.as_str(), b.kinetic.as_ref()?)))
+        .collect();
+    if !kinetic.is_empty() {
+        overlay.write(KINETIC, &serde_json::to_vec(&kinetic)?)?;
+    }
     let mut namespaces: Vec<&str> = mods
         .iter()
         .flat_map(|m| m.content.namespaces.iter().map(String::as_str))
@@ -1314,6 +1327,8 @@ fn prune_sets(sets: &Path, keep: &Path) {
 
 /// In a root built by [`build`]: its warnings, one per line.
 const WARNINGS: &str = "horizon-mod-content-warnings.txt";
+/// In a root built by [`build`] with kinetic blocks: their parts, by block id (kinetics.rs).
+pub const KINETIC: &str = "kinetic.json";
 
 /// In a root built by [`resource_root`]: what it was built from.
 const STAMP: &str = "horizon-mod-content.stamp";

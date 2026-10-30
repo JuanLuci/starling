@@ -5959,7 +5959,8 @@ impl Game<'_> {
     /// building-blocking entities; random draws, scheduled ticks and events
     /// stay in the preview.
     fn remote_can_place(&mut self, hit: &super::Hit, stack: &ItemStack) -> Option<DryPlace> {
-        if !self.may_build() {
+        // A crank takes the use (game/kinetics.rs): nothing is predicted against it.
+        if !self.may_build() || self.kinetic_crank_at(hit.pos) {
             return None;
         }
         let ctx = horizon_world::level::PlaceContext {

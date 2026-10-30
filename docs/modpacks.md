@@ -218,7 +218,16 @@ properties and shapes the new block takes, and overrides what differs:
 
 Most decoration and resource blocks are vanilla classes with other numbers: Macaw's doors are
 `DoorBlock`s, XTones are full cubes, ore sets are `DropExperienceBlock`s. So templates cover the
-data tier without code. Templates also give mod blocks every behaviour Horizon already
+data tier without code.
+
+A block can also be a **kinetic part** (Starling: rotation passed from block to block, as
+Create's; `horizon_client::kinetics`): `"kinetic": { "part": "shaft" | "cogwheel" |
+"large_cogwheel" | "gearbox" | "motor" | "crank", "rpm": 16, "spins": true, "half":
+"<ns>:block/<model>", "extra": "<ns>:block/<model>" }`. Its axis or facing is its state's `axis`
+or `facing`. A part that turns whole (`spins`) declares `"render_shape": "ENTITYBLOCK_ANIMATED"`
+in its properties, so the terrain leaves it to the game, which draws it turning; `half` is a
+model drawn turning at each face it joins through (a gearbox's shaft ends), `extra` one turning
+with it (a crank's handle). The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
 implements and the harnesses already check. Items work the same way (`"template":
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on).
 

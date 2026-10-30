@@ -71,6 +71,7 @@ pub mod inv_sort;
 pub mod item_render;
 pub mod item_sync;
 pub mod item_tooltip;
+pub mod kinetics;
 pub mod lan;
 pub mod landing;
 pub mod locator_bar;

@@ -82,6 +82,56 @@ pub struct BlockProperties {
     pub map_color: Option<u8>,
     /// A vanilla block whose sounds this block uses.
     pub sounds: Option<String>,
+    /// `MODEL` (the terrain draws its model), `INVISIBLE`, or `ENTITYBLOCK_ANIMATED` (the game
+    /// draws it: a kinetic part's turning model).
+    pub render_shape: Option<String>,
+}
+
+/// The render shapes a block may declare.
+pub const RENDER_SHAPES: [&str; 3] = ["MODEL", "INVISIBLE", "ENTITYBLOCK_ANIMATED"];
+
+/// What a block is in a kinetic network (rotation passed from block to block, as Create's):
+/// its part, a source's speed, and the models the game turns with it. Its axis or facing is
+/// its state's `axis` or `facing` property.
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Kinetic {
+    pub part: KineticPart,
+    /// A source's speed in RPM (a motor's always, a crank's while it is turned), at most 256
+    /// either way.
+    #[serde(default)]
+    pub rpm: f32,
+    /// The block's own model turns about its axis (the game draws it: its render shape is
+    /// `ENTITYBLOCK_ANIMATED`).
+    #[serde(default)]
+    pub spins: bool,
+    /// A model (`<ns>:block/<path>`) drawn turning at each face the part connects through,
+    /// made pointing south: a gearbox's and a motor's shaft ends.
+    #[serde(default)]
+    pub half: Option<String>,
+    /// Another model turning with the block, turned as its blockstate turns its own (a crank's
+    /// handle).
+    #[serde(default)]
+    pub extra: Option<String>,
+}
+
+/// A kinetic part: what it joins and how.
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KineticPart {
+    /// Along its axis, both ends.
+    Shaft,
+    /// A shaft that also meshes with the cogwheels beside it (radius half a block).
+    Cogwheel,
+    /// The same, a block in radius: meshes diagonally with small ones and at right angles with
+    /// large ones.
+    LargeCogwheel,
+    /// Joins the four faces around its axis.
+    Gearbox,
+    /// A source turning its facing side at `rpm`.
+    Motor,
+    /// A source turning its back while a player turns it (sneaking: the other way).
+    Crank,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +142,8 @@ struct BlockFile {
     properties: BlockProperties,
     #[serde(default = "yes")]
     item: bool,
+    #[serde(default)]
+    kinetic: Option<Kinetic>,
 }
 fn yes() -> bool {
     true
@@ -108,6 +160,8 @@ pub struct Block {
     pub properties: BlockProperties,
     /// Also add a block item with the same id.
     pub item: bool,
+    /// Its part in a kinetic network, if any.
+    pub kinetic: Option<Kinetic>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -350,6 +404,7 @@ impl Content {
                 template: file.template,
                 properties: file.properties,
                 item: file.item,
+                kinetic: file.kinetic,
             });
         }
         for (item, name) in items {
@@ -407,6 +462,26 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
     }
     if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
         return Err("sounds names a vanilla block (minecraft:...)".into());
+    }
+    if p.render_shape
+        .as_deref()
+        .is_some_and(|s| !RENDER_SHAPES.contains(&s))
+    {
+        return Err("render_shape is MODEL, INVISIBLE or ENTITYBLOCK_ANIMATED".into());
+    }
+    if let Some(k) = &file.kinetic {
+        if !k.rpm.is_finite() || k.rpm.abs() > 256.0 {
+            return Err("kinetic rpm is a number from -256 to 256".into());
+        }
+        let model = |m: &Option<String>| {
+            m.as_deref().is_none_or(|m| {
+                m.split_once(':')
+                    .is_some_and(|(ns, p)| !ns.is_empty() && !p.is_empty())
+            })
+        };
+        if !model(&k.half) || !model(&k.extra) {
+            return Err("kinetic half and extra name models as <namespace>:<path>".into());
+        }
     }
     Ok(())
 }
@@ -498,10 +573,39 @@ capabilities = ["registries"]
                     ..BlockProperties::default()
                 },
                 item: true,
+                kinetic: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+    }
+
+    #[test]
+    fn a_kinetic_block_names_its_part_its_models_and_a_render_shape() {
+        let file: BlockFile = serde_json::from_str(
+            r#"{"template":"minecraft:iron_chain",
+                "properties":{"render_shape":"ENTITYBLOCK_ANIMATED"},
+                "kinetic":{"part":"large_cogwheel","spins":true}}"#,
+        )
+        .unwrap();
+        assert!(check_block(&file).is_ok());
+        let kinetic = file.kinetic.unwrap();
+        assert_eq!(kinetic.part, KineticPart::LargeCogwheel);
+        assert!(kinetic.spins && kinetic.half.is_none() && kinetic.rpm == 0.0);
+        let refused =
+            |json: &str| check_block(&serde_json::from_str::<BlockFile>(json).unwrap()).is_err();
+        assert!(refused(
+            r#"{"template":"minecraft:iron_chain","properties":{"render_shape":"SPIN"}}"#
+        ));
+        assert!(refused(
+            r#"{"template":"minecraft:iron_chain","kinetic":{"part":"motor","rpm":300}}"#
+        ));
+        assert!(refused(
+            r#"{"template":"minecraft:oak_log","kinetic":{"part":"gearbox","half":"shaft_half"}}"#
+        ));
+        // A part the game does not know is not read at all.
+        let unknown = r#"{"template":"minecraft:iron_chain","kinetic":{"part":"flywheel"}}"#;
+        assert!(serde_json::from_str::<BlockFile>(unknown).is_err());
     }
 
     #[test]

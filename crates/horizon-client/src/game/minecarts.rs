@@ -1232,54 +1232,65 @@ impl Game<'_> {
             return;
         };
         for (_, model) in &models {
-            for face in &model.faces {
-                let Some(s) = self
-                    .pack
-                    .layer_names
-                    .get(&face.layer)
-                    .and_then(|n| self.gui.atlas.sprites.get(n))
-                else {
-                    continue;
-                };
-                use horizon_assets::model::Direction as D;
-                let shade: u32 = match face.quad.facing {
-                    D::Up => 255,
-                    D::Down => 127,
-                    D::North | D::South => 204,
-                    D::West | D::East => 153,
-                };
-                let color = if diffuse {
-                    u32::MAX
-                } else {
-                    0xFF00_0000 | shade << 16 | shade << 8 | shade
-                };
-                let normal = if diffuse {
-                    use horizon_client::item_render::{direction_vector, transform_normal};
-                    let n = transform_normal(m, direction_vector(face.quad.facing));
-                    let n = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
-                    [n[0], n[1], n[2], 127]
-                } else {
-                    [0; 4]
-                };
-                let light = if diffuse {
-                    let emission = u32::from(face.quad.light_emission) * 16;
-                    (light & 0xFF) | (light >> 8 & 0xFF).max(emission) << 8
-                } else {
-                    light
-                };
-                for k in 0..4 {
-                    let p = face.quad.positions[k];
-                    let uv = face.quad.uv[k];
-                    out.push(Vertex {
-                        normal,
-                        pos: m.transform_point3(glam::Vec3::from_array(p)).to_array(),
-                        uv: [s.u0 + uv[0] * (s.u1 - s.u0), s.v0 + uv[1] * (s.v1 - s.v0)],
-                        layer: 0,
-                        color,
-                        light,
-                        glint_uv: [0.0, 0.0],
-                    });
-                }
+            self.baked_model_vertices(model, m, light, diffuse, out);
+        }
+    }
+    /// One baked model's faces, as [`Self::block_model_vertices`] draws each of a state's.
+    pub(super) fn baked_model_vertices(
+        &self,
+        model: &horizon_client::models::catalog::BakedModel,
+        m: glam::Mat4,
+        light: u32,
+        diffuse: bool,
+        out: &mut Vec<Vertex>,
+    ) {
+        for face in &model.faces {
+            let Some(s) = self
+                .pack
+                .layer_names
+                .get(&face.layer)
+                .and_then(|n| self.gui.atlas.sprites.get(n))
+            else {
+                continue;
+            };
+            use horizon_assets::model::Direction as D;
+            let shade: u32 = match face.quad.facing {
+                D::Up => 255,
+                D::Down => 127,
+                D::North | D::South => 204,
+                D::West | D::East => 153,
+            };
+            let color = if diffuse {
+                u32::MAX
+            } else {
+                0xFF00_0000 | shade << 16 | shade << 8 | shade
+            };
+            let normal = if diffuse {
+                use horizon_client::item_render::{direction_vector, transform_normal};
+                let n = transform_normal(m, direction_vector(face.quad.facing));
+                let n = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
+                [n[0], n[1], n[2], 127]
+            } else {
+                [0; 4]
+            };
+            let light = if diffuse {
+                let emission = u32::from(face.quad.light_emission) * 16;
+                (light & 0xFF) | (light >> 8 & 0xFF).max(emission) << 8
+            } else {
+                light
+            };
+            for k in 0..4 {
+                let p = face.quad.positions[k];
+                let uv = face.quad.uv[k];
+                out.push(Vertex {
+                    normal,
+                    pos: m.transform_point3(glam::Vec3::from_array(p)).to_array(),
+                    uv: [s.u0 + uv[0] * (s.u1 - s.u0), s.v0 + uv[1] * (s.v1 - s.v0)],
+                    layer: 0,
+                    color,
+                    light,
+                    glint_uv: [0.0, 0.0],
+                });
             }
         }
     }

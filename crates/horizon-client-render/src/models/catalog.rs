@@ -49,9 +49,24 @@ pub struct StateModels {
     states: Vec<Option<(usize, SelectedModels)>>,
     /// Every transformed model once, with the variant it was baked from.
     baked: Vec<(Variant, BakedModel)>,
+    /// The kinetic parts' models no blockstate names, by model and turns: their place in `baked`.
+    partials: BTreeMap<VariantKey, u32>,
 }
 fn key(variant: &Variant) -> VariantKey {
     (variant.model.clone(), variant.rotations, variant.uv_lock)
+}
+/// The models the kinetic blocks of a content root turn besides their own (`half` and `extra`
+/// in its kinetic.json, which horizon-client's mod_content writes); none for vanilla's.
+fn partial_models(root: &Path) -> BTreeSet<String> {
+    let Ok(bytes) = fs::read(root.join("kinetic.json")) else {
+        return BTreeSet::new();
+    };
+    let parts: BTreeMap<String, Value> = serde_json::from_slice(&bytes).unwrap_or_default();
+    parts
+        .values()
+        .flat_map(|part| ["half", "extra"].map(|k| part[k].as_str().map(str::to_owned)))
+        .flatten()
+        .collect()
 }
 impl StateModels {
     pub fn load(
@@ -208,6 +223,16 @@ impl StateModels {
             }
             choices.push(CompiledChoices::new(&definition)?);
         }
+        // Kinetic parts' turning models no blockstate names (a gearbox's shaft ends, a crank's
+        // handle), baked at every quarter turn about x and y.
+        let partials = partial_models(root);
+        for name in &partials {
+            for x in 0..4u8 {
+                for y in 0..4u8 {
+                    variants.insert((name.clone(), [x, y, 0], false));
+                }
+            }
+        }
         let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
         let library = match models.block_library(root, names.clone()) {
             Ok(library) => library,
@@ -255,11 +280,22 @@ impl StateModels {
         }
         // Every variant of every definition was baked above.
         let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let partials = index
+            .into_iter()
+            .filter(|((name, ..), _)| partials.contains(name))
+            .collect();
         Ok(Self {
             choices,
             states,
             baked,
+            partials,
         })
+    }
+    /// A kinetic part's model no blockstate names, baked at these quarter turns about x and y
+    /// (z 0).
+    pub fn partial(&self, model: &str, turns: [u8; 3]) -> Option<&BakedModel> {
+        let i = self.partials.get(&(model.to_owned(), turns, false))?;
+        Some(&self.baked[*i as usize].1)
     }
     pub fn collect(
         &self,
