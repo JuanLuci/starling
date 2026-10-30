@@ -229,6 +229,8 @@ struct NewBlock<'a> {
     rename: Rename,
     /// The template's item, if it has one.
     item: Option<String>,
+    /// Its declared shape for each of its states, in block units (`state_shapes`).
+    shapes: Option<Vec<Vec<[f64; 6]>>>,
 }
 /// An item being added (declared, or a block's).
 struct NewItem {
@@ -307,10 +309,15 @@ impl<'a> Plan<'a> {
                     }
                     wanted_sounds.push(s.clone());
                 }
+                let shapes = match &decl.properties.shape {
+                    Some(boxes) => Some(state_shapes(boxes, &mut facts, &rename.states)?),
+                    None => None,
+                };
                 blocks.push(NewBlock {
                     decl,
                     rename,
                     item: None,
+                    shapes,
                 });
             }
         }
@@ -409,6 +416,9 @@ impl<'a> Plan<'a> {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
                     self.override_gameplay(b, &mut row);
+                    if let Some(shapes) = &b.shapes {
+                        shape_gameplay(&mut row, &shapes[i]);
+                    }
                 }
                 list.push(row);
             }
@@ -507,6 +517,29 @@ impl<'a> Plan<'a> {
             "gameplay-facts.json" => states(doc, "states", false, true)?,
             "block-behaviours.json" => {
                 states(doc, "states", false, false)?;
+                // A declared shape's support and solidity (blocks.rs reads `[0] & 63` and
+                // `[1] & 1`), the rest the template's.
+                if let Some(J::Arr(rows)) = doc.at("states") {
+                    for b in &self.blocks {
+                        for (i, boxes) in b.shapes.iter().flatten().enumerate() {
+                            let Some(J::Arr(row)) = rows.get_mut(b.rename.first as usize + i)
+                            else {
+                                continue;
+                            };
+                            let (support, solid) = shape_support(boxes);
+                            if let Some(slot) = row.get_mut(0) {
+                                *slot = J::Num(support.into());
+                            }
+                            if let Some(slot) = row.get_mut(1) {
+                                let flags = match slot {
+                                    J::Num(n) => n.as_u64().unwrap_or(0),
+                                    _ => 0,
+                                };
+                                *slot = J::Num(((flags & !1) | u64::from(solid)).into());
+                            }
+                        }
+                    }
+                }
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
                     return Err("no blocks".into());
                 };
@@ -534,7 +567,15 @@ impl<'a> Plan<'a> {
             "model-states.json"
             | "landing-definitions.json"
             | "worldgen/blocks/survival-rules.json" => self.names(doc, false),
-            "render-definitions.json" => self.names(doc, true),
+            "render-definitions.json" => {
+                self.names(doc, true);
+                // A declared shape hides no neighbour's faces.
+                for b in self.blocks.iter().filter(|b| b.shapes.is_some()) {
+                    if let Some(v) = doc.get_mut(&b.decl.id) {
+                        v.set("can_occlude", J::Bool(false));
+                    }
+                }
+            }
             "worldgen/blocks/survival-extra-definitions.json" => {
                 if let Some(map) = doc.at("ignition_odds") {
                     self.names(map, false);
@@ -603,8 +644,11 @@ impl<'a> Plan<'a> {
     }
 
     /// One NBT table: `states` lists, `cached_shapes` arrays and `blocks`
-    /// compounds, wherever they are.
-    fn nbt(&self, tag: &mut Tag) {
+    /// compounds, wherever they are; declared shapes in its shape tables.
+    fn nbt(&self, table: &str, tag: &mut Tag) {
+        self.nbt_in(tag, table.ends_with("occlusion.nbt"));
+    }
+    fn nbt_in(&self, tag: &mut Tag, occlusion: bool) {
         let Tag::Compound(c) = tag else {
             return;
         };
@@ -641,14 +685,282 @@ impl<'a> Plan<'a> {
                         {
                             *slot = Tag::Float(f.to_bits());
                         }
+                        // block-properties.nbt's flags: a declared shape does not occlude.
+                        if let (Some(_), Tag::Byte(flags)) = (&b.shapes, &mut v) {
+                            *flags &= !CAN_OCCLUDE;
+                        }
                         map.insert(b.decl.id.as_str().into(), v);
                     }
                 }
-                (_, inner @ Tag::Compound(_)) => self.nbt(inner),
+                (name, inner @ Tag::Compound(_)) => {
+                    self.nbt_in(inner, occlusion || name == "occlusion")
+                }
                 _ => {}
             }
         }
+        self.place_shapes(c, occlusion);
     }
+
+    /// In a shape table (`shapes` and their `cached_shapes`, the template's copied): each
+    /// declared shape's states pointed at its grid, added once a block for each different one;
+    /// at the empty shape in an occlusion table.
+    fn place_shapes(&self, c: &mut nbt::Compound, occlusion: bool) {
+        let shaped: Vec<&NewBlock> = self.blocks.iter().filter(|b| b.shapes.is_some()).collect();
+        if shaped.is_empty() || !c.contains_key(&JavaString::from("cached_shapes")) {
+            return;
+        }
+        let Some(Tag::List(entries)) = c.get_mut(&JavaString::from("shapes")) else {
+            return;
+        };
+        let mut slots: Vec<(u32, i32)> = Vec::new();
+        if occlusion {
+            // The empty shape: the canonical one, else any with no cell occupied (occlusion
+            // tables keep no canonical identities), else one added.
+            let empty = entries
+                .iter()
+                .position(|e| e.get("canonical") == Some(&Tag::Byte(1)))
+                .or_else(|| {
+                    entries.iter().position(|e| {
+                        matches!(e.get("occupied"), Some(Tag::ByteArray(cells)) if cells.iter().all(|c| *c == 0))
+                    })
+                });
+            let empty = match empty {
+                Some(i) => i,
+                None => {
+                    let Ok(entry) =
+                        grid_entry([vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]], &[false])
+                    else {
+                        return;
+                    };
+                    entries.push(entry);
+                    entries.len() - 1
+                }
+            };
+            // The new states (the template's own keep theirs).
+            for b in &shaped {
+                let count = b.rename.states.len() as u32;
+                slots.extend((0..count).map(|i| (b.rename.first + i, empty as i32)));
+            }
+        } else {
+            for b in &shaped {
+                let mut made: Vec<(&Vec<[f64; 6]>, i32)> = Vec::new();
+                for (i, boxes) in b.shapes.iter().flatten().enumerate() {
+                    let index = match made.iter().find(|(m, _)| *m == boxes) {
+                        Some((_, index)) => *index,
+                        None => {
+                            let Ok(entry) = shape_entry(boxes) else {
+                                continue;
+                            };
+                            entries.push(entry);
+                            made.push((boxes, entries.len() as i32 - 1));
+                            entries.len() as i32 - 1
+                        }
+                    };
+                    slots.push((b.rename.first + i as u32, index));
+                }
+            }
+        }
+        if let Some(Tag::IntArray(cached)) = c.get_mut(&JavaString::from("cached_shapes")) {
+            for (state, index) in slots {
+                if let Some(slot) = cached.get_mut(state as usize) {
+                    *slot = index;
+                }
+            }
+        }
+    }
+}
+
+/// block-properties.nbt's flag for `BlockState.canOcclude`.
+const CAN_OCCLUDE: i8 = 16;
+
+/// A declared shape (`[x1, y1, z1, x2, y2, z2]` in sixteenths, made for a state facing up or
+/// along y) for each of its states (`states`, its template's): turned to the state's `facing`,
+/// else its `axis`, as Create's shapers turn theirs, in block units.
+fn state_shapes(
+    boxes: &[[f32; 6]],
+    facts: &mut J,
+    states: &Range<u32>,
+) -> Result<Vec<Vec<[f64; 6]>>> {
+    let Some(J::Arr(rows)) = facts.at("states") else {
+        return Err("facts.json: no states".into());
+    };
+    Ok(states
+        .clone()
+        .map(|id| {
+            // facts.json's rows: [name, .., {"properties": {...}, "id": ...}].
+            let properties = match rows.get(id as usize) {
+                Some(J::Arr(row)) => row.get(4).and_then(|r| r.get("properties")),
+                _ => None,
+            };
+            let property = |key: &str| match properties.and_then(|p| p.get(key)) {
+                Some(J::Str(s)) => Some(s.as_str()),
+                _ => None,
+            };
+            let toward = match (property("facing"), property("axis")) {
+                (Some(facing), _) => horizon_mods::content::direction(facing),
+                (None, Some("x")) => Some([1, 0, 0]),
+                (None, Some("z")) => Some([0, 0, 1]),
+                _ => None,
+            };
+            let turns = toward.map_or([0; 3], |f| horizon_mods::content::turns_from([0, 1, 0], f));
+            boxes
+                .iter()
+                .map(|b| turn_box(b, [turns[0], turns[1]]))
+                .collect()
+        })
+        .collect())
+}
+
+/// A box in sixteenths turned about the block's middle as a blockstate variant turns a model
+/// (`turns` quarters about x, then about y; a quarter about x takes south up, about y south
+/// west), in block units.
+fn turn_box(b: &[f32; 6], turns: [u8; 2]) -> [f64; 6] {
+    let corner = |c: [f32; 3]| {
+        let mut v = c.map(|v| f64::from(v) / 16.0 - 0.5);
+        for _ in 0..turns[0] {
+            v = [v[0], v[2], -v[1]];
+        }
+        for _ in 0..turns[1] {
+            v = [-v[2], v[1], v[0]];
+        }
+        v.map(|v| v + 0.5)
+    };
+    let (a, c) = (corner([b[0], b[1], b[2]]), corner([b[3], b[4], b[5]]));
+    [
+        a[0].min(c[0]),
+        a[1].min(c[1]),
+        a[2].min(c[2]),
+        a[0].max(c[0]),
+        a[1].max(c[1]),
+        a[2].max(c[2]),
+    ]
+}
+
+/// A gameplay row's outline (the boxes and their edges) and its collision, occlusion and light
+/// facts for a declared shape: full collision only as a whole block, no occlusion, light
+/// through.
+fn shape_gameplay(row: &mut J, boxes: &[[f64; 6]]) {
+    let list = |v: &[f64]| J::Arr(v.iter().map(|v| J::f64(*v)).collect());
+    row.set("outline", J::Arr(boxes.iter().map(|b| list(b)).collect()));
+    let mut edges = Vec::new();
+    for b in boxes {
+        for axis in 0..3 {
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            for (pu, pv) in [(0, 0), (3, 0), (0, 3), (3, 3)] {
+                let mut edge = [0.0; 6];
+                edge[axis] = b[axis];
+                edge[axis + 3] = b[axis + 3];
+                (edge[u], edge[u + 3]) = (b[u + pu], b[u + pu]);
+                (edge[v], edge[v + 3]) = (b[v + pv], b[v + pv]);
+                edges.push(list(&edge));
+            }
+        }
+    }
+    row.set("outline_edges", J::Arr(edges));
+    for key in ["solid_render", "can_occlude", "shape_occlusion"] {
+        row.set(key, J::Bool(false));
+    }
+    let whole = boxes == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+    row.set("full_collision", J::Bool(whole));
+    row.set("dampening", J::Num(0.into()));
+    row.set("skylight_down", J::Bool(true));
+}
+
+/// A declared shape's support bits (block-behaviours.json's first: FULL by direction ordinal,
+/// CENTER six on, RIGID twelve on) and `isSolid`: a face is FULL and RIGID where one box covers
+/// it whole, CENTER where one covers its middle; solid as `calculateSolid` judges the shape's
+/// bounds (on average 0.729 or a block tall).
+fn shape_support(boxes: &[[f64; 6]]) -> (u64, bool) {
+    // Direction ordinals: down, up, north, south, west, east.
+    const FACES: [(usize, bool); 6] = [
+        (1, false),
+        (1, true),
+        (2, false),
+        (2, true),
+        (0, false),
+        (0, true),
+    ];
+    let mut bits = 0u64;
+    for (d, (axis, far)) in FACES.into_iter().enumerate() {
+        let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+        let touching = |b: &[f64; 6]| match far {
+            true => b[axis] < 1.0 && 1.0 <= b[axis + 3],
+            false => b[axis] <= 0.0 && 0.0 < b[axis + 3],
+        };
+        let covers = |b: &[f64; 6], lo: f64, hi: f64| {
+            b[u] <= lo && hi <= b[u + 3] && b[v] <= lo && hi <= b[v + 3]
+        };
+        if boxes.iter().any(|b| touching(b) && covers(b, 0.0, 1.0)) {
+            bits |= (1 << d) | (1 << (12 + d));
+        }
+        if boxes
+            .iter()
+            .any(|b| touching(b) && covers(b, 7.0 / 16.0, 9.0 / 16.0))
+        {
+            bits |= 1 << (6 + d);
+        }
+    }
+    let (lo, hi) = boxes
+        .iter()
+        .fold(([f64::MAX; 3], [f64::MIN; 3]), |(lo, hi), b| {
+            (
+                std::array::from_fn(|i| lo[i].min(b[i])),
+                std::array::from_fn(|i| hi[i].max(b[i + 3])),
+            )
+        });
+    let size: [f64; 3] = std::array::from_fn(|i| hi[i] - lo[i]);
+    let solid = (size[0] + size[1] + size[2]) / 3.0 >= 0.729_166_666_666_666_6 || size[1] >= 1.0;
+    (bits, solid)
+}
+
+/// A shape table entry (as `VanillaCollisionOracle.grid` writes them) of boxes in block units:
+/// an array grid on their edges, a cell occupied inside a box.
+fn shape_entry(boxes: &[[f64; 6]]) -> Result<Tag> {
+    let coords: [Vec<f64>; 3] = std::array::from_fn(|axis| {
+        let mut v: Vec<f64> = boxes.iter().flat_map(|b| [b[axis], b[axis + 3]]).collect();
+        v.sort_by(f64::total_cmp);
+        v.dedup();
+        v
+    });
+    let sizes: [usize; 3] = std::array::from_fn(|i| coords[i].len().saturating_sub(1));
+    let mid = |axis: usize, i: usize| (coords[axis][i] + coords[axis][i + 1]) / 2.0;
+    let mut occupied = Vec::with_capacity(sizes.iter().product());
+    for x in 0..sizes[0] {
+        for y in 0..sizes[1] {
+            for z in 0..sizes[2] {
+                let p = [mid(0, x), mid(1, y), mid(2, z)];
+                occupied.push(
+                    boxes
+                        .iter()
+                        .any(|b| (0..3).all(|i| b[i] < p[i] && p[i] < b[i + 3])),
+                );
+            }
+        }
+    }
+    grid_entry(coords, &occupied)
+}
+
+/// A shape table entry of an array grid: its edges by axis and its cells, `(x * sy + y) * sz + z`.
+fn grid_entry(coords: [Vec<f64>; 3], occupied: &[bool]) -> Result<Tag> {
+    let shape =
+        horizon_core::geometry::VoxelShape::from_mixed_grid(coords.clone(), occupied, [false; 3])
+            .map_err(|e| e.to_string())?;
+    let (min, max) = shape.discrete_bounds();
+    let axis = |i: usize| Tag::LongArray(coords[i].iter().map(|v| v.to_bits() as i64).collect());
+    Ok(Tag::compound([
+        ("x", axis(0)),
+        ("y", axis(1)),
+        ("z", axis(2)),
+        (
+            "occupied",
+            Tag::ByteArray(occupied.iter().map(|o| u8::from(*o)).collect()),
+        ),
+        ("cube", Tag::Byte(0)),
+        ("cube_axes", Tag::Byte(0)),
+        ("discrete_min", Tag::IntArray(min.to_vec())),
+        ("discrete_max", Tag::IntArray(max.to_vec())),
+        ("canonical", Tag::Byte(0)),
+    ]))
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
@@ -1039,7 +1351,7 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
         } else {
             let (mut named, _) = nbt::read_named(&fs::read(&path)?, Limits::tables())
                 .map_err(|e| format!("{name}: {e}"))?;
-            plan.nbt(&mut named.tag);
+            plan.nbt(name, &mut named.tag);
             nbt::write_named(&named, Limits::tables()).map_err(|e| format!("{name}: {e}"))?
         };
         overlay.write(name, &bytes)

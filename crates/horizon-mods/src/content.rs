@@ -85,6 +85,12 @@ pub struct BlockProperties {
     /// `MODEL` (the terrain draws its model), `INVISIBLE`, or `ENTITYBLOCK_ANIMATED` (the game
     /// draws it: a kinetic part's turning model).
     pub render_shape: Option<String>,
+    /// Starling: the block's own shape, for a block shaped unlike its template: boxes
+    /// `[x1, y1, z1, x2, y2, z2]` in sixteenths (as model elements, -16 to 32: a block out at
+    /// most), made for a state facing up (or along y) and turned to each state's `facing` (else
+    /// `axis`), as Create's shapers are made. Its outline, collision and support are these
+    /// boxes, and it hides none of its neighbours' faces nor their light.
+    pub shape: Option<Vec<[f32; 6]>>,
 }
 
 /// The render shapes a block may declare.
@@ -517,6 +523,18 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
     {
         return Err("render_shape is MODEL, INVISIBLE or ENTITYBLOCK_ANIMATED".into());
     }
+    if p.shape.as_ref().is_some_and(|boxes| {
+        boxes.is_empty()
+            || boxes.iter().any(|b| {
+                b.iter().any(|v| !(-16.0..=32.0).contains(v)) || (0..3).any(|i| b[i] >= b[i + 3])
+            })
+    }) {
+        return Err(
+            "shape is boxes [x1, y1, z1, x2, y2, z2] in sixteenths, -16 to 32, each \
+                    from its least corner to its greatest"
+                .into(),
+        );
+    }
     if let Some(k) = &file.kinetic {
         if !k.rpm.is_finite() || k.rpm.abs() > 256.0 {
             return Err("kinetic rpm is a number from -256 to 256".into());
@@ -659,6 +677,21 @@ capabilities = ["registries"]
         ));
         assert!(refused(
             r#"{"template":"minecraft:lightning_rod","kinetic":{"part":"crank","extra_facing":"in"}}"#
+        ));
+        // A shape of its own: boxes in sixteenths, a block out at most, least corner first.
+        let shaped: BlockFile = serde_json::from_str(
+            r#"{"template":"minecraft:oak_log","properties":{"shape":[[0,6,0,16,10,16],[-8,0,6,24,16,10]]}}"#,
+        )
+        .unwrap();
+        assert!(check_block(&shaped).is_ok());
+        assert!(refused(
+            r#"{"template":"minecraft:oak_log","properties":{"shape":[[0,0,0,16,40,16]]}}"#
+        ));
+        assert!(refused(
+            r#"{"template":"minecraft:oak_log","properties":{"shape":[[8,0,0,4,16,16]]}}"#
+        ));
+        assert!(refused(
+            r#"{"template":"minecraft:oak_log","properties":{"shape":[]}}"#
         ));
         let crank: BlockFile = serde_json::from_str(
             r#"{"template":"minecraft:lightning_rod","kinetic":{"part":"crank",

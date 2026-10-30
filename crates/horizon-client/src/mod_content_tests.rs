@@ -716,6 +716,98 @@ fn manifest(id: &str, namespaces: &str) -> String {
     )
 }
 
+/// A block with a shape of its own on a full template (a disc on a log): each state's outline,
+/// collision and support are the boxes turned to its axis, it occludes nothing, and every table
+/// still loads.
+#[test]
+fn a_declared_shape_is_each_states_outline_collision_and_support() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-shape-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let toml = manifest("cogs", "");
+    let m = folder_mod(
+        &scratch.join("cogs"),
+        &[
+            ("horizon-mod.toml", &toml),
+            (
+                "data/cogs/horizon/block/disc.json",
+                r#"{"template": "minecraft:oak_log",
+                    "properties": {"shape": [[0, 6, 0, 16, 10, 16]]}}"#,
+            ),
+        ],
+    );
+    let root = scratch.join("root");
+    build(&base, &[m], &root).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let state = |axis: &str| {
+        let mut s = registry
+            .state(registry.default_state("cogs:disc").unwrap())
+            .unwrap()
+            .clone();
+        s.properties.insert("axis".into(), axis.into());
+        registry.id(&s).unwrap()
+    };
+    // Made lying flat (along y), standing up across x and across z.
+    let flat = [0.0, 0.375, 0.0, 1.0, 0.625, 1.0];
+    assert_eq!(&*facts.get(state("y")).outline, [flat]);
+    assert_eq!(
+        &*facts.get(state("x")).outline,
+        [[0.375, 0.0, 0.0, 0.625, 1.0, 1.0]]
+    );
+    assert_eq!(
+        &*facts.get(state("z")).outline,
+        [[0.0, 0.0, 0.375, 1.0, 1.0, 0.625]]
+    );
+    assert_eq!(facts.get(state("y")).outline_edges.len(), 12);
+    // No face whole: no full support (the log's are all full).
+    assert_eq!(facts.get(state("y")).sturdy_full, 0);
+    let log = facts.get(registry.default_state("minecraft:oak_log").unwrap());
+    assert_eq!(log.sturdy_full, 63);
+    // The collision table points the state at the disc's grid; the occlusion table at nothing.
+    let table = |name: &str| {
+        nbt::read_named(&fs::read(root.join(name)).unwrap(), Limits::tables())
+            .unwrap()
+            .0
+            .tag
+    };
+    let collision = table("cached-collision.nbt");
+    let Some(Tag::IntArray(cached)) = collision.get("cached_shapes") else {
+        panic!("no cached shapes");
+    };
+    let Some(Tag::List(shapes)) = collision.get("shapes") else {
+        panic!("no shapes");
+    };
+    let entry = &shapes[cached[state("y").0 as usize] as usize];
+    let Some(Tag::LongArray(y)) = entry.get("y") else {
+        panic!("no y");
+    };
+    let y: Vec<f64> = y.iter().map(|b| f64::from_bits(*b as u64)).collect();
+    assert_eq!(y, [0.375, 0.625]);
+    let occlusion = table("occlusion.nbt");
+    let (Some(Tag::IntArray(cached)), Some(Tag::List(shapes))) =
+        (occlusion.get("cached_shapes"), occlusion.get("shapes"))
+    else {
+        panic!("no occlusion shapes");
+    };
+    let empty = &shapes[cached[state("y").0 as usize] as usize];
+    let Some(Tag::ByteArray(cells)) = empty.get("occupied") else {
+        panic!("no occupancy");
+    };
+    assert!(cells.iter().all(|c| *c == 0), "the disc occludes nothing");
+    // And its template, the log, still occludes and collides as a whole block.
+    let log_state = registry.default_state("minecraft:oak_log").unwrap().0 as usize;
+    let Some(Tag::ByteArray(cells)) = shapes[cached[log_state] as usize].get("occupied") else {
+        panic!("no log occupancy");
+    };
+    assert!(cells.contains(&1), "the log still occludes");
+    assert!(log.full_collision);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A mod whose files sit under namespaces besides its id (Towns and Towers'
 /// `kaisyn`): they join the root, and loaders read those namespaces.
 #[test]

@@ -148,6 +148,12 @@ derivative work. These rules are part of the pipeline, not advice to users:
    the mod's observed behaviour (the oracle and the harness), its own data files and its
    public documentation. The repository holds the pipeline, the API, metadata (ids, names, versions, licences, counts)
    and test fixtures we write ourselves.
+
+   **Starling** (this fork) narrows the rule by licence: a mod whose code is MIT, or under another
+   licence that allows copying and modifying it, may be read and its code ported, with its
+   copyright and licence notice kept beside what came from it (`licenses/`). Create's code is
+   MIT (its assets are All Rights Reserved and stay out). Mods under any other licence keep
+   rule 4 as written.
 5. **Contacting authors or publishing any port is Ludovic's call.** Agents ask first.
 
 This is engineering policy, not legal advice. Before anything is published, Ludovic decides,
@@ -219,6 +225,13 @@ properties and shapes the new block takes, and overrides what differs:
 Most decoration and resource blocks are vanilla classes with other numbers: Macaw's doors are
 `DoorBlock`s, XTones are full cubes, ore sets are `DropExperienceBlock`s. So templates cover the
 data tier without code.
+
+A block shaped unlike its template declares its own shape (Starling): `"properties": {"shape":
+[[0, 6, 0, 16, 10, 16], [5, 0, 5, 11, 16, 11]]}`, boxes in sixteenths as model elements are
+(-16 to 32: a block out at most), made for a state facing up (or along y) and turned to each
+state's `facing`, else its `axis`, as Create's shapers are. Its outline, collision and support
+are those boxes, and it hides none of its neighbours' faces nor their light (a cogwheel on a
+chain's template, a crushing wheel that is a whole block but lets its neighbours show).
 
 A block can also be a **kinetic part** (Starling: rotation passed from block to block, as
 Create's; `horizon_client::kinetics`): `"kinetic": { "part": "shaft" | "cogwheel" |
