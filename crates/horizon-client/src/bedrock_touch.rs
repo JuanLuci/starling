@@ -58,7 +58,19 @@ const GLYPHS: &[(&str, &str)] = &[
         "command",
         ".......#\n......##\n.....##.\n....##..\n...##...\n..##....\n.##.....\n##......\n#.......",
     ),
+    (
+        "debug",
+        "######.#####.\n######.######\n##.........##\n##.........##\n#####...####.\n\
+         #####...####.\n##.........##\n##.........##\n##.....######\n##.....#####.",
+    ),
 ];
+
+/// What the marker holds: the revision and the glyphs drawn, so a glyph added later is drawn on
+/// the next start.
+fn stamp_key(revision: &str) -> String {
+    let names: Vec<&str> = GLYPHS.iter().map(|(name, _)| *name).collect();
+    format!("{revision} {}", names.join(","))
+}
 
 /// git's name for `bytes`: the SHA-1 of `blob <length>\0` and them.
 fn blob_sha1(bytes: &[u8]) -> String {
@@ -116,11 +128,11 @@ fn stamp(plate: &[u8], w: u32, glyph: &str, pressed: bool) -> Vec<u8> {
     out
 }
 
-/// Whether this revision's buttons are all there.
+/// Whether this revision's buttons, and every glyph, are all there.
 pub fn present(resources: &Path) -> bool {
     let revision = serde_json::from_str::<serde_json::Value>(MANIFEST)
         .ok()
-        .and_then(|m| m["revision"].as_str().map(str::to_owned));
+        .and_then(|m| m["revision"].as_str().map(stamp_key));
     revision.is_some_and(|r| std::fs::read_to_string(marker(resources)).ok() == Some(r))
 }
 
@@ -205,7 +217,7 @@ pub fn fetch(resources: &Path) -> Result<usize, String> {
         let path = resources.join("assets/starling/bedrock-touch-LICENSE.md");
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
-    std::fs::write(marker(resources), revision).map_err(|e| e.to_string())?;
+    std::fs::write(marker(resources), stamp_key(revision)).map_err(|e| e.to_string())?;
     Ok(written)
 }
 

@@ -1,8 +1,12 @@
-//! Touch controls for phones (horizon-android): a floating stick that walks, dragging anywhere
-//! else that turns the view (a tap there uses the held item, a still press breaks), buttons for
+//! Touch controls for phones (horizon-android): a stick that walks (floating under the finger,
+//! or fixed with its knob going to the finger), dragging anywhere else that turns the view (a tap there uses the held item, a still press breaks), buttons for
 //! every other action (jump, sneak, attack, use, inventory, chat, commands, pause, camera, drop,
-//! offhand), and the hotbar's slots to tap. Each finger is claimed by one control when it lands
-//! and keeps it until it lifts.
+//! offhand, the debug screen), and the hotbar's slots to tap. Each finger is claimed by one
+//! control when it lands and keeps it until it lifts.
+//!
+//! As Bedrock's control modes, the taps and presses act on what is under the finger ("tap to
+//! interact", [`Interact::Tap`], the default: no crosshair, no Attack and Use buttons) or on what
+//! the crosshair is on ("aim crosshair", [`Interact::Crosshair`]).
 //!
 //! Where the controls are is a [`LayoutConfig`] the player edits in place ([`LayoutEditor`]):
 //! a long press on pause opens it. It is kept as JSON beside options.txt (touch-layout.json).
@@ -42,10 +46,12 @@ pub enum Button {
     Camera,
     /// key.command: the chat with a slash.
     Command,
+    /// key.debug.overlay (F3): held as the key, so a tap shows or hides the debug screen.
+    Debug,
 }
 
 impl Button {
-    pub const ALL: [Button; 11] = [
+    pub const ALL: [Button; 12] = [
         Button::Jump,
         Button::Sneak,
         Button::Inventory,
@@ -57,6 +63,7 @@ impl Button {
         Button::Offhand,
         Button::Camera,
         Button::Command,
+        Button::Debug,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -71,6 +78,7 @@ impl Button {
             Button::Offhand => "Swap",
             Button::Camera => "Cam",
             Button::Command => "/",
+            Button::Debug => "F3",
         }
     }
     /// Its name in touch-layout.json.
@@ -87,6 +95,51 @@ impl Button {
             Button::Offhand => "offhand",
             Button::Camera => "camera",
             Button::Command => "command",
+            Button::Debug => "debug",
+        }
+    }
+    /// Only for aiming the crosshair: tap to interact has no Attack and Use buttons (Bedrock's
+    /// "Joystick & tap to interact" shows none).
+    fn aims(self) -> bool {
+        matches!(self, Button::Attack | Button::Use)
+    }
+}
+
+/// What a tap and a still press on the view act on: Bedrock's "tap to interact" (what is under
+/// the finger: a tap hits a mob or uses a block, a press breaks the block or interacts with the
+/// mob) or "aim crosshair" (what the crosshair is on: a tap uses, a press breaks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Interact {
+    #[default]
+    Tap,
+    Crosshair,
+}
+
+impl Interact {
+    /// Its name in touch-layout.json.
+    pub fn id(self) -> &'static str {
+        match self {
+            Interact::Tap => "tap",
+            Interact::Crosshair => "crosshair",
+        }
+    }
+    fn from_id(id: &str) -> Option<Self> {
+        [Interact::Tap, Interact::Crosshair]
+            .into_iter()
+            .find(|i| i.id() == id)
+    }
+    /// What the editor's button says: what is touched, or what is aimed at (a press interacts in
+    /// both, so not "tap").
+    pub fn label(self) -> &'static str {
+        match self {
+            Interact::Tap => "Touch",
+            Interact::Crosshair => "Aim",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            Interact::Tap => Interact::Crosshair,
+            Interact::Crosshair => Interact::Tap,
         }
     }
 }
@@ -248,6 +301,10 @@ pub struct LayoutConfig {
     pub opacity: f32,
     /// How the Sneak button sneaks.
     pub sneak: SneakMode,
+    /// What taps and presses on the view act on.
+    pub interact: Interact,
+    /// The stick stays where it rests ([`Layout::fixed_stick`]).
+    pub fixed_stick: bool,
 }
 
 impl Default for LayoutConfig {
@@ -267,12 +324,15 @@ impl Default for LayoutConfig {
                 (Button::Command, place(0.81, 0.111, 0.5)),
                 (Button::Pause, place(0.5, 0.0833, 0.45)),
                 (Button::Camera, place(0.43, 0.0833, 0.45)),
+                (Button::Debug, place(0.57, 0.0833, 0.45)),
                 (Button::Drop, place(0.711, 0.951, 0.4)),
                 (Button::Offhand, place(0.289, 0.951, 0.4)),
             ],
             extra: Vec::new(),
             opacity: 1.0,
             sneak: SneakMode::Toggle,
+            interact: Interact::Tap,
+            fixed_stick: false,
         }
     }
 }
@@ -317,6 +377,12 @@ impl LayoutConfig {
             .as_str()
             .and_then(SneakMode::from_id)
             .unwrap_or_default();
+        // Layouts from before the choice get Bedrock's default too.
+        config.interact = value["interact"]
+            .as_str()
+            .and_then(Interact::from_id)
+            .unwrap_or_default();
+        config.fixed_stick = value["anchor"].as_str() == Some("fixed");
         if value["stick"].is_object() {
             read(&value["stick"], &mut config.stick, MIN_SIZE);
             if config.stick.show == Show::Off {
@@ -365,6 +431,8 @@ impl LayoutConfig {
                 None => "auto",
             },
             "sneak": self.sneak.id(),
+            "interact": self.interact.id(),
+            "anchor": if self.fixed_stick { "fixed" } else { "floating" },
             "stick": entry(&self.stick),
             "buttons": buttons,
             "mods": mods,
@@ -403,6 +471,11 @@ impl LayoutConfig {
         shape.hits(c, r, p)
     }
 
+    /// Whether `button` is part of the controls in this interaction mode.
+    pub fn offers(&self, button: Button) -> bool {
+        self.interact == Interact::Crosshair || !button.aims()
+    }
+
     /// How opaque a control is drawn while playing: 0 for a ghost.
     pub fn alpha(&self, place: &Place) -> f32 {
         match place.show {
@@ -437,10 +510,11 @@ pub enum Action {
     Release(Button),
     /// Pause held past [`EDIT_HOLD`]: open the layout editor.
     EditLayout,
-    /// A quick tap on the view: use the held item once.
-    Use,
-    AttackStart,
-    AttackStop,
+    /// A quick tap on the view, there: use the held item once (tapping a mob to interact hits it).
+    Tap([f32; 2]),
+    /// A press on the view held still past [`HOLD`], there: break (or use) until [`Action::HoldStop`].
+    HoldStart([f32; 2]),
+    HoldStop,
     /// Select hotbar slot 0..8.
     Slot(usize),
     /// Three fingers landing together: show or hide the Stats overlay.
@@ -457,9 +531,12 @@ pub struct Layout {
     pub height: f32,
     /// The size unit: a ninth of the shorter side.
     pub unit: f32,
-    /// The stick takes fingers landing left of this and below `stick_top`.
+    /// The stick takes fingers landing left of this and below `stick_top` (a floating stick).
     pub stick_right: f32,
     pub stick_top: f32,
+    /// The stick stays where it rests and its knob goes to the finger (Bedrock's "Lock
+    /// Joystick"), instead of starting under a finger landing anywhere on the left.
+    pub fixed_stick: bool,
     /// Where the stick rests before a finger moves it, its reach, and how opaque it is drawn.
     pub stick_home: [f32; 2],
     pub stick_radius: f32,
@@ -467,6 +544,8 @@ pub struct Layout {
     /// The D-pad instead of the stick: centred on `stick_home`, `stick_radius` from its middle
     /// to an edge.
     pub dpad: bool,
+    /// Taps and presses on the view act on what is under the finger ([`Interact::Tap`]).
+    pub tap: bool,
     /// The buttons that work: centre, radius, and how opaque they are drawn (0 for a ghost).
     pub buttons: Vec<(Button, [f32; 2], f32, f32)>,
     /// The mods' buttons that work, the same way: their index in [`LayoutConfig::extra`], and
@@ -498,14 +577,16 @@ impl Layout {
             unit: u,
             stick_right: w * 0.4,
             stick_top: h * 0.3,
+            fixed_stick: config.fixed_stick,
             stick_home: [config.stick.x * w, config.stick.y * h],
             stick_radius: config.stick.size * u,
             stick_alpha: config.alpha(&config.stick),
             dpad: config.dpad == Some(true),
+            tap: config.interact == Interact::Tap,
             buttons: config
                 .buttons
                 .iter()
-                .filter(|(_, p)| p.show != Show::Off)
+                .filter(|(b, p)| p.show != Show::Off && config.offers(*b))
                 .map(|(b, p)| (*b, [p.x * w, p.y * h], p.size * u, config.alpha(p)))
                 .collect(),
             extra: config
@@ -553,6 +634,30 @@ impl Layout {
             (c, centre, third * 0.46)
         };
         [at([0, -1]), at([-1, 0]), at([1, 0]), at([0, 1])]
+    }
+    /// Where the stick is for a finger landing at `p`, if the finger takes it: a fixed stick on
+    /// its frame (a square as wide as its reach, a little past the edge too), a floating one
+    /// under the finger on the left of the screen.
+    fn stick_at(&self, p: [f32; 2]) -> Option<[f32; 2]> {
+        if self.dpad {
+            return None;
+        }
+        if self.fixed_stick {
+            let reach = self.stick_radius * 1.25;
+            let [x, y] = self.stick_home;
+            return ((p[0] - x).abs() <= reach && (p[1] - y).abs() <= reach).then_some([x, y]);
+        }
+        (p[0] < self.stick_right && p[1] > self.stick_top).then_some(p)
+    }
+    /// Where the knob goes for a finger at `p` on the stick at `origin`, the stick's tilt (-1..1,
+    /// x right, y up) and how far the finger is from the middle.
+    fn stick_tilt(&self, origin: [f32; 2], p: [f32; 2]) -> ([f32; 2], [f32; 2], f32) {
+        let [x, y] = origin;
+        let (dx, dy) = (p[0] - x, p[1] - y);
+        let r = self.stick_radius;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let k = len.min(r) / len;
+        ([x + dx * k, y + dy * k], [dx * k / r, -dy * k / r], len)
     }
     /// Whether `p` presses the close button.
     pub fn close_at(&self, p: [f32; 2]) -> bool {
@@ -610,7 +715,8 @@ enum Role {
         last: [f32; 2],
         down: Instant,
         dragged: bool,
-        attacking: bool,
+        /// Held still past [`HOLD`]: breaking (or using) until it lifts.
+        holding: bool,
     },
     Button(Button, Instant),
     /// A finger on the D-pad: the cell it is on (None off the pad) and whether it sprints.
@@ -738,17 +844,20 @@ impl TouchControls {
                         cell: Some(cell),
                         sprinting,
                     }
-                } else if !layout.dpad
-                    && p[0] < layout.stick_right
-                    && p[1] > layout.stick_top
-                    && !self
+                } else if let Some(origin) = layout.stick_at(p).filter(|_| {
+                    !self
                         .fingers
                         .iter()
                         .any(|(_, r)| matches!(r, Role::Stick { .. }))
-                {
-                    self.stick = Some((p, p));
+                }) {
+                    // A fixed stick's knob goes straight to the finger.
+                    let (knob, stick, _) = layout.stick_tilt(origin, p);
+                    self.stick = Some((origin, knob));
+                    if stick != [0.0, 0.0] {
+                        out.push(Action::Stick(stick));
+                    }
                     Role::Stick {
-                        origin: p,
+                        origin,
                         sprinting: false,
                     }
                 } else {
@@ -757,7 +866,7 @@ impl TouchControls {
                         last: p,
                         down: now,
                         dragged: false,
-                        attacking: false,
+                        holding: false,
                     }
                 };
                 self.fingers.retain(|(f, _)| *f != id);
@@ -777,7 +886,7 @@ impl TouchControls {
                         out.retain(|a| !matches!(a, Action::Press(_) | Action::Slot(_)));
                         out.extend(self.lift(role, false, now));
                     }
-                    out.retain(|a| !matches!(a, Action::Use));
+                    out.retain(|a| !matches!(a, Action::Tap(_)));
                     out.push(Action::ToggleStats);
                 }
             }
@@ -787,13 +896,9 @@ impl TouchControls {
                 };
                 match role {
                     Role::Stick { origin, sprinting } => {
-                        let (dx, dy) = (p[0] - origin[0], p[1] - origin[1]);
+                        let (knob, stick, len) = layout.stick_tilt(*origin, p);
                         let r = layout.stick_radius;
-                        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-                        let k = len.min(r) / len;
-                        let knob = [origin[0] + dx * k, origin[1] + dy * k];
                         self.stick = Some((*origin, knob));
-                        let stick = [dx * k / r, -dy * k / r];
                         out.push(Action::Stick(stick));
                         let forward = stick[1] > stick[0].abs();
                         let sprint = if *sprinting {
@@ -857,15 +962,16 @@ impl TouchControls {
                 out
             }
             Role::Look {
+                last,
                 down,
                 dragged,
-                attacking,
+                holding,
                 ..
             } => {
-                if attacking {
-                    vec![Action::AttackStop]
+                if holding {
+                    vec![Action::HoldStop]
                 } else if ended && !dragged && now - down < HOLD {
-                    vec![Action::Use]
+                    vec![Action::Tap(last)]
                 } else {
                     Vec::new()
                 }
@@ -901,19 +1007,41 @@ impl TouchControls {
                 continue;
             }
             if let Role::Look {
+                last,
                 down,
                 dragged: false,
-                attacking,
+                holding,
                 ..
             } = role
-                && !*attacking
+                && !*holding
                 && now - *down >= HOLD
             {
-                *attacking = true;
-                out.push(Action::AttackStart);
+                *holding = true;
+                out.push(Action::HoldStart(*last));
             }
         }
         out
+    }
+
+    /// Where the finger on the view points while it may still tap, or while it holds (not while
+    /// it only turns the view): what tap to interact acts on is found along it.
+    pub fn aim(&self) -> Option<[f32; 2]> {
+        self.fingers.iter().rev().find_map(|(_, role)| match role {
+            Role::Look {
+                last,
+                dragged,
+                holding,
+                ..
+            } if !*dragged || *holding => Some(*last),
+            _ => None,
+        })
+    }
+
+    /// Whether a finger on the view holds (breaks or uses) now.
+    pub fn holding(&self) -> bool {
+        self.fingers
+            .iter()
+            .any(|(_, r)| matches!(r, Role::Look { holding: true, .. }))
     }
 
     /// Lift every finger (a menu opened, the app went to the background).
@@ -956,6 +1084,8 @@ pub enum Chip {
     Visibility,
     /// The Sneak button's only: Hold or Toggle ([`SneakMode`]).
     Sneak,
+    /// The stick's only: floating or fixed ([`LayoutConfig::fixed_stick`]).
+    Anchor,
 }
 
 /// The editor's own buttons, at the top.
@@ -965,6 +1095,8 @@ pub enum EditorAction {
     Reset,
     /// The stick or the D-pad.
     Movement,
+    /// Tap to interact or aim the crosshair ([`Interact`]).
+    Interact,
 }
 
 /// The layout editor: drag a control to move it; the one last touched gets chips to make it
@@ -983,21 +1115,16 @@ pub struct LayoutEditor {
 const SIZE_STEP: f32 = 0.1;
 
 impl LayoutEditor {
-    /// Done and Reset, near the top centre, under the row of buttons the default layout puts there.
-    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 3] {
+    /// Done, the movement control, the interaction mode and Reset, near the top centre, under the
+    /// row of buttons the default layout puts there.
+    pub fn bar(width: f32, height: f32) -> [(EditorAction, [f32; 2], f32); 4] {
         let u = unit(width, height);
+        let at = |x: f32| [width / 2.0 + x * u, 2.6 * u];
         [
-            (
-                EditorAction::Done,
-                [width / 2.0 - 1.4 * u, 2.6 * u],
-                0.6 * u,
-            ),
-            (
-                EditorAction::Reset,
-                [width / 2.0 + 1.4 * u, 2.6 * u],
-                0.6 * u,
-            ),
-            (EditorAction::Movement, [width / 2.0, 2.6 * u], 0.6 * u),
+            (EditorAction::Done, at(-2.1), 0.6 * u),
+            (EditorAction::Movement, at(-0.7), 0.6 * u),
+            (EditorAction::Interact, at(0.7), 0.6 * u),
+            (EditorAction::Reset, at(2.1), 0.6 * u),
         ]
     }
 
@@ -1035,8 +1162,8 @@ impl LayoutEditor {
         }
     }
 
-    /// Every control, ghosts and those off too (the running mods' buttons last), with its centre
-    /// and radius in pixels.
+    /// Every control of the interaction mode, ghosts and those off too (the running mods'
+    /// buttons last), with its centre and radius in pixels.
     pub fn targets(
         config: &LayoutConfig,
         width: f32,
@@ -1054,6 +1181,7 @@ impl LayoutEditor {
             config
                 .buttons
                 .iter()
+                .filter(|(b, _)| config.offers(*b))
                 .map(|(b, p)| (Target::Button(*b), *p, at(p), p.size * u)),
         )
         .chain(
@@ -1096,6 +1224,8 @@ impl LayoutEditor {
         ];
         if selected != Target::Stick {
             chips.push((Chip::Visibility, [c[0] + 1.1 * u, y], 0.42 * u));
+        } else if config.dpad != Some(true) {
+            chips.push((Chip::Anchor, [c[0] + 1.1 * u, y], 0.42 * u));
         }
         if selected == Target::Button(Button::Sneak) {
             chips.push((Chip::Sneak, [c[0] + 2.2 * u, y], 0.42 * u));
@@ -1130,6 +1260,13 @@ impl LayoutEditor {
                             Some(false) => None,
                         };
                     }
+                    if action == EditorAction::Interact {
+                        config.interact = config.interact.next();
+                        // Attack and Use go with the crosshair.
+                        if matches!(self.selected, Some(Target::Button(b)) if !config.offers(b)) {
+                            self.selected = None;
+                        }
+                    }
                     return Some(action);
                 }
                 let u = unit(width, height);
@@ -1146,6 +1283,8 @@ impl LayoutEditor {
                 {
                     if chip == Chip::Sneak {
                         config.sneak = config.sneak.next();
+                    } else if chip == Chip::Anchor {
+                        config.fixed_stick = !config.fixed_stick;
                     } else if let Some(place) = self.selected.and_then(|t| config.place_mut(t)) {
                         let stick = self.selected == Some(Target::Stick);
                         let extra = matches!(self.selected, Some(Target::Extra(_)));
@@ -1158,7 +1297,7 @@ impl LayoutEditor {
                             Chip::Smaller => place.size = (place.size - SIZE_STEP).max(min),
                             Chip::Bigger => place.size = (place.size + SIZE_STEP).min(max),
                             Chip::Visibility => place.show = place.show.next(stick),
-                            Chip::Sneak => {}
+                            Chip::Sneak | Chip::Anchor => {}
                         }
                     }
                     return None;
@@ -1450,6 +1589,31 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_stick_stays_and_its_knob_goes_to_the_finger() {
+        let config = LayoutConfig {
+            fixed_stick: true,
+            ..LayoutConfig::default()
+        };
+        assert_eq!(LayoutConfig::from_json(&config.to_json()), config);
+        let (l, now) = (Layout::from_config(&config, 3200.0, 1440.0, 4.0), Instant::now());
+        let [x, y] = l.stick_home;
+        let r = l.stick_radius;
+        let mut t = TouchControls::default();
+        // Landing on the right half of the stick walks right at once.
+        let land = t.event(&l, 1, TouchPhase::Started, [x + r * 0.5, y], now);
+        assert!(
+            matches!(land[..], [Action::Stick([sx, sy])] if (sx - 0.5).abs() < 1e-5 && sy == 0.0)
+        );
+        let push = t.event(&l, 1, TouchPhase::Moved, [x, y - 10.0 * r], now);
+        assert!(push.contains(&Action::Sprint(true)));
+        assert_eq!(t.stick, Some((l.stick_home, [x, y - r])));
+        t.event(&l, 1, TouchPhase::Ended, [x, y - r], now);
+        // Off its frame, even on the left, a finger turns the view.
+        t.event(&l, 2, TouchPhase::Started, [x + r * 2.0, y - r * 2.0], now);
+        assert!(t.stick.is_none() && t.aim().is_some());
+    }
+
+    #[test]
     fn three_fingers_together_toggle_the_stats_and_take_nothing_else() {
         let (l, now) = (layout(), Instant::now());
         let mut t = TouchControls::default();
@@ -1546,7 +1710,10 @@ mod tests {
 
     #[test]
     fn layouts_round_trip_and_fill_in_controls_they_lack() {
-        let mut config = LayoutConfig::default();
+        let mut config = LayoutConfig {
+            interact: Interact::Crosshair,
+            ..LayoutConfig::default()
+        };
         config.buttons[1].1 = Place {
             x: 0.5,
             y: 0.5,
@@ -1583,6 +1750,10 @@ mod tests {
         );
         assert_eq!(read.buttons[1].1.show, Show::Off);
         assert_eq!(read.buttons[2], LayoutConfig::default().buttons[2]);
+        // From before the debug button and the interaction mode: both as Bedrock's default.
+        let debug = |c: &LayoutConfig| c.buttons.iter().find(|(b, _)| *b == Button::Debug).cloned();
+        assert_eq!(debug(&read), debug(&LayoutConfig::default()));
+        assert_eq!(read.interact, Interact::Tap);
         assert_eq!(LayoutConfig::from_json("not json"), LayoutConfig::default());
         // Off takes no fingers; a ghost does, and is not drawn; opacities multiply.
         let layout = Layout::from_config(&config, 3200.0, 1440.0, 6.0);
@@ -1660,7 +1831,27 @@ mod tests {
             [x0 + (x1 - x0) * 0.8, y],
         );
         assert_eq!(config.opacity, 0.8);
-        let reset = LayoutEditor::bar(w, h)[1].1;
+        let bar = |action: EditorAction| {
+            LayoutEditor::bar(w, h)
+                .into_iter()
+                .find(|(a, ..)| *a == action)
+                .unwrap()
+                .1
+        };
+        // Aiming the crosshair brings Attack and Use into the layout, touching takes them out.
+        let has_use = |config: &LayoutConfig| {
+            LayoutEditor::targets(config, w, h)
+                .iter()
+                .any(|(t, ..)| *t == Target::Button(Button::Use))
+        };
+        assert!(!has_use(&config));
+        let interact = bar(EditorAction::Interact);
+        editor.event(&mut config, w, h, 10, TouchPhase::Started, interact);
+        assert_eq!(config.interact, Interact::Crosshair);
+        assert!(has_use(&config));
+        editor.event(&mut config, w, h, 11, TouchPhase::Started, interact);
+        assert_eq!(config.interact, Interact::Tap);
+        let reset = bar(EditorAction::Reset);
         assert_eq!(
             editor.event(&mut config, w, h, 9, TouchPhase::Started, reset),
             Some(EditorAction::Reset)
@@ -1874,9 +2065,10 @@ mod tests {
         assert!(!sprint.live && (sprint.place.size - 0.24).abs() < 1e-5);
         let layout = Layout::from_config(&back, w, h, 6.0);
         assert_eq!(layout.extra.len(), 1);
+        // The stick, the buttons but Attack and Use (tap to interact), the running mod's.
         assert_eq!(
             LayoutEditor::targets(&back, w, h).len(),
-            1 + Button::ALL.len() + 1
+            1 + Button::ALL.len() - 2 + 1
         );
         // Reset brings back the mods' own places.
         let mut reset = LayoutConfig::default();
@@ -1908,16 +2100,64 @@ mod tests {
         t.event(&l, 3, TouchPhase::Started, [2000.0, 600.0], now);
         assert_eq!(
             t.event(&l, 3, TouchPhase::Ended, [2000.0, 600.0], now + HOLD / 3),
-            vec![Action::Use]
+            vec![Action::Tap([2000.0, 600.0])]
         );
 
         t.event(&l, 4, TouchPhase::Started, [2000.0, 600.0], now);
-        assert_eq!(t.frame(now + HOLD), vec![Action::AttackStart]);
+        assert_eq!(t.frame(now + HOLD), vec![Action::HoldStart([2000.0, 600.0])]);
         assert!(t.frame(now + HOLD * 2).is_empty());
         assert_eq!(
             t.event(&l, 4, TouchPhase::Ended, [2000.0, 600.0], now + HOLD * 3),
-            vec![Action::AttackStop]
+            vec![Action::HoldStop]
         );
+    }
+
+    #[test]
+    fn the_finger_aims_until_it_turns_the_view_and_while_it_holds() {
+        let (l, now) = (layout(), Instant::now());
+        let mut t = TouchControls::default();
+        assert_eq!(t.aim(), None);
+        // Landing (and moving less than a tap's slop) aims where the finger is.
+        t.event(&l, 1, TouchPhase::Started, [2000.0, 600.0], now);
+        assert_eq!(t.aim(), Some([2000.0, 600.0]));
+        t.event(&l, 1, TouchPhase::Moved, [2005.0, 602.0], now);
+        assert_eq!(t.aim(), Some([2005.0, 602.0]));
+        // Dragged, it only turns the view.
+        t.event(&l, 1, TouchPhase::Moved, [2300.0, 602.0], now);
+        assert_eq!(t.aim(), None);
+        t.event(&l, 1, TouchPhase::Ended, [2300.0, 602.0], now);
+        // Held, it breaks what is under it, and keeps aiming as it turns the view.
+        t.event(&l, 2, TouchPhase::Started, [2200.0, 500.0], now);
+        t.frame(now + HOLD);
+        assert!(t.holding());
+        let turn = t.event(&l, 2, TouchPhase::Moved, [2500.0, 500.0], now + HOLD);
+        assert!(matches!(turn[..], [Action::Look(..)]));
+        assert_eq!(t.aim(), Some([2500.0, 500.0]));
+        t.event(&l, 2, TouchPhase::Ended, [2500.0, 500.0], now + HOLD);
+        assert_eq!(t.aim(), None);
+        assert!(!t.holding());
+    }
+
+    #[test]
+    fn tap_to_interact_has_no_attack_and_use_and_the_debug_button_is_there() {
+        let (w, h) = (3200.0, 1440.0);
+        let has = |config: &LayoutConfig, button: Button| {
+            Layout::from_config(config, w, h, 6.0)
+                .buttons
+                .iter()
+                .any(|(b, ..)| *b == button)
+        };
+        let tap = LayoutConfig::default();
+        assert!(Layout::from_config(&tap, w, h, 6.0).tap);
+        assert!(!has(&tap, Button::Attack) && !has(&tap, Button::Use));
+        assert!(has(&tap, Button::Debug) && has(&tap, Button::Jump));
+        let aim = LayoutConfig {
+            interact: Interact::Crosshair,
+            ..LayoutConfig::default()
+        };
+        assert!(!Layout::from_config(&aim, w, h, 6.0).tap);
+        assert!(has(&aim, Button::Attack) && has(&aim, Button::Use));
+        assert_eq!(LayoutConfig::from_json(&aim.to_json()), aim);
     }
 
     #[test]

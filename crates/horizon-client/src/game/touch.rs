@@ -16,11 +16,12 @@ use horizon_client::{
     gamepad::Button as Pad,
     hud::HudBatch,
     touch::{
-        self, Action, Button, Chip, EditorAction, Layout, LayoutConfig, LayoutEditor, Shape, Show,
-        Target, TouchControls,
+        self, Action, Button, Chip, EditorAction, Interact, Layout, LayoutConfig, LayoutEditor,
+        Shape, Show, Target, TouchControls,
     },
     ui_theme::{Face, Ui, color},
 };
+use horizon_client::debug_keys::KeyAction;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use winit::{
@@ -53,6 +54,12 @@ pub(super) struct Touch {
     /// The controls were live last frame (the playing screen).
     live: bool,
     use_until: Option<Instant>,
+    /// A tap on a mob hits it: the attack trigger is held until then.
+    attack_until: Option<Instant>,
+    /// Where a tap landed, aimed along while its use or hit is held ([`USE_PULSE`]).
+    tapped: Option<(Instant, [f32; 2])>,
+    /// The press held on the view uses (a mob, the air) rather than breaks.
+    hold_uses: bool,
     /// The on-screen keyboard was asked for.
     keyboard: bool,
     /// The keyboard is wanted over the text field shown now: a typing screen opened, or a tap
@@ -307,6 +314,8 @@ pub(super) fn draw_editor(
                 _ => "On",
             },
             Chip::Sneak => config.sneak.label(),
+            Chip::Anchor if config.fixed_stick => "Fixed",
+            Chip::Anchor => "Float",
         };
         label(ui, c, r, text, ink(1.0));
     }
@@ -348,7 +357,9 @@ pub(super) fn draw_editor(
     for (action, c, r) in LayoutEditor::bar(w, h) {
         let fill = match action {
             EditorAction::Done => color::with_alpha(color::ACCENT, 0.9),
-            EditorAction::Reset | EditorAction::Movement => color::with_alpha(color::BG, 0.85),
+            EditorAction::Reset | EditorAction::Movement | EditorAction::Interact => {
+                color::with_alpha(color::BG, 0.85)
+            }
         };
         circle(ui, c, r, fill);
         let text = match action {
@@ -361,6 +372,8 @@ pub(super) fn draw_editor(
                 Some(false) => "Stick",
                 None => "Auto",
             },
+            // What a tap and a press act on: what is touched, or the crosshair's.
+            EditorAction::Interact => config.interact.label(),
         };
         label(ui, c, r, text, ink(1.0));
     }
@@ -425,6 +438,79 @@ impl Game<'_> {
     fn touch_dpad(&self) -> bool {
         let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
         picked.unwrap_or(self.remote_stick_mode() == Some(ServerStick::Keys))
+    }
+
+    /// Taps and presses on the view act on what is under the finger now: tap to interact, the
+    /// touch controls in play, in first person (the ray goes through the finger from the eyes).
+    pub(super) fn touch_taps(&self) -> bool {
+        self.touch.live
+            && self.touch.editor.is_none()
+            && self.touch_shown()
+            && self.camera_type.first_person()
+            && self
+                .touch
+                .config
+                .as_ref()
+                .is_none_or(|c| c.interact == Interact::Tap)
+    }
+
+    /// The window pixel tap to interact aims through: a finger that may still tap or holds, or
+    /// a tap whose click is still held.
+    fn touch_aim_point(&self) -> Option<[f32; 2]> {
+        if !self.touch_taps() {
+            return None;
+        }
+        self.touch.controls.aim().or_else(|| {
+            self.touch
+                .tapped
+                .filter(|(until, _)| Instant::now() < *until)
+                .map(|(_, p)| p)
+        })
+    }
+
+    /// The unit ray from the eyes through the finger on the screen (the camera's own projection:
+    /// its vertical field of view and the window's shape), for [`Game::aim`].
+    pub(super) fn touch_aim_dir(&self) -> Option<[f64; 3]> {
+        let p = self.touch_aim_point()?;
+        let fov = self.locator_camera?.3;
+        let [w, h] = self.touch_size().map(f64::from);
+        let (sx, sy) = (
+            2.0 * f64::from(p[0]) / w - 1.0,
+            1.0 - 2.0 * f64::from(p[1]) / h,
+        );
+        let t = (f64::from(fov).to_radians() / 2.0).tan();
+        let forward = glam::DVec3::from_array(super::view_vector(self.yaw, self.pitch));
+        let yaw = f64::from(self.yaw).to_radians();
+        // The screen's right (yaw 0 faces +z, its right is -x) and up.
+        let right = glam::DVec3::new(-yaw.cos(), 0.0, -yaw.sin());
+        let up = right.cross(forward);
+        let dir = forward + right * (sx * t * w / h) + up * (sy * t);
+        Some(dir.normalize().to_array())
+    }
+
+    /// The look along [`Game::touch_aim_dir`] (yaw near the player's own): what the server is
+    /// told the player looks at and places with while a finger aims, so a block or mob acted on
+    /// off the crosshair is in view to it (and its anticheat).
+    pub(super) fn touch_aim_rotation(&self) -> Option<(f32, f32)> {
+        let [x, y, z] = self.touch_aim_dir()?;
+        let yaw = (-x).atan2(z).to_degrees() as f32;
+        let pitch = (-y).clamp(-1.0, 1.0).asin().to_degrees() as f32;
+        let turn = (yaw - self.yaw).rem_euclid(360.0);
+        let turn = if turn > 180.0 { turn - 360.0 } else { turn };
+        Some((self.yaw + turn, pitch))
+    }
+
+    /// A block, with no mob before it, under the finger (or the crosshair).
+    fn touch_on_block(&self) -> bool {
+        self.pick_entity_hit().is_none() && self.pick().is_some()
+    }
+
+    /// Tap to interact has no crosshair, and outlines a block only while a finger aims at it.
+    pub(super) fn touch_hides_crosshair(&self) -> bool {
+        self.touch_taps()
+    }
+    pub(super) fn touch_hides_outline(&self) -> bool {
+        self.touch_taps() && self.touch_aim_point().is_none()
     }
 
     fn touch_layout_path() -> Result<std::path::PathBuf> {
@@ -639,6 +725,13 @@ impl Game<'_> {
             self.touch.use_until = None;
             self.pad.touch_trigger(0, 0.0);
         }
+        if self.touch.attack_until.is_some_and(|t| now >= t) {
+            self.touch.attack_until = None;
+            self.pad.touch_trigger(1, 0.0);
+        }
+        if self.touch.tapped.is_some_and(|(t, _)| now >= t) {
+            self.touch.tapped = None;
+        }
         // The on-screen keyboard (its keys arrive as key events; on Android an editor behind it
         // holds the field, text_mirror.rs). The screens made for typing
         // (chat, sign, book, command block) open it with them; the other text fields on a tap on
@@ -781,11 +874,19 @@ impl Game<'_> {
                 Action::Look(dx, dy) => self.mouse.add_motion(dx as f64, dy as f64),
                 Action::Press(Button::Jump) => self.pad.touch_hold(Pad::South, true),
                 Action::Release(Button::Jump) => self.pad.touch_hold(Pad::South, false),
-                Action::Press(Button::Attack) | Action::AttackStart => {
-                    self.pad.touch_trigger(1, 1.0)
+                Action::Press(Button::Attack) => self.pad.touch_trigger(1, 1.0),
+                Action::Release(Button::Attack) => self.pad.touch_trigger(1, 0.0),
+                // Held on a block it breaks it; on a mob or the air it is the right button
+                // held (interact, eat, draw a bow), as Bedrock's press.
+                Action::HoldStart(_) => {
+                    self.touch.hold_uses = !self.touch_on_block();
+                    let trigger = if self.touch.hold_uses { 0 } else { 1 };
+                    self.pad.touch_trigger(trigger, 1.0);
                 }
-                Action::Release(Button::Attack) | Action::AttackStop => {
-                    self.pad.touch_trigger(1, 0.0)
+                Action::HoldStop => {
+                    let trigger = if self.touch.hold_uses { 0 } else { 1 };
+                    self.touch.hold_uses = false;
+                    self.pad.touch_trigger(trigger, 0.0);
                 }
                 Action::Press(Button::Use) => {
                     self.touch.use_until = None;
@@ -805,10 +906,31 @@ impl Game<'_> {
                     // key.command: the chat opened with a slash.
                     let _ = self.touch_key_tap(KeyCode::Slash);
                 }
+                // F3 held as the key while the finger is on it (KeyboardHandler: its release
+                // toggles the debug screen).
+                Action::Press(Button::Debug) => {
+                    self.physical_keys.insert(KeyCode::F3);
+                    self.debug_key(KeyCode::F3, KeyAction::Press);
+                }
+                Action::Release(Button::Debug) => {
+                    self.physical_keys.remove(&KeyCode::F3);
+                    self.debug_key(KeyCode::F3, KeyAction::Release);
+                }
                 Action::Release(_) => {}
-                Action::Use => {
-                    self.pad.touch_trigger(0, 1.0);
-                    self.touch.use_until = Some(Instant::now() + USE_PULSE);
+                Action::Tap(p) => {
+                    let now = Instant::now();
+                    // Tap to interact aims where it landed while the click is held.
+                    if self.touch_taps() {
+                        self.touch.tapped = Some((now + USE_PULSE * 2, p));
+                    }
+                    // A mob under the finger is hit, as Bedrock's tap; the rest is used.
+                    if self.touch_taps() && self.pick_entity_hit().is_some() {
+                        self.pad.touch_trigger(1, 1.0);
+                        self.touch.attack_until = Some(now + USE_PULSE);
+                    } else {
+                        self.pad.touch_trigger(0, 1.0);
+                        self.touch.use_until = Some(now + USE_PULSE);
+                    }
                 }
                 Action::Slot(slot) => self.selected = slot,
                 Action::ToggleStats => self.toggle_stats_overlay(),
@@ -939,15 +1061,35 @@ impl Game<'_> {
                     label(&mut ui, c, half, text, ink(a));
                 }
             } else if a > 0.0 {
+                // The knob half the frame's size, as Bedrock's (and Starling's own) sprites are.
                 match (skin("stick"), skin("stick_knob")) {
                     (Some(ring), Some(top)) => {
                         icon(&mut ui, &ring, base, layout.stick_radius, 1.0, a);
-                        icon(&mut ui, &top, knob, layout.stick_radius * 0.45, 1.0, a);
+                        icon(&mut ui, &top, knob, layout.stick_radius * 0.5, 1.0, a);
                     }
                     _ => {
                         circle(&mut ui, base, layout.stick_radius, plate(a));
-                        circle(&mut ui, knob, layout.stick_radius * 0.45, pressed(a));
+                        circle(&mut ui, knob, layout.stick_radius * 0.5, pressed(a));
                     }
+                }
+            }
+            // Breaking under the finger (tap to interact): a ring around it that fills as the
+            // block cracks.
+            if let (Some(p), true, false) = (
+                self.touch_aim_point(),
+                self.touch.controls.holding(),
+                self.touch.hold_uses,
+            ) {
+                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress.clamp(0.0, 1.0));
+                let (ring, dot) = (layout.unit * 0.55, layout.unit * 0.07);
+                const DOTS: usize = 24;
+                for i in 0..DOTS {
+                    let turn = i as f32 / DOTS as f32;
+                    let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+                    let c = [p[0] + ring * angle.cos(), p[1] + ring * angle.sin()];
+                    let lit = turn < progress;
+                    let fill = color::with_alpha(color::WHITE, if lit { 0.9 } else { 0.3 });
+                    circle(&mut ui, c, dot, fill);
                 }
             }
             let sneaking = self.player.as_ref().is_some_and(|p| p.shift_key_down);

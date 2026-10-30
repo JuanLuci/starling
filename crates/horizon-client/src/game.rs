@@ -2141,9 +2141,19 @@ impl Game<'_> {
     }
     /// Where targeting starts and points: the eyes along the view. Every
     /// crosshair target (blocks, fluids, entities, mod raycasts) is found
-    /// along this ray, so a tracked controller can stand in for it.
+    /// along this ray, so a tracked controller can stand in for it, and so
+    /// does a finger with tap to interact (game/touch.rs).
     fn aim(&self) -> Option<([f64; 3], [f64; 3])> {
-        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
+        let dir = self
+            .touch_aim_dir()
+            .unwrap_or_else(|| view_vector(self.yaw, self.pitch));
+        Some((self.eye_position()?, dir))
+    }
+    /// The look a use acts with (BlockPlaceContext's rotation) and the server
+    /// is told: the view's, or the finger's with tap to interact.
+    fn interaction_rotation(&self) -> (f32, f32) {
+        self.touch_aim_rotation()
+            .unwrap_or((self.yaw, self.pitch))
     }
     fn reach(&self) -> f64 {
         if self.creative { 5.0 } else { 4.5 }
@@ -4632,13 +4642,14 @@ impl Game<'_> {
             _ => Direction::East,
         };
         // BlockItem.place through the vanilla placement rules.
+        let (yaw, pitch) = self.interaction_rotation();
         let ctx = PlaceContext {
             clicked_pos: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: false,
-            yaw: self.yaw,
-            pitch: self.pitch,
+            yaw,
+            pitch,
             sneaking: self.keys.contains(&KeyCode::ShiftLeft),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
@@ -6256,6 +6267,7 @@ impl Game<'_> {
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
+                && !self.touch_hides_crosshair()
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -12076,7 +12088,11 @@ impl Game<'_> {
         // player who may build. Adventure players only get one with a CAN_BREAK or
         // CAN_PLACE_ON item and spectators with a menu block; Horizon reads neither the
         // components nor opens menus for spectators, so those never show it.
-        let outline = if self.screen == Screen::Playing && !self.ui.hide_gui && self.may_build() {
+        let outline = if self.screen == Screen::Playing
+            && !self.ui.hide_gui
+            && self.may_build()
+            && !self.touch_hides_outline()
+        {
             self.pick()
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);

@@ -5258,7 +5258,9 @@ impl Game<'_> {
             p.sprinting,
         );
         let steer = self.remote.as_ref().and_then(|r| r.steer_yaw);
-        let (yaw, pitch, selected) = (steer.unwrap_or(self.yaw), self.pitch, self.selected);
+        // A finger aiming with tap to interact: the server sees the player look at what it acts on.
+        let (look_yaw, look_pitch) = self.interaction_rotation();
+        let (yaw, pitch, selected) = (steer.unwrap_or(look_yaw), look_pitch, self.selected);
         let riding = self.riding.is_some();
         let vehicle = self.remote_vehicle_packets();
         let Some(r) = self.remote.as_mut() else {
@@ -5964,8 +5966,8 @@ impl Game<'_> {
             face: horizon_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.face == [0; 3],
-            yaw: self.yaw,
-            pitch: self.pitch,
+            yaw: self.interaction_rotation().0,
+            pitch: self.interaction_rotation().1,
             sneaking: self.keys.contains(&KeyCode::ShiftLeft),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),

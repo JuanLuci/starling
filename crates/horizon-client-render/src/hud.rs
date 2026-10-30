@@ -322,6 +322,14 @@ const TOUCH_SPRITES: &[(&str, &[u8])] = &[
         include_bytes!("../../horizon-client/assets/touch/command_pressed.png"),
     ),
     (
+        "debug",
+        include_bytes!("../../horizon-client/assets/touch/debug.png"),
+    ),
+    (
+        "debug_pressed",
+        include_bytes!("../../horizon-client/assets/touch/debug_pressed.png"),
+    ),
+    (
         "dpad_down",
         include_bytes!("../../horizon-client/assets/touch/dpad_down.png"),
     ),

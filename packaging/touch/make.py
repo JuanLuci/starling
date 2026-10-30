@@ -211,6 +211,18 @@ ICONS = {
         .###.........
         ###..........
     """,
+    "debug": """
+        ######.#####.
+        ######.######
+        ##.........##
+        ##.........##
+        #####...####.
+        #####...####.
+        ##.........##
+        ##.........##
+        ##.....######
+        ##.....#####.
+    """,
     "up": """
         .......##.......
         ......####......
@@ -273,7 +285,7 @@ def build():
     OUT.mkdir(parents=True, exist_ok=True)
     sprites = {}
     for name in ["jump", "sneak", "attack", "use", "inventory", "chat", "pause", "drop", "offhand",
-                 "camera", "command"]:
+                 "camera", "command", "debug"]:
         sprites[name] = tile(name, False)
         sprites[name + "_pressed"] = tile(name, True)
     turns = {"up": None, "down": Image.Transpose.ROTATE_180,
