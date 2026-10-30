@@ -21,8 +21,10 @@ const REACH: i32 = 8;
 const RESCAN: Duration = Duration::from_millis(250);
 /// ...and at least this often (chunks sent again replace their blocks without a write).
 const REFRESH: Duration = Duration::from_secs(2);
-/// A crank keeps turning this long after the last frame its player held use on it.
+/// A crank keeps turning this long after the last frame its player held use on it...
 const CRANK_HOLD: Duration = Duration::from_millis(150);
+/// ...and at least this long after a press on it starts (a tap turns it about a turn at 32 RPM).
+const CRANK_TAP: Duration = Duration::from_millis(1800);
 /// Parts farther from the camera than this (blocks) are not drawn.
 const DRAW_DISTANCE: f64 = 96.0;
 /// How fast a part's drawn speed follows its network's (ticks for it to come about two thirds
@@ -48,6 +50,8 @@ pub(super) struct Kinetics {
     seen: Option<(u64, u64, Instant)>,
     /// The crank the player turns, its speed outwards, and until when.
     crank: Option<([i32; 3], f32, Instant)>,
+    /// Use was held on a crank last frame: a press that starts turns it a while (a tap).
+    cranking: bool,
 }
 
 impl Game<'_> {
@@ -133,7 +137,7 @@ impl Game<'_> {
         }
     }
 
-    /// Whether a crank is at `pos` (a press on it turns it rather than breaks it).
+    /// Whether a crank is at `pos` (a use on it turns it, placing nothing against it).
     pub(super) fn kinetic_crank_at(&self, pos: [i32; 3]) -> bool {
         self.res.rest_ready()
             && self
@@ -145,7 +149,8 @@ impl Game<'_> {
 
     /// The crank the player holds use on (the crosshair's, or the finger's with tap to
     /// interact): turned counter-clockwise as seen from its handle, sneaking the other way, and
-    /// a moment after letting go. True when what is turned changed.
+    /// a moment after letting go; each press that starts on it (a tap: touch holds break it, as
+    /// any block) turns it a while. True when what is turned changed.
     fn turn_crank(&mut self, now: Instant) -> bool {
         let before = self.kinetics.crank.map(|(p, v, _)| (p, v));
         let held = self.right && self.screen == Screen::Playing;
@@ -155,12 +160,21 @@ impl Game<'_> {
             .map(|hit| hit.pos)
             .and_then(|p| Some((p, self.kinetics.parts.get(&p)?.1.clone())))
             .filter(|(_, part)| part.kind == KineticPart::Crank);
+        let pressed = target.is_some() && !self.kinetics.cranking;
+        self.kinetics.cranking = target.is_some();
         if let Some((p, part)) = target {
             // Its back turns about the face outwards: counter-clockwise from the front is the
             // other way about it.
             let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
             let speed = if sneaking { part.rpm } else { -part.rpm };
-            self.kinetics.crank = Some((p, speed, now + CRANK_HOLD));
+            let turning = self
+                .kinetics
+                .crank
+                .filter(|(q, v, _)| *q == p && *v == speed)
+                .map(|(_, _, until)| until);
+            let until =
+                (now + if pressed { CRANK_TAP } else { CRANK_HOLD }).max(turning.unwrap_or(now));
+            self.kinetics.crank = Some((p, speed, until));
         } else if self
             .kinetics
             .crank
@@ -302,7 +316,9 @@ impl Game<'_> {
 /// about its axis, a motor's and a crank's by their face's sign.
 fn own_way(part: &Part) -> (usize, f32) {
     match part.kind {
-        KineticPart::Motor | KineticPart::Crank => kinetics::at_face(part.face, 1.0),
+        KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
+            kinetics::at_face(part.face, 1.0)
+        }
         _ => (part.axis, 1.0),
     }
 }

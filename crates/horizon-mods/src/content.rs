@@ -186,6 +186,12 @@ pub enum KineticPart {
     Motor,
     /// A source turning its back while a player turns it (sneaking: the other way).
     Crank,
+    /// Turned through its back, it breaks the block it faces (Create's mechanical drill: a
+    /// step a tick past its hardness over a hundredth of its speed, ten steps a block).
+    Drill,
+    /// A shaft along its axis; two a block apart turning opposite ways crush the items that
+    /// fall between them (Create's crushing wheels and their crushing and milling recipes).
+    CrushingWheel,
 }
 
 #[derive(Debug, Deserialize)]

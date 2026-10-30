@@ -235,7 +235,7 @@ chain's template, a crushing wheel that is a whole block but lets its neighbours
 
 A block can also be a **kinetic part** (Starling: rotation passed from block to block, as
 Create's; `horizon_client::kinetics`): `"kinetic": { "part": "shaft" | "cogwheel" |
-"large_cogwheel" | "gearbox" | "motor" | "crank", "rpm": 16, "spins": true, "half":
+"large_cogwheel" | "gearbox" | "motor" | "crank" | "drill" | "crushing_wheel", "rpm": 16, "spins": true, "half":
 "<ns>:block/<model>", "extra": "<ns>:block/<model>" }`. Its axis or facing is its state's `axis`
 or `facing` (a shaft-like part with only a `facing`, a water wheel, is an axle along it). A part that turns whole (`spins`) declares `"render_shape": "ENTITYBLOCK_ANIMATED"`
 in its properties, so the terrain leaves it to the game, which draws it turning; `half` is a
@@ -243,7 +243,11 @@ model drawn turning at each face it joins through (a gearbox's shaft ends), `ext
 with it (a crank's handle), turned as the blockstate turns the block's own model unless
 `"extra_facing": "north"` (or another direction) says which way it is made pointing; it is then
 turned from there to the state's `facing`. The game draws only the faces of these models that
-look at the camera, as the terrain does. The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
+look at the camera, as the terrain does. Where the game simulates the world (its own server, not a
+remote one), a `drill` turned through its back breaks the block it faces and `crushing_wheel`s two
+apart turning towards each other crush the items that fall between them, by the content root's
+`create:crushing` (else `create:milling`) recipes; a hopper facing the gap fills it
+(`game/kinetic_machines.rs`, ported from Create's code, MIT). The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
 implements and the harnesses already check. Items work the same way (`"template":
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on).
 

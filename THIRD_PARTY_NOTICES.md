@@ -7,6 +7,15 @@ developers, with one upstream fix applied
 ([gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124)). It is licensed under MIT or
 Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+## Create
+
+`crates/horizon-client/src/game/kinetic_machines.rs` ports
+[Create](https://github.com/Creators-of-Create/Create) 6.0.10's mechanical drill and crushing
+wheels (BlockBreakingKineticBlockEntity, DrillBlockEntity, CrushingWheelBlock and
+CrushingWheelControllerBlockEntity) by The Create Team, whose code is under the MIT license
+(`licenses/create-MIT.txt`). Create's assets are All Rights Reserved; none are in this
+repository.
+
 ## Pixelify Sans
 
 `crates/horizon-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)

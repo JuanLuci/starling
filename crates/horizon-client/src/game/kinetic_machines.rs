@@ -1,0 +1,619 @@
+//! Create's working machines where this game simulates the world (the integrated server, a LAN
+//! host or a dedicated server; a remote server runs its own): drills break the block they face
+//! and crushing wheels crush the items that fall between them while their kinetic networks
+//! turn. Ported from Create 6.0.10 (MIT; licenses/create-MIT.txt): BlockBreakingKineticBlockEntity
+//! and DrillBlockEntity for the drill, CrushingWheelBlock.updateControllers and
+//! CrushingWheelControllerBlockEntity for the wheels, whose controller is no block here but the
+//! air between two wheels. The networks are solved from the block states as the window solves
+//! them (game/kinetics.rs); a crank only the window's player turns does not reach here.
+use super::Game;
+use horizon_client::items::ItemStack;
+use horizon_client::kinetics::{self, KineticPart, Part};
+use horizon_core::{position::BlockPos, random::RandomSource};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+/// Ticks between looks over the loaded chunks for parts (sooner when blocks change).
+const RESCAN_TICKS: i64 = 20;
+/// KineticBlockEntity's lazy tick: a drill with nothing to break looks again this often.
+const LAZY_TICKS: i64 = 10;
+/// ItemEntity.setDefaultPickUpDelay.
+const PICKUP_DELAY: u32 = 10;
+/// The controller's collision, `CRUSHING_WHEEL_CONTROLLER_COLLISION` facing down: items wait on
+/// it (13 sixteenths up) while the wheels are busy.
+const WAITING_HEIGHT: f64 = 13.0 / 16.0;
+
+#[derive(Default)]
+pub(super) struct Machines {
+    parts: HashMap<[i32; 3], Arc<Part>>,
+    speeds: HashMap<[i32; 3], f32>,
+    /// The world's block revision and chunk set at the last look, and when (game time).
+    seen: Option<(u64, u64, i64)>,
+    drills: HashMap<[i32; 3], Drill>,
+    controllers: HashMap<[i32; 3], Controller>,
+    /// Items a controller put out, by entity id: that controller does not take them again
+    /// (Create's `BypassCrushingWheel`).
+    bypass: HashMap<u32, [i32; 3]>,
+    /// Drills, crushing wheels and controllers at the last look, for the log.
+    counts: (usize, usize, usize),
+}
+
+/// BlockBreakingKineticBlockEntity's state.
+struct Drill {
+    /// `destroyProgress`, 0 to 10.
+    progress: i32,
+    /// `ticksUntilNextProgress`: -1 waits for the lazy tick.
+    wait: i32,
+    breaking: [i32; 3],
+    /// `breakerId`: negative, apart from players' and mobs'.
+    breaker: i32,
+}
+
+/// CrushingWheelControllerBlockEntity's state.
+struct Controller {
+    /// The way crushed items go: the way the wheels' rims move between them.
+    facing: [i32; 3],
+    /// `crushingspeed`: a wheel's speed over 50.
+    speed: f32,
+    /// `ProcessingInventory`: the item being crushed, then what it became.
+    slots: Vec<ItemStack>,
+    remaining: f32,
+    applied: bool,
+}
+
+/// Create's crushing and milling recipes the content root holds: the crusher tries crushing,
+/// then milling.
+#[derive(Default)]
+pub(super) struct Recipes {
+    crushing: HashMap<Arc<str>, Recipe>,
+    milling: HashMap<Arc<str>, Recipe>,
+}
+
+struct Recipe {
+    /// `processing_time`, in ticks at speed one.
+    time: f32,
+    /// Each result: the item, its count and its chance.
+    results: Vec<(Arc<str>, u32, f32)>,
+}
+
+impl Recipes {
+    /// `data/<namespace>/recipe/{crushing,milling}/**.json` of the content root: one item in,
+    /// results with chances. Recipes with conditions (other mods' compat) or a tag in are left
+    /// out.
+    pub(super) fn load(root: &Path) -> Self {
+        let out = Self::read(root);
+        if !out.crushing.is_empty() || !out.milling.is_empty() {
+            log::info!(
+                "Horizon: {} crushing and {} milling recipes",
+                out.crushing.len(),
+                out.milling.len()
+            );
+        }
+        out
+    }
+    fn read(root: &Path) -> Self {
+        let mut out = Recipes::default();
+        let Ok(namespaces) = std::fs::read_dir(root.join("data")) else {
+            return out;
+        };
+        for ns in namespaces.flatten() {
+            for (kind, map) in [
+                ("crushing", &mut out.crushing),
+                ("milling", &mut out.milling),
+            ] {
+                let mut stack = vec![ns.path().join("recipe").join(kind)];
+                while let Some(dir) = stack.pop() {
+                    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                        let path = e.path();
+                        if path.is_dir() {
+                            stack.push(path);
+                            continue;
+                        }
+                        let Some((input, recipe)) = std::fs::read(&path)
+                            .ok()
+                            .and_then(|b| serde_json::from_slice(&b).ok())
+                            .and_then(|v| Recipe::parse(&v, kind))
+                        else {
+                            continue;
+                        };
+                        map.entry(input).or_insert(recipe);
+                    }
+                }
+            }
+        }
+        out
+    }
+    fn find(&self, item: &str) -> Option<&Recipe> {
+        self.crushing.get(item).or_else(|| self.milling.get(item))
+    }
+}
+
+impl Recipe {
+    fn parse(v: &serde_json::Value, kind: &str) -> Option<(Arc<str>, Recipe)> {
+        if v["type"].as_str()? != format!("create:{kind}")
+            || v.get("neoforge:conditions").is_some()
+            || v.get("conditions").is_some()
+        {
+            return None;
+        }
+        let input: Arc<str> = v["ingredients"].get(0)?["item"].as_str()?.into();
+        let results = v["results"]
+            .as_array()?
+            .iter()
+            .filter_map(|r| {
+                let id = r["id"].as_str().or_else(|| r["item"].as_str())?;
+                let count = r["count"].as_u64().unwrap_or(1) as u32;
+                let chance = r["chance"].as_f64().unwrap_or(1.0) as f32;
+                Some((id.into(), count, chance))
+            })
+            .collect();
+        let time = v["processing_time"].as_f64().unwrap_or(100.0) as f32;
+        Some((input, Recipe { time, results }))
+    }
+}
+
+fn add(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn scale(a: [i32; 3], k: i32) -> [i32; 3] {
+    a.map(|v| v * k)
+}
+fn cross(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn unit(axis: usize, sign: i32) -> [i32; 3] {
+    let mut v = [0; 3];
+    v[axis] = sign;
+    v
+}
+const DIRECTIONS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
+
+impl Game<'_> {
+    /// Once a tick where the world is simulated: the drills and the crushing wheels at work.
+    pub(super) fn tick_kinetic_machines(&mut self) -> super::Result<()> {
+        if self.res.kinetics().is_empty() {
+            return Ok(());
+        }
+        let now = self.world.game_time;
+        let world = (self.world.revision, self.world.chunks.membership_revision());
+        let stale = self.machines.seen.is_none_or(|(revision, chunks, at)| {
+            (revision, chunks) != world || now - at >= RESCAN_TICKS
+        });
+        if stale {
+            self.find_machines();
+            self.machines.seen = Some((world.0, world.1, now));
+        }
+        let drills: Vec<([i32; 3], f32)> = self
+            .machines
+            .parts
+            .iter()
+            .filter(|(_, p)| p.kind == KineticPart::Drill)
+            .filter_map(|(pos, _)| Some((*pos, *self.machines.speeds.get(pos)?)))
+            .filter(|(_, s)| *s != 0.0)
+            .collect();
+        for (pos, speed) in drills {
+            self.tick_drill(pos, speed)?;
+        }
+        let controllers: Vec<[i32; 3]> = self.machines.controllers.keys().copied().collect();
+        for pos in controllers {
+            self.tick_controller(pos);
+        }
+        Ok(())
+    }
+
+    /// The kinetic parts in the loaded chunks, their speeds, and the controllers between
+    /// crushing wheels turning towards each other (`CrushingWheelBlock.updateControllers`).
+    fn find_machines(&mut self) {
+        let table = self.res.kinetics();
+        let kinetic = |id: u32| {
+            table
+                .get(horizon_world::registry::BlockStateId(id))
+                .is_some()
+        };
+        let mut parts = HashMap::new();
+        for ((cx, cz), chunk) in self.world.chunks.iter() {
+            for (si, section) in chunk.sections.iter().enumerate() {
+                if !section.blocks.maybe_has(kinetic) {
+                    continue;
+                }
+                for i in 0..4096 {
+                    let state = horizon_world::registry::BlockStateId(section.get(i));
+                    if let Some(part) = table.get(state) {
+                        let pos = [
+                            cx * 16 + (i & 15) as i32,
+                            horizon_client::chunk::MIN_Y + si as i32 * 16 + (i >> 8) as i32,
+                            cz * 16 + ((i >> 4) & 15) as i32,
+                        ];
+                        parts.insert(pos, part.clone());
+                    }
+                }
+            }
+        }
+        let speeds = kinetics::solve(&parts, &HashMap::new());
+        let mut found: HashMap<[i32; 3], ([i32; 3], f32)> = HashMap::new();
+        for (pos, part) in &parts {
+            if part.kind != KineticPart::CrushingWheel {
+                continue;
+            }
+            let Some(&speed) = speeds.get(pos).filter(|s| **s != 0.0) else {
+                continue;
+            };
+            for side in DIRECTIONS {
+                if side[part.axis] != 0 {
+                    continue;
+                }
+                let other = add(*pos, scale(side, 2));
+                let opposite = parts
+                    .get(&other)
+                    .filter(|o| o.kind == KineticPart::CrushingWheel && o.axis == part.axis)
+                    .and_then(|_| speeds.get(&other))
+                    .is_some_and(|s| *s != 0.0 && (*s > 0.0) != (speed > 0.0));
+                let between = add(*pos, side);
+                if !opposite
+                    || self.world.block(between[0], between[1], between[2]) != self.world.air
+                {
+                    continue;
+                }
+                // The rim at the gap moves along the axis turned towards the gap, by the
+                // wheel's sign (about the axis's positive way).
+                let along = cross(unit(part.axis, 1), side);
+                let facing = scale(along, if speed > 0.0 { 1 } else { -1 });
+                found.insert(between, (facing, speed.abs() / 50.0));
+            }
+        }
+        let wheels = parts
+            .values()
+            .filter(|p| p.kind == KineticPart::CrushingWheel)
+            .count();
+        let drills = parts
+            .values()
+            .filter(|p| p.kind == KineticPart::Drill)
+            .count();
+        let counts = (drills, wheels, found.len());
+        if counts != self.machines.counts {
+            log::info!(
+                "Horizon: Create machines: {drills} drills, {wheels} crushing wheels, {} turning \
+                 between them ({} turning of {} parts)",
+                found.len(),
+                speeds.values().filter(|s| **s != 0.0).count(),
+                parts.len()
+            );
+            self.machines.counts = counts;
+        }
+        let m = &mut self.machines;
+        m.controllers
+            .retain(|pos, c| found.get(pos).is_some_and(|f| f.0 == c.facing));
+        for (pos, (facing, speed)) in found {
+            m.controllers
+                .entry(pos)
+                .or_insert_with(|| Controller {
+                    facing,
+                    speed,
+                    slots: Vec::new(),
+                    remaining: 0.0,
+                    applied: false,
+                })
+                .speed = speed;
+        }
+        m.drills
+            .retain(|pos, _| parts.get(pos).is_some_and(|p| p.kind == KineticPart::Drill));
+        let ids: std::collections::HashSet<u32> = self.dropped.iter().map(|d| d.id).collect();
+        m.bypass.retain(|id, _| ids.contains(id));
+        m.parts = parts;
+        m.speeds = speeds;
+    }
+
+    /// `BlockBreakingKineticBlockEntity.tick` for the drill at `pos` turning at `speed`: a
+    /// step of `destroyProgress` every hardness over a hundredth of the speed ticks, the block
+    /// broken at ten.
+    fn tick_drill(&mut self, pos: [i32; 3], speed: f32) -> super::Result<()> {
+        let Some(part) = self.machines.parts.get(&pos) else {
+            return Ok(());
+        };
+        // Its face is its back: it breaks the block the other way.
+        let breaking = add(pos, part.face.map(|v| -v));
+        let lazy = self.world.game_time % LAZY_TICKS == 0;
+        let breaker = -1000 - self.machines.drills.len() as i32;
+        let drill = self.machines.drills.entry(pos).or_insert(Drill {
+            progress: 0,
+            wait: 0,
+            breaking,
+            breaker,
+        });
+        if drill.breaking != breaking {
+            drill.breaking = breaking;
+            drill.progress = 0;
+        }
+        if drill.wait < 0 {
+            if !lazy {
+                return Ok(());
+            }
+            drill.wait = 1;
+        }
+        let waited = drill.wait;
+        drill.wait -= 1;
+        if waited > 0 {
+            return Ok(());
+        }
+        let (progress, breaker) = (drill.progress, drill.breaker);
+        let state = self.world.block(breaking[0], breaking[1], breaking[2]);
+        let facts = self.res.facts().get(state);
+        let hardness = facts.hardness;
+        let liquid = matches!(
+            &*facts.name,
+            "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+        );
+        let air = state == self.world.air
+            || matches!(&*facts.name, "minecraft:cave_air" | "minecraft:void_air");
+        if air || liquid || hardness < 0.0 {
+            if progress != 0 {
+                if let Some(d) = self.machines.drills.get_mut(&pos) {
+                    d.progress = 0;
+                }
+                self.drill_cracks(breaker, breaking, -1);
+            }
+            return Ok(());
+        }
+        let break_speed = speed.abs() / 100.0;
+        let step = ((break_speed / hardness) as i32).clamp(1, 10 - progress);
+        let progress = progress + step;
+        if progress >= 10 {
+            if let Some(d) = self.machines.drills.get_mut(&pos) {
+                d.progress = 0;
+                d.wait = -1;
+            }
+            self.drill_cracks(breaker, breaking, -1);
+            return self.drill_break(breaking, state);
+        }
+        if let Some(d) = self.machines.drills.get_mut(&pos) {
+            d.progress = progress;
+            d.wait = (hardness / break_speed) as i32;
+        }
+        self.drill_cracks(breaker, breaking, progress);
+        Ok(())
+    }
+
+    /// `ServerLevel.destroyBlockProgress` for a drill: its cracks where every player nearby
+    /// sees them (-1 takes them away).
+    fn drill_cracks(&mut self, breaker: i32, pos: [i32; 3], progress: i32) {
+        self.destroy_block_progress(breaker, pos, progress);
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.broadcast_near(
+                [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])],
+                64.0,
+                &horizon_protocol::packets::play::Clientbound::BlockDestruction(
+                    horizon_protocol::packets::play::BlockDestruction {
+                        id: breaker,
+                        pos,
+                        progress: if (0..10).contains(&progress) {
+                            progress as u8
+                        } else {
+                            255
+                        },
+                    },
+                ),
+                None,
+            );
+        }
+    }
+
+    /// `BlockBreakingKineticBlockEntity.onBlockBroken`: the block gone with its particles and
+    /// sound, its drops (no tool) still at its middle, a little apart.
+    fn drill_break(
+        &mut self,
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+    ) -> super::Result<()> {
+        let registry = self.pack.assets.registry;
+        let drops = self
+            .res
+            .items()
+            .block_drops(registry, state, None, &mut self.world.random);
+        let air = self.world.air;
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        self.with_level(|b, level, ticks| b.set_block(level, ticks, at, air, 3));
+        self.process_level_events()?;
+        self.level_event_at(2001, pos, state.0 as i32);
+        for stack in drops {
+            let r = &mut self.world.random;
+            // VecHelper.offsetRandomly(center, random, 1/8).
+            let mut at = [0.0; 3];
+            for (i, v) in at.iter_mut().enumerate() {
+                *v = f64::from(pos[i]) + 0.5 + f64::from(r.next_float() * 2.0 - 1.0) * 0.125;
+            }
+            self.spawn_item(stack, at, [0.0; 3], PICKUP_DELAY);
+        }
+        Ok(())
+    }
+
+    /// `CrushingWheelControllerBlockEntity.tick` for the controller at `pos`: an item falling in
+    /// is taken (one at a time; the others wait on it), crushed by its recipe as fast as the
+    /// wheels turn, and what it became put out the way the rims move.
+    fn tick_controller(&mut self, pos: [i32; 3]) {
+        let Some(c) = self.machines.controllers.get(&pos) else {
+            return;
+        };
+        if c.speed == 0.0 {
+            return;
+        }
+        let (facing, speed, occupied) = (c.facing, c.speed * 4.0, !c.slots.is_empty());
+        let (lo, hi) = (pos.map(f64::from), pos.map(|v| f64::from(v) + 1.0));
+        // An item entity's box (a quarter block wide and tall, from its feet) in the cell.
+        let inside = |p: &horizon_core::geometry::Vec3| {
+            let h = 0.125;
+            p.x - h < hi[0]
+                && p.x + h > lo[0]
+                && p.y < hi[1]
+                && p.y + 2.0 * h > lo[1]
+                && p.z - h < hi[2]
+                && p.z + h > lo[2]
+        };
+        if !occupied {
+            let bypass = &self.machines.bypass;
+            if let Some(i) = self
+                .dropped
+                .iter()
+                .position(|d| inside(&d.position) && bypass.get(&d.id) != Some(&pos))
+            {
+                let item = self.dropped.remove(i);
+                self.controller_take(pos, item.stack);
+            }
+            return;
+        }
+        // CRUSHING_WHEEL_CONTROLLER_COLLISION: the others wait on it.
+        if facing == [0, -1, 0] {
+            let floor = lo[1] + WAITING_HEIGHT;
+            for d in &mut self.dropped {
+                if inside(&d.position) && self.machines.bypass.get(&d.id) != Some(&pos) {
+                    if d.position.y < floor {
+                        d.position.y = floor;
+                    }
+                    d.velocity.y = d.velocity.y.max(0.0);
+                }
+            }
+        }
+        let res = Arc::clone(&self.res);
+        let recipes = res.crushing();
+        let Some(c) = self.machines.controllers.get_mut(&pos) else {
+            return;
+        };
+        // log2 of one is nought: a single item crushes at the most, as in Create.
+        let count = c.slots.first().map_or(1, |s| s.count.max(1)) as f32;
+        let divisor = if c.applied { 1.0 } else { count.log2() };
+        c.remaining -= (speed / divisor).clamp(0.25, 20.0);
+        if c.remaining < 20.0 && !c.applied {
+            let input = c.slots.first().cloned();
+            c.slots.clear();
+            c.applied = true;
+            let Some(input) = input else {
+                return;
+            };
+            let Some(recipe) = recipes.find(&input.item) else {
+                // No recipe: Create's wheels crush it to nothing.
+                return;
+            };
+            let mut out: Vec<ItemStack> = Vec::new();
+            for _ in 0..input.count {
+                for (id, n, chance) in &recipe.results {
+                    if *chance < 1.0 && self.world.random.next_float() >= *chance {
+                        continue;
+                    }
+                    match out.iter_mut().find(|s| s.item == *id && s.count + n <= 64) {
+                        Some(s) => s.count += n,
+                        None => out.push(ItemStack {
+                            item: id.clone(),
+                            count: *n,
+                            damage: 0,
+                            extra: None,
+                        }),
+                    }
+                }
+            }
+            if let Some(c) = self.machines.controllers.get_mut(&pos) {
+                c.slots = out;
+            }
+            return;
+        }
+        if c.remaining > 0.0 {
+            return;
+        }
+        c.remaining = 0.0;
+        let slots = std::mem::take(&mut c.slots);
+        let center = pos.map(|v| f64::from(v) + 0.5);
+        let out_pos: [f64; 3] = std::array::from_fn(|i| center[i] + 0.55 * f64::from(facing[i]));
+        let out_speed = [
+            0.25 * f64::from(facing[0]),
+            if facing[1] > 0 { 0.5 } else { 0.0 },
+            0.25 * f64::from(facing[2]),
+        ];
+        for stack in slots {
+            self.spawn_item(stack, out_pos, out_speed, 0);
+            if let Some(item) = self.dropped.last() {
+                self.machines.bypass.insert(item.id, pos);
+            }
+        }
+    }
+
+    /// An item into the controller at `pos` (`intakeItem`, `itemInserted`): its recipe's time
+    /// to go, else a hundred ticks.
+    fn controller_take(&mut self, pos: [i32; 3], stack: ItemStack) {
+        let time = self
+            .res
+            .crushing()
+            .find(&stack.item)
+            .map_or(100.0, |r| r.time);
+        if let Some(c) = self.machines.controllers.get_mut(&pos) {
+            c.slots = vec![stack];
+            c.remaining = time;
+            c.applied = false;
+        }
+    }
+
+    /// Whether a crushing controller is at `pos` (a hopper facing it puts items in it).
+    pub(super) fn crusher_at(&self, pos: [i32; 3]) -> bool {
+        self.machines.controllers.contains_key(&pos)
+    }
+
+    /// A hopper's item into the crushing controller at `pos` when one is there and empty (its
+    /// inventory takes items); true when it took it.
+    pub(super) fn controller_insert(&mut self, pos: [i32; 3], stack: &ItemStack) -> bool {
+        let free = self
+            .machines
+            .controllers
+            .get(&pos)
+            .is_some_and(|c| c.speed != 0.0 && c.slots.is_empty());
+        if free {
+            self.controller_take(pos, stack.clone());
+        }
+        free
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crushing_recipes_read_their_input_results_and_time() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type": "create:crushing", "ingredients": [{"item": "minecraft:gravel"}],
+                "processing_time": 250, "results": [{"id": "minecraft:sand"},
+                {"chance": 0.1, "id": "minecraft:flint"}]}"#,
+        )
+        .unwrap();
+        let (input, recipe) = Recipe::parse(&v, "crushing").unwrap();
+        assert_eq!(&*input, "minecraft:gravel");
+        assert_eq!(recipe.time, 250.0);
+        assert_eq!(recipe.results.len(), 2);
+        assert_eq!(recipe.results[1].2, 0.1);
+        // Milling read as milling only, and another mod's compat (with conditions) left out.
+        assert!(Recipe::parse(&v, "milling").is_none());
+        let compat: serde_json::Value = serde_json::from_str(
+            r#"{"type": "create:crushing", "neoforge:conditions": [], "ingredients":
+                [{"item": "x:ore"}], "results": [{"id": "x:dust"}]}"#,
+        )
+        .unwrap();
+        assert!(Recipe::parse(&compat, "crushing").is_none());
+    }
+
+    #[test]
+    fn rims_between_wheels_turning_towards_each_other_go_one_way() {
+        // Wheels along z at x 0 and 2: the one at 0 turning the positive way about z moves its
+        // rim at the gap (x + 1) along z × x = +y, so the other turns the other way.
+        assert_eq!(cross(unit(2, 1), [1, 0, 0]), [0, 1, 0]);
+        // From the other wheel, the side is -x and its speed's sign the other: the same way.
+        assert_eq!(scale(cross(unit(2, 1), [-1, 0, 0]), -1), [0, 1, 0]);
+    }
+}

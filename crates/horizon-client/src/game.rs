@@ -84,6 +84,7 @@ mod integrated;
 mod item_draw;
 mod item_particles;
 mod jukebox;
+mod kinetic_machines;
 mod kinetics;
 mod lan;
 mod lan_actions;
@@ -1245,6 +1246,8 @@ struct WorldRest {
     stations: horizon_client::stations::StationData,
     /// Content mods' kinetic parts, by state.
     kinetics: horizon_client::kinetics::KineticTable,
+    /// Create's crushing and milling recipes the content root holds (game/kinetic_machines.rs).
+    crushing: kinetic_machines::Recipes,
 }
 
 impl Resources {
@@ -1265,6 +1268,9 @@ impl Resources {
     }
     fn kinetics(&self) -> &horizon_client::kinetics::KineticTable {
         &self.rest().kinetics
+    }
+    fn crushing(&self) -> &kinetic_machines::Recipes {
+        &self.rest().crushing
     }
     fn recipes(&self) -> &Recipes {
         &self.rest().recipes
@@ -1796,6 +1802,9 @@ struct Game<'a> {
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
     /// The kinetic parts near the player and their speeds (game/kinetics.rs).
     kinetics: kinetics::Kinetics,
+    /// Where this game simulates the world: its drills and crushing wheels at work
+    /// (game/kinetic_machines.rs).
+    machines: kinetic_machines::Machines,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
     boats: Vec<boats::Boat>,
@@ -5737,6 +5746,7 @@ impl Game<'_> {
             horizon_client::spans::time("tick_tnt", || self.tick_tnt())?;
         }
         if running {
+            horizon_client::spans::time("tick_kinetic_machines", || self.tick_kinetic_machines())?;
             horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
             horizon_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
             horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
@@ -14499,6 +14509,7 @@ impl<'a> Game<'a> {
             waypoints: Default::default(),
             locator_camera: None,
             kinetics: Default::default(),
+            machines: Default::default(),
             experience_display: Default::default(),
             boats: Vec::new(),
             boat_models: prepared.boat_models,
@@ -15241,6 +15252,7 @@ fn load_world_rest(
         });
     Ok(WorldRest {
         kinetics,
+        crushing: kinetic_machines::Recipes::load(root),
         stations,
         items,
         recipes,

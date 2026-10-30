@@ -404,7 +404,7 @@ impl Spin {
         });
         let (axis, ends) = match k.part {
             KineticPart::Motor => (axis_of(facing?), vec![facing?]),
-            KineticPart::Crank => {
+            KineticPart::Crank | KineticPart::Drill => {
                 let back = facing?.map(|v| -v);
                 (axis_of(back), vec![back])
             }

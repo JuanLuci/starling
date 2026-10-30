@@ -513,12 +513,9 @@ impl Game<'_> {
     }
 
     /// A block, with no mob before it, under the finger (or the crosshair), that a press breaks:
-    /// not a content mod's crank, which a press turns (game/kinetics.rs).
+    /// a content mod's crank too, which a tap turns (game/kinetics.rs).
     fn touch_on_block(&self) -> bool {
-        self.pick_entity_hit().is_none()
-            && self
-                .pick()
-                .is_some_and(|hit| !self.kinetic_crank_at(hit.pos))
+        self.pick_entity_hit().is_none() && self.pick().is_some()
     }
 
     /// Tap to interact has no crosshair, and outlines a block only while a finger aims at it.

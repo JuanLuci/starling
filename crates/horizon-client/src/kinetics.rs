@@ -54,12 +54,12 @@ impl Part {
             _ => None,
         };
         let (axis, face) = match kinetic.part {
-            KineticPart::Motor | KineticPart::Crank => {
+            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
                 let facing = direction(facing?)?;
-                let face = if kinetic.part == KineticPart::Crank {
-                    facing.map(|v| -v)
-                } else {
+                let face = if kinetic.part == KineticPart::Motor {
                     facing
+                } else {
+                    facing.map(|v| -v)
                 };
                 (axis_of(face), face)
             }
@@ -107,14 +107,17 @@ impl Part {
             v
         };
         match self.kind {
-            KineticPart::Shaft | KineticPart::Cogwheel | KineticPart::LargeCogwheel => {
+            KineticPart::Shaft
+            | KineticPart::Cogwheel
+            | KineticPart::LargeCogwheel
+            | KineticPart::CrushingWheel => {
                 vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)]
             }
             KineticPart::Gearbox => (0..3)
                 .filter(|a| *a != self.axis)
                 .flat_map(|a| [(unit(a, 1), 1.0), (unit(a, -1), -1.0)])
                 .collect(),
-            KineticPart::Motor | KineticPart::Crank => {
+            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
                 vec![(self.face, self.face[self.axis] as f32)]
             }
         }
@@ -454,6 +457,38 @@ mod tests {
         parts.insert([-2, 0, 0], wheel);
         parts.insert([-3, 0, 0], shaft("x"));
         assert_eq!(solve(&parts, &HashMap::new())[&[-3, 0, 0]], -16.0);
+    }
+
+    #[test]
+    fn a_drill_turns_through_its_back_and_crushing_wheels_as_shafts() {
+        let mut parts = HashMap::new();
+        parts.insert([0, 0, 0], motor("east", 32.0));
+        parts.insert([1, 0, 0], shaft("x"));
+        // Facing east, its back (west) on the shaft: it turns.
+        parts.insert([2, 0, 0], part(KineticPart::Drill, None, Some("east"), 0.0));
+        // In front of the drill: its head joins nothing.
+        parts.insert(
+            [3, 0, 0],
+            part(KineticPart::CrushingWheel, Some("x"), None, 0.0),
+        );
+        // Above the motor, a crushing wheel along y joins nothing either (the motor turns east).
+        parts.insert(
+            [0, 1, 0],
+            part(KineticPart::CrushingWheel, Some("y"), None, 0.0),
+        );
+        let speeds = solve(&parts, &HashMap::new());
+        assert_eq!(speeds[&[1, 0, 0]], 32.0);
+        assert!(speeds[&[2, 0, 0]].abs() == 32.0);
+        assert!(!speeds.contains_key(&[3, 0, 0]));
+        assert!(!speeds.contains_key(&[0, 1, 0]));
+        // A crushing wheel is an axle: a motor facing up turns one along y over it.
+        let mut parts = HashMap::new();
+        parts.insert([0, 0, 0], motor("up", 16.0));
+        parts.insert(
+            [0, 1, 0],
+            part(KineticPart::CrushingWheel, Some("y"), None, 0.0),
+        );
+        assert_eq!(solve(&parts, &HashMap::new())[&[0, 1, 0]], 16.0);
     }
 
     #[test]

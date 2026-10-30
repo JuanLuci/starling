@@ -660,11 +660,18 @@ impl Game<'_> {
     /// a container entity there (`getContainerAt`).
     fn hopper_eject(&mut self, pos: Pos, hopper: &View) -> bool {
         let state = self.world.block(pos.0, pos.1, pos.2);
-        let c = self.containers();
-        let Some(facing) = c.prop(state, "facing").and_then(dir_from_name) else {
+        let Some(facing) = self
+            .containers()
+            .prop(state, "facing")
+            .and_then(dir_from_name)
+        else {
             return false;
         };
         let front = offset(pos, facing);
+        if let Some(took) = self.eject_into_crusher(front, hopper) {
+            return took;
+        }
+        let c = self.containers();
         let face = facing.opposite();
         if let Some(target) = c.view(front, false) {
             return self.eject_into(pos, hopper, &target, face);
@@ -678,6 +685,26 @@ impl Game<'_> {
         };
         self.with_entity_container(id, |g, target| g.eject_into(pos, hopper, target, face))
             .unwrap_or(false)
+    }
+    /// One item into the crushing wheel controller at `front` (game/kinetic_machines.rs: the
+    /// air between two Create crushing wheels, whose inventory takes items from a hopper), when
+    /// one is there.
+    fn eject_into_crusher(&mut self, front: Pos, hopper: &View) -> Option<bool> {
+        let at = [front.0, front.1, front.2];
+        if !self.crusher_at(at) {
+            return None;
+        }
+        for slot in 0..hopper.len() {
+            let Some(one) = self.take_one(hopper, slot) else {
+                continue;
+            };
+            if self.controller_insert(at, &one) {
+                return Some(true);
+            }
+            self.put_back(hopper, slot, one);
+            return Some(false);
+        }
+        Some(false)
     }
     /// The rest of `HopperBlockEntity.ejectItems`: one item into `target`.
     fn eject_into(&mut self, pos: Pos, hopper: &View, target: &View, face: Direction) -> bool {
