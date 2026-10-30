@@ -7,9 +7,11 @@ mod agent_settings;
 mod allays;
 mod armor_stands;
 mod banners;
+mod basins;
 mod beacon;
 mod beds;
 mod beehives;
+mod belts;
 mod block_entity_anims;
 mod block_entity_ticks;
 mod block_items;
@@ -62,6 +64,7 @@ mod explosion;
 mod extras;
 mod falling_damage;
 mod fangs;
+mod fans;
 #[cfg(target_os = "android")]
 mod files_offer;
 mod fireworks;
@@ -110,6 +113,7 @@ mod llamas;
 mod locator_bar;
 mod loom;
 mod mace;
+mod machine_entities;
 mod machines;
 mod maps;
 mod minecarts;
@@ -147,6 +151,7 @@ mod nether_portal;
 mod ominous_item_spawner;
 mod options;
 mod own_skin;
+mod own_states;
 mod packs;
 mod pad;
 mod pad_menu;
@@ -164,6 +169,7 @@ mod player_equip;
 mod postprocess;
 mod potions;
 mod powder_snow;
+mod processing;
 mod pumpkin;
 mod raids;
 mod recipe_book;
@@ -1247,8 +1253,10 @@ struct WorldRest {
     stations: horizon_client::stations::StationData,
     /// Content mods' kinetic parts, by state.
     kinetics: horizon_client::kinetics::KineticTable,
-    /// Create's crushing and milling recipes the content root holds (game/kinetic_machines.rs).
-    crushing: kinetic_machines::Recipes,
+    /// Create's processing recipes the content root holds (game/kinetic_machines.rs).
+    create_recipes: kinetic_machines::Recipes,
+    /// Create's basin recipes and the crafting ones a basin takes (game/basins.rs).
+    basin_recipes: basins::BasinRecipes,
 }
 
 impl Resources {
@@ -1270,8 +1278,11 @@ impl Resources {
     fn kinetics(&self) -> &horizon_client::kinetics::KineticTable {
         &self.rest().kinetics
     }
-    fn crushing(&self) -> &kinetic_machines::Recipes {
-        &self.rest().crushing
+    fn create_recipes(&self) -> &kinetic_machines::Recipes {
+        &self.rest().create_recipes
+    }
+    fn basin_recipes(&self) -> &basins::BasinRecipes {
+        &self.rest().basin_recipes
     }
     fn recipes(&self) -> &Recipes {
         &self.rest().recipes
@@ -4414,6 +4425,16 @@ impl Game<'_> {
             && let Some(hit) = block_hit
         {
             let held = self.held().cloned();
+            // A content mod's machine (Create's depot, millstone: processing.rs).
+            if self.use_machine(hit.pos, hit.face) {
+                self.swing_arm();
+                return Ok(true);
+            }
+            // Create's belt connector on a shaft (belts.rs).
+            if self.use_belt_connector(hit.pos, sneaking) {
+                self.swing_arm();
+                return Ok(true);
+            }
             if self.use_lectern(hit.pos, held.as_ref()) {
                 self.swing_arm();
                 return Ok(true);
@@ -4692,6 +4713,8 @@ impl Game<'_> {
         };
         let target = [pos.x, pos.y, pos.z];
         let state = self.apply_item_block_state(target, state, &stack)?;
+        // A content mod's block with states of its own: what its template does not place.
+        let state = self.orient_own_states(target, state, &ctx);
         self.mod_block_event(target, state, true);
         if let Some(entity) = BlockEntity::for_block(&self.res.facts().get(state).name) {
             let key = (target[0], target[1], target[2]);
@@ -15251,9 +15274,48 @@ fn load_world_rest(
             log::warn!("Horizon: kinetic parts not loaded: {e}");
             Default::default()
         });
+    // Create's basin recipes, with the crafting ones a mixer or a press takes (game/basins.rs).
+    let basin_recipes = if kinetics.is_empty() {
+        basins::BasinRecipes::default()
+    } else {
+        let crafting: Vec<basins::CraftingRecipe> = recipes
+            .crafting
+            .iter()
+            .filter_map(|(_, r)| {
+                use horizon_client::crafting::Recipe as R;
+                let set = |i: &horizon_client::crafting::Ingredient| {
+                    i.0.iter().map(|s| Arc::from(s.as_str())).collect()
+                };
+                let (shapeless, ingredients, result) = match r {
+                    R::Shapeless {
+                        ingredients,
+                        result,
+                    } => (true, ingredients.iter().map(set).collect(), result),
+                    R::Shaped { cells, result, .. } => {
+                        (false, cells.iter().flatten().map(set).collect(), result)
+                    }
+                    R::Special(_) => return None,
+                };
+                Some(basins::CraftingRecipe {
+                    shapeless,
+                    ingredients,
+                    result: result.item.clone()?,
+                    count: result.count,
+                })
+            })
+            .collect();
+        let fluid_tags = basins::fluid_tags(root);
+        basins::BasinRecipes::load(
+            root,
+            &|t| items.item_tag_order.get(t).cloned().unwrap_or_default(),
+            &|t| fluid_tags.get(t).cloned().unwrap_or_default(),
+            &crafting,
+        )
+    };
     Ok(WorldRest {
         kinetics,
-        crushing: kinetic_machines::Recipes::load(root),
+        basin_recipes,
+        create_recipes: kinetic_machines::Recipes::load(root, &items),
         stations,
         items,
         recipes,

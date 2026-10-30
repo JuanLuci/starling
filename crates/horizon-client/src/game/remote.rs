@@ -1732,6 +1732,20 @@ impl Game<'_> {
     /// packet's type, loads the tag (`loadWithComponents`); an empty tag
     /// changes nothing.
     pub(super) fn remote_block_entity_data(&mut self, pos: [i32; 3], kind: i32, tag: &Tag) {
+        // Starling: a content mod's machine (kinetics.rs). Its tag is kept as the chunk keeps the
+        // block entities it does not model, for the window to draw what the machine holds.
+        if kind == horizon_client::lan::chunks::MACHINE_ENTITY_TYPE {
+            if let Tag::Compound(fields) = tag
+                && !fields.is_empty()
+            {
+                let mut full = fields.clone();
+                for (k, v) in ["x", "y", "z"].into_iter().zip(pos) {
+                    full.insert(k.into(), Tag::Int(v));
+                }
+                super::spill::put_saved_entity(&mut self.world, pos, Tag::Compound(full));
+            }
+            return;
+        }
         let key = (pos[0], pos[1], pos[2]);
         let Some(name) = self
             .remote
@@ -5885,6 +5899,11 @@ impl Game<'_> {
             return (false, DryUse::default());
         }
         if self.jukebox_takes(hit.pos, held) {
+            return (true, DryUse::default());
+        }
+        // A content mod's machine takes the click where its server would (processing.rs): a
+        // depot's top, a millstone with an empty hand. Nothing is placed against it.
+        if self.machine_takes(hit.pos, hit.face, held) {
             return (true, DryUse::default());
         }
         // BeehiveBlock.useItemOn: shears or a glass bottle on a full hive

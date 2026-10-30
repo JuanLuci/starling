@@ -1148,6 +1148,8 @@ impl Game<'_> {
                 .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&self.pack.assets)))
                 .clone(),
         );
+        // Content mods' machines: their block entities go to the players too.
+        encoder.mark_machines(self.res.kinetics().entity_states().map(|s| s.0));
         let lan = Lan::start_with(sync.clone(), net)?;
         if let Some(uuid) = host {
             lan.reserve(uuid);

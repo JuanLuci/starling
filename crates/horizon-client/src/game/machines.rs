@@ -671,6 +671,9 @@ impl Game<'_> {
         if let Some(took) = self.eject_into_crusher(front, hopper) {
             return took;
         }
+        if let Some(took) = self.eject_into_machine(front, hopper) {
+            return took;
+        }
         let c = self.containers();
         let face = facing.opposite();
         if let Some(target) = c.view(front, false) {
@@ -706,6 +709,25 @@ impl Game<'_> {
         }
         Some(false)
     }
+    /// One item into the content mod's machine at `front` (Create's depot, millstone, basin:
+    /// processing.rs), when one is there.
+    fn eject_into_machine(&mut self, front: Pos, hopper: &View) -> Option<bool> {
+        let at = [front.0, front.1, front.2];
+        self.machine_kind(at)?;
+        for slot in 0..hopper.len() {
+            let Some(one) = self.take_one(hopper, slot) else {
+                continue;
+            };
+            return match self.machine_insert(at, one.clone()) {
+                Some(None) => Some(true),
+                _ => {
+                    self.put_back(hopper, slot, one);
+                    Some(false)
+                }
+            };
+        }
+        Some(false)
+    }
     /// The rest of `HopperBlockEntity.ejectItems`: one item into `target`.
     fn eject_into(&mut self, pos: Pos, hopper: &View, target: &View, face: Direction) -> bool {
         if self.containers().is_full(target, face) {
@@ -733,6 +755,9 @@ impl Game<'_> {
             f64::from(pos.1) + 1.5,
             f64::from(pos.2) + 0.5,
         ];
+        if let Some(took) = self.suck_from_machine(above, hopper) {
+            return took;
+        }
         if let Some(took) = self.suck_from_container(above, at, hopper) {
             return took;
         }
@@ -765,6 +790,35 @@ impl Game<'_> {
             return false;
         }
         self.suck_item_entities(hopper, min, max)
+    }
+    /// One item from the outputs of the content mod's machine above (processing.rs), when one
+    /// with an inventory is there.
+    fn suck_from_machine(&mut self, above: Pos, hopper: &View) -> Option<bool> {
+        let at = [above.0, above.1, above.2];
+        match self.machine_kind(at)? {
+            super::machine_entities::Kind::Press | super::machine_entities::Kind::Mixer => {
+                return None;
+            }
+            _ => {}
+        }
+        // Room in the hopper first: an item taken is not put back into the machine.
+        let c = self.containers();
+        let room =
+            (0..hopper.len()).any(|i| c.get(hopper, i).is_none_or(|s| s.count < c.max_stack(s)));
+        if !room {
+            return Some(false);
+        }
+        let Some(Some(one)) = self.machine_take_one(at) else {
+            return Some(false);
+        };
+        match self.add_item(None, hopper, one, None) {
+            None => Some(true),
+            Some(rest) => {
+                // It did not fit after all (another item): back into the machine.
+                let _ = self.machine_insert(at, rest);
+                Some(false)
+            }
+        }
     }
     /// The container half of `HopperBlockEntity.suckInItems`: one item from the
     /// container at `above`, through its bottom face; with no block container

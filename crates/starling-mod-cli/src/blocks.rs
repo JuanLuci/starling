@@ -404,7 +404,7 @@ impl Spin {
         });
         let (axis, ends) = match k.part {
             KineticPart::Motor => (axis_of(facing?), vec![facing?]),
-            KineticPart::Crank | KineticPart::Drill => {
+            KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
                 let back = facing?.map(|v| -v);
                 (axis_of(back), vec![back])
             }
@@ -810,6 +810,9 @@ mod tests {
             half: None,
             extra: Some("create:block/hand_crank/handle".into()),
             extra_facing: Some("north".into()),
+            head: None,
+            pole: None,
+            models: Vec::new(),
         };
         let props = BTreeMap::from([("facing".to_owned(), "up".to_owned())]);
         let spin = Spin::new(&crank, &props).unwrap();

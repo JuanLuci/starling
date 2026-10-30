@@ -41,6 +41,16 @@ pub struct Part {
     /// The quarter turns that point `extra` at the state's facing, when it is made pointing
     /// elsewhere than the block's own model (None: the blockstate's turns).
     pub extra_turns: Option<[u8; 3]>,
+    /// The models a machine moves down as it works: a press's head, a mixer's head and pole.
+    pub head: Option<String>,
+    pub pole: Option<String>,
+    /// Its state's `powered`: a clutch's break, a gearshift's turn the other way.
+    pub powered: bool,
+    /// A belt segment with a pulley (its start, end or a shaft along it), which joins the shafts
+    /// at its sides; a middle one joins nothing but its belt.
+    pub pulley: bool,
+    /// More models the game draws for it (a belt's, game/belts.rs).
+    pub models: Vec<String>,
 }
 
 impl Part {
@@ -55,7 +65,7 @@ impl Part {
             _ => None,
         };
         let (axis, face) = match kinetic.part {
-            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
+            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
                 let facing = direction(facing?)?;
                 let face = if kinetic.part == KineticPart::Motor {
                     facing
@@ -66,6 +76,15 @@ impl Part {
             }
             // Cogwheels about y whatever their state says.
             KineticPart::Millstone | KineticPart::Mixer => (1, [0; 3]),
+            // A belt's pulley across it, level (a sideways belt's is set upright where it loads).
+            KineticPart::Belt => (
+                if axis_of(direction(facing?)?) == 0 {
+                    2
+                } else {
+                    0
+                },
+                [0; 3],
+            ),
             _ => match axis {
                 Some(axis) => (by_name(axis)?, [0; 3]),
                 None => (axis_of(direction(facing?)?), [0; 3]),
@@ -84,6 +103,11 @@ impl Part {
             half: kinetic.half.clone(),
             extra: kinetic.extra.clone(),
             extra_turns,
+            head: kinetic.head.clone(),
+            pole: kinetic.pole.clone(),
+            powered: false,
+            pulley: true,
+            models: kinetic.models.clone(),
         })
     }
     /// A cogwheel's teeth (Create's models: 8 and 16, one along each axis at no turn).
@@ -114,9 +138,22 @@ impl Part {
             | KineticPart::Cogwheel
             | KineticPart::LargeCogwheel
             | KineticPart::CrushingWheel
-            | KineticPart::Press => {
+            | KineticPart::Press
+            | KineticPart::WaterWheel => {
                 vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)]
             }
+            // ClutchBlockEntity: powered, nothing passes; GearshiftBlockEntity: powered, the far
+            // side turns the other way.
+            KineticPart::Clutch if self.powered => Vec::new(),
+            KineticPart::Clutch => vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)],
+            KineticPart::Gearshift => {
+                let far = if self.powered { -1.0 } else { 1.0 };
+                vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), far)]
+            }
+            KineticPart::Belt if self.pulley => {
+                vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)]
+            }
+            KineticPart::Belt => Vec::new(),
             // MillstoneBlock.hasShaftTowards: down only; the mixer's none (both mesh).
             KineticPart::Millstone => vec![([0, -1, 0], 1.0)],
             KineticPart::Mixer => Vec::new(),
@@ -124,7 +161,7 @@ impl Part {
                 .filter(|a| *a != self.axis)
                 .flat_map(|a| [(unit(a, 1), 1.0), (unit(a, -1), -1.0)])
                 .collect(),
-            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
+            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
                 vec![(self.face, self.face[self.axis] as f32)]
             }
         }
@@ -147,6 +184,8 @@ fn axis_of(v: [i32; 3]) -> usize {
 pub struct KineticTable {
     parts: Vec<Option<Arc<Part>>>,
     machines: Vec<Option<Machine>>,
+    /// The properties of blocks' own their templates do not place, by block (own-states.json).
+    own: HashMap<String, Vec<String>>,
 }
 
 impl KineticTable {
@@ -165,8 +204,21 @@ impl KineticTable {
                     continue;
                 };
                 let prop = |k: &str| state.properties.get(k).map(String::as_str);
-                *slot = Part::new(kinetic, prop("axis"), prop("facing")).map(Arc::new);
+                *slot = Part::new(kinetic, prop("axis"), prop("facing")).map(|mut part| {
+                    part.powered = prop("powered") == Some("true");
+                    if part.kind == KineticPart::Belt {
+                        part.pulley = prop("part") != Some("middle");
+                        if prop("slope") == Some("sideways") {
+                            part.axis = 1;
+                        }
+                    }
+                    Arc::new(part)
+                });
             }
+        }
+        if let Some(bytes) = read(crate::mod_content::OWN_STATES) {
+            out.own = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{}: {e}", crate::mod_content::OWN_STATES))?;
         }
         if let Some(bytes) = read(crate::mod_content::MACHINES) {
             let declared: HashMap<String, Machine> = serde_json::from_slice(&bytes)
@@ -182,6 +234,11 @@ impl KineticTable {
     }
     pub fn is_empty(&self) -> bool {
         self.parts.iter().all(Option::is_none) && self.machines.iter().all(Option::is_none)
+    }
+    /// The properties of lock's own that the game sets when it is placed (its template
+    /// places the others), if any.
+    pub fn own_placement(&self, block: &str) -> Option<&[String]> {
+        self.own.get(block).map(Vec::as_slice)
     }
     pub fn get(&self, state: BlockStateId) -> Option<&Arc<Part>> {
         self.parts.get(state.0 as usize)?.as_ref()
@@ -207,6 +264,60 @@ impl KineticTable {
             .map(BlockStateId)
             .filter(|s| self.keeps_entity(*s))
     }
+}
+
+/// `WaterWheelBlockEntity.determineAndApplyFlowScore` and `getGeneratedSpeed` for a water wheel
+/// at `pos` turning about `axis`: each fluid beside it in its plane flowing round it one way or
+/// the other (more than half along its rim) counts for that way, and the wheel turns 8 RPM
+/// (about its axis's positive way) the way most of them push, or not at all. `flow` is the
+/// fluid's flow at a block (`FluidState.getFlow`).
+pub fn water_wheel_speed(axis: usize, pos: [i32; 3], flow: impl Fn([i32; 3]) -> [f64; 3]) -> f32 {
+    let mut score = 0i32;
+    for d in [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ] {
+        if d[axis] != 0 {
+            continue;
+        }
+        let at = [pos[0] + d[0], pos[1] + d[1], pos[2] + d[2]];
+        let mut f = flow(at);
+        f[axis] = 0.0;
+        let length = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+        if length == 0.0 {
+            continue;
+        }
+        let f = f.map(|v| v / length);
+        // VecHelper.rotate(normal, 90, axis): the rim's positive way at that side.
+        let n = d.map(f64::from);
+        let motion = match axis {
+            0 => [n[0], -n[2], n[1]],
+            1 => [n[2], n[1], -n[0]],
+            _ => [-n[1], n[0], n[2]],
+        };
+        let dot = f[0] * motion[0] + f[1] * motion[1] + f[2] * motion[2];
+        if dot.abs() > 0.5 {
+            score += dot.signum() as i32;
+        }
+    }
+    score.clamp(-1, 1) as f32 * 8.0
+}
+
+/// The water wheels' speeds among `parts`, by [`water_wheel_speed`]: sources for [`solve`].
+pub fn water_wheels(
+    parts: &HashMap<[i32; 3], Arc<Part>>,
+    flow: impl Fn([i32; 3]) -> [f64; 3],
+) -> HashMap<[i32; 3], f32> {
+    parts
+        .iter()
+        .filter(|(_, p)| p.kind == KineticPart::WaterWheel)
+        .map(|(pos, p)| (*pos, water_wheel_speed(p.axis, *pos, &flow)))
+        .filter(|(_, s)| *s != 0.0)
+        .collect()
 }
 
 /// The parts `p` joins (by end or mesh) and the factor from its speed to theirs.
@@ -291,6 +402,22 @@ pub fn solve(
     parts: &HashMap<[i32; 3], Arc<Part>>,
     turned: &HashMap<[i32; 3], f32>,
 ) -> HashMap<[i32; 3], f32> {
+    solve_linked(parts, turned, &[])
+}
+
+/// [`solve`], with `groups` of parts that turn alike wherever they are (each belt's segments:
+/// its belt joins its pulleys).
+pub fn solve_linked(
+    parts: &HashMap<[i32; 3], Arc<Part>>,
+    turned: &HashMap<[i32; 3], f32>,
+    groups: &[Vec<[i32; 3]>],
+) -> HashMap<[i32; 3], f32> {
+    let mut group_of: HashMap<[i32; 3], usize> = HashMap::new();
+    for (i, g) in groups.iter().enumerate() {
+        for p in g {
+            group_of.insert(*p, i);
+        }
+    }
     let mut sources: Vec<([i32; 3], f32)> = parts
         .iter()
         .filter(|(_, part)| part.source())
@@ -323,7 +450,16 @@ pub fn solve(
         let mut queue = VecDeque::from([start]);
         while let Some(p) = queue.pop_front() {
             let (s, _) = speed[&p];
-            for (q, factor) in links(parts, p, &parts[&p]) {
+            let mut joined = links(parts, p, &parts[&p]);
+            if let Some(g) = group_of.get(&p) {
+                joined.extend(
+                    groups[*g]
+                        .iter()
+                        .filter(|q| **q != p && parts.contains_key(*q))
+                        .map(|q| (*q, 1.0)),
+                );
+            }
+            for (q, factor) in joined {
                 let raw = s * factor;
                 let want = raw.clamp(-MAX_RPM, MAX_RPM);
                 match speed.get(&q) {
@@ -423,8 +559,44 @@ mod tests {
             half: None,
             extra: None,
             extra_facing: None,
+            head: None,
+            pole: None,
+            models: Vec::new(),
         };
         Arc::new(Part::new(&kinetic, axis, facing).unwrap())
+    }
+
+    #[test]
+    fn water_flowing_past_one_side_of_a_wheel_turns_it() {
+        // A wheel about z at the origin; water under it flowing east pushes its rim one way.
+        let under_east = |p: [i32; 3]| {
+            if p == [0, -1, 0] {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0; 3]
+            }
+        };
+        assert_eq!(water_wheel_speed(2, [0; 3], under_east), 8.0);
+        // Over it, the other way.
+        let over_east = |p: [i32; 3]| {
+            if p == [0, 1, 0] {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0; 3]
+            }
+        };
+        assert_eq!(water_wheel_speed(2, [0; 3], over_east), -8.0);
+        // Both: they cancel. Flowing along its axis: nothing.
+        let both = |p: [i32; 3]| if p[1] != 0 { [1.0, 0.0, 0.0] } else { [0.0; 3] };
+        assert_eq!(water_wheel_speed(2, [0; 3], both), 0.0);
+        let along = |p: [i32; 3]| {
+            if p == [0, -1, 0] {
+                [0.0, 0.0, 1.0]
+            } else {
+                [0.0; 3]
+            }
+        };
+        assert_eq!(water_wheel_speed(2, [0; 3], along), 0.0);
     }
 
     #[test]
@@ -450,6 +622,9 @@ mod tests {
             half: None,
             extra: Some("create:block/hand_crank/handle".into()),
             extra_facing: Some("north".into()),
+            head: None,
+            pole: None,
+            models: Vec::new(),
         };
         let up = Part::new(&kinetic, None, Some("up")).unwrap();
         assert_eq!(up.extra_turns, Some([3, 0, 0]));

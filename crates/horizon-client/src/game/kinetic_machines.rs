@@ -6,7 +6,7 @@
 //! CrushingWheelControllerBlockEntity for the wheels, whose controller is no block here but the
 //! air between two wheels. The networks are solved from the block states as the window solves
 //! them (game/kinetics.rs); a crank only the window's player turns does not reach here.
-use super::Game;
+use super::{Game, machine_entities};
 use horizon_client::items::ItemStack;
 use horizon_client::kinetics::{self, KineticPart, Part};
 use horizon_core::{position::BlockPos, random::RandomSource};
@@ -27,7 +27,7 @@ const WAITING_HEIGHT: f64 = 13.0 / 16.0;
 #[derive(Default)]
 pub(super) struct Machines {
     parts: HashMap<[i32; 3], Arc<Part>>,
-    speeds: HashMap<[i32; 3], f32>,
+    pub(super) speeds: HashMap<[i32; 3], f32>,
     /// The world's block revision and chunk set at the last look, and when (game time).
     seen: Option<(u64, u64, i64)>,
     drills: HashMap<[i32; 3], Drill>,
@@ -35,6 +35,18 @@ pub(super) struct Machines {
     /// Items a controller put out, by entity id: that controller does not take them again
     /// (Create's `BypassCrushingWheel`).
     bypass: HashMap<u32, [i32; 3]>,
+    /// The machines with block entities (machine_entities.rs) at the last look.
+    entities: Vec<([i32; 3], machine_entities::Kind)>,
+    /// Their timers that run every tick, since their tags were last kept (processing.rs), and a
+    /// mixer's processing ticks.
+    pub(super) timers: HashMap<[i32; 3], i32>,
+    pub(super) works: HashMap<[i32; 3], i32>,
+    /// Each fan's air current (fans.rs), and how far along the items and depots in one are.
+    pub(super) currents: HashMap<[i32; 3], super::fans::Current>,
+    pub(super) fan_items: HashMap<u32, (super::fans::Processing, i32)>,
+    pub(super) fan_depots: HashMap<[i32; 3], (super::fans::Processing, i32)>,
+    /// The belts and their items (belts.rs).
+    pub(super) belts: super::belts::Belts,
     /// Drills, crushing wheels and controllers at the last look, for the log.
     counts: (usize, usize, usize),
 }
@@ -62,82 +74,121 @@ struct Controller {
     applied: bool,
 }
 
-/// Create's crushing and milling recipes the content root holds: the crusher tries crushing,
-/// then milling.
+/// The types of Create's processing recipes the machines use: one item in, results with chances
+/// (`create:<type>`).
+const RECIPE_TYPES: [&str; 5] = ["crushing", "milling", "pressing", "splashing", "haunting"];
+
+/// Create's processing recipes the content root holds, by type, each's first ingredient's
+/// items (a tag's, as the items list it) to the recipe.
 #[derive(Default)]
 pub(super) struct Recipes {
-    crushing: HashMap<Arc<str>, Recipe>,
-    milling: HashMap<Arc<str>, Recipe>,
+    by_type: HashMap<&'static str, HashMap<Arc<str>, Arc<Recipe>>>,
 }
 
-struct Recipe {
+pub(super) struct Recipe {
     /// `processing_time`, in ticks at speed one.
-    time: f32,
+    pub(super) time: f32,
     /// Each result: the item, its count and its chance.
-    results: Vec<(Arc<str>, u32, f32)>,
+    pub(super) results: Vec<(Arc<str>, u32, f32)>,
 }
 
 impl Recipes {
-    /// `data/<namespace>/recipe/{crushing,milling}/**.json` of the content root: one item in,
-    /// results with chances. Recipes with conditions (other mods' compat) or a tag in are left
-    /// out.
-    pub(super) fn load(root: &Path) -> Self {
-        let out = Self::read(root);
-        if !out.crushing.is_empty() || !out.milling.is_empty() {
-            log::info!(
-                "Horizon: {} crushing and {} milling recipes",
-                out.crushing.len(),
-                out.milling.len()
-            );
+    /// `data/<namespace>/recipe/<type>/**.json` of the content root. Recipes with conditions
+    /// (other mods' compat) are left out; of two for one item, the first read stays.
+    pub(super) fn load(root: &Path, items: &horizon_client::items::Items) -> Self {
+        let tag = |t: &str| items.item_tag_order.get(t).cloned().unwrap_or_default();
+        let out = Self::read(root, &tag);
+        if !out.by_type.is_empty() {
+            let counts: Vec<String> = RECIPE_TYPES
+                .iter()
+                .map(|k| format!("{} {k}", out.by_type.get(k).map_or(0, HashMap::len)))
+                .collect();
+            log::info!("Horizon: Create recipes by item: {}", counts.join(", "));
         }
         out
     }
-    fn read(root: &Path) -> Self {
+    fn read(root: &Path, tag: &dyn Fn(&str) -> Vec<String>) -> Self {
         let mut out = Recipes::default();
         let Ok(namespaces) = std::fs::read_dir(root.join("data")) else {
             return out;
         };
-        for ns in namespaces.flatten() {
-            for (kind, map) in [
-                ("crushing", &mut out.crushing),
-                ("milling", &mut out.milling),
-            ] {
-                let mut stack = vec![ns.path().join("recipe").join(kind)];
+        let mut namespaces: Vec<_> = namespaces.flatten().map(|e| e.path()).collect();
+        namespaces.sort();
+        for ns in namespaces {
+            for kind in RECIPE_TYPES {
+                let mut stack = vec![ns.join("recipe").join(kind)];
                 while let Some(dir) = stack.pop() {
-                    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                        let path = e.path();
+                    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.path())
+                        .collect();
+                    entries.sort();
+                    for path in entries {
                         if path.is_dir() {
                             stack.push(path);
                             continue;
                         }
-                        let Some((input, recipe)) = std::fs::read(&path)
+                        let Some((inputs, recipe)) = std::fs::read(&path)
                             .ok()
                             .and_then(|b| serde_json::from_slice(&b).ok())
-                            .and_then(|v| Recipe::parse(&v, kind))
+                            .and_then(|v| Recipe::parse(&v, kind, tag))
                         else {
                             continue;
                         };
-                        map.entry(input).or_insert(recipe);
+                        let recipe = Arc::new(recipe);
+                        let map = out.by_type.entry(kind).or_default();
+                        for input in inputs {
+                            map.entry(input).or_insert_with(|| recipe.clone());
+                        }
                     }
                 }
             }
         }
         out
     }
-    fn find(&self, item: &str) -> Option<&Recipe> {
-        self.crushing.get(item).or_else(|| self.milling.get(item))
+    /// The recipe of `kind` (`pressing`...) for `item`.
+    pub(super) fn find(&self, kind: &str, item: &str) -> Option<&Recipe> {
+        self.by_type.get(kind)?.get(item).map(|r| &**r)
+    }
+    /// The crusher's: crushing, then milling.
+    fn crushing(&self, item: &str) -> Option<&Recipe> {
+        self.find("crushing", item)
+            .or_else(|| self.find("milling", item))
     }
 }
 
 impl Recipe {
-    fn parse(v: &serde_json::Value, kind: &str) -> Option<(Arc<str>, Recipe)> {
+    /// A recipe of `create:<kind>` and the items its first ingredient takes: `{"item": id}`,
+    /// `{"tag": t}` (`tag` lists a tag's items) or a list of them, as 1.21.1 writes them.
+    fn parse(
+        v: &serde_json::Value,
+        kind: &str,
+        tag: &dyn Fn(&str) -> Vec<String>,
+    ) -> Option<(Vec<Arc<str>>, Recipe)> {
         if v["type"].as_str()? != format!("create:{kind}")
             || v.get("neoforge:conditions").is_some()
             || v.get("conditions").is_some()
         {
             return None;
         }
-        let input: Arc<str> = v["ingredients"].get(0)?["item"].as_str()?.into();
+        let first = v["ingredients"].get(0)?;
+        let mut inputs: Vec<Arc<str>> = Vec::new();
+        let alternatives = first
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| vec![first.clone()]);
+        for a in &alternatives {
+            if let Some(id) = a["item"].as_str() {
+                inputs.push(id.into());
+            } else if let Some(t) = a["tag"].as_str() {
+                inputs.extend(tag(t).into_iter().map(Arc::from));
+            }
+        }
+        if inputs.is_empty() {
+            return None;
+        }
         let results = v["results"]
             .as_array()?
             .iter()
@@ -149,7 +200,24 @@ impl Recipe {
             })
             .collect();
         let time = v["processing_time"].as_f64().unwrap_or(100.0) as f32;
-        Some((input, Recipe { time, results }))
+        Some((inputs, Recipe { time, results }))
+    }
+
+    /// `ProcessingRecipe.rollResults` for one item: each result kept by its chance.
+    pub(super) fn roll(&self, random: &mut impl RandomSource) -> Vec<ItemStack> {
+        let mut out: Vec<ItemStack> = Vec::new();
+        for (id, n, chance) in &self.results {
+            if *chance < 1.0 && random.next_float() >= *chance {
+                continue;
+            }
+            out.push(ItemStack {
+                item: id.clone(),
+                count: *n,
+                damage: 0,
+                extra: None,
+            });
+        }
+        out
     }
 }
 
@@ -206,10 +274,33 @@ impl Game<'_> {
         for (pos, speed) in drills {
             self.tick_drill(pos, speed)?;
         }
+        // Fans: their air currents (fans.rs), facing away from their backs.
+        let m = &self.machines;
+        let fans: Vec<([i32; 3], [i32; 3], f32)> = m
+            .parts
+            .iter()
+            .filter(|(_, p)| p.kind == KineticPart::Fan)
+            .map(|(pos, p)| {
+                let speed = m.speeds.get(pos).copied().unwrap_or(0.0);
+                (*pos, p.face.map(|v| -v), speed)
+            })
+            .collect();
+        for (pos, facing, speed) in fans {
+            self.tick_fan(pos, facing, speed);
+        }
         let controllers: Vec<[i32; 3]> = self.machines.controllers.keys().copied().collect();
         for pos in controllers {
             self.tick_controller(pos);
         }
+        // The machines with items of their own: depots, millstones, presses (processing.rs).
+        let m = &self.machines;
+        let machines: Vec<([i32; 3], machine_entities::Kind, f32)> = m
+            .entities
+            .iter()
+            .map(|(pos, kind)| (*pos, *kind, m.speeds.get(pos).copied().unwrap_or(0.0)))
+            .collect();
+        self.tick_processing(&machines);
+        self.tick_belts();
         Ok(())
     }
 
@@ -218,11 +309,11 @@ impl Game<'_> {
     fn find_machines(&mut self) {
         let table = self.res.kinetics();
         let kinetic = |id: u32| {
-            table
-                .get(horizon_world::registry::BlockStateId(id))
-                .is_some()
+            let state = horizon_world::registry::BlockStateId(id);
+            table.get(state).is_some() || table.machine(state).is_some()
         };
         let mut parts = HashMap::new();
+        let mut entities = Vec::new();
         for ((cx, cz), chunk) in self.world.chunks.iter() {
             for (si, section) in chunk.sections.iter().enumerate() {
                 if !section.blocks.maybe_has(kinetic) {
@@ -230,18 +321,46 @@ impl Game<'_> {
                 }
                 for i in 0..4096 {
                     let state = horizon_world::registry::BlockStateId(section.get(i));
-                    if let Some(part) = table.get(state) {
-                        let pos = [
-                            cx * 16 + (i & 15) as i32,
-                            horizon_client::chunk::MIN_Y + si as i32 * 16 + (i >> 8) as i32,
-                            cz * 16 + ((i >> 4) & 15) as i32,
-                        ];
+                    let part = table.get(state);
+                    let machine = table.machine(state);
+                    if part.is_none() && machine.is_none() {
+                        continue;
+                    }
+                    let pos = [
+                        cx * 16 + (i & 15) as i32,
+                        horizon_client::chunk::MIN_Y + si as i32 * 16 + (i >> 8) as i32,
+                        cz * 16 + ((i >> 4) & 15) as i32,
+                    ];
+                    if let Some(kind) = machine_entities::Kind::of(machine, part.map(|p| p.kind)) {
+                        entities.push((pos, kind));
+                    }
+                    if let Some(part) = part {
                         parts.insert(pos, part.clone());
                     }
                 }
             }
         }
-        let speeds = kinetics::solve(&parts, &HashMap::new());
+        entities.sort_unstable_by_key(|(pos, _)| *pos);
+        // Water wheels turned by the water past them are sources too.
+        let (world, fluids) = (&self.world, &self.res.motion().fluids);
+        let wheels = kinetics::water_wheels(&parts, |p| {
+            let v = horizon_client::entities::flow_vector(world, fluids, p);
+            [v.x, v.y, v.z]
+        });
+        // The belts: each one's segments turn together (belts.rs).
+        let belt_positions: Vec<[i32; 3]> = entities
+            .iter()
+            .filter(|(_, k)| *k == machine_entities::Kind::Belt)
+            .map(|(p, _)| *p)
+            .collect();
+        let chains = super::belts::chains(&self.belt_segments(&belt_positions));
+        let groups: Vec<Vec<[i32; 3]>> = chains.iter().map(|c| c.segments.clone()).collect();
+        let speeds = kinetics::solve_linked(&parts, &wheels, &groups);
+        self.machines
+            .belts
+            .items
+            .retain(|start, _| chains.iter().any(|c| c.start() == *start));
+        self.machines.belts.chains = chains;
         let mut found: HashMap<[i32; 3], ([i32; 3], f32)> = HashMap::new();
         for (pos, part) in &parts {
             if part.kind != KineticPart::CrushingWheel {
@@ -311,8 +430,15 @@ impl Game<'_> {
             .retain(|pos, _| parts.get(pos).is_some_and(|p| p.kind == KineticPart::Drill));
         let ids: std::collections::HashSet<u32> = self.dropped.iter().map(|d| d.id).collect();
         m.bypass.retain(|id, _| ids.contains(id));
+        super::fans::forget(&mut m.fan_items, &ids);
+        m.currents
+            .retain(|pos, _| parts.get(pos).is_some_and(|p| p.kind == KineticPart::Fan));
         m.parts = parts;
         m.speeds = speeds;
+        let here = |pos: &[i32; 3]| entities.binary_search_by_key(pos, |(p, _)| *p).is_ok();
+        m.timers.retain(|pos, _| here(pos));
+        m.works.retain(|pos, _| here(pos));
+        m.entities = entities;
     }
 
     /// `BlockBreakingKineticBlockEntity.tick` for the drill at `pos` turning at `speed`: a
@@ -485,7 +611,7 @@ impl Game<'_> {
             }
         }
         let res = Arc::clone(&self.res);
-        let recipes = res.crushing();
+        let recipes = res.create_recipes();
         let Some(c) = self.machines.controllers.get_mut(&pos) else {
             return;
         };
@@ -500,7 +626,7 @@ impl Game<'_> {
             let Some(input) = input else {
                 return;
             };
-            let Some(recipe) = recipes.find(&input.item) else {
+            let Some(recipe) = recipes.crushing(&input.item) else {
                 // No recipe: Create's wheels crush it to nothing.
                 return;
             };
@@ -551,8 +677,8 @@ impl Game<'_> {
     fn controller_take(&mut self, pos: [i32; 3], stack: ItemStack) {
         let time = self
             .res
-            .crushing()
-            .find(&stack.item)
+            .create_recipes()
+            .crushing(&stack.item)
             .map_or(100.0, |r| r.time);
         if let Some(c) = self.machines.controllers.get_mut(&pos) {
             c.slots = vec![stack];
@@ -593,19 +719,20 @@ mod tests {
                 {"chance": 0.1, "id": "minecraft:flint"}]}"#,
         )
         .unwrap();
-        let (input, recipe) = Recipe::parse(&v, "crushing").unwrap();
-        assert_eq!(&*input, "minecraft:gravel");
+        let no_tags = |_: &str| Vec::new();
+        let (input, recipe) = Recipe::parse(&v, "crushing", &no_tags).unwrap();
+        assert_eq!(input, [Arc::from("minecraft:gravel")]);
         assert_eq!(recipe.time, 250.0);
         assert_eq!(recipe.results.len(), 2);
         assert_eq!(recipe.results[1].2, 0.1);
         // Milling read as milling only, and another mod's compat (with conditions) left out.
-        assert!(Recipe::parse(&v, "milling").is_none());
+        assert!(Recipe::parse(&v, "milling", &no_tags).is_none());
         let compat: serde_json::Value = serde_json::from_str(
             r#"{"type": "create:crushing", "neoforge:conditions": [], "ingredients":
                 [{"item": "x:ore"}], "results": [{"id": "x:dust"}]}"#,
         )
         .unwrap();
-        assert!(Recipe::parse(&compat, "crushing").is_none());
+        assert!(Recipe::parse(&compat, "crushing", &no_tags).is_none());
     }
 
     #[test]

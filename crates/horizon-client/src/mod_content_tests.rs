@@ -808,6 +808,103 @@ fn a_declared_shape_is_each_states_outline_collision_and_support() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A block with properties no vanilla block has (Create's saw: facing, axis_along_first,
+/// flipped): its own states, in the registry's order, each copying the template state that
+/// shares most of its properties; a declared shape turns by its own facing; its states turn
+/// among themselves; and every table still loads.
+#[test]
+fn a_block_with_states_of_its_own_gets_them() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-own-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let toml = manifest("saws", "");
+    let m = folder_mod(
+        &scratch.join("saws"),
+        &[
+            ("horizon-mod.toml", &toml),
+            (
+                "data/saws/horizon/block/saw.json",
+                r#"{"template": "minecraft:lightning_rod",
+                    "properties": {"shape": [[0, 0, 0, 16, 12, 16]]},
+                    "states": {"facing": ["north", "east", "south", "west", "up", "down"],
+                               "axis_along_first": ["false", "true"], "flipped": ["false", "true"]}}"#,
+            ),
+        ],
+    );
+    let root = scratch.join("root");
+    build(&base, &[m], &root).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let default = registry.default_state("saws:saw").unwrap();
+    let props = &registry.state(default).unwrap().properties;
+    // The first of each property's values; the rod's own (powered) is not the saw's.
+    assert_eq!(props.get("facing").map(String::as_str), Some("north"));
+    assert_eq!(
+        props.get("axis_along_first").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(props.get("flipped").map(String::as_str), Some("false"));
+    assert!(!props.contains_key("powered"));
+    let state = |facing: &str, along: &str| {
+        let mut s = registry.state(default).unwrap().clone();
+        s.properties.insert("facing".into(), facing.into());
+        s.properties.insert("axis_along_first".into(), along.into());
+        registry.id(&s).unwrap()
+    };
+    // 24 states by property name (axis_along_first, facing, flipped), the last changing
+    // fastest, after the rod's.
+    assert_eq!(state("east", "false").0, default.0 + 2);
+    assert_eq!(state("down", "true").0, default.0 + 22);
+    // Its shape turned by its own facing: made up, lying on its side facing east.
+    assert_eq!(
+        &*facts.get(state("up", "false")).outline,
+        [[0.0, 0.0, 0.0, 1.0, 0.75, 1.0]]
+    );
+    assert_eq!(
+        &*facts.get(state("east", "false")).outline,
+        [[0.0, 0.0, 0.0, 0.75, 1.0, 1.0]]
+    );
+    // Turned a quarter clockwise, north faces east; mirrored left to right, north faces south.
+    let structure: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("worldgen/blocks/structure-blocks.json")).unwrap(),
+    )
+    .unwrap();
+    let north = state("north", "true").0 as usize;
+    assert_eq!(
+        structure["rotate"][north][0].as_u64(),
+        Some(u64::from(state("east", "true").0))
+    );
+    assert_eq!(
+        structure["mirror"][north][0].as_u64(),
+        Some(u64::from(state("south", "true").0))
+    );
+    // The model states name its own properties.
+    let models: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("model-states.json")).unwrap()).unwrap();
+    assert_eq!(
+        models["saws:saw"]["states"].as_array().map(Vec::len),
+        Some(24)
+    );
+    assert!(models["saws:saw"]["schema"].get("flipped").is_some());
+    // Every per-state table checks its states against the registry, and the behaviours load.
+    for table in [
+        "occlusion.nbt",
+        "cached-collision.nbt",
+        "movement-properties.nbt",
+        "worldgen/blocks/block-properties.nbt",
+        "worldgen/blocks/cached-support.nbt",
+        "worldgen/blocks/cached-collision.nbt",
+    ] {
+        horizon_world::registry::BlockTableFile::open(&root.join(table), registry)
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+    }
+    horizon_world::level::Behaviours::load(registry, &root).unwrap();
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A mod whose files sit under namespaces besides its id (Towns and Towers'
 /// `kaisyn`): they join the root, and loaders read those namespaces.
 #[test]

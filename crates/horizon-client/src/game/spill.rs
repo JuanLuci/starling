@@ -566,6 +566,13 @@ impl GameLevel<'_> {
         if !side_effects {
             return true;
         }
+        // A content mod's machine: everything it holds (ItemHelper.dropContents).
+        if super::machine_entities::is_machine_tag(&tag) {
+            for stack in super::machine_entities::held_items(&tag) {
+                self.drop_item_stack(pos, stack);
+            }
+            return true;
+        }
         let name = self.facts.get(old).name.clone();
         let items = match removal::pre_remove(&name) {
             PreRemove::Contents { slots, .. } if &*name == "minecraft:decorated_pot" => {

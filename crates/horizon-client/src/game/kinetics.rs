@@ -6,6 +6,7 @@
 //!
 //! The speeds come from the block states alone, so the window and a world's server solve the
 //! same networks without telling each other; only the window draws them.
+use super::machine_entities::Kind;
 use super::{Game, Screen};
 use horizon_client::kinetics::{self, DEGREES_PER_TICK, KineticPart, Part};
 use horizon_client::mesher::Vertex;
@@ -36,6 +37,9 @@ const EASE_TICKS: f64 = 4.0;
 pub(super) struct Kinetics {
     /// The parts near the player, by position.
     parts: HashMap<[i32; 3], (BlockStateId, Arc<Part>)>,
+    /// The machines with block entities near the player (machine_entities.rs): what they hold
+    /// and their moving parts are drawn.
+    machines: HashMap<[i32; 3], Kind>,
     /// What each turns at, its own way (kinetics.rs): only those a source reaches.
     speeds: HashMap<[i32; 3], f32>,
     /// What each is drawn turning at, following `speeds` (EASE_TICKS).
@@ -52,6 +56,10 @@ pub(super) struct Kinetics {
     crank: Option<([i32; 3], f32, Instant)>,
     /// Use was held on a crank last frame: a press that starts turns it a while (a tap).
     cranking: bool,
+    /// The belts near the player (belts.rs), and each one's items as the window moves them
+    /// between their tag's updates (the update's game time with them).
+    belts: Vec<super::belts::Chain>,
+    belt_items: HashMap<[i32; 3], (i64, Vec<super::belts::Transported>)>,
 }
 
 impl Game<'_> {
@@ -76,19 +84,27 @@ impl Game<'_> {
             self.kinetics.seen = Some((world.0, world.1, now));
         }
         if stale || crank {
-            let turned: HashMap<_, _> = self
-                .kinetics
-                .crank
-                .map(|(p, v, _)| (p, v))
-                .into_iter()
-                .collect();
             let parts = self
                 .kinetics
                 .parts
                 .iter()
                 .map(|(p, (_, part))| (*p, part.clone()))
                 .collect();
-            self.kinetics.speeds = kinetics::solve(&parts, &turned);
+            // The crank turned, and the water wheels the water past them turns.
+            let (world, fluids) = (&self.world, &self.res.motion().fluids);
+            let mut turned = kinetics::water_wheels(&parts, |p| {
+                let v = horizon_client::entities::flow_vector(world, fluids, p);
+                [v.x, v.y, v.z]
+            });
+            turned.extend(self.kinetics.crank.map(|(p, v, _)| (p, v)));
+            // Each belt's segments turn together.
+            let groups: Vec<Vec<[i32; 3]>> = self
+                .kinetics
+                .belts
+                .iter()
+                .map(|c| c.segments.clone())
+                .collect();
+            self.kinetics.speeds = kinetics::solve_linked(&parts, &turned, &groups);
             if changed {
                 // Each part's turn now, those joining meshed with those already turning.
                 let k = &mut self.kinetics;
@@ -133,6 +149,37 @@ impl Game<'_> {
             if turned != 0.0 {
                 let run = k.run.entry(*p).or_insert(0.0);
                 *run = (*run + turned).rem_euclid(360.0);
+            }
+        }
+        self.advance_belts(dt as f32);
+    }
+
+    /// Each belt's items along as its server moves them (BeltInventory's moving, which Create's
+    /// client runs too), from where its tag last put them.
+    fn advance_belts(&mut self, dt: f32) {
+        for chain in self.kinetics.belts.clone() {
+            let start = chain.start();
+            let tag = super::spill::saved_entity(&self.world, start);
+            let since = match tag.as_ref().and_then(|t| t.get("Since")) {
+                Some(horizon_world::nbt::Tag::Long(v)) => *v,
+                _ => 0,
+            };
+            let stale = self
+                .kinetics
+                .belt_items
+                .get(&start)
+                .is_none_or(|(at, _)| *at != since);
+            if stale {
+                let items = tag
+                    .as_ref()
+                    .map(super::belts::read_items)
+                    .unwrap_or_default();
+                self.kinetics.belt_items.insert(start, (since, items));
+            }
+            let speed = self.kinetics.shown.get(&start).copied().unwrap_or(0.0);
+            let movement = chain.movement(speed) * dt;
+            if let Some((_, items)) = self.kinetics.belt_items.get_mut(&start) {
+                super::belts::advance(items, chain.len(), movement, super::belts::Ending::Eject);
             }
         }
     }
@@ -197,8 +244,11 @@ impl Game<'_> {
             (player.position.x.floor() as i32) >> 4,
             (player.position.z.floor() as i32) >> 4,
         );
-        let kinetic = |id: u32| table.get(BlockStateId(id)).is_some();
+        let kinetic = |id: u32| {
+            table.get(BlockStateId(id)).is_some() || table.machine(BlockStateId(id)).is_some()
+        };
         let mut parts = HashMap::new();
+        let mut machines = HashMap::new();
         for cx in pcx - reach..=pcx + reach {
             for cz in pcz - reach..=pcz + reach {
                 let Some(chunk) = self.world.chunks.get(&(cx, cz)) else {
@@ -210,12 +260,20 @@ impl Game<'_> {
                     }
                     for i in 0..4096 {
                         let state = BlockStateId(section.get(i));
-                        if let Some(part) = table.get(state) {
-                            let pos = [
-                                cx * 16 + (i & 15) as i32,
-                                horizon_client::chunk::MIN_Y + si as i32 * 16 + (i >> 8) as i32,
-                                cz * 16 + ((i >> 4) & 15) as i32,
-                            ];
+                        let part = table.get(state);
+                        let machine = table.machine(state);
+                        if part.is_none() && machine.is_none() {
+                            continue;
+                        }
+                        let pos = [
+                            cx * 16 + (i & 15) as i32,
+                            horizon_client::chunk::MIN_Y + si as i32 * 16 + (i >> 8) as i32,
+                            cz * 16 + ((i >> 4) & 15) as i32,
+                        ];
+                        if let Some(kind) = Kind::of(machine, part.map(|p| p.kind)) {
+                            machines.insert(pos, kind);
+                        }
+                        if let Some(part) = part {
                             parts.insert(pos, (state, part.clone()));
                         }
                     }
@@ -227,7 +285,18 @@ impl Game<'_> {
             || parts
                 .iter()
                 .any(|(p, (state, _))| old.get(p).map(|(s, _)| s) != Some(state));
+        let belt_positions: Vec<[i32; 3]> = machines
+            .iter()
+            .filter(|(_, k)| **k == Kind::Belt)
+            .map(|(p, _)| *p)
+            .collect();
+        let belts = super::belts::chains(&self.belt_segments(&belt_positions));
+        self.kinetics
+            .belt_items
+            .retain(|start, _| belts.iter().any(|c| c.start() == *start));
+        self.kinetics.belts = belts;
         self.kinetics.parts = parts;
+        self.kinetics.machines = machines;
         changed
     }
 
@@ -235,6 +304,8 @@ impl Game<'_> {
     /// gearbox's and a motor's faces, a crank's handle; each about its axis through the block's
     /// middle, as far as it has turned (advance_kinetics).
     pub(super) fn kinetic_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        self.machine_item_geometry(camera, out);
+        self.belt_item_geometry(camera, out);
         if self.kinetics.parts.is_empty() {
             return;
         }
@@ -307,7 +378,394 @@ impl Game<'_> {
                     self.baked_model_vertices(model, at * end, light, false, out);
                 }
             }
+            // A belt's segment and pulley (BeltRenderer).
+            if part.kind == KineticPart::Belt {
+                self.belt_segment_geometry(*state, part, at, own, light, out);
+            }
+            // A press's head, a mixer's pole and head, as far down as their work has them
+            // (MechanicalPressRenderer, MechanicalMixerRenderer); a mixer's head turns.
+            if part.head.is_some() || part.pole.is_some() {
+                let turns = models.first().map_or([0; 3], |(v, _)| v.rotations);
+                let (down, spin) = match part.kind {
+                    KineticPart::Mixer => self.mixer_head(*pos),
+                    _ => (self.press_head_down(*pos), 0.0),
+                };
+                let drop = glam::Mat4::from_translation(glam::Vec3::new(0.0, -down, 0.0));
+                for (model, spins) in [(&part.head, true), (&part.pole, false)] {
+                    let Some(model) = model
+                        .as_deref()
+                        .and_then(|m| catalog.partial(m, [turns[0], turns[1], 0]))
+                    else {
+                        continue;
+                    };
+                    let turned = if spins {
+                        turn(1, 1.0, spin, 0.0)
+                    } else {
+                        glam::Mat4::IDENTITY
+                    };
+                    self.baked_model_vertices(model, at * drop * turned, light, false, out);
+                }
+            }
             cull_back_faces(out, start);
+        }
+    }
+
+    /// `BeltRenderer.renderSafe` for one segment: its part of the belt (its top and its bottom,
+    /// or a diagonal's one), turned to its facing and slope, and its pulley turning with it.
+    /// `part.models` are the belt's: start, middle, end, their bottoms, the diagonals', the
+    /// pulley.
+    fn belt_segment_geometry(
+        &self,
+        state: BlockStateId,
+        part: &Part,
+        at: glam::Mat4,
+        own: glam::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        use super::belts::{Part as Piece, Segment, Slope};
+        let catalog = &self.pack.render.model_catalog;
+        let Some(segment) = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| Segment::of(&s.properties))
+        else {
+            return;
+        };
+        let model = |i: usize| {
+            part.models
+                .get(i)
+                .and_then(|m| catalog.partial(m, [0, 0, 0]))
+        };
+        let f = segment.facing;
+        let (upward, downward) = (
+            segment.slope == Slope::Upward,
+            segment.slope == Slope::Downward,
+        );
+        let diagonal = upward || downward;
+        let sideways = segment.slope == Slope::Sideways;
+        let vertical = segment.slope == Slope::Vertical;
+        // AngleHelper.horizontalAngle: south 0, east 90, north 180, west 270.
+        let facing_angle = match f {
+            [1, 0, 0] => 90.0f32,
+            [0, 0, -1] => 180.0,
+            [-1, 0, 0] => 270.0,
+            _ => 0.0,
+        };
+        let y =
+            facing_angle + if upward { 180.0 } else { 0.0 } + if sideways { 270.0 } else { 0.0 };
+        let center = glam::Mat4::from_translation(glam::Vec3::splat(0.5));
+        let local = center
+            * glam::Mat4::from_rotation_y(y.to_radians())
+            * glam::Mat4::from_rotation_z(if sideways { 90f32.to_radians() } else { 0.0 })
+            * glam::Mat4::from_rotation_x(if !diagonal && segment.slope != Slope::Horizontal {
+                90f32.to_radians()
+            } else {
+                0.0
+            })
+            * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+        let (mut start, mut end) = (segment.part == Piece::Start, segment.part == Piece::End);
+        let positive = f[0] + f[2] > 0;
+        if downward || (vertical && positive) {
+            std::mem::swap(&mut start, &mut end);
+        }
+        let which = |bottom: bool| match (diagonal, bottom, start, end) {
+            (true, _, true, _) => 6,
+            (true, _, _, true) => 8,
+            (true, _, _, _) => 7,
+            (false, true, true, _) => 3,
+            (false, true, _, true) => 5,
+            (false, true, _, _) => 4,
+            (false, false, true, _) => 0,
+            (false, false, _, true) => 2,
+            (false, false, _, _) => 1,
+        };
+        for bottom in [true, false] {
+            if let Some(m) = model(which(bottom)) {
+                self.baked_model_vertices(m, at * local, light, false, out);
+            }
+            // A diagonal belt has no separate bottom.
+            if diagonal {
+                break;
+            }
+        }
+        if part.pulley {
+            // Its axis across the belt (up for a sideways one): made along z, laid along x or y.
+            let dir_x = !sideways && f[2] != 0;
+            let lay = center
+                * glam::Mat4::from_rotation_y(if dir_x { 90f32.to_radians() } else { 0.0 })
+                * glam::Mat4::from_rotation_x(if sideways { 90f32.to_radians() } else { 0.0 })
+                * glam::Mat4::from_rotation_x(90f32.to_radians())
+                * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+            if let Some(m) = model(9) {
+                self.baked_model_vertices(m, at * own * lay, light, false, out);
+            }
+        }
+    }
+
+    /// `BeltRenderer.renderItems`: every belt's items where the window has them, lying flat (a
+    /// block upright), tilted on a slope, off the middle as they lie.
+    fn belt_item_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        use super::belts::Slope;
+        use horizon_client::block_entity_render::vertex_light;
+        for chain in &self.kinetics.belts {
+            let Some((_, items)) = self.kinetics.belt_items.get(&chain.start()) else {
+                continue;
+            };
+            if items.is_empty() {
+                continue;
+            }
+            let s = chain.start();
+            let corner = glam::DVec3::new(f64::from(s[0]), f64::from(s[1]), f64::from(s[2]));
+            if (corner + glam::DVec3::splat(0.5)).distance(camera) > DRAW_DISTANCE / 2.0 {
+                continue;
+            }
+            let f = chain.facing.map(|v| v as f32);
+            let base = glam::Mat4::from_translation((corner - camera).as_vec3())
+                * glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.5 * f[0] + 0.5,
+                    15.0 / 16.0,
+                    -0.5 * f[2] + 0.5,
+                ));
+            let length = chain.len() as f32;
+            let verticality = match chain.slope {
+                Slope::Upward => 1.0,
+                Slope::Downward => -1.0,
+                _ => 0.0,
+            };
+            let start = out.len();
+            for item in items {
+                let offset = item.position;
+                let up = if offset < 0.5 {
+                    0.0
+                } else {
+                    verticality * (offset.min(length - 0.5) - 0.5)
+                };
+                // Off the middle across it: along x where its clockwise turn is.
+                let along_x = chain.facing[2] != 0;
+                let side = if along_x { item.side } else { -item.side };
+                let place = glam::Vec3::new(
+                    f[0] * offset + if along_x { side } else { 0.0 },
+                    up,
+                    f[2] * offset + if along_x { 0.0 } else { side },
+                );
+                let on_slope =
+                    chain.slope != Slope::Horizontal && offset.clamp(0.5, length - 0.5) == offset;
+                let forward = ((chain.slope == Slope::Downward)
+                    ^ (chain.facing[0] + chain.facing[2] > 0))
+                    == (chain.facing[2] != 0);
+                let tilt = if on_slope {
+                    if forward { -45f32 } else { 45.0 }
+                } else {
+                    0.0
+                };
+                let tilt = if chain.facing[0] != 0 {
+                    glam::Mat4::from_rotation_z(tilt.to_radians())
+                } else {
+                    glam::Mat4::from_rotation_x(tilt.to_radians())
+                };
+                let lift = glam::Mat4::from_translation(glam::Vec3::new(
+                    0.0,
+                    if on_slope { 1.0 / 8.0 } else { 0.0 },
+                    0.0,
+                ));
+                let segment = chain.position_for(offset.floor() as i32);
+                let light = vertex_light(self.world.light(segment[0], segment[1] + 1, segment[2]));
+                let pose = base * glam::Mat4::from_translation(place) * tilt * lift;
+                self.depot_item(&item.stack, pose, item.angle as f32, light, out);
+            }
+            cull_back_faces(out, start);
+        }
+    }
+
+    /// How far down the mixer at `pos` has its head and pole (blocks), and how far its head has
+    /// turned (degrees): `getRenderedHeadOffset` and `getRenderedHeadRotationSpeed`, from its
+    /// run since the server last said where it was.
+    fn mixer_head(&self, pos: [i32; 3]) -> (f32, f32) {
+        use super::basins::{MIX_DOWN, MIX_UP};
+        let e = super::machine_entities::read(&self.world, pos, Kind::Mixer);
+        let speed = self.kinetics.speeds.get(&pos).copied().unwrap_or(0.0);
+        let time = self.world.game_time as f32 + self.clock.fraction() as f32;
+        let elapsed = (self.world.game_time - e.since) as f32 + self.clock.fraction() as f32;
+        let ticks = match e.running {
+            MIX_DOWN => elapsed.clamp(0.0, 20.0),
+            MIX_UP => (20.0 + elapsed).clamp(20.0, 40.0),
+            _ => -1.0,
+        };
+        let eased = |t: f32| (2.0 - (t / 20.0 * std::f32::consts::PI).cos()) / 2.0 - 0.5;
+        let offset = if ticks < 0.0 {
+            0.0
+        } else if ticks < 20.0 {
+            eased(ticks)
+        } else if ticks <= 20.0 {
+            1.0
+        } else {
+            eased(40.0 - ticks)
+        };
+        let head_speed = match ticks {
+            t if t < 0.0 => speed / 2.0,
+            t if t < 15.0 => speed,
+            t if t <= 20.0 => speed * 2.0,
+            _ => speed,
+        };
+        (
+            offset + 7.0 / 16.0,
+            (time * head_speed * 0.6).rem_euclid(360.0),
+        )
+    }
+
+    /// How far down the press at `pos` has its head (blocks): its run since it started, at its
+    /// network's speed (`PressingBehaviour.getRenderedHeadOffset` times the mode's
+    /// `headOffset`).
+    fn press_head_down(&self, pos: [i32; 3]) -> f32 {
+        use super::processing::{CYCLE, PRESS_BASIN, PRESS_BELT, press_head, press_rate};
+        let e = super::machine_entities::read(&self.world, pos, Kind::Press);
+        if e.running == 0 {
+            return 0.0;
+        }
+        let speed = self.kinetics.speeds.get(&pos).copied().unwrap_or(0.0);
+        let elapsed = (self.world.game_time - e.since) as f32 + self.clock.fraction() as f32;
+        let ticks = (elapsed.max(0.0) * press_rate(speed) as f32).min(CYCLE as f32);
+        let reach = match e.running {
+            PRESS_BELT => 19.0 / 16.0,
+            PRESS_BASIN => 22.0 / 16.0,
+            _ => 1.0,
+        };
+        press_head(ticks) * reach
+    }
+
+    /// What the machines near hold, where Create draws it: a depot's stack lying on its top
+    /// and its outputs around it (DepotRenderer).
+    fn machine_item_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        use horizon_client::block_entity_render::vertex_light;
+        for (pos, kind) in &self.kinetics.machines {
+            if *kind == Kind::Basin {
+                self.basin_item_geometry(*pos, camera, out);
+                continue;
+            }
+            if *kind != Kind::Depot {
+                continue;
+            }
+            let corner = glam::DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+            if (corner + glam::DVec3::splat(0.5)).distance(camera) > DRAW_DISTANCE / 2.0 {
+                continue;
+            }
+            let e = super::machine_entities::read(&self.world, *pos, *kind);
+            if e.stacks().next().is_none() {
+                continue;
+            }
+            // The light above its top (the depot's own block is solid).
+            let light = vertex_light(self.world.light(pos[0], pos[1] + 1, pos[2]));
+            let top = glam::Mat4::from_translation((corner - camera).as_vec3())
+                * glam::Mat4::from_translation(glam::Vec3::new(0.5, 15.0 / 16.0, 0.5));
+            let start = out.len();
+            for (slot, stack) in e.items.iter().enumerate() {
+                let Some(stack) = stack else {
+                    continue;
+                };
+                // The held stack in the middle; output i an eighth of a turn round from the last,
+                // a little out.
+                let (place, angle) = if slot == 0 {
+                    (glam::Mat4::IDENTITY, 0.0)
+                } else {
+                    let i = (slot - 1) as f32;
+                    let around = glam::Mat4::from_rotation_y((45.0 * i).to_radians())
+                        * glam::Mat4::from_translation(glam::Vec3::new(0.35, 0.0, 0.0));
+                    (around, (slot as f32 * 137.5) % 360.0)
+                };
+                self.depot_item(stack, top * place, angle, light, out);
+            }
+            cull_back_faces(out, start);
+        }
+    }
+
+    /// What a basin holds (BasinRenderer): its stacks lying about its floor, turned each its
+    /// own way, the outputs over the inputs.
+    fn basin_item_geometry(&self, pos: [i32; 3], camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        use horizon_client::block_entity_render::vertex_light;
+        let corner = glam::DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+        if (corner + glam::DVec3::splat(0.5)).distance(camera) > DRAW_DISTANCE / 2.0 {
+            return;
+        }
+        let e = super::machine_entities::read(&self.world, pos, Kind::Basin);
+        if e.stacks().next().is_none() {
+            return;
+        }
+        let light = vertex_light(self.world.light(pos[0], pos[1] + 1, pos[2]));
+        let base = glam::Mat4::from_translation((corner - camera).as_vec3());
+        let start = out.len();
+        for (n, (slot, stack)) in e
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| Some((i, s.as_ref()?)))
+            .enumerate()
+        {
+            // A spiral out from the middle, a little higher for each, as Create piles them.
+            let angle = n as f32 * 137.5;
+            let radius = if n == 0 {
+                0.0
+            } else {
+                0.22 + 0.04 * (n % 3) as f32
+            };
+            let (x, z) = (
+                0.5 + radius * angle.to_radians().cos(),
+                0.5 + radius * angle.to_radians().sin(),
+            );
+            let y = 5.0 / 16.0 + 0.02 * n as f32 + if slot >= 9 { 0.1 } else { 0.0 };
+            let place = base * glam::Mat4::from_translation(glam::Vec3::new(x, y, z));
+            self.depot_item(stack, place, angle, light, out);
+        }
+        cull_back_faces(out, start);
+    }
+
+    /// `DepotRenderer.renderItem`: a stack lying flat (a block upright), more copies the more
+    /// it holds, turned `angle` degrees.
+    fn depot_item(
+        &self,
+        stack: &horizon_client::items::ItemStack,
+        pose: glam::Mat4,
+        angle: f32,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        use horizon_assets::item_model::DisplayContext;
+        let state = self.resolve_item(stack, DisplayContext::Fixed, None, 0);
+        if state.is_empty() {
+            return;
+        }
+        let block = self
+            .res
+            .items()
+            .get(&stack.item)
+            .is_some_and(|i| i.block.is_some());
+        let copies = (stack.count.max(1).ilog2() / 2) as usize;
+        let mut pose = pose * glam::Mat4::from_rotation_y(angle.to_radians());
+        for i in 0..=copies {
+            let spread = if block {
+                // A fixed step per copy where Create draws one from a random seeded by nothing.
+                let s = 0.0625 * i as f32 * 0.5;
+                glam::Mat4::from_translation(glam::Vec3::new(s, 0.0, s))
+            } else {
+                glam::Mat4::IDENTITY
+            };
+            let mut copy = pose * spread * glam::Mat4::from_scale(glam::Vec3::splat(0.5));
+            if !block {
+                copy = copy
+                    * glam::Mat4::from_translation(glam::Vec3::new(0.0, -3.0 / 16.0, 0.0))
+                    * glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+            }
+            self.submit_item_world(&state, copy, light, out);
+            if !block {
+                pose *= glam::Mat4::from_rotation_y(10f32.to_radians());
+            }
+            pose *= glam::Mat4::from_translation(glam::Vec3::new(
+                0.0,
+                if block { 1.0 / 64.0 } else { 1.0 / 16.0 },
+                0.0,
+            ));
         }
     }
 }
@@ -316,7 +774,7 @@ impl Game<'_> {
 /// about its axis, a motor's and a crank's by their face's sign.
 fn own_way(part: &Part) -> (usize, f32) {
     match part.kind {
-        KineticPart::Motor | KineticPart::Crank | KineticPart::Drill => {
+        KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
             kinetics::at_face(part.face, 1.0)
         }
         _ => (part.axis, 1.0),

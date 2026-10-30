@@ -11,6 +11,7 @@ use horizon_core::geometry::{Aabb, Vec3};
 use horizon_world::block_collision::BlockCollisionRegistry;
 
 mod fluids;
+pub use fluids::flow_vector;
 
 #[derive(Clone, Debug)]
 pub struct ItemEntity {

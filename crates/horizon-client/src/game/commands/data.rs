@@ -267,7 +267,10 @@ impl Game<'_> {
             }
             "block" => {
                 let p = self.block_pos_arg(ctx, &format!("{prefix}Pos"))?;
-                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) {
+                // A content mod's machine keeps its block entity as a saved tag (read only here).
+                let machine = self.machine_kind(p).is_some()
+                    && crate::game::spill::saved_entity(&self.world, p).is_some();
+                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) && !machine {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
                 Ok(DataRef::Block(p))
@@ -293,6 +296,11 @@ impl Game<'_> {
             DataRef::Block(p) => {
                 let key = (p[0], p[1], p[2]);
                 let name = self.data_block_name(*p);
+                if !self.world.block_entities.contains_key(&key)
+                    && let Some(tag) = crate::game::spill::saved_entity(&self.world, *p)
+                {
+                    return Ok(tag);
+                }
                 let e = self
                     .world
                     .block_entities

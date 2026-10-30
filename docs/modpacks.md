@@ -256,9 +256,27 @@ state's `facing`, else its `axis`, as Create's shapers are. Its outline, collisi
 are those boxes, and it hides none of its neighbours' faces nor their light (a cogwheel on a
 chain's template, a crushing wheel that is a whole block but lets its neighbours show).
 
+A block whose properties no vanilla block has declares its own (Starling): `"states": {"facing":
+["north", "east", "south", "west", "up", "down"], "flipped": ["false", "true"]}`, each
+property's values in order, the first the default's (Create's saw, funnels, belts, pipes, and
+the 101 blocks of Create the carry left out). Its states come in the registry's order
+(properties by name, the last changing fastest), each copying the rows of the template state
+that shares most of its properties; the template's own properties are best declared too, since
+its behaviour reads them. The properties its template does not place are placed as Create
+places its blocks: an `axis` by the face clicked, a `facing` with up and down by the look, one
+of four by the player's facing (`own-states.json` in the root; game/own_states.rs). Its states
+turn and mirror among themselves by their `facing` or `axis`.
+
+A block that keeps items of its own declares the **machine** it is, `"machine": "depot" |
+"basin"` (Starling, `machines.json` in the root): its block entity is a tag the chunk saves (its
+id its block's), sent to the players near with a Starling-only block entity type, and its items
+drop when it breaks (game/machine_entities.rs). Hoppers put into a depot, a millstone or a
+basin and take from their outputs.
+
 A block can also be a **kinetic part** (Starling: rotation passed from block to block, as
 Create's; `horizon_client::kinetics`): `"kinetic": { "part": "shaft" | "cogwheel" |
-"large_cogwheel" | "gearbox" | "motor" | "crank" | "drill" | "crushing_wheel", "rpm": 16, "spins": true, "half":
+"large_cogwheel" | "gearbox" | "motor" | "crank" | "drill" | "crushing_wheel" | "millstone" |
+"press" | "mixer" | "fan" | "water_wheel" | "clutch" | "gearshift", "rpm": 16, "spins": true, "half":
 "<ns>:block/<model>", "extra": "<ns>:block/<model>" }`. Its axis or facing is its state's `axis`
 or `facing` (a shaft-like part with only a `facing`, a water wheel, is an axle along it). A part that turns whole (`spins`) declares `"render_shape": "ENTITYBLOCK_ANIMATED"`
 in its properties, so the terrain leaves it to the game, which draws it turning; `half` is a
@@ -270,7 +288,15 @@ look at the camera, as the terrain does. Where the game simulates the world (its
 remote one), a `drill` turned through its back breaks the block it faces and `crushing_wheel`s two
 apart turning towards each other crush the items that fall between them, by the content root's
 `create:crushing` (else `create:milling`) recipes; a hopper facing the gap fills it
-(`game/kinetic_machines.rs`, ported from Create's code, MIT). The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
+(`game/kinetic_machines.rs`, ported from Create's code, MIT). A `millstone` (a small cogwheel
+also joined from below) mills what falls on it or a hopper puts in; a `press` (an axle along its
+facing) presses a depot's item two blocks below, items lying under it, or compacts a basin's
+(`create:compacting`, and 2x2 and 3x3 crafting); a `mixer` (a small cogwheel) mixes a basin's
+two blocks below (`create:mixing`, shapeless crafting, fluids, heat); a `fan` blows or pulls
+items along its current and water, lava, fire and soul fire in it wash, blast, smoke and haunt
+them (game/processing.rs, basins.rs, fans.rs). A `water_wheel` is a source the water flowing past
+it turns, 8 RPM; a `clutch` breaks and a `gearshift` reverses its axle while powered. `head` and
+`pole` name the models a press or a mixer moves down as it works. The build gathers the parts in the root's `kinetic.json`. Templates also give mod blocks every behaviour Horizon already
 implements and the harnesses already check. Items work the same way (`"template":
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on).
 

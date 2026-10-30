@@ -55,18 +55,25 @@ pub struct StateModels {
 fn key(variant: &Variant) -> VariantKey {
     (variant.model.clone(), variant.rotations, variant.uv_lock)
 }
-/// The models the kinetic blocks of a content root turn besides their own (`half` and `extra`
-/// in its kinetic.json, which horizon-client's mod_content writes); none for vanilla's.
+/// The models the kinetic blocks of a content root turn or move besides their own (`half`,
+/// `extra`, `head`, `pole` and `models` in its kinetic.json, which horizon-client's mod_content
+/// writes); none for vanilla's.
 fn partial_models(root: &Path) -> BTreeSet<String> {
     let Ok(bytes) = fs::read(root.join("kinetic.json")) else {
         return BTreeSet::new();
     };
     let parts: BTreeMap<String, Value> = serde_json::from_slice(&bytes).unwrap_or_default();
-    parts
-        .values()
-        .flat_map(|part| ["half", "extra"].map(|k| part[k].as_str().map(str::to_owned)))
-        .flatten()
-        .collect()
+    let mut out = BTreeSet::new();
+    for part in parts.values() {
+        for k in ["half", "extra", "head", "pole"] {
+            out.extend(part[k].as_str().map(str::to_owned));
+        }
+        // A part's other models (a belt's).
+        for m in part["models"].as_array().into_iter().flatten() {
+            out.extend(m.as_str().map(str::to_owned));
+        }
+    }
+    out
 }
 impl StateModels {
     pub fn load(

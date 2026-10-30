@@ -124,6 +124,17 @@ pub struct Kinetic {
     /// north, its block up).
     #[serde(default)]
     pub extra_facing: Option<String>,
+    /// A model the machine moves down as it works, turned as the blockstate turns its own: a
+    /// press's head (Create's `mechanical_press/head`), a mixer's head, which also turns.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// A model moving down with `head` without turning: a mixer's pole.
+    #[serde(default)]
+    pub pole: Option<String>,
+    /// More models the game draws for its part, in the order the part names them (a belt's:
+    /// start, middle, end, their bottoms, its diagonals, its pulley).
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// The directions a kinetic model may be made pointing.
@@ -201,6 +212,22 @@ pub enum KineticPart {
     /// A small cogwheel about y joining nothing else; turned above a basin, it mixes what is in
     /// it (Create's mechanical mixer).
     Mixer,
+    /// Turned through its back, it blows (or pulls) air out of its front: the items in the air
+    /// are pushed, and washed, blasted, smoked or haunted by what the air passes (Create's
+    /// encased fan).
+    Fan,
+    /// An axle along its axis (or its facing's) that water flowing past its rim turns, 8 RPM
+    /// the way it flows (Create's water wheel).
+    WaterWheel,
+    /// An axle along its axis that a redstone signal (its state's `powered`) breaks (Create's
+    /// clutch).
+    Clutch,
+    /// An axle along its axis that a redstone signal turns the other way past it (Create's
+    /// gearshift).
+    Gearshift,
+    /// A mechanical belt's segment (Create's belt): its pulleys (at its ends) join the shafts at
+    /// their sides and turn together, and it carries items along.
+    Belt,
 }
 
 /// What a block with work of its own keeps and does (Starling: Create's machines,
@@ -213,6 +240,12 @@ pub enum Machine {
     Depot,
     /// Holds the items a press compacts or a mixer mixes, and their results (Create's basin).
     Basin,
+    /// A belt segment (Create's belt; with the kinetic part `belt`): the belt's items are its
+    /// start's.
+    Belt,
+    /// Burns fuel and heats the basin above it, its state's `blaze` saying how much (Create's
+    /// blaze burner).
+    Burner,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +260,8 @@ struct BlockFile {
     kinetic: Option<Kinetic>,
     #[serde(default)]
     machine: Option<Machine>,
+    #[serde(default)]
+    states: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 fn yes() -> bool {
     true
@@ -247,7 +282,15 @@ pub struct Block {
     pub kinetic: Option<Kinetic>,
     /// The machine it is, if it keeps items of its own.
     pub machine: Option<Machine>,
+    /// Starling: properties of its own, when no vanilla block has its (Create's belt, funnels,
+    /// saw): each property's values, in its states' order, the first the default's. Its states
+    /// take the template's behaviour and facts, each from the template's state sharing most of
+    /// its properties.
+    pub states: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
+
+/// The most states a block may declare of its own.
+pub const MAX_OWN_STATES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -592,6 +635,7 @@ impl Content {
                 item: file.item,
                 kinetic: file.kinetic,
                 machine: file.machine,
+                states: file.states,
             });
         }
         for (item, name) in items {
@@ -626,6 +670,34 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             "template {:?} is not a vanilla block (minecraft:...)",
             file.template
         ));
+    }
+    if let Some(states) = &file.states {
+        let plain = |s: &str| {
+            (1..=32).contains(&s.len())
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        };
+        let mut count = 1usize;
+        for (name, values) in states {
+            if !plain(name) {
+                return Err(format!("state property {name:?} is not [a-z0-9_]{{1,32}}"));
+            }
+            if values.is_empty() || values.iter().any(|v| !plain(v)) {
+                return Err(format!(
+                    "state property {name}: its values are one or more of [a-z0-9_]{{1,32}}"
+                ));
+            }
+            let unique: BTreeSet<&String> = values.iter().collect();
+            if unique.len() != values.len() {
+                return Err(format!("state property {name} lists a value twice"));
+            }
+            count = count.saturating_mul(values.len());
+        }
+        if states.is_empty() || states.len() > 16 || count > MAX_OWN_STATES {
+            return Err(format!(
+                "states: 1 to 16 properties, at most {MAX_OWN_STATES} states in all"
+            ));
+        }
     }
     let p = &file.properties;
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
@@ -678,8 +750,10 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
                     .is_some_and(|(ns, p)| !ns.is_empty() && !p.is_empty())
             })
         };
-        if !model(&k.half) || !model(&k.extra) {
-            return Err("kinetic half and extra name models as <namespace>:<path>".into());
+        if !model(&k.half) || !model(&k.extra) || !model(&k.head) || !model(&k.pole) {
+            return Err(
+                "kinetic half, extra, head and pole name models as <namespace>:<path>".into(),
+            );
         }
         if k.extra_facing
             .as_deref()
@@ -780,6 +854,7 @@ capabilities = ["registries"]
                 item: true,
                 kinetic: None,
                 machine: None,
+                states: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
