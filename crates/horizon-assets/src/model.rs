@@ -135,7 +135,14 @@ impl CuboidModel {
     /// Like the native stream entry point, this reads one value and leaves
     /// trailing input unread. The pinned native entry point uses strict JSON.
     pub fn from_json(json: &str) -> Result<Self> {
-        let raw = serde_json::Deserializer::from_str(json.strip_prefix('\u{feff}').unwrap_or(json))
+        let json = json.strip_prefix('\u{feff}').unwrap_or(json);
+        // NeoForge's composite models (mods' blocks): one model of their children's elements.
+        if json.contains("composite")
+            && let Some(flat) = flatten_composite(json)
+        {
+            return Self::from_json(&flat);
+        }
+        let raw = serde_json::Deserializer::from_str(json)
             .into_iter::<&RawValue>()
             .next()
             .ok_or_else(|| error("empty model input"))??;
@@ -195,6 +202,71 @@ impl CuboidModel {
         })
     }
 }
+/// A `neoforge:composite` (or `forge:composite`) model as one plain model: its own elements, then
+/// each child's, the children's texture slots renamed `<child>_<slot>` so two children's `#0`
+/// stay apart (a slot a child does not set is the composite's). Only children written out in
+/// place; a child naming a parent model leaves the model as it is (None).
+fn flatten_composite(json: &str) -> Option<String> {
+    use serde_json::Value;
+    let mut model: serde_json::Map<String, Value> = serde_json::from_str(json).ok()?;
+    let loader = model.get("loader")?.as_str()?;
+    if !loader.ends_with(":composite") {
+        return None;
+    }
+    let children = model.remove("children")?;
+    model.remove("loader");
+    let mut elements = match model.remove("elements") {
+        Some(Value::Array(own)) => own,
+        _ => Vec::new(),
+    };
+    let mut textures = match model.remove("textures") {
+        Some(Value::Object(own)) => own,
+        _ => serde_json::Map::new(),
+    };
+    for (name, child) in children.as_object()? {
+        let child = child.as_object()?;
+        if child.contains_key("parent") {
+            return None;
+        }
+        let own = child.get("textures").and_then(Value::as_object);
+        let renamed = |slot: &str| match own {
+            Some(own) if own.contains_key(slot) => format!("{name}_{slot}"),
+            _ => slot.to_owned(),
+        };
+        for (slot, value) in own.into_iter().flatten() {
+            let value = match value.as_str().and_then(|v| v.strip_prefix('#')) {
+                Some(target) => Value::String(format!("#{}", renamed(target))),
+                None => value.clone(),
+            };
+            textures.insert(renamed(slot), value);
+        }
+        for element in child
+            .get("elements")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let mut element = element.clone();
+            if let Some(faces) = element.get_mut("faces").and_then(Value::as_object_mut) {
+                for face in faces.values_mut() {
+                    let target = face
+                        .get("texture")
+                        .and_then(Value::as_str)
+                        .and_then(|t| t.strip_prefix('#'))
+                        .map(renamed);
+                    if let (Some(target), Some(face)) = (target, face.as_object_mut()) {
+                        face.insert("texture".into(), Value::String(format!("#{target}")));
+                    }
+                }
+            }
+            elements.push(element);
+        }
+    }
+    model.insert("textures".into(), Value::Object(textures));
+    model.insert("elements".into(), Value::Array(elements));
+    serde_json::to_string(&model).ok()
+}
+
 fn nullable<T>(raw: &RawValue, decode: impl FnOnce(&RawValue) -> Result<T>) -> Result<Option<T>> {
     if raw.get() == "null" {
         Ok(None)
@@ -390,5 +462,36 @@ impl ItemTransforms {
             }
         }
         Ok(Self { contexts })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_composite_model_is_its_childrens_elements_with_their_own_textures() {
+        let json = r##"{"loader":"neoforge:composite","parent":"block/block",
+            "textures":{"particle":"create:block/casing"},
+            "children":{
+                "base":{"textures":{"0":"create:block/base"},
+                    "elements":[{"from":[0,0,0],"to":[16,4,16],"faces":{"up":{"texture":"#0"}}}]},
+                "bulb":{"textures":{"0":"create:block/bulb","1":"#0"},
+                    "elements":[{"from":[6,4,6],"to":[10,8,10],
+                        "faces":{"up":{"texture":"#1"},"down":{"texture":"#particle"}}}]}}}"##;
+        let model = CuboidModel::from_json(json).unwrap();
+        assert_eq!(model.parent.as_deref(), Some("minecraft:block/block"));
+        let elements: Vec<Element> = model.elements.unwrap().into_iter().flatten().collect();
+        let face = |e: &Element, d: Direction| e.faces[&d].as_ref().unwrap().texture.clone();
+        // Each child's #0 its own; a slot a child does not set is the composite's.
+        assert_eq!(face(&elements[0], Direction::Up), "#base_0");
+        assert_eq!(face(&elements[1], Direction::Up), "#bulb_1");
+        assert_eq!(face(&elements[1], Direction::Down), "#particle");
+        assert!(matches!(&model.textures["bulb_1"], TextureSlot::Reference(t) if t == "bulb_0"));
+        assert!(model.textures.contains_key("base_0") && model.textures.contains_key("particle"));
+        // A child naming its parent model is left as it is.
+        let parented =
+            r#"{"loader":"neoforge:composite","children":{"a":{"parent":"block/stone"}}}"#;
+        assert!(flatten_composite(parented).is_none());
     }
 }
