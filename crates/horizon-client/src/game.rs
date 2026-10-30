@@ -9275,7 +9275,8 @@ impl Game<'_> {
         // game again with it; a new world takes the set running now.
         if create.is_none() {
             match world_content::entry(folder) {
-                world_content::Entry::Open => {}
+                // The next start the player makes loads this set: no restart to come back.
+                world_content::Entry::Open => world_content::remember_running(),
                 world_content::Entry::Restart(set) => {
                     log::info!(
                         "Horizon: {folder} plays with mods {set:?}, not the {:?} running: starting again",
@@ -9306,6 +9307,7 @@ impl Game<'_> {
             }
         } else {
             self.content_record = Some(folder.to_owned());
+            world_content::remember_running();
         }
         world_loading::world_data_used();
         if self.defer_world_entry(PendingWorldEntry::Local {

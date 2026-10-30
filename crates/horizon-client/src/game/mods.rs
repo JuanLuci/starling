@@ -381,7 +381,7 @@ impl ItemCatalog for Catalog {
 /// Mods that add blocks or items are tied to the world (world_content.rs): with
 /// `registries`, those are the ones loaded, whatever `enabled` says (a restart
 /// into a world brings its set; a pack reload keeps the start's, since the
-/// registries can't change). The ones loaded are what worlds compare theirs
+/// registries can't change). Without, the last world's set (`last_start`). The ones loaded are what worlds compare theirs
 /// with. `on_build` hears the mods' names before their root is built (none when
 /// it is reused).
 pub(super) fn content_root(
@@ -400,18 +400,33 @@ pub(super) fn content_root(
     let mut mods: Vec<ContentMod> = Vec::new();
     let mut enabled_tied = std::collections::BTreeSet::new();
     let mut installed_tied = std::collections::BTreeSet::new();
-    for path in &paths {
-        let Ok(package) = Package::read(path) else {
-            continue;
-        };
+    let packages: Vec<_> = paths
+        .iter()
+        .filter_map(|path| Some((path, Package::read(path).ok()?)))
+        .collect();
+    for (path, package) in &packages {
+        let m = &package.manifest;
+        if m.capabilities.contains(&Capability::Registries) {
+            installed_tied.insert(m.id.clone());
+            if enabled.contains(&m.id) || dev.contains(path) {
+                enabled_tied.insert(m.id.clone());
+            }
+        }
+    }
+    // A start the player made (no restart asked for a set): the last world's mods, so opening it
+    // again needs no restart, while Options > Mods turns on what it did then.
+    let last = match registries {
+        Some(_) => None,
+        None => super::world_content::last_start(&enabled_tied),
+    };
+    if let Some(last) = &last {
+        log::info!("Horizon: starting with the last world's mods {last:?}");
+    }
+    let registries = registries.or(last.as_ref());
+    for (path, package) in &packages {
+        let path = *path;
         let m = &package.manifest;
         let tied = m.capabilities.contains(&Capability::Registries);
-        if tied {
-            installed_tied.insert(m.id.clone());
-        }
-        if tied && (enabled.contains(&m.id) || dev.contains(path)) {
-            enabled_tied.insert(m.id.clone());
-        }
         let on = match registries {
             Some(set) if tied => set.contains(&m.id),
             _ => enabled.contains(&m.id),

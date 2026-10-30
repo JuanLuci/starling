@@ -12,6 +12,9 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 const WORLD_FILE: &str = "horizon-content.json";
 /// In the private home: the world the next start enters, and its content mods.
 const NEXT_FILE: &str = "next-start.json";
+/// In the private home: the content mods the last world opened with, and those Options > Mods
+/// turned on then.
+const LAST_FILE: &str = "last-content.json";
 
 /// What a restart asked of this start.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,6 +194,31 @@ fn decide(
     }
 }
 
+/// Keeps the set running now (a world opened with it) for the next start the player makes:
+/// opening that world again then needs no restart, which on a phone shows as the game closing
+/// and opening again.
+pub(super) fn remember_running() {
+    let body = serde_json::json!({ "mods": running(), "enabled": enabled() });
+    let path = horizon_client::logging::private_home().join(LAST_FILE);
+    if let Err(e) = std::fs::write(&path, body.to_string()) {
+        log::warn!("Horizon: the last world's mods were not kept: {e}");
+    }
+}
+
+/// The set a start the player made (no restart asked for one) loads: the last world's, while
+/// Options > Mods turns on the same mods as then (`enabled_now`); none once that changed, so the
+/// mods turned on there are the ones a world made next takes.
+pub(super) fn last_start(enabled_now: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+    let text =
+        std::fs::read_to_string(horizon_client::logging::private_home().join(LAST_FILE)).ok()?;
+    last_from(&text, enabled_now)
+}
+
+fn last_from(text: &str, enabled_now: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    (ids(&value["enabled"]) == *enabled_now).then(|| ids(&value["mods"]))
+}
+
 /// Writes the next start's request: world `folder` with `content`.
 pub(super) fn request_restart(folder: &str, content: &BTreeSet<String>) -> std::io::Result<()> {
     let body = serde_json::json!({ "world": folder, "content": content });
@@ -290,6 +318,16 @@ mod tests {
         assert!(!kept);
         decide("w", set(&[]), &set(&[]), None, None, || kept = true);
         assert!(kept);
+    }
+
+    #[test]
+    fn a_start_takes_the_last_worlds_mods_while_options_turn_on_the_same() {
+        let (create, none) = (set(&["create"]), set(&[]));
+        let kept = serde_json::json!({ "mods": ["create"], "enabled": [] }).to_string();
+        assert_eq!(last_from(&kept, &none), Some(create.clone()));
+        // Options > Mods changed since: its mods, for the worlds made next.
+        assert_eq!(last_from(&kept, &create), None);
+        assert_eq!(last_from("not json", &none), None);
     }
 
     #[test]
