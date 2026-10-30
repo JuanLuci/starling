@@ -45,8 +45,13 @@
 //!
 //! `starling-mod blocks <content mod> --resources <dir> --out <dir>` draws a content mod's blocks
 //! on contact sheets and says what the game would draw wrong (blocks.rs).
+//!
+//! `starling-mod pack-port <carried folder> --jar <jar> --modrinth <slug> --version <version>
+//! --out <file.hmod>` makes a ported Java mod's `.hmod` to share, its authors' assets left out
+//! for the game to fetch from Modrinth (port.rs).
 mod blocks;
 mod creative;
+mod port;
 mod recipes;
 mod render;
 mod window;
@@ -67,7 +72,9 @@ use std::{
 
 const USAGE: &str = "usage: starling-mod run <mod folder or .hmod> [--scenario <file.json>] \
     [--step <json>]... [--storage <dir>] [--resources <dir>] [--png <dir>] [--watch]\n       \
-    starling-mod blocks <content mod> --resources <dir> --out <dir> [--only <text>] [--tile <px>]";
+    starling-mod blocks <content mod> --resources <dir> --out <dir> [--only <text>] [--tile <px>]\n       \
+    starling-mod pack-port <carried folder> --jar <jar> --modrinth <slug> --version <version> \
+    --out <file.hmod> [--take assets/<ns>/]...";
 
 fn main() -> ExitCode {
     log::set_logger(&JSON_LOG).expect("the only logger");
@@ -76,6 +83,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("blocks") => blocks::blocks(&args[1..]),
+        Some("pack-port") => port::pack_port(&args[1..]),
         _ => Err(USAGE.into()),
     };
     // The JavaScript engine ran on quick code: its full code is kept for the next run.

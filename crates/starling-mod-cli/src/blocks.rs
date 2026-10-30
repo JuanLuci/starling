@@ -416,6 +416,8 @@ impl Spin {
                     .collect();
                 (axis, ends)
             }
+            KineticPart::Millstone => (1, vec![unit(1, -1)]),
+            KineticPart::Mixer => (1, Vec::new()),
             _ => {
                 let axis = by_name.or_else(|| facing.map(axis_of))?;
                 (axis, vec![unit(axis, 1), unit(axis, -1)])

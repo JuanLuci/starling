@@ -192,6 +192,27 @@ pub enum KineticPart {
     /// A shaft along its axis; two a block apart turning opposite ways crush the items that
     /// fall between them (Create's crushing wheels and their crushing and milling recipes).
     CrushingWheel,
+    /// A small cogwheel about y that also joins the block below; turned, it mills what is put
+    /// in it (Create's millstone and its milling recipes).
+    Millstone,
+    /// An axle along its facing's axis; turned, it presses what is below it (Create's
+    /// mechanical press: an item on a depot or on the ground, a basin's items compacted).
+    Press,
+    /// A small cogwheel about y joining nothing else; turned above a basin, it mixes what is in
+    /// it (Create's mechanical mixer).
+    Mixer,
+}
+
+/// What a block with work of its own keeps and does (Starling: Create's machines,
+/// `game/kinetic_machines.rs`), besides any kinetic part: its items live in a block entity the
+/// world saves (its id the block's), and nearby players see them.
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Machine {
+    /// Holds a stack on top for a press or a fan to work on (Create's depot).
+    Depot,
+    /// Holds the items a press compacts or a mixer mixes, and their results (Create's basin).
+    Basin,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +225,8 @@ struct BlockFile {
     item: bool,
     #[serde(default)]
     kinetic: Option<Kinetic>,
+    #[serde(default)]
+    machine: Option<Machine>,
 }
 fn yes() -> bool {
     true
@@ -222,6 +245,8 @@ pub struct Block {
     pub item: bool,
     /// Its part in a kinetic network, if any.
     pub kinetic: Option<Kinetic>,
+    /// The machine it is, if it keeps items of its own.
+    pub machine: Option<Machine>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -262,6 +287,9 @@ enum Source {
 #[derive(Debug)]
 pub struct Content {
     source: Source,
+    /// Its fetched assets (Starling, [`crate::fetch`]): their folder, and the files there the
+    /// mod has none of its own for.
+    fetched: Option<(PathBuf, BTreeSet<String>)>,
     /// Every content file (`assets/...`, `data/...`), sorted.
     pub files: Vec<String>,
     pub blocks: Vec<Block>,
@@ -271,7 +299,11 @@ pub struct Content {
 }
 
 /// Reads a mod's content files ([`Content::reader`]).
-pub enum FileReader<'a> {
+pub struct FileReader<'a> {
+    own: OwnFiles<'a>,
+    fetched: Option<(&'a Path, &'a BTreeSet<String>)>,
+}
+enum OwnFiles<'a> {
     Dir(&'a Path),
     Zip(Box<zip::ZipArchive<std::fs::File>>),
 }
@@ -279,11 +311,19 @@ impl FileReader<'_> {
     /// One content file's bytes.
     pub fn read(&mut self, name: &str) -> Result<Vec<u8>, String> {
         check_path(name)?;
-        let reader: Box<dyn Read + '_> = match self {
-            Self::Dir(root) => {
-                Box::new(std::fs::File::open(root.join(name)).map_err(|e| format!("{name}: {e}"))?)
+        let fetched = self
+            .fetched
+            .filter(|(_, names)| names.contains(name))
+            .map(|(dir, _)| dir);
+        let open = |root: &Path| std::fs::File::open(root.join(name));
+        let reader: Box<dyn Read + '_> = match (&mut self.own, fetched) {
+            (_, Some(root)) => Box::new(open(root).map_err(|e| format!("{name}: {e}"))?),
+            (OwnFiles::Dir(root), None) => {
+                Box::new(open(root).map_err(|e| format!("{name}: {e}"))?)
             }
-            Self::Zip(zip) => Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?),
+            (OwnFiles::Zip(zip), None) => {
+                Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?)
+            }
         };
         let mut out = Vec::new();
         reader
@@ -295,6 +335,66 @@ impl FileReader<'_> {
         }
         Ok(out)
     }
+}
+
+fn reader<'a>(
+    source: &'a Source,
+    fetched: &'a Option<(PathBuf, BTreeSet<String>)>,
+) -> Result<FileReader<'a>, String> {
+    Ok(FileReader {
+        own: match source {
+            Source::Dir(root) => OwnFiles::Dir(root),
+            Source::Zip(path) => OwnFiles::Zip(Box::new(open_zip(path)?)),
+        },
+        fetched: fetched.as_ref().map(|(dir, names)| (dir.as_path(), names)),
+    })
+}
+
+/// JSON text without the comments Gson's lenient reader skips: `//` and
+/// `#` to the end of the line, and `/* ... */`, outside strings.
+pub fn without_comments(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let mut string = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if string {
+            out.push(b);
+            if b == b'\\' {
+                out.extend(bytes.get(i + 1));
+                i += 1;
+            } else if b == b'"' {
+                string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match (b, bytes.get(i + 1)) {
+            (b'"', _) => {
+                string = true;
+                out.push(b);
+                i += 1;
+            }
+            (b'/', Some(b'/')) | (b'#', _) => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            (b'/', Some(b'*')) => {
+                i += 2;
+                while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                    i += 1;
+                }
+                i += 2;
+                out.push(b' ');
+            }
+            _ => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Why two content mods cannot be on together: a namespace both own (one's
@@ -311,7 +411,17 @@ pub fn clash(a: (&str, &[String]), b: (&str, &[String])) -> Option<String> {
 impl Content {
     /// The content of the mod at `path` (a `.hmod` or a mod folder).
     pub fn read(path: &Path, manifest: &Manifest) -> Result<Content, String> {
-        let (source, sized) = if path.is_dir() {
+        Self::read_with(path, manifest, None)
+    }
+
+    /// [`Content::read`], with the assets its manifest fetches when they are unpacked in
+    /// `fetched` ([`crate::fetch::dir`]): a file the mod has of its own is its own.
+    pub fn read_with(
+        path: &Path,
+        manifest: &Manifest,
+        fetched: Option<&Path>,
+    ) -> Result<Content, String> {
+        let (source, mut sized) = if path.is_dir() {
             let mut out = Vec::new();
             for top in ["assets", "data"] {
                 walk(path, &path.join(top), &mut out)?;
@@ -328,6 +438,22 @@ impl Content {
                 }
             }
             (Source::Zip(path.to_owned()), out)
+        };
+        let fetch = manifest.assets.as_ref().map(|a| &a.fetch);
+        let fetched = match (fetched, fetch) {
+            (Some(dir), Some(fetch)) if crate::fetch::ready(dir, fetch) => {
+                let own: BTreeSet<&str> = sized.iter().map(|(n, _)| n.as_str()).collect();
+                let mut found = Vec::new();
+                walk(dir, &dir.join("assets"), &mut found)?;
+                // Only the folders it takes, whatever else is there.
+                found.retain(|(n, _)| {
+                    !own.contains(n.as_str()) && fetch.take.iter().any(|t| n.starts_with(t))
+                });
+                let names = found.iter().map(|(n, _)| n.clone()).collect();
+                sized.extend(found);
+                Some((dir.to_owned(), names))
+            }
+            _ => None,
         };
         let mut files = Vec::with_capacity(sized.len());
         let mut total = 0u64;
@@ -349,6 +475,7 @@ impl Content {
         files.dedup();
         let mut content = Content {
             source,
+            fetched,
             files,
             blocks: Vec::new(),
             items: Vec::new(),
@@ -365,6 +492,11 @@ impl Content {
         }
     }
 
+    /// The folder its fetched assets are read from, when they are.
+    pub fn fetched(&self) -> Option<&Path> {
+        self.fetched.as_ref().map(|(dir, _)| dir.as_path())
+    }
+
     /// No files: a mod with code only.
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
@@ -378,10 +510,7 @@ impl Content {
     /// A reader of its content files. A packaged mod's archive is opened
     /// once for all of them (opening it reads its whole index).
     pub fn reader(&self) -> Result<FileReader<'_>, String> {
-        Ok(match &self.source {
-            Source::Dir(root) => FileReader::Dir(root),
-            Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
-        })
+        reader(&self.source, &self.fetched)
     }
 
     /// Where content may go, and the declarations.
@@ -448,10 +577,7 @@ impl Content {
         // One reader for every declaration: a packaged mod's archive opened per file read its
         // whole index each time (Create's 900 declarations in 10,000 files: half a minute on a
         // phone, at every start).
-        let mut reader = match &self.source {
-            Source::Dir(root) => FileReader::Dir(root),
-            Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
-        };
+        let mut reader = reader(&self.source, &self.fetched)?;
         for (block, name) in blocks {
             let file: BlockFile =
                 serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
@@ -465,6 +591,7 @@ impl Content {
                 properties: file.properties,
                 item: file.item,
                 kinetic: file.kinetic,
+                machine: file.machine,
             });
         }
         for (item, name) in items {
@@ -652,6 +779,7 @@ capabilities = ["registries"]
                 },
                 item: true,
                 kinetic: None,
+                machine: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");

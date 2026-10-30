@@ -373,6 +373,35 @@ impl ItemCatalog for Catalog {
     }
 }
 
+/// What [`content_root`] tells a loading screen while it works.
+pub(super) enum ContentNote<'a> {
+    /// A mod's assets coming from Modrinth: its name, and the bytes so far and in all.
+    Fetching {
+        name: &'a str,
+        done: u64,
+        total: u64,
+    },
+    /// The mods' root being built: their ids.
+    Building(&'a str),
+}
+
+impl ContentNote<'_> {
+    /// The loading screen's line for it.
+    pub(super) fn text(&self) -> String {
+        let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
+        match self {
+            ContentNote::Fetching { name, done, total } => format!(
+                "Downloading {name}'s textures and models from Modrinth: {:.1} of {:.1} MB",
+                mb(*done),
+                mb(*total)
+            ),
+            ContentNote::Building(names) => {
+                format!("Preparing mods: {names} (the first time takes a minute)")
+            }
+        }
+    }
+}
+
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left
@@ -382,14 +411,14 @@ impl ItemCatalog for Catalog {
 /// `registries`, those are the ones loaded, whatever `enabled` says (a restart
 /// into a world brings its set; a pack reload keeps the start's, since the
 /// registries can't change). Without, the last world's set (`last_start`). The ones loaded are what worlds compare theirs
-/// with. `on_build` hears the mods' names before their root is built (none when
-/// it is reused).
+/// with. `on_note` hears a mod's assets coming from Modrinth (mod_assets.rs) the first time it is
+/// on, and the mods' names before their root is built (none when it is reused).
 pub(super) fn content_root(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,
     dev: &[std::path::PathBuf],
     registries: Option<&std::collections::BTreeSet<String>>,
-    on_build: &mut dyn FnMut(&str),
+    on_note: &mut dyn FnMut(ContentNote),
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Content, Package};
@@ -434,8 +463,32 @@ pub(super) fn content_root(
         if !on || mods.iter().any(|c| c.id == m.id) {
             continue;
         }
+        // Its assets from Modrinth, the first time it is on.
+        let cache = horizon_client::logging::cache_dir();
+        let fetched = m
+            .assets
+            .as_ref()
+            .map(|a| horizon_mods::fetch::dir(&cache, &a.fetch));
+        if let (Some(dir), Some(a)) = (&fetched, &m.assets)
+            && !horizon_mods::fetch::ready(dir, &a.fetch)
+        {
+            log::info!(
+                "Horizon: fetching {}'s assets: {} from Modrinth ({} bytes)",
+                m.id,
+                a.fetch.file,
+                a.fetch.size
+            );
+            let name = m.name.as_str();
+            let got = super::mod_assets::get(m, dir, &mut |done, total| {
+                on_note(ContentNote::Fetching { name, done, total })
+            });
+            match got {
+                Ok(n) => log::info!("Horizon: {} assets of {} unpacked", n, m.id),
+                Err(e) => log::warn!("Horizon: {}'s assets not fetched: {e}", m.id),
+            }
+        }
         // A mod without registries brings its own GUI sprites at most (its buttons' icons).
-        let content = Content::read(path, m).and_then(|content| {
+        let content = Content::read_with(path, m, fetched.as_deref()).and_then(|content| {
             // The first of two mods owning one namespace stays on.
             let own = (m.id.as_str(), content.namespaces.as_slice());
             match mods
@@ -472,7 +525,7 @@ pub(super) fn content_root(
         root,
         &mods,
         &horizon_client::logging::cache_dir(),
-        &mut || on_build(&names),
+        &mut || on_note(ContentNote::Building(&names)),
     );
     match built {
         Ok(out) => {
@@ -736,10 +789,25 @@ impl Game<'_> {
                 } else {
                     format!("May {}.", may.join(", "))
                 };
+                // Assets from Modrinth: where from, and why they are not here if they are not.
+                let fetched = m.assets.as_ref().map_or_else(String::new, |a| {
+                    format!(
+                        " Its textures, models and sounds come from Modrinth ({}, {:.1} MB), \
+                         downloaded the first time it is on.",
+                        a.fetch.file,
+                        a.fetch.size as f64 / 1_000_000.0
+                    )
+                });
+                let problem = problem.or_else(|| {
+                    super::mod_assets::failed(&m.id)
+                        .map(|e| format!("Its assets could not be downloaded: {e}"))
+                });
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
-                    description: format!("{may} {}", m.description).trim().to_owned(),
+                    description: format!("{may}{fetched} {}", m.description)
+                        .trim()
+                        .to_owned(),
                     summary: m.description.clone(),
                     config: self.mods.mods.config_screen(&m.id),
                     problem,

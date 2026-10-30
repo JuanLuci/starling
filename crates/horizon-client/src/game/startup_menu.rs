@@ -246,16 +246,17 @@ pub(super) fn spawn_loader(
             // A content build takes a while (about 40 s on a phone for Create): the menu bundle
             // goes first, so the loading screen can say what it waits for.
             let registries = super::world_content::next_start().map(|next| &next.content);
+            let mut menu_sent = false;
             let root = mods::content_root(
                 &root,
                 &settings.mods.enabled,
                 &dev_mods,
                 registries,
-                &mut |names| {
-                    progress.note(Some(format!(
-                        "Preparing mods: {names} (the first time takes a minute)"
-                    )));
-                    if let Ok(ui) = UiResources::load(&root, &vanilla_root) {
+                &mut |note| {
+                    progress.note(Some(note.text()));
+                    if !std::mem::replace(&mut menu_sent, true)
+                        && let Ok(ui) = UiResources::load(&root, &vanilla_root)
+                    {
                         let _ = sender.send(LoaderMsg::Ui(ui, root.clone()));
                     }
                 },

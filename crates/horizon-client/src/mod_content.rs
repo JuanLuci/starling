@@ -1547,6 +1547,15 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     if !kinetic.is_empty() {
         overlay.write(KINETIC, &serde_json::to_vec(&kinetic)?)?;
     }
+    // The machines keeping items of their own, by block id (game/kinetic_machines.rs).
+    let machines: BTreeMap<&str, horizon_mods::content::Machine> = mods
+        .iter()
+        .flat_map(|m| &m.content.blocks)
+        .filter_map(|b| Some((b.id.as_str(), b.machine?)))
+        .collect();
+    if !machines.is_empty() {
+        overlay.write(MACHINES, &serde_json::to_vec(&machines)?)?;
+    }
     let mut namespaces: Vec<&str> = mods
         .iter()
         .flat_map(|m| m.content.namespaces.iter().map(String::as_str))
@@ -1641,6 +1650,8 @@ fn prune_sets(sets: &Path, keep: &Path) {
 const WARNINGS: &str = "horizon-mod-content-warnings.txt";
 /// In a root built by [`build`] with kinetic blocks: their parts, by block id (kinetics.rs).
 pub const KINETIC: &str = "kinetic.json";
+/// In a root built by [`build`] with machines: what each is, by block id (kinetics.rs).
+pub const MACHINES: &str = "machines.json";
 
 /// In a root built by [`resource_root`]: what it was built from.
 const STAMP: &str = "horizon-mod-content.stamp";
@@ -1691,6 +1702,10 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
             }
         } else {
             parts.push(meta(source)?);
+        }
+        // Its assets fetched from Modrinth: there or not, and unpacked again.
+        if let Some(fetched) = m.content.fetched() {
+            parts.push(meta(fetched)?);
         }
     }
     let mut hasher = Sha256::new();

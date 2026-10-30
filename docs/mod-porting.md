@@ -221,6 +221,20 @@ model only the mod's code builds: Create's copycats) and `fighting-faces` (two t
 place: they flicker). Look at the pages before taking a block to the phone. Light and the blocks
 around are the world's: the PC client (`horizon-ctl`) shows those.
 
+### A port to share: `starling-mod pack-port`
+
+```
+starling-mod pack-port <carried folder> --jar <the mod's jar> --modrinth <slug> \
+    --version <Modrinth version> --out <file.hmod> [--take assets/<namespace>/]...
+```
+
+For a mod whose code may be shared and whose assets may not (Create: MIT code, All Rights
+Reserved assets). Writes the `.hmod` without the taken folders (`assets/<id>/` by default) and
+with an `[assets.fetch]` naming the jar by its SHA-512, so the game downloads it from Modrinth on
+the player's device (docs/modpacks.md, Licences). It unpacks the jar as the game will and stops
+when a carried file under those folders would not come back the same: a file changed by hand
+belongs outside them, in a namespace of the port's own. The jar must be the one on Modrinth.
+
 In the game: `--dev-mod <folder or .hmod>` on the PC client reloads the mod when it changes;
 `horizon-ctl` drives the game (`touch tap X Y` puts a finger on it, `screenshot`, `state`). On a
 phone, `cargo horizon-mod push` (Rust) or an `adb push` of the `.hmod` into

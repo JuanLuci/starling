@@ -3712,6 +3712,7 @@ dependencies = [
  "log",
  "png",
  "serde_json",
+ "sha2",
  "zip",
 ]
 

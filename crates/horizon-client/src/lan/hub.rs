@@ -1569,10 +1569,10 @@ impl Hub {
                 // A decorated pot is no block entity: its tag is the chunk's saved one.
                 let tag = match world.block_entities.get(&(x, y, z)) {
                     Some(entity) => super::chunks::entity_tag(entity),
-                    None => world
-                        .chunks
-                        .get(&(x >> 4, z >> 4))
-                        .and_then(|c| super::chunks::pot_tag(c, (x, y, z))),
+                    None => world.chunks.get(&(x >> 4, z >> 4)).and_then(|c| {
+                        super::chunks::pot_tag(c, (x, y, z))
+                            .or_else(|| super::chunks::machine_tag(c, (x, y, z)))
+                    }),
                 };
                 let Some(tag) = tag else {
                     continue;

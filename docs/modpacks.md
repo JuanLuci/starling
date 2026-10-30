@@ -154,6 +154,29 @@ derivative work. These rules are part of the pipeline, not advice to users:
    copyright and licence notice kept beside what came from it (`licenses/`). Create's code is
    MIT (its assets are All Rights Reserved and stay out). Mods under any other licence keep
    rule 4 as written.
+
+   A port whose code may be shared but whose assets may not ships without them, and the game
+   fetches them on the player's device from the mod's own file on Modrinth (Starling,
+   `horizon_mods::fetch`), as `prepare` gets Minecraft's from Mojang. The manifest names the
+   file by its SHA-512 and the folders the game takes from it:
+
+   ```toml
+   [assets.fetch]
+   modrinth = "create"
+   version = "6.0.10+mc1.21.1"
+   file = "create-1.21.1-6.0.10.jar"
+   size = 19123767
+   sha512 = "11cc8fc0…"
+   take = ["assets/create/"]
+   ```
+
+   The first start with the mod on asks Modrinth for the file with that hash, downloads it from
+   Modrinth's CDN, checks it and unpacks the folders as `carry` does (the same skipped paths, the
+   `items/` definitions) into `cache/mod-assets/`; the mod's content reads them as its own, its
+   own files winning. The jar's code never runs and the jar is deleted. Without them (no network)
+   the mod loads untextured and its row on the Mods page says why. `starling-mod pack-port`
+   makes such a `.hmod` from a carried folder and the jar, and refuses when a carried file under
+   the taken folders would not come back the same from the jar.
 5. **Contacting authors or publishing any port is Ludovic's call.** Agents ask first.
 
 This is engineering policy, not legal advice. Before anything is published, Ludovic decides,

@@ -617,13 +617,15 @@ fn unreadable(name: &str, bytes: &mut Vec<u8>) -> Option<String> {
         Ok(v) => v,
         // Minecraft reads data files with Gson's lenient reader, which skips
         // comments: YUNG's pools have them. The carry is plain JSON.
-        Err(e) => match serde_json::from_slice::<Value>(&without_comments(bytes)) {
-            Ok(v) => {
-                *bytes = serde_json::to_vec_pretty(&v).expect("a parsed value serializes");
-                v
+        Err(e) => {
+            match serde_json::from_slice::<Value>(&horizon_mods::content::without_comments(bytes)) {
+                Ok(v) => {
+                    *bytes = serde_json::to_vec_pretty(&v).expect("a parsed value serializes");
+                    v
+                }
+                Err(_) => return Some(format!("does not parse as JSON: {e}")),
             }
-            Err(_) => return Some(format!("does not parse as JSON: {e}")),
-        },
+        }
     };
     // A vanilla or convention tag that replaces is kept: the game honours it
     // as a data pack's, with a warning (docs/mods.md). A tag of the mod's own
@@ -636,53 +638,6 @@ fn unreadable(name: &str, bytes: &mut Vec<u8>) -> Option<String> {
         *bytes = serde_json::to_vec_pretty(&value).expect("a parsed value serializes");
     }
     None
-}
-
-/// JSON text without the comments Gson's lenient reader skips: `//` and
-/// `#` to the end of the line, and `/* ... */`, outside strings.
-fn without_comments(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    let mut string = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if string {
-            out.push(b);
-            if b == b'\\' {
-                out.extend(bytes.get(i + 1));
-                i += 1;
-            } else if b == b'"' {
-                string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match (b, bytes.get(i + 1)) {
-            (b'"', _) => {
-                string = true;
-                out.push(b);
-                i += 1;
-            }
-            (b'/', Some(b'/')) | (b'#', _) => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            (b'/', Some(b'*')) => {
-                i += 2;
-                while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
-                    i += 1;
-                }
-                i += 2;
-                out.push(b' ');
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 /// Carries `jar` over into `out/carry/`. With the oracle's `facts`, blocks

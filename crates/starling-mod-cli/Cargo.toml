@@ -16,7 +16,9 @@ horizon-assets = { path = "../horizon-assets" }
 serde_json = "1.0.151"
 log = "0.4"
 png = "0.18"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# pack-port names a jar by its SHA-512, as Modrinth does.
+sha2 = "0.10.9"
+zip ={ version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

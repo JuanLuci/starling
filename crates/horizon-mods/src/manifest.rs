@@ -68,7 +68,41 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// Files the `.hmod` leaves out and the game fetches on the player's device (Starling): a
+    /// ported Java mod's assets, which its authors keep (All Rights Reserved), from the very
+    /// file on Modrinth the player could download themselves ([`crate::fetch`]).
+    #[serde(default)]
+    pub assets: Option<Assets>,
 }
+
+/// A manifest's `[assets]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Assets {
+    pub fetch: Fetch,
+}
+
+/// `[assets.fetch]`: one file on Modrinth, found and checked by its SHA-512, and the folders of
+/// it the game takes.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Fetch {
+    /// The Modrinth project (its slug), shown to the player.
+    pub modrinth: String,
+    /// The version the file is of, shown.
+    pub version: String,
+    /// The file's name, shown.
+    pub file: String,
+    /// Its size in bytes: shown before the download, and the most it may be.
+    pub size: u64,
+    /// Its SHA-512 in lowercase hex: Modrinth finds the file by it, and the download must match.
+    pub sha512: String,
+    /// What the game takes from it: folders `assets/<namespace>/` of the mod's own namespaces.
+    pub take: Vec<String>,
+}
+
+/// The biggest file `[assets.fetch]` may name.
+const MAX_FETCH: u64 = 256 << 20;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -398,7 +432,56 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        if let Some(Assets { fetch }) = &m.assets {
+            m.check_fetch(fetch)
+                .map_err(|e| format!("{MANIFEST}: [assets.fetch]: {e}"))?;
+        }
         Ok(m)
+    }
+    fn check_fetch(&self, fetch: &Fetch) -> Result<(), String> {
+        if !self.capabilities.contains(&Capability::Registries) {
+            return Err("fetched assets are content, which needs capability registries".into());
+        }
+        let hex = fetch.sha512.len() == 128
+            && fetch
+                .sha512
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !hex {
+            return Err("sha512 is not 128 lowercase hex digits".into());
+        }
+        if !(1..=MAX_FETCH).contains(&fetch.size) {
+            return Err(format!("size is not 1 to {} MiB", MAX_FETCH >> 20));
+        }
+        let plain = |s: &str| {
+            (1..=128).contains(&s.len())
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
+        };
+        for (field, value) in [
+            ("modrinth", &fetch.modrinth),
+            ("version", &fetch.version),
+            ("file", &fetch.file),
+        ] {
+            if !plain(value) {
+                return Err(format!("{field} {value:?} is not [A-Za-z0-9_.+-]{{1,128}}"));
+            }
+        }
+        if fetch.take.is_empty() {
+            return Err("take lists no folder".into());
+        }
+        for folder in &fetch.take {
+            let ns = folder
+                .strip_prefix("assets/")
+                .and_then(|f| f.strip_suffix('/'))
+                .filter(|ns| !ns.contains('/'));
+            if !ns.is_some_and(|ns| self.owned_namespaces().any(|own| own == ns)) {
+                return Err(format!(
+                    "take {folder:?} is not assets/<namespace>/ of the mod's own namespaces"
+                ));
+            }
+        }
+        Ok(())
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {

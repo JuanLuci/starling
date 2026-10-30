@@ -1,5 +1,6 @@
-//! Kinetic networks: rotation passed from block to block, as Create's (written from its
-//! documented behaviour, its Ponder scenes and wiki, never its code): shafts along their axis,
+//! Kinetic networks: rotation passed from block to block, as Create's (first written from its
+//! documented behaviour, its Ponder scenes and wiki; its code is MIT, and the machines are ported
+//! from it, licenses/create-MIT.txt): shafts along their axis,
 //! cogwheels meshing with the cogwheels beside them, gearboxes around a corner, and the sources
 //! that turn them (motors, cranks). Content mods say which of their blocks are what
 //! (`kinetic` in a block's declaration, gathered in the root's kinetic.json).
@@ -16,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-pub use horizon_mods::content::{Kinetic, KineticPart};
+pub use horizon_mods::content::{Kinetic, KineticPart, Machine};
 
 /// The fastest a part turns (Create's default speed limit).
 pub const MAX_RPM: f32 = 256.0;
@@ -63,6 +64,8 @@ impl Part {
                 };
                 (axis_of(face), face)
             }
+            // Cogwheels about y whatever their state says.
+            KineticPart::Millstone | KineticPart::Mixer => (1, [0; 3]),
             _ => match axis {
                 Some(axis) => (by_name(axis)?, [0; 3]),
                 None => (axis_of(direction(facing?)?), [0; 3]),
@@ -93,7 +96,7 @@ impl Part {
     /// A cogwheel's radius in blocks; 0 for parts that do not mesh.
     pub fn radius(&self) -> f32 {
         match self.kind {
-            KineticPart::Cogwheel => 0.5,
+            KineticPart::Cogwheel | KineticPart::Millstone | KineticPart::Mixer => 0.5,
             KineticPart::LargeCogwheel => 1.0,
             _ => 0.0,
         }
@@ -110,9 +113,13 @@ impl Part {
             KineticPart::Shaft
             | KineticPart::Cogwheel
             | KineticPart::LargeCogwheel
-            | KineticPart::CrushingWheel => {
+            | KineticPart::CrushingWheel
+            | KineticPart::Press => {
                 vec![(unit(self.axis, 1), 1.0), (unit(self.axis, -1), 1.0)]
             }
+            // MillstoneBlock.hasShaftTowards: down only; the mixer's none (both mesh).
+            KineticPart::Millstone => vec![([0, -1, 0], 1.0)],
+            KineticPart::Mixer => Vec::new(),
             KineticPart::Gearbox => (0..3)
                 .filter(|a| *a != self.axis)
                 .flat_map(|a| [(unit(a, 1), 1.0), (unit(a, -1), -1.0)])
@@ -134,38 +141,71 @@ fn axis_of(v: [i32; 3]) -> usize {
     v.iter().position(|c| *c != 0).unwrap_or(1)
 }
 
-/// Every state's part, from a content root's kinetic.json; empty without one.
+/// Every state's part and machine, from a content root's kinetic.json and machines.json; empty
+/// without them.
 #[derive(Default)]
 pub struct KineticTable {
     parts: Vec<Option<Arc<Part>>>,
+    machines: Vec<Option<Machine>>,
 }
 
 impl KineticTable {
     pub fn load(root: &Path, registry: &BlockRegistry) -> Result<Self> {
-        let path = root.join(crate::mod_content::KINETIC);
-        let Ok(bytes) = std::fs::read(&path) else {
-            return Ok(Self::default());
-        };
-        let declared: HashMap<String, Kinetic> =
-            serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut parts = vec![None; registry.len()];
-        for (i, slot) in parts.iter_mut().enumerate() {
-            let Some(state) = registry.state(BlockStateId(i as u32)) else {
-                continue;
-            };
-            let Some(kinetic) = declared.get(&state.name) else {
-                continue;
-            };
-            let prop = |k: &str| state.properties.get(k).map(String::as_str);
-            *slot = Part::new(kinetic, prop("axis"), prop("facing")).map(Arc::new);
+        let read = |name: &str| std::fs::read(root.join(name)).ok();
+        let mut out = Self::default();
+        if let Some(bytes) = read(crate::mod_content::KINETIC) {
+            let declared: HashMap<String, Kinetic> = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{}: {e}", crate::mod_content::KINETIC))?;
+            out.parts = vec![None; registry.len()];
+            for (i, slot) in out.parts.iter_mut().enumerate() {
+                let Some(state) = registry.state(BlockStateId(i as u32)) else {
+                    continue;
+                };
+                let Some(kinetic) = declared.get(&state.name) else {
+                    continue;
+                };
+                let prop = |k: &str| state.properties.get(k).map(String::as_str);
+                *slot = Part::new(kinetic, prop("axis"), prop("facing")).map(Arc::new);
+            }
         }
-        Ok(Self { parts })
+        if let Some(bytes) = read(crate::mod_content::MACHINES) {
+            let declared: HashMap<String, Machine> = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{}: {e}", crate::mod_content::MACHINES))?;
+            out.machines = (0..registry.len())
+                .map(|i| {
+                    let state = registry.state(BlockStateId(i as u32))?;
+                    declared.get(&state.name).copied()
+                })
+                .collect();
+        }
+        Ok(out)
     }
     pub fn is_empty(&self) -> bool {
-        self.parts.iter().all(Option::is_none)
+        self.parts.iter().all(Option::is_none) && self.machines.iter().all(Option::is_none)
     }
     pub fn get(&self, state: BlockStateId) -> Option<&Arc<Part>> {
         self.parts.get(state.0 as usize)?.as_ref()
+    }
+    /// The machine a state is, when it is one that is no kinetic part (a depot, a basin).
+    pub fn machine(&self, state: BlockStateId) -> Option<Machine> {
+        *self.machines.get(state.0 as usize)?
+    }
+    /// Whether a state keeps a block entity of its machine's (its items, its work): a declared
+    /// machine, or a millstone, a press or a mixer.
+    pub fn keeps_entity(&self, state: BlockStateId) -> bool {
+        self.machine(state).is_some()
+            || self.get(state).is_some_and(|p| {
+                matches!(
+                    p.kind,
+                    KineticPart::Millstone | KineticPart::Press | KineticPart::Mixer
+                )
+            })
+    }
+    /// The states that keep a block entity ([`KineticTable::keeps_entity`]).
+    pub fn entity_states(&self) -> impl Iterator<Item = BlockStateId> + '_ {
+        (0..self.parts.len().max(self.machines.len()) as u32)
+            .map(BlockStateId)
+            .filter(|s| self.keeps_entity(*s))
     }
 }
 
