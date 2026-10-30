@@ -1715,7 +1715,10 @@ mod tests {
             ..LayoutConfig::default()
         };
         assert_eq!(LayoutConfig::from_json(&config.to_json()), config);
-        let (l, now) = (Layout::from_config(&config, 3200.0, 1440.0, 4.0), Instant::now());
+        let (l, now) = (
+            Layout::from_config(&config, 3200.0, 1440.0, 4.0),
+            Instant::now(),
+        );
         let [x, y] = l.stick_home;
         let r = l.stick_radius;
         let mut t = TouchControls::default();
@@ -2224,7 +2227,10 @@ mod tests {
         );
 
         t.event(&l, 4, TouchPhase::Started, [2000.0, 600.0], now);
-        assert_eq!(t.frame(now + HOLD), vec![Action::HoldStart([2000.0, 600.0])]);
+        assert_eq!(
+            t.frame(now + HOLD),
+            vec![Action::HoldStart([2000.0, 600.0])]
+        );
         assert!(t.frame(now + HOLD * 2).is_empty());
         assert_eq!(
             t.event(&l, 4, TouchPhase::Ended, [2000.0, 600.0], now + HOLD * 3),
@@ -2296,7 +2302,8 @@ mod tests {
 
     #[test]
     fn the_gyroscope_turns_the_view_as_the_phone_turns_on_any_side() {
-        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
         let quarter = std::f32::consts::FRAC_PI_2;
         // Landscape, top to the left (ROTATION_90): the screen's up is the device's x. Turned
         // left a quarter about it: the view turns 90 degrees left.
@@ -2329,15 +2336,18 @@ mod tests {
         let chips = l.debug_chips();
         assert_eq!(chips.len(), DEBUG_COMBOS.len());
         // Under the button (it is at the top), on the screen, none over another.
-        assert!(chips.iter().all(|(_, c, h)| c[1] > f3[1]
-            && c[0] - h[0] >= 0.0
-            && c[0] + h[0] <= l.width));
+        assert!(
+            chips
+                .iter()
+                .all(|(_, c, h)| c[1] > f3[1] && c[0] - h[0] >= 0.0 && c[0] + h[0] <= l.width)
+        );
         let mut t = TouchControls::default();
         // A chip is nothing while F3 is not held (the finger turns the view there).
         let hitboxes = chips[1].1;
-        assert!(!t
-            .event(&l, 1, TouchPhase::Started, hitboxes, now)
-            .contains(&Action::DebugCombo(1)));
+        assert!(
+            !t.event(&l, 1, TouchPhase::Started, hitboxes, now)
+                .contains(&Action::DebugCombo(1))
+        );
         t.event(&l, 1, TouchPhase::Ended, hitboxes, now + HOLD);
         // Held: a second finger on a chip presses that combination.
         assert_eq!(

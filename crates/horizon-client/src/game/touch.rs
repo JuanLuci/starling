@@ -9,6 +9,7 @@ mod slots;
 mod text_mirror;
 
 use super::{Game, Screen, mod_widgets::ModFace};
+use horizon_client::debug_keys::KeyAction;
 use horizon_client::gamepad::ServerStick;
 use horizon_client::input_mode::InputMode;
 use horizon_client::{
@@ -21,7 +22,6 @@ use horizon_client::{
     },
     ui_theme::{Face, Ui, color},
 };
-use horizon_client::debug_keys::KeyAction;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use winit::{
@@ -1168,7 +1168,10 @@ impl Game<'_> {
                 self.touch.controls.holding(),
                 self.touch.hold_uses,
             ) {
-                let progress = self.mining.as_ref().map_or(0.0, |m| m.progress.clamp(0.0, 1.0));
+                let progress = self
+                    .mining
+                    .as_ref()
+                    .map_or(0.0, |m| m.progress.clamp(0.0, 1.0));
                 let (ring, dot) = (layout.unit * 0.55, layout.unit * 0.07);
                 const DOTS: usize = 24;
                 for i in 0..DOTS {
@@ -1205,8 +1208,20 @@ impl Game<'_> {
             if self.touch.controls.held(Button::Debug) {
                 for (i, c, half) in layout.debug_chips() {
                     let shape = Shape::Wide(half[0] / half[1]);
-                    plate_of(&mut ui, shape, c, half[1], color::with_alpha(color::BG, 0.85));
-                    label(&mut ui, c, half[1] * 1.6, touch::DEBUG_COMBOS[i].1, ink(1.0));
+                    plate_of(
+                        &mut ui,
+                        shape,
+                        c,
+                        half[1],
+                        color::with_alpha(color::BG, 0.85),
+                    );
+                    label(
+                        &mut ui,
+                        c,
+                        half[1] * 1.6,
+                        touch::DEBUG_COMBOS[i].1,
+                        ink(1.0),
+                    );
                 }
             }
             // The mods' buttons, lit while held.

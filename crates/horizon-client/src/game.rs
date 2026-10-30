@@ -2152,8 +2152,7 @@ impl Game<'_> {
     /// The look a use acts with (BlockPlaceContext's rotation) and the server
     /// is told: the view's, or the finger's with tap to interact.
     fn interaction_rotation(&self) -> (f32, f32) {
-        self.touch_aim_rotation()
-            .unwrap_or((self.yaw, self.pitch))
+        self.touch_aim_rotation().unwrap_or((self.yaw, self.pitch))
     }
     fn reach(&self) -> f64 {
         if self.creative { 5.0 } else { 4.5 }
