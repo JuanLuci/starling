@@ -3707,6 +3707,7 @@ dependencies = [
 name = "starling-mod-cli"
 version = "0.1.0"
 dependencies = [
+ "horizon-assets",
  "horizon-mods",
  "log",
  "png",
