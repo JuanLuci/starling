@@ -91,7 +91,9 @@ Tried:
   the game's `use_item` starts with its hook, its text is in the library, which exports both `starling_on_create` and
   `ANativeActivity_onCreate`, with no warning from the mod. From an empty build folder (8 vCPUs): 252 s with the quick
   profile, 225 s with fast (311 crates; horizon-mixins built once before, in about a minute). The fast library is 64
-  MB stripped, the APK with it 33 MB.
+  MB stripped, the APK with it 33 MB. With the build folder kept (2026-10-31, `c119e5cd7`, its folder from
+  `f2da8d3` two days before): 159 s, 7 crates recompiled (2 min 20 s of Cargo); again with nothing changed, 11 s
+  (the archive, the apply and the APK).
 - **The workflow on GitHub** (a dispatch for 0.1.3): the request, the runner, the tag's checkout, horizon-mixins and
   the script ran; the build stopped at `E_TARGET_NOT_FOUND` for `native_mods`, as it must: 0.1.3 has no hook points.
   **0.1.4 is the first version that builds**; nothing was published.
