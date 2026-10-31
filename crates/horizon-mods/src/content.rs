@@ -366,6 +366,8 @@ pub struct Item {
 enum Source {
     Dir(PathBuf),
     Zip(PathBuf),
+    /// Generated in-memory files of an Inox declaration mod.
+    Memory(PathBuf, BTreeMap<String, Vec<u8>>),
 }
 
 /// A mod's content: its files and declarations.
@@ -391,6 +393,7 @@ pub struct FileReader<'a> {
 enum OwnFiles<'a> {
     Dir(&'a Path),
     Zip(Box<zip::ZipArchive<std::fs::File>>),
+    Memory(&'a BTreeMap<String, Vec<u8>>),
 }
 impl FileReader<'_> {
     /// One content file's bytes.
@@ -409,6 +412,9 @@ impl FileReader<'_> {
             (OwnFiles::Zip(zip), None) => {
                 Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?)
             }
+            (OwnFiles::Memory(files), None) => Box::new(std::io::Cursor::new(
+                files.get(name).ok_or_else(|| format!("{name}: missing"))?.as_slice(),
+            )),
         };
         let mut out = Vec::new();
         reader
@@ -430,6 +436,7 @@ fn reader<'a>(
         own: match source {
             Source::Dir(root) => OwnFiles::Dir(root),
             Source::Zip(path) => OwnFiles::Zip(Box::new(open_zip(path)?)),
+            Source::Memory(_, files) => OwnFiles::Memory(files),
         },
         fetched: fetched.as_ref().map(|(dir, names)| (dir.as_path(), names)),
     })
@@ -506,6 +513,9 @@ impl Content {
         manifest: &Manifest,
         fetched: Option<&Path>,
     ) -> Result<Content, String> {
+        if crate::imod::is_imod(path) {
+            return Self::read_imod(path, manifest);
+        }
         let (source, mut sized) = if path.is_dir() {
             let mut out = Vec::new();
             for top in ["assets", "data"] {
@@ -573,8 +583,77 @@ impl Content {
     /// Where the files are read from: the mod's folder or its `.hmod`.
     pub fn source(&self) -> &Path {
         match &self.source {
-            Source::Dir(path) | Source::Zip(path) => path,
+            Source::Dir(path) | Source::Zip(path) | Source::Memory(path, _) => path,
         }
+    }
+
+    /// Reads an Inox declaration mod, generates its content files, and sends them through
+    /// the same validation path as ordinary .hmod content.
+    fn read_imod(path: &Path, manifest: &Manifest) -> Result<Content, String> {
+        let (declared, file) = crate::imod::parse(&crate::imod::read_toml(path)?)?;
+        if declared.id != manifest.id {
+            return Err("Inox manifest changed between package and content loading".into());
+        }
+        let mut raw = BTreeMap::<String, Vec<u8>>::new();
+        if path.is_dir() {
+            let mut sized = Vec::new();
+            for top in ["assets", "data"] {
+                walk(path, &path.join(top), &mut sized)?;
+            }
+            for (name, _) in sized {
+                let bytes = std::fs::read(path.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+                raw.insert(name, bytes);
+            }
+        } else {
+            let mut zip = open_zip(path)?;
+            for i in 0..zip.len() {
+                let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+                let name = entry.name().to_owned();
+                if (name.starts_with("assets/") || name.starts_with("data/")) && !entry.is_dir() {
+                    if entry.size() > MAX_FILE {
+                        return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+                    }
+                    let mut bytes = Vec::with_capacity(entry.size() as usize);
+                    entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                    if bytes.len() as u64 > MAX_FILE {
+                        return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+                    }
+                    raw.insert(name, bytes);
+                }
+            }
+        }
+        let names: BTreeSet<String> = raw.keys().cloned().collect();
+        let generated = crate::imod::generate(&file, &names, |name| {
+            raw.get(name).cloned().ok_or_else(|| format!("{name}: missing"))
+        })?;
+        raw.extend(generated);
+        let mut total = 0u64;
+        let mut files = Vec::with_capacity(raw.len());
+        for (name, bytes) in &raw {
+            check_path(name)?;
+            total += bytes.len() as u64;
+            if bytes.len() as u64 > MAX_FILE {
+                return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+            }
+            files.push(name.clone());
+        }
+        if files.len() > MAX_FILES {
+            return Err(format!("more than {MAX_FILES} content files"));
+        }
+        if total > MAX_TOTAL {
+            return Err(format!("content is over {} MiB", MAX_TOTAL >> 20));
+        }
+        files.sort();
+        let mut content = Content {
+            source: Source::Memory(path.to_owned(), raw),
+            fetched: None,
+            files,
+            blocks: Vec::new(),
+            items: Vec::new(),
+            namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
+        };
+        content.check(manifest)?;
+        Ok(content)
     }
 
     /// The folder its fetched assets are read from, when they are.
