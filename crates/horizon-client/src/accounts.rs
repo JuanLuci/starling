@@ -339,6 +339,11 @@ pub fn cancel() {
     }
 }
 
+/// Whether the player explicitly chose offline mode (kept across app restarts).
+pub fn offline_mode_selected() -> bool {
+    dir().join("offline-mode").is_file()
+}
+
 /// Use the offline profile without deleting the saved Microsoft account. The choice persists
 /// across restarts; signing in again explicitly turns it off.
 pub fn play_offline() -> Result<(), String> {
