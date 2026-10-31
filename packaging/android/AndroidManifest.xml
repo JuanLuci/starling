@@ -28,6 +28,13 @@
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application
+        android:label="@LABEL@"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="true"
+        android:isGame="true"
+        android:appCategory="game"
+        android:requestLegacyExternalStorage="true"
+        android:extractNativeLibs="true">
         <activity
             android:name="io.github.juanluci.starling.LauncherActivity$HomeActivity"
             android:exported="true"
@@ -38,13 +45,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        android:label="@LABEL@"
-        android:icon="@mipmap/ic_launcher"
-        android:hasCode="true"
-        android:isGame="true"
-        android:appCategory="game"
-        android:requestLegacyExternalStorage="true"
-        android:extractNativeLibs="true">
         <!-- The home screen is the launcher; file imports still use LauncherActivity and game rendering stays native Rust. -->
         <!-- A task of its own, out of the recents: the game's task stays the game's. -->
         <activity
