@@ -219,6 +219,7 @@ public final class LauncherActivity extends Activity {
 
         @Override protected void onCreate(Bundle state) {
             super.onCreate(state);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
             getWindow().setStatusBarColor(BG);
             getWindow().setNavigationBarColor(BG);
             getWindow().getDecorView().setSystemUiVisibility(0);
