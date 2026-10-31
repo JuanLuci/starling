@@ -256,6 +256,8 @@ mod tests {
         );
         assert_eq!(chosen(&d).as_deref(), Some("Steve_2"));
         assert_eq!(load_or_create(&d), "Steve_2");
+        // The explicitly chosen profile must also win with no Microsoft session.
+        assert_eq!(for_worlds(&d), "Steve_2");
         // A name replaced by a generated one is no longer the player's choice; the rest stays.
         set_values(&d, &[(NAME, Some("bad name"))]).unwrap();
         let again = load_or_create(&d);
