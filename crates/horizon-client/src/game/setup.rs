@@ -24,8 +24,10 @@ enum Step {
     /// game's files are where a player can reach them, and a bug report's log with them.
     #[cfg(target_os = "android")]
     Folder(super::files_offer::Stage),
-    /// Nothing under way: sign in, or bring resources from a computer.
+    /// Nothing under way: choose an account or bring resources from a computer.
     Start,
+    /// A local profile was selected; Microsoft sign-in is skipped.
+    Offline(String),
     /// Asking Microsoft (or renewing the saved sign-in).
     Talking,
     /// The player signs in elsewhere with `code`.
@@ -56,6 +58,7 @@ enum Action {
     #[cfg(target_os = "android")]
     FolderLater,
     SignIn,
+    OfflineAccount,
     OpenLink,
     CopyCode,
     /// Pick the resources prepared on a computer (as the loading failure did).
@@ -142,7 +145,15 @@ fn step(setup: &Setup, failure: &str) -> Step {
             if let Some(stage) = folder_offer(setup) {
                 return Step::Folder(stage);
             }
-            Step::Start
+            if accounts::offline_mode_selected() {
+                let name = std::env::current_dir().map_or_else(
+                    |_| "Player".to_owned(),
+                    |dir| horizon_client::offline_name::load_or_create(&dir),
+                );
+                Step::Offline(name)
+            } else {
+                Step::Start
+            }
         }
         State::Resuming | State::Starting | State::SignedIn(_) => Step::Talking,
         State::Code { code, link } => Step::Code { code, link },
@@ -182,10 +193,13 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
         }
         Step::Start => (
             "Set up Starling",
-            "Starling plays Minecraft: Java Edition from your own copy of the game. Sign in \
-             with the Microsoft account that owns it: Starling downloads the game from Mojang and \
-             prepares it on this phone, once (about 1.5 GB, a few minutes)."
+            "Microsoft sign-in is optional. Create an offline account to play without connecting Microsoft. You still need your own prepared Minecraft Java resources; import them from a computer to finish setup."
                 .into(),
+            None,
+        ),
+        Step::Offline(name) => (
+            "Offline account ready",
+            format!("Playing as {name}. No Microsoft sign-in is needed for single-player, LAN, or offline-mode servers. Import your prepared Minecraft Java resources from a computer to finish setup."),
             None,
         ),
         Step::Talking => ("Set up Starling", "Talking to Microsoft...".into(), None),
@@ -248,8 +262,12 @@ fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
             ]
         }
         Step::Start => [
-            Some(("Sign in with Microsoft", Action::SignIn)),
+            Some(("Create offline account", Action::OfflineAccount)),
             Some(("Files from a computer", Action::Pick)),
+        ],
+        Step::Offline(_) => [
+            Some(("Files from a computer", Action::Pick)),
+            Some(("Sign in with Microsoft", Action::SignIn)),
         ],
         Step::Code { .. } => [
             Some(("Open the page", Action::OpenLink)),
@@ -583,6 +601,11 @@ impl Loading {
                 self.setup.folder_later = true;
             }
             Action::SignIn => accounts::sign_in(),
+            Action::OfflineAccount => {
+                if let Err(e) = accounts::play_offline() {
+                    log::warn!("Horizon: could not create the offline account: {e}");
+                }
+            }
             Action::OpenLink => {
                 if let State::Code { link, .. } = accounts::state()
                     && !horizon_client::platform::open_link(&link).unwrap_or(false)
