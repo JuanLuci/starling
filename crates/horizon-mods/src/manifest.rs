@@ -531,6 +531,9 @@ impl Package {
     /// A `.hmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
     /// content, `assets/` and `data/`) or a folder holding the same.
     pub fn read(path: &Path) -> Result<Self, String> {
+        if crate::imod::is_imod(path) {
+            return Self::read_imod(path);
+        }
         let (toml, wasm, js) = if path.is_dir() {
             let toml = std::fs::read_to_string(path.join(MANIFEST));
             let read = |name: &str| -> Result<Option<Vec<u8>>, String> {
@@ -594,6 +597,11 @@ impl Package {
         }
         Ok(Package { manifest, wasm, js })
     }
+    /// An Inox content mod (`.imod` or a folder holding `inox.toml`): no executable code.
+    fn read_imod(path: &Path) -> Result<Self, String> {
+        let (manifest, _) = crate::imod::parse(&crate::imod::read_toml(path)?)?;
+        Ok(Package { manifest, wasm: None, js: None })
+    }
     /// The `.hmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {
         Self::write_files(manifest_text, Some(wasm), &[])
@@ -634,7 +642,7 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = read
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "hmod") || p.join(MANIFEST).is_file())
+        .filter(|p| p.extension().is_some_and(|e| e == "hmod") || p.join(MANIFEST).is_file() || crate::imod::is_imod(p))
         .collect();
     found.sort();
     found
