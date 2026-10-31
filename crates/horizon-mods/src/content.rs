@@ -610,7 +610,7 @@ impl Content {
         } else {
             let mut zip = open_zip(path)?;
             for i in 0..zip.len() {
-                let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+                let entry = zip.by_index(i).map_err(|e| e.to_string())?;
                 let name = entry.name().to_owned();
                 if (name.starts_with("assets/") || name.starts_with("data/")) && !entry.is_dir() {
                     if entry.size() > MAX_FILE {
