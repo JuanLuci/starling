@@ -37,6 +37,7 @@
         android:extractNativeLibs="true">
         <activity
             android:name="io.github.juanluci.starling.LauncherActivity$HomeActivity"
+            android:screenOrientation="portrait"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Material.NoActionBar">
