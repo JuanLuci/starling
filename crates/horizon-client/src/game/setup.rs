@@ -146,9 +146,8 @@ fn step(setup: &Setup, failure: &str) -> Step {
                 return Step::Folder(stage);
             }
             if accounts::offline_mode_selected() {
-                let name = std::env::current_dir().map_or_else(
-                    |_| "Player".to_owned(),
-                    |dir| horizon_client::offline_name::load_or_create(&dir),
+                let name = horizon_client::offline_name::load_or_create(
+                    &horizon_client::logging::game_home(),
                 );
                 Step::Offline(name)
             } else {
