@@ -489,7 +489,7 @@ impl Game<'_> {
     }
 
     /// Keeps a belt's items as its start's block entity (and tells the players near).
-    fn write_belt(&mut self, start: [i32; 3], items: &[Transported]) {
+    pub(super) fn write_belt(&mut self, start: [i32; 3], items: &[Transported]) {
         let (Some(Kind::Belt), Some(mut e)) = (
             self.machine_kind(start),
             self.machine_entity(start).map(|(_, e)| e),
@@ -565,7 +565,7 @@ impl Game<'_> {
 
     /// An item onto the belt segment at `at` from a belt behind it going `facing` (the next
     /// belt's start or side): `BeltInventory.canInsertAtFromSide` and `insert`.
-    fn belt_insert_from_side(
+    pub(super) fn belt_insert_from_side(
         &mut self,
         at: [i32; 3],
         facing: [i32; 3],

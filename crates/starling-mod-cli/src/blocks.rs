@@ -404,7 +404,7 @@ impl Spin {
         });
         let (axis, ends) = match k.part {
             KineticPart::Motor => (axis_of(facing?), vec![facing?]),
-            KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
+            KineticPart::Crank | KineticPart::Drill | KineticPart::Fan | KineticPart::Bearing => {
                 let back = facing?.map(|v| -v);
                 (axis_of(back), vec![back])
             }
@@ -417,6 +417,10 @@ impl Spin {
                 (axis, ends)
             }
             KineticPart::Millstone => (1, vec![unit(1, -1)]),
+            KineticPart::Arm => {
+                let up = props.get("ceiling").map(String::as_str) == Some("true");
+                (1, vec![unit(1, if up { 1 } else { -1 })])
+            }
             KineticPart::Mixer => (1, Vec::new()),
             // SawBlock: sideways, through its back; up or down, across it.
             KineticPart::Saw if facing?[1] == 0 => {

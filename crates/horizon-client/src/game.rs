@@ -6,9 +6,11 @@ mod agent;
 mod agent_settings;
 mod allays;
 mod armor_stands;
+mod arms;
 mod banners;
 mod basins;
 mod beacon;
+mod bearings;
 mod beds;
 mod beehives;
 mod belts;
@@ -4428,6 +4430,11 @@ impl Game<'_> {
             && let Some(hit) = block_hit
         {
             let held = self.held().cloned();
+            // Create's arm in hand marks what it works with (arms.rs).
+            if self.use_arm_item(hit.pos) {
+                self.swing_arm();
+                return Ok(true);
+            }
             // A content mod's machine (Create's depot, millstone: processing.rs).
             if self.use_machine(hit.pos, hit.face) {
                 self.swing_arm();
@@ -4718,6 +4725,8 @@ impl Game<'_> {
         let state = self.apply_item_block_state(target, state, &stack)?;
         // A content mod's block with states of its own: what its template does not place.
         let state = self.orient_own_states(target, state, &ctx);
+        // Create's arm takes the points marked for it.
+        self.arm_placed(target);
         self.mod_block_event(target, state, true);
         if let Some(entity) = BlockEntity::for_block(&self.res.facts().get(state).name) {
             let key = (target[0], target[1], target[2]);

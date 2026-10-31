@@ -146,6 +146,18 @@ impl Game<'_> {
         rest
     }
 
+    /// `FunnelBlock.tryInsert` into the funnel at `pos` (an arm's): what did not go in.
+    pub(super) fn funnel_insert_at(
+        &mut self,
+        pos: [i32; 3],
+        stack: ItemStack,
+    ) -> Option<ItemStack> {
+        match self.funnel(pos) {
+            Some(f) if !f.powered => self.funnel_insert(pos, &f, stack),
+            _ => Some(stack),
+        }
+    }
+
     /// A horizontal funnel's flap (`FunnelFlapPacket`): its sound (`AllSoundEvents.FUNNEL_FLAP`).
     fn funnel_flap(&mut self, pos: [i32; 3], f: &Funnel) {
         if f.facing[1] == 0 {

@@ -113,6 +113,8 @@ impl Game<'_> {
                 Kind::Saw => self.tick_saw(pos, speed),
                 Kind::Funnel => self.tick_funnel(pos),
                 Kind::Chute => self.tick_chute(pos),
+                Kind::Bearing => self.tick_bearing(pos, speed),
+                Kind::Arm => self.tick_arm(pos, speed),
                 Kind::Belt => {}
             }
         }
@@ -575,6 +577,7 @@ impl Game<'_> {
             Some(Kind::Belt) => held.is_none(),
             Some(Kind::Saw) => self.saw_takes(pos, held),
             Some(Kind::Funnel) => self.funnel_takes(pos, face, held),
+            Some(Kind::Bearing) => held.is_none(),
             // Fuel (BlazeBurnerBlock.useItemOn).
             Some(Kind::Burner) => held.is_some_and(|h| {
                 self.res
@@ -600,6 +603,7 @@ impl Game<'_> {
             Some(Kind::Burner) => self.use_burner(pos),
             Some(Kind::Saw) => self.use_saw(pos),
             Some(Kind::Funnel) => self.use_funnel(pos, face),
+            Some(Kind::Bearing) => self.use_bearing(pos),
             _ => false,
         }
     }

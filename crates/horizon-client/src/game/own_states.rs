@@ -113,6 +113,12 @@ impl Game<'_> {
                     let along = self.axis_along_first(pos, facing, flat);
                     vec![if along { "true" } else { "false" }]
                 }
+                // ArmBlock: on a ceiling when placed on a block's bottom.
+                "ceiling" => vec![if clicked == [0, -1, 0] {
+                    "true"
+                } else {
+                    "false"
+                }],
                 // FunnelBlock: extracting unless they sneak.
                 "extracting" => vec![if ctx.sneaking { "false" } else { "true" }],
                 // SawBlock: upright, and the player facing south or east.

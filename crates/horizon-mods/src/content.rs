@@ -241,6 +241,14 @@ pub enum KineticPart {
     /// up or down, an axle across it (its state's `axis_along_first`), and facing up it cuts the
     /// items put on it (cutting and stonecutting recipes).
     Saw,
+    /// Create's mechanical and windmill bearings: turned through its back (or, a windmill's,
+    /// turning it), it carries the blocks attached in front of it round its facing's axis; a
+    /// windmill's is a source by its sails (`capacity`), a mechanical one starts and stops
+    /// with its network.
+    Bearing,
+    /// Create's mechanical arm: a small cogwheel about y also joined from below (above, its
+    /// state's `ceiling`), moving items between the points marked for it as it turns.
+    Arm,
 }
 
 /// What a block with work of its own keeps and does (Starling: Create's machines,

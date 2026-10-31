@@ -49,6 +49,8 @@ pub(super) struct Machines {
     pub(super) belts: super::belts::Belts,
     /// Each extracting funnel's ticks until it extracts again (funnels.rs).
     pub(super) funnels: HashMap<[i32; 3], i32>,
+    /// The points marked for the next arm placed (arms.rs).
+    pub(super) arm_selection: Vec<super::arms::Point>,
     /// Drills, crushing wheels and controllers at the last look, for the log.
     counts: (usize, usize, usize),
 }
@@ -533,10 +535,16 @@ impl Game<'_> {
         entities.sort_unstable_by_key(|(pos, _)| *pos);
         // Water wheels turned by the water past them are sources too.
         let (world, fluids) = (&self.world, &self.res.motion().fluids);
-        let wheels = kinetics::water_wheels(&parts, |p| {
+        let mut wheels = kinetics::water_wheels(&parts, |p| {
             let v = horizon_client::entities::flow_vector(world, fluids, p);
             [v.x, v.y, v.z]
         });
+        // And windmills by their sails (bearings.rs).
+        let bearings = entities
+            .iter()
+            .filter(|(_, k)| *k == machine_entities::Kind::Bearing)
+            .map(|(p, _)| *p);
+        wheels.extend(self.windmill_speeds(bearings));
         // The belts: each one's segments turn together (belts.rs).
         let belt_positions: Vec<[i32; 3]> = entities
             .iter()

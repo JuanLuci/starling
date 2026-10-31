@@ -68,7 +68,11 @@ impl Part {
             _ => None,
         };
         let (axis, face) = match kinetic.part {
-            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
+            KineticPart::Motor
+            | KineticPart::Crank
+            | KineticPart::Drill
+            | KineticPart::Fan
+            | KineticPart::Bearing => {
                 let facing = direction(facing?)?;
                 let face = if kinetic.part == KineticPart::Motor {
                     facing
@@ -90,6 +94,8 @@ impl Part {
             }
             // Cogwheels about y whatever their state says.
             KineticPart::Millstone | KineticPart::Mixer => (1, [0; 3]),
+            // ArmBlock: about y, its shaft below (above, on a ceiling: set where it loads).
+            KineticPart::Arm => (1, [0, -1, 0]),
             // A belt's pulley across it, level (a sideways belt's is set upright where it loads).
             KineticPart::Belt => (
                 if axis_of(direction(facing?)?) == 0 {
@@ -136,7 +142,10 @@ impl Part {
     /// A cogwheel's radius in blocks; 0 for parts that do not mesh.
     pub fn radius(&self) -> f32 {
         match self.kind {
-            KineticPart::Cogwheel | KineticPart::Millstone | KineticPart::Mixer => 0.5,
+            KineticPart::Cogwheel
+            | KineticPart::Millstone
+            | KineticPart::Mixer
+            | KineticPart::Arm => 0.5,
             KineticPart::LargeCogwheel => 1.0,
             _ => 0.0,
         }
@@ -173,13 +182,16 @@ impl Part {
             // MillstoneBlock.hasShaftTowards: down only; the mixer's none (both mesh).
             KineticPart::Millstone => vec![([0, -1, 0], 1.0)],
             KineticPart::Mixer => Vec::new(),
+            KineticPart::Arm => vec![(self.face, 1.0)],
             KineticPart::Gearbox => (0..3)
                 .filter(|a| *a != self.axis)
                 .flat_map(|a| [(unit(a, 1), 1.0), (unit(a, -1), -1.0)])
                 .collect(),
-            KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
-                vec![(self.face, self.face[self.axis] as f32)]
-            }
+            KineticPart::Motor
+            | KineticPart::Crank
+            | KineticPart::Drill
+            | KineticPart::Fan
+            | KineticPart::Bearing => vec![(self.face, self.face[self.axis] as f32)],
             KineticPart::Saw if self.face != [0; 3] => {
                 vec![(self.face, self.face[self.axis] as f32)]
             }
@@ -233,6 +245,9 @@ impl KineticTable {
                         if prop("slope") == Some("sideways") {
                             part.axis = 1;
                         }
+                    }
+                    if part.kind == KineticPart::Arm && prop("ceiling") == Some("true") {
+                        part.face = [0, 1, 0];
                     }
                     // DirectionalAxisKineticBlock.getRotationAxis, facing up or down.
                     if part.kind == KineticPart::Saw && part.face == [0; 3] {
@@ -296,6 +311,8 @@ impl KineticTable {
                         | KineticPart::Press
                         | KineticPart::Mixer
                         | KineticPart::Saw
+                        | KineticPart::Bearing
+                        | KineticPart::Arm
                 )
             })
     }

@@ -571,6 +571,17 @@ impl GameLevel<'_> {
             for stack in super::machine_entities::held_items(&tag) {
                 self.drop_item_stack(pos, stack);
             }
+            // A bearing's contraption: its blocks, as their items.
+            if let Some(c) = tag.get("Contraption") {
+                let c = super::bearings::Contraption::read(c, self.registry);
+                for (_, state) in c.blocks {
+                    let item = self.facts.get(state).item.clone();
+                    if &*item != "minecraft:air" {
+                        let stack = horizon_client::items::ItemStack::new(&item, 1);
+                        self.drop_item_stack(pos, Some(stack));
+                    }
+                }
+            }
             return true;
         }
         let name = self.facts.get(old).name.clone();

@@ -97,6 +97,14 @@ impl Game<'_> {
                 [v.x, v.y, v.z]
             });
             turned.extend(self.kinetics.crank.map(|(p, v, _)| (p, v)));
+            // Windmills by their sails (bearings.rs).
+            let bearings = self
+                .kinetics
+                .machines
+                .iter()
+                .filter(|(_, k)| **k == Kind::Bearing)
+                .map(|(p, _)| *p);
+            turned.extend(self.windmill_speeds(bearings));
             // Each belt's segments turn together.
             let groups: Vec<Vec<[i32; 3]>> = self
                 .kinetics
@@ -386,6 +394,14 @@ impl Game<'_> {
             if part.kind == KineticPart::Saw {
                 self.saw_blade_geometry(*state, *pos, part, at, light, out);
             }
+            // A bearing's top and what it turns (BearingRenderer, the contraption's blocks).
+            if part.kind == KineticPart::Bearing {
+                self.bearing_geometry(*state, *pos, part, at, light, out);
+            }
+            // An arm reaching (ArmRenderer).
+            if part.kind == KineticPart::Arm {
+                self.arm_geometry(*state, *pos, part, at, light, out);
+            }
             // A press's head, a mixer's pole and head, as far down as their work has them
             // (MechanicalPressRenderer, MechanicalMixerRenderer); a mixer's head turns.
             if part.head.is_some() || part.pole.is_some() {
@@ -649,6 +665,178 @@ impl Game<'_> {
         let catalog = &self.pack.render.model_catalog;
         if let Some(model) = catalog.partial(model, [turns[0], turns[1], 0]) {
             self.baked_model_vertices(model, at, light, false, out);
+        }
+    }
+
+    /// `BearingRenderer.renderSafe` and the contraption it turns: its top (`part.models[0]`,
+    /// made facing up) and the blocks it holds, about its facing's axis through the anchor's
+    /// middle, as far as they have turned since the server last said.
+    fn bearing_geometry(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+        part: &Part,
+        at: glam::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let Some(facing) = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| s.properties.get("facing"))
+            .and_then(|f| kinetics::direction(f))
+        else {
+            return;
+        };
+        let axis = facing.iter().position(|v| *v != 0).unwrap_or(1);
+        let catalog = &self.pack.render.model_catalog;
+        let contraption = self.contraption(pos);
+        let angle = contraption.as_ref().map_or(0.0, |c| {
+            let since = super::machine_entities::read(&self.world, pos, Kind::Bearing).since;
+            let t = (self.world.game_time - since) as f32 + self.clock.fraction() as f32;
+            c.angle + c.speed * t
+        });
+        let mut unit = glam::Vec3::ZERO;
+        unit[axis] = 1.0;
+        let spin = glam::Mat4::from_translation(glam::Vec3::splat(0.5))
+            * glam::Mat4::from_axis_angle(unit, angle.to_radians())
+            * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+        let turns = kinetics::turns_from([0, 1, 0], facing);
+        if let Some(top) = part
+            .models
+            .first()
+            .and_then(|m| catalog.partial(m, [turns[0], turns[1], 0]))
+        {
+            self.baked_model_vertices(top, at * spin, light, false, out);
+        }
+        let Some(c) = contraption else {
+            return;
+        };
+        let anchor = at
+            * glam::Mat4::from_translation(glam::Vec3::new(
+                facing[0] as f32,
+                facing[1] as f32,
+                facing[2] as f32,
+            ));
+        for (rel, s) in &c.blocks {
+            let Ok(models) = catalog.collect_seeded(*s, 0) else {
+                continue;
+            };
+            let place = anchor
+                * spin
+                * glam::Mat4::from_translation(glam::Vec3::new(
+                    rel[0] as f32,
+                    rel[1] as f32,
+                    rel[2] as f32,
+                ));
+            for (_, model) in &models {
+                self.baked_model_vertices(model, place, light, false, out);
+            }
+        }
+    }
+
+    /// `ArmRenderer.renderArm`: the arm's base turned towards where it goes, its two arms and
+    /// head bent to reach it (back to rest the first half of a move, out to the point the
+    /// second), its claw round what it holds. `part.models`: base, lower body, upper body, claw
+    /// base, upper grip, lower grip.
+    fn arm_geometry(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+        part: &Part,
+        at: glam::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        use super::arms::{ArmState, REST, angles};
+        use horizon_assets::item_model::DisplayContext;
+        if part.models.len() < 6 {
+            return;
+        }
+        let ceiling = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .is_some_and(|s| s.properties.get("ceiling").map(String::as_str) == Some("true"));
+        let e = super::machine_entities::read(&self.world, pos, Kind::Arm);
+        let a = ArmState::read(e.arm.as_ref());
+        let t = (self.world.game_time - e.since) as f32 + self.clock.fraction() as f32;
+        let progress = a.progress_after(t);
+        let target = |i: i32| {
+            let p = a.points.get(usize::try_from(i).ok()?)?;
+            let (v, claw) = self.arm_point_target(p.pos);
+            Some(angles(pos, v, claw, ceiling))
+        };
+        let (to, from) = (target(a.target), target(a.from));
+        let shortest = |from: f32, to: f32| (to - from + 540.0).rem_euclid(360.0) - 180.0;
+        let lerp_angle = |k: f32, from: f32, to: f32| from + shortest(from, to) * k;
+        let prev_base = from.map_or(REST.base, |f| f.base);
+        let base = to.map_or(prev_base, |t| lerp_angle(progress, prev_base, t.base));
+        let start = if a.rest { None } else { from };
+        let (p0, p1) = if progress < 0.5 {
+            (start.unwrap_or(REST), REST)
+        } else {
+            (REST, to.unwrap_or(REST))
+        };
+        let k = if progress >= 1.0 {
+            1.0
+        } else {
+            (progress % 0.5) * 2.0
+        };
+        let lower = p0.lower + (p1.lower - p0.lower) * k;
+        let upper = p0.upper + (p1.upper - p0.upper) * k;
+        let head = lerp_angle(k, p0.head % 360.0, p1.head % 360.0);
+        let catalog = &self.pack.render.model_catalog;
+        let rot_x = |d: f32| glam::Mat4::from_rotation_x(d.to_radians());
+        let move_to =
+            |x: f32, y: f32, z: f32| glam::Mat4::from_translation(glam::Vec3::new(x, y, z));
+        let mut draw = |i: usize, m: glam::Mat4| {
+            if let Some(model) = catalog.partial(&part.models[i], [0, 0, 0]) {
+                self.baked_model_vertices(model, m, light, false, out);
+            }
+        };
+        let mut m = at * move_to(0.5, 0.5, 0.5);
+        if ceiling {
+            m *= rot_x(180.0);
+        }
+        m *= move_to(0.0, 4.0 / 16.0, 0.0) * glam::Mat4::from_rotation_y(base.to_radians());
+        draw(0, m);
+        // The renderer's lowerArmAngle - 135, plus transformLowerArm's 135.
+        m *= move_to(0.0, 2.0 / 16.0, 0.0) * rot_x(lower);
+        draw(1, m);
+        // upperArmAngle - 90, less transformUpperArm's 90.
+        m *= move_to(0.0, 0.0, -14.0 / 16.0) * rot_x(upper - 180.0);
+        draw(2, m);
+        m *= move_to(0.0, 0.0, -15.0 / 16.0) * rot_x(head - 45.0);
+        draw(3, m);
+        let held = e.items.first().cloned().flatten();
+        let block = held.as_ref().is_some_and(|h| {
+            self.res
+                .items()
+                .get(&h.item)
+                .is_some_and(|i| i.block.is_some())
+        });
+        for (flip, grip) in [(1.0f32, 5), (-1.0, 4)] {
+            let open = match (&held, block) {
+                (Some(_), true) => 3.0 / 16.0,
+                (Some(_), false) => 5.0 / 64.0,
+                (None, _) => 1.0 / 16.0,
+            };
+            draw(grip, m * move_to(0.0, -flip * open, -6.0 / 16.0));
+        }
+        if let Some(stack) = held {
+            let model = self.resolve_item(&stack, DisplayContext::Fixed, None, 0);
+            if !model.is_empty() {
+                let scale = if block { 0.5 } else { 0.625 };
+                let item = m
+                    * rot_x(90.0)
+                    * move_to(0.0, if block { -9.0 / 16.0 } else { -10.0 / 16.0 }, 0.0)
+                    * glam::Mat4::from_scale(glam::Vec3::splat(scale));
+                self.submit_item_world(&model, item, light, out);
+            }
         }
     }
 
@@ -1046,9 +1234,11 @@ impl Game<'_> {
 /// about its axis, a motor's and a crank's by their face's sign.
 fn own_way(part: &Part) -> (usize, f32) {
     match part.kind {
-        KineticPart::Motor | KineticPart::Crank | KineticPart::Drill | KineticPart::Fan => {
-            kinetics::at_face(part.face, 1.0)
-        }
+        KineticPart::Motor
+        | KineticPart::Crank
+        | KineticPart::Drill
+        | KineticPart::Fan
+        | KineticPart::Bearing => kinetics::at_face(part.face, 1.0),
         KineticPart::Saw if part.face != [0; 3] => kinetics::at_face(part.face, 1.0),
         _ => (part.axis, 1.0),
     }
