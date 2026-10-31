@@ -823,6 +823,8 @@ mod tests {
             head: None,
             pole: None,
             models: Vec::new(),
+            stress: 0.0,
+            capacity: 8.0,
         };
         let props = BTreeMap::from([("facing".to_owned(), "up".to_owned())]);
         let spin = Spin::new(&crank, &props).unwrap();

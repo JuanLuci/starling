@@ -268,16 +268,25 @@ of four by the player's facing (`own-states.json` in the root; game/own_states.r
 turn and mirror among themselves by their `facing` or `axis`.
 
 A block that keeps items of its own declares the **machine** it is, `"machine": "depot" |
-"basin"` (Starling, `machines.json` in the root): its block entity is a tag the chunk saves (its
-id its block's), sent to the players near with a Starling-only block entity type, and its items
-drop when it breaks (game/machine_entities.rs). Hoppers put into a depot, a millstone or a
-basin and take from their outputs.
+"basin" | "belt" | "burner" | "funnel"` (Starling, `machines.json` in the root): its block entity
+is a tag the chunk saves (its id its block's), sent to the players near with a Starling-only
+block entity type, and its items drop when it breaks (game/machine_entities.rs). Hoppers put into
+a depot, a millstone, a basin or a saw and take from their outputs. A `funnel` (its states'
+`facing`, `extracting` and `powered`) faces away from the inventory behind it: it puts what comes
+in at its open side into it, or extracts and drops what it gives every 8 ticks (one item, a
+`brass` one's block up to a stack), while no redstone signal is beside it; a `*_belt_funnel` over
+a belt takes what passes off it, or pushes onto it (its `shape`: `pulling`, `pushing`,
+`retracted`, `extended`), and a sideways funnel placed over a belt or depot becomes one
+(game/funnels.rs).
 
 A block can also be a **kinetic part** (Starling: rotation passed from block to block, as
 Create's; `horizon_client::kinetics`): `"kinetic": { "part": "shaft" | "cogwheel" |
 "large_cogwheel" | "gearbox" | "motor" | "crank" | "drill" | "crushing_wheel" | "millstone" |
-"press" | "mixer" | "fan" | "water_wheel" | "clutch" | "gearshift", "rpm": 16, "spins": true, "half":
-"<ns>:block/<model>", "extra": "<ns>:block/<model>" }`. Its axis or facing is its state's `axis`
+"press" | "mixer" | "fan" | "water_wheel" | "clutch" | "gearshift" | "belt" | "saw", "rpm": 16,
+"spins": true, "half": "<ns>:block/<model>", "extra": "<ns>:block/<model>", "stress": 4,
+"capacity": 32 }`. `stress` is what a part takes from its network per RPM it turns at, `capacity`
+what a source gives per RPM it turns the network at; a network taking more than its sources give
+stands still (Create's stress units). Its axis or facing is its state's `axis`
 or `facing` (a shaft-like part with only a `facing`, a water wheel, is an axle along it). A part that turns whole (`spins`) declares `"render_shape": "ENTITYBLOCK_ANIMATED"`
 in its properties, so the terrain leaves it to the game, which draws it turning; `half` is a
 model drawn turning at each face it joins through (a gearbox's shaft ends), `extra` one turning

@@ -13,12 +13,14 @@ Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 [Create](https://github.com/Creators-of-Create/Create) 6.0.10's mechanical drill and crushing
 wheels (BlockBreakingKineticBlockEntity, DrillBlockEntity, CrushingWheelBlock and
 CrushingWheelControllerBlockEntity) and the recipes Create makes as the game loads
-(RuntimeDataGenerator), and `processing.rs`, `basins.rs`, `fans.rs`, `belts.rs` and `saws.rs`
-beside it its depot, millstone, mechanical press, basin, mechanical mixer, blaze burner, encased
-fan, mechanical belt and mechanical saw (DepotBehaviour, MillstoneBlockEntity, PressingBehaviour,
-BasinRecipe, MechanicalMixerBlockEntity, BlazeBurnerBlockEntity, AirCurrent, FanProcessing,
-BeltInventory, BeltConnectorItem, SawBlockEntity, TreeCutter and their renderers), with
-`horizon_client::kinetics`'s water wheel (WaterWheelBlockEntity) and `own_states.rs`'s placement
+(RuntimeDataGenerator), and `processing.rs`, `basins.rs`, `fans.rs`, `belts.rs`, `saws.rs` and
+`funnels.rs` beside it its depot, millstone, mechanical press, basin, mechanical mixer, blaze
+burner, encased fan, mechanical belt, mechanical saw and funnels (DepotBehaviour,
+MillstoneBlockEntity, PressingBehaviour, BasinRecipe, MechanicalMixerBlockEntity,
+BlazeBurnerBlockEntity, AirCurrent, FanProcessing, BeltInventory, BeltConnectorItem,
+SawBlockEntity, TreeCutter, FunnelBlock, FunnelBlockEntity, BeltFunnelBlock,
+BeltFunnelInteractionHandler and their renderers), with `horizon_client::kinetics`'s water wheel
+(WaterWheelBlockEntity) and stress (KineticNetwork) and `own_states.rs`'s placement
 (DirectionalAxisKineticBlock), by The Create Team, whose code is under the MIT license
 (`licenses/create-MIT.txt`). Create's assets are All Rights Reserved; none are in this
 repository: a shared port fetches them from Modrinth on the player's device.

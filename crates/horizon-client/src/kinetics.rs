@@ -51,6 +51,9 @@ pub struct Part {
     pub pulley: bool,
     /// More models the game draws for it (a belt's, game/belts.rs).
     pub models: Vec<String>,
+    /// What it takes from its network and, a source, gives, per RPM ([`Kinetic::stress`]).
+    pub stress: f32,
+    pub capacity: f32,
 }
 
 impl Part {
@@ -119,6 +122,8 @@ impl Part {
             powered: false,
             pulley: true,
             models: kinetic.models.clone(),
+            stress: kinetic.stress.max(0.0),
+            capacity: kinetic.capacity.max(0.0),
         })
     }
     /// A cogwheel's teeth (Create's models: 8 and 16, one along each axis at no turn).
@@ -423,7 +428,9 @@ fn links(parts: &HashMap<[i32; 3], Arc<Part>>, p: [i32; 3], part: &Part) -> Vec<
 /// Every part's speed, from the sources: the motors, and `turned` (cranks being turned, at
 /// their own speed, outwards). Each network takes its fastest source's speed; a slower one
 /// turning it the same way is overpowered. A network its sources (or a loop of gears) would
-/// turn two ways at once stands still. Parts no source reaches are not listed.
+/// turn two ways at once stands still, and so does one taking more stress than its sources
+/// give (Create's KineticNetwork: each part's stress times its speed, against each source's
+/// capacity times its own). Parts no source reaches are not listed.
 pub fn solve(
     parts: &HashMap<[i32; 3], Arc<Part>>,
     turned: &HashMap<[i32; 3], f32>,
@@ -460,18 +467,24 @@ pub fn solve_linked(
     sources.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()).then(a.0.cmp(&b.0)));
     let mut speed: HashMap<[i32; 3], (f32, usize)> = HashMap::new();
     let mut stuck: Vec<bool> = Vec::new();
+    // Each network's stress capacity: its sources' (calculateCapacity).
+    let mut capacity: Vec<f32> = Vec::new();
     // Parts held at the limit: their gears no longer match, which jams nothing.
     let mut capped: std::collections::HashSet<[i32; 3]> = std::collections::HashSet::new();
     for (start, value) in sources {
+        let gives = parts[&start].capacity * value.abs();
         if let Some((s, net)) = speed.get(&start) {
             // Reached from a faster source: the other way jams the network.
             if s * value < 0.0 {
                 stuck[*net] = true;
+            } else {
+                capacity[*net] += gives;
             }
             continue;
         }
         let net = stuck.len();
         stuck.push(false);
+        capacity.push(gives);
         speed.insert(start, (value.clamp(-MAX_RPM, MAX_RPM), net));
         let mut queue = VecDeque::from([start]);
         while let Some(p) = queue.pop_front() {
@@ -507,6 +520,14 @@ pub fn solve_linked(
                 }
             }
         }
+    }
+    // calculateStress: what every part takes at its speed; more than the capacity overstresses.
+    let mut stress = vec![0.0f32; stuck.len()];
+    for (p, (s, net)) in &speed {
+        stress[*net] += parts[p].stress * s.abs();
+    }
+    for (net, jammed) in stuck.iter_mut().enumerate() {
+        *jammed |= stress[net] > capacity[net];
     }
     speed
         .into_iter()
@@ -588,6 +609,8 @@ mod tests {
             head: None,
             pole: None,
             models: Vec::new(),
+            stress: 0.0,
+            capacity: 0.0,
         };
         Arc::new(Part::new(&kinetic, axis, facing).unwrap())
     }
@@ -651,6 +674,8 @@ mod tests {
             head: None,
             pole: None,
             models: Vec::new(),
+            stress: 0.0,
+            capacity: 8.0,
         };
         let up = Part::new(&kinetic, None, Some("up")).unwrap();
         assert_eq!(up.extra_turns, Some([3, 0, 0]));
@@ -698,6 +723,35 @@ mod tests {
         parts.insert([-2, 0, 0], wheel);
         parts.insert([-3, 0, 0], shaft("x"));
         assert_eq!(solve(&parts, &HashMap::new())[&[-3, 0, 0]], -16.0);
+    }
+
+    #[test]
+    fn a_network_taking_more_stress_than_its_sources_give_stands_still() {
+        // A motor giving 2 per RPM at 16 (32) turns a drill taking 4 per RPM (64): too much.
+        let with = |p: Arc<Part>, stress: f32, capacity: f32| {
+            let mut p = (*p).clone();
+            p.stress = stress;
+            p.capacity = capacity;
+            Arc::new(p)
+        };
+        let mut parts = HashMap::new();
+        parts.insert([0, 0, 0], with(motor("east", 16.0), 0.0, 2.0));
+        parts.insert(
+            [1, 0, 0],
+            with(part(KineticPart::Drill, None, Some("east"), 0.0), 4.0, 0.0),
+        );
+        assert_eq!(solve(&parts, &HashMap::new())[&[1, 0, 0]].abs(), 0.0);
+        // Twice the capacity is enough (as much as it takes).
+        parts.insert([0, 0, 0], with(motor("east", 16.0), 0.0, 4.0));
+        assert_eq!(solve(&parts, &HashMap::new())[&[1, 0, 0]].abs(), 16.0);
+        // Two sources turning a line the same way give both their capacities.
+        let mut parts = HashMap::new();
+        parts.insert([0, 0, 0], with(motor("east", 16.0), 0.0, 2.0));
+        parts.insert([1, 0, 0], with(shaft("x"), 4.0, 0.0));
+        parts.insert([2, 0, 0], shaft("x"));
+        assert_eq!(solve(&parts, &HashMap::new())[&[1, 0, 0]], 0.0);
+        parts.insert([3, 0, 0], with(motor("west", -16.0), 0.0, 2.0));
+        assert_eq!(solve(&parts, &HashMap::new())[&[1, 0, 0]], 16.0);
     }
 
     #[test]

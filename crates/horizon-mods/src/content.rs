@@ -135,6 +135,14 @@ pub struct Kinetic {
     /// start, middle, end, their bottoms, its diagonals, its pulley).
     #[serde(default)]
     pub models: Vec<String>,
+    /// Create's stress: what it takes from its network, in stress units per RPM it turns at
+    /// (Create's `impact`: a drill's 4, a press's 8).
+    #[serde(default)]
+    pub stress: f32,
+    /// A source's stress capacity, in stress units per RPM it turns its network at (a water
+    /// wheel's 32, a crank's 8). A network taking more than its sources give stands still.
+    #[serde(default)]
+    pub capacity: f32,
 }
 
 /// The directions a kinetic model may be made pointing.
