@@ -42,6 +42,8 @@ pub(super) struct Kinetics {
     machines: HashMap<[i32; 3], Kind>,
     /// What each turns at, its own way (kinetics.rs): only those a source reaches.
     speeds: HashMap<[i32; 3], f32>,
+    /// The sources turned other than motors (cranks, water wheels, windmills), as last solved.
+    turned: HashMap<[i32; 3], f32>,
     /// What each is drawn turning at, following `speeds` (EASE_TICKS).
     shown: HashMap<[i32; 3], f32>,
     /// Each part's turn when the parts last changed (degrees): meshed teeth go into the gaps.
@@ -105,6 +107,7 @@ impl Game<'_> {
                 .filter(|(_, k)| **k == Kind::Bearing)
                 .map(|(p, _)| *p);
             turned.extend(self.windmill_speeds(bearings));
+            self.kinetics.turned = turned.clone();
             // Each belt's segments turn together.
             let groups: Vec<Vec<[i32; 3]>> = self
                 .kinetics
@@ -734,6 +737,110 @@ impl Game<'_> {
             for (_, model) in &models {
                 self.baked_model_vertices(model, place, light, false, out);
             }
+        }
+    }
+
+    /// Starling: the kinetic part the player looks at, in the screen's top right corner (under
+    /// any effect icons): its
+    /// block, its speed, and its network's stress against its capacity (Create's goggles show
+    /// these; another port of Create shows them so).
+    pub(super) fn draw_kinetic_info(&self, batch: &mut horizon_client::hud::HudBatch) {
+        use horizon_client::hud::{HudBatch, rgba};
+        if self.ui.hide_gui || self.screen != super::Screen::Playing || self.title.is_some() {
+            return;
+        }
+        let Some(hit) = self.pick() else {
+            return;
+        };
+        let Some((state, _)) = self.kinetics.parts.get(&hit.pos) else {
+            return;
+        };
+        let name = self.res.facts().get(*state).name.clone();
+        let (ns, path) = name.split_once(':').unwrap_or(("minecraft", &name));
+        let block = self.translate(&format!("block.{ns}.{path}"), path);
+        let mut owner = ns.to_owned();
+        if let Some(first) = owner.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        let speed = self
+            .kinetics
+            .speeds
+            .get(&hit.pos)
+            .copied()
+            .unwrap_or(0.0)
+            .abs();
+        let parts: HashMap<[i32; 3], Arc<Part>> = self
+            .kinetics
+            .parts
+            .iter()
+            .map(|(p, (_, part))| (*p, part.clone()))
+            .collect();
+        let groups: Vec<Vec<[i32; 3]>> = self
+            .kinetics
+            .belts
+            .iter()
+            .map(|c| c.segments.clone())
+            .collect();
+        let (stress, capacity) = kinetics::network_stress(
+            &parts,
+            &self.kinetics.turned,
+            &groups,
+            &self.kinetics.speeds,
+            hit.pos,
+        )
+        .unwrap_or((0.0, 0.0));
+        let rpm = if speed.fract() == 0.0 {
+            format!("{speed:.0} RPM")
+        } else {
+            format!("{speed:.1} RPM")
+        };
+        let lines = [
+            (format!("{owner} : {block}"), rgba(255, 210, 110, 255)),
+            (rpm, rgba(255, 255, 255, 255)),
+            (
+                format!("Stress : {stress:.0} / {capacity:.0} SU"),
+                if stress > capacity {
+                    rgba(255, 90, 90, 255)
+                } else {
+                    rgba(255, 255, 255, 255)
+                },
+            ),
+        ];
+        let atlas = &self.gui.atlas;
+        let width = lines
+            .iter()
+            .map(|(t, _)| HudBatch::text_width(atlas, t))
+            .fold(0.0, f32::max);
+        let (pad, line) = (3.0, 10.0);
+        let w = width + pad * 2.0;
+        let h = line * lines.len() as f32 + pad * 2.0 - 2.0;
+        let x = batch.width - w - 2.0;
+        // Below the effect icons there (`Hud.extractEffects`: the beneficial row at 1, the
+        // harmful one at 27, 24 tall).
+        let y = self
+            .potions
+            .effects
+            .list
+            .iter()
+            .map(|e| {
+                if horizon_client::hud_overlays::EffectIcon::from(e).beneficial {
+                    25.0
+                } else {
+                    51.0
+                }
+            })
+            .fold(0.0, f32::max)
+            + 2.0;
+        batch.fill(atlas, x, y, w, h, rgba(52, 60, 88, 200));
+        for (i, (text, color)) in lines.iter().enumerate() {
+            batch.text(
+                atlas,
+                text,
+                x + pad,
+                y + pad + line * i as f32,
+                *color,
+                true,
+            );
         }
     }
 

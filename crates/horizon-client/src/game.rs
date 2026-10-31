@@ -6248,6 +6248,8 @@ impl Game<'_> {
         self.draw_link_prompt(&mut batch);
         self.draw_touch(&mut batch);
         self.draw_chat_bar(&mut batch);
+        // Starling: the kinetic part looked at, its speed and stress (kinetics.rs).
+        self.draw_kinetic_info(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);

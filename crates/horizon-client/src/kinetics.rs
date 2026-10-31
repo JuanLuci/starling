@@ -562,6 +562,42 @@ pub fn solve_linked(
         .collect()
 }
 
+/// The stress the network `start` is in takes and the capacity its sources give, in stress units
+/// (Create's KineticNetwork, as [`solve_linked`] weighs it), from the speeds it solved.
+pub fn network_stress(
+    parts: &HashMap<[i32; 3], Arc<Part>>,
+    turned: &HashMap<[i32; 3], f32>,
+    groups: &[Vec<[i32; 3]>],
+    speeds: &HashMap<[i32; 3], f32>,
+    start: [i32; 3],
+) -> Option<(f32, f32)> {
+    parts.get(&start)?;
+    let mut seen = std::collections::HashSet::from([start]);
+    let mut queue = VecDeque::from([start]);
+    let (mut stress, mut capacity) = (0.0f32, 0.0f32);
+    while let Some(p) = queue.pop_front() {
+        let part = &parts[&p];
+        let speed = speeds.get(&p).copied().unwrap_or(0.0);
+        stress += part.stress * speed.abs();
+        let own = if part.source() {
+            part.rpm
+        } else {
+            turned.get(&p).copied().unwrap_or(0.0)
+        };
+        capacity += part.capacity * own.abs();
+        let mut joined: Vec<[i32; 3]> = links(parts, p, part).into_iter().map(|(q, _)| q).collect();
+        if let Some(g) = groups.iter().find(|g| g.contains(&p)) {
+            joined.extend(g.iter().copied().filter(|q| parts.contains_key(q)));
+        }
+        for q in joined {
+            if seen.insert(q) {
+                queue.push_back(q);
+            }
+        }
+    }
+    Some((stress, capacity))
+}
+
 /// Every part's turn when the world's clock began, in degrees, so meshed cogwheels' teeth go into
 /// each other's gaps as they turn: a small one beside another half a tooth (22.5 degrees) from it,
 /// a large one diagonal to a small one half of its own tooth (11.25). Parts on one axle keep one
