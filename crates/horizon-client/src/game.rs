@@ -9355,6 +9355,50 @@ impl Game<'_> {
                 }
             }
         } else {
+            // Made with other mods than the ones running: the game starts again with them and
+            // creates it then (once: a second time they did not load, and the title says so).
+            let running = world_content::running();
+            let chosen = create
+                .and_then(|o| o.mods.as_ref())
+                .filter(|chosen| **chosen != running);
+            let again = world_content::next_start().is_some_and(|n| n.world == folder);
+            let missing: std::collections::BTreeSet<String> = chosen
+                .map(|chosen| chosen.difference(&running).cloned().collect())
+                .unwrap_or_default();
+            if let Some(chosen) = chosen
+                && (!again || !missing.is_empty())
+            {
+                if !again {
+                    log::info!(
+                        "Horizon: {folder} is made with mods {chosen:?}, not the {running:?} \
+                         running: starting again"
+                    );
+                    let created = world_content::Created {
+                        name: name.unwrap_or(folder).to_owned(),
+                        seed,
+                        creative,
+                        options: create.cloned().unwrap_or_default(),
+                    };
+                    world_content::request_create(folder, chosen, &created)?;
+                    world_content::restart();
+                    return Ok(());
+                }
+                let message = format!(
+                    "This world was to be made with {}, which did not load. Look at it in \
+                     Options > Mods, then create the world again.",
+                    world_content::names(&missing)
+                );
+                log::warn!("Horizon: {folder}: {message}");
+                let saves = std::env::current_dir()?.join("saves");
+                let title = self
+                    .title
+                    .get_or_insert_with(|| Title::new(saves, &self.options.resources));
+                title.mode = horizon_client::title::Mode::Error {
+                    message,
+                    return_to: Box::new(horizon_client::title::Mode::Main),
+                };
+                return Ok(());
+            }
             self.content_record = Some(folder.to_owned());
             world_content::remember_running();
         }
@@ -15683,6 +15727,9 @@ fn start_game<'a>(
             );
             title.last_server = game.settings.file.string("lastServer");
             game.title = Some(title);
+            // Started again for a world's own mods (the start without a loading screen: the
+            // menu's takes it in startup_menu.rs).
+            game.pending_entry = world_content::next_entry();
         }
     }
     if std::env::var_os("HORIZON_COMMAND_SCRIPT").is_some()

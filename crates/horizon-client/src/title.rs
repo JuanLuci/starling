@@ -21,6 +21,7 @@ mod flat;
 mod tests;
 pub mod world_management;
 pub use create_world::{DIFFICULTIES, WorldOptions};
+pub use data_packs::set_running as set_running_world_mods;
 pub use flat::{FlatLayer, FlatSettings, State as FlatEditor};
 
 /// SelectWorldScreen's `HeaderAndFooterLayout(8 + 9 + 8 + 20 + 4, 60)`.
@@ -1659,7 +1660,9 @@ impl Title {
             }
             // CreateWorldScreen.openDataPackSelectionScreen (Starling: the game's own folder).
             (Mode::Create { options, .. }, Some(31)) => {
-                *self.packs.get_mut() = Some(data_packs::DataPacks::open(&options.data_packs));
+                let mods = options.mods.clone().unwrap_or_else(data_packs::running);
+                *self.packs.get_mut() =
+                    Some(data_packs::DataPacks::open(&options.data_packs, &mods));
                 Action::None
             }
             (
@@ -1957,11 +1960,14 @@ impl Title {
             }
         }
     }
-    /// The data packs' `onClose`: their choice kept for the world being created.
+    /// The data packs' `onClose`: their choice kept for the world being created, the world mods
+    /// with it.
     fn close_packs(&mut self, chosen: Vec<String>) {
         *self.packs.get_mut() = None;
         if let Mode::Create { options, .. } = &mut self.mode {
-            options.data_packs = chosen;
+            let (packs, mods) = data_packs::split(chosen);
+            options.data_packs = packs;
+            options.mods = Some(mods);
         }
     }
     pub fn escape(&mut self) {

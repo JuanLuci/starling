@@ -1,13 +1,17 @@
 //! Starling: Create New World's Data Packs screen (`CreateWorldScreen.openDataPackSelectionScreen`):
 //! the pack screen over the game's `datapacks` folder, where a player puts packs (a phone's file
 //! manager reaches it in the game's shared folder). The chosen ones are copied into the new
-//! world's `datapacks`, where the world finds and enables them.
+//! world's `datapacks`, where the world finds and enables them. The content mods that add blocks
+//! or items (`registries`, tied to the world) are offered beside them as `mod/<id>`: the world
+//! plays with the chosen ones.
 use crate::hud::{HudAtlas, HudBatch};
 use crate::pack_screen::{self, Action, Compat, PackInfo, PackScreen, Source};
 use crate::packs::Position;
 use crate::screen_draw::Measure;
 use crate::text::{Style, Text};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 /// The game's own folder of data packs to choose from, beside `resourcepacks`.
@@ -17,25 +21,78 @@ pub fn folder() -> PathBuf {
         .join("datapacks")
 }
 
-/// The packs the screen offers: the folder's, then vanilla's own (required, at the bottom).
-fn infos(dir: &Path) -> Vec<PackInfo> {
-    // A folder of its own as `resources`: no built-in resource packs come along.
-    let mut infos: Vec<PackInfo> = crate::packs::discover(dir, dir)
+/// A world mod's id in the screen's list.
+const MOD: &str = "mod/";
+
+static RUNNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The world mods this start loaded (the game's world_content.rs): what a new world plays with
+/// unless the screen chooses others.
+pub fn set_running(ids: BTreeSet<String>) {
+    *RUNNING.lock().unwrap_or_else(PoisonError::into_inner) = ids;
+}
+pub(super) fn running() -> BTreeSet<String> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The mods folder's mods that add blocks or items, by id.
+fn world_mods() -> Vec<horizon_mods::Manifest> {
+    let dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join(crate::mod_list::DIR);
+    let mut mods: Vec<horizon_mods::Manifest> = horizon_mods::find(&dir)
         .iter()
-        .map(|p| PackInfo {
-            id: p.id.clone(),
-            title: p.title.clone(),
-            description: p.raw_description.clone(),
-            description_style: p.description_style.clone(),
+        .filter_map(|path| horizon_mods::Package::read(path).ok())
+        .map(|p| p.manifest)
+        .filter(|m| {
+            m.capabilities
+                .contains(&horizon_mods::Capability::Registries)
+        })
+        .collect();
+    mods.sort_by(|a, b| a.name.cmp(&b.name));
+    mods.dedup_by(|a, b| a.id == b.id);
+    mods
+}
+
+/// The packs the screen offers: the world mods, the folder's packs, then vanilla's own
+/// (required, at the bottom).
+fn infos(dir: &Path) -> Vec<PackInfo> {
+    let mut infos: Vec<PackInfo> = world_mods()
+        .into_iter()
+        .map(|m| PackInfo {
+            id: format!("{MOD}{}", m.id),
+            title: Text::literal(&m.name),
+            description: Text::literal(if m.description.is_empty() {
+                format!("Mod {}", m.version)
+            } else {
+                format!("Mod {}: {}", m.version, m.description)
+            }),
+            description_style: Style::default(),
             source: Source::Default,
-            // The resource pack format it is judged by is not a data pack's.
             compat: Compat::Compatible,
-            icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
+            icon: None,
             required: false,
             position: Position::Top,
             fixed: false,
         })
         .collect();
+    // A folder of its own as `resources`: no built-in resource packs come along.
+    infos.extend(crate::packs::discover(dir, dir).iter().map(|p| PackInfo {
+        id: p.id.clone(),
+        title: p.title.clone(),
+        description: p.raw_description.clone(),
+        description_style: p.description_style.clone(),
+        source: Source::Default,
+        // The resource pack format it is judged by is not a data pack's.
+        compat: Compat::Compatible,
+        icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
+        required: false,
+        position: Position::Top,
+        fixed: false,
+    }));
     infos.push(PackInfo {
         id: "vanilla".into(),
         title: Text::literal("vanilla"),
@@ -62,11 +119,12 @@ pub(super) struct DataPacks {
 }
 
 impl DataPacks {
-    /// Opened over Create New World with its current choice.
-    pub(super) fn open(chosen: &[String]) -> Self {
+    /// Opened over Create New World with its current choice: data packs and world mods.
+    pub(super) fn open(packs: &[String], mods: &BTreeSet<String>) -> Self {
         let dir = folder();
         let selected = std::iter::once("vanilla".to_owned())
-            .chain(chosen.iter().cloned())
+            .chain(mods.iter().map(|id| format!("{MOD}{id}")))
+            .chain(packs.iter().cloned())
             .collect();
         DataPacks {
             opening: Some((infos(&dir), selected)),
@@ -176,6 +234,17 @@ impl DataPacks {
     pub(super) fn search_at(&self, (x, y): (f32, f32)) -> bool {
         self.screen.as_ref().is_some_and(|s| s.search_at(x, y))
     }
+}
+
+/// A choice ([`DataPacks::commit`]) as its data packs and its world mods' ids.
+pub(super) fn split(chosen: Vec<String>) -> (Vec<String>, BTreeSet<String>) {
+    let (mods, packs): (Vec<String>, Vec<String>) =
+        chosen.into_iter().partition(|id| id.starts_with(MOD));
+    let mods = mods
+        .iter()
+        .filter_map(|id| id.strip_prefix(MOD).map(str::to_owned))
+        .collect();
+    (packs, mods)
 }
 
 /// The chosen packs (`file/<name>`) copied from `from` (the game's folder) into the world's

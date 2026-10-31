@@ -21,6 +21,17 @@ const LAST_FILE: &str = "last-content.json";
 pub(super) struct NextStart {
     pub(super) world: String,
     pub(super) content: BTreeSet<String>,
+    /// A new world to create with those mods (Create New World's choice), not one to open.
+    pub(super) create: Option<Created>,
+}
+
+/// Create New World's choices, kept across the restart that loads the world's mods.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct Created {
+    pub(super) name: String,
+    pub(super) seed: Option<i64>,
+    pub(super) creative: bool,
+    pub(super) options: horizon_client::title::WorldOptions,
 }
 
 fn next_path() -> PathBuf {
@@ -37,10 +48,37 @@ pub(super) fn next_start() -> Option<&'static NextStart> {
         let value: serde_json::Value = serde_json::from_str(&text).ok()?;
         let world = value["world"].as_str()?.to_owned();
         let content = ids(&value["content"]);
+        let create = serde_json::from_value(value["create"].clone()).ok();
         log::info!("Horizon: started again to enter {world} with its mods {content:?}");
-        Some(NextStart { world, content })
+        Some(NextStart {
+            world,
+            content,
+            create,
+        })
     })
     .as_ref()
+}
+
+/// The world a restart was made for: it opens as the title's Play does, or is created as Create
+/// New World asked.
+pub(super) fn next_entry() -> Option<super::PendingWorldEntry> {
+    let next = next_start()?;
+    Some(match &next.create {
+        Some(c) => super::PendingWorldEntry::Local {
+            folder: next.world.clone(),
+            name: Some(c.name.clone()),
+            seed: c.seed,
+            creative: c.creative,
+            create: Some(Box::new(c.options.clone())),
+        },
+        None => super::PendingWorldEntry::Local {
+            folder: next.world.clone(),
+            name: None,
+            seed: None,
+            creative: false,
+            create: None,
+        },
+    })
 }
 
 fn ids(value: &serde_json::Value) -> BTreeSet<String> {
@@ -58,6 +96,8 @@ fn running_cell() -> &'static Mutex<BTreeSet<String>> {
     RUNNING.get_or_init(Default::default)
 }
 pub(super) fn set_running(ids: BTreeSet<String>) {
+    // Create New World's mods screen starts from them.
+    horizon_client::title::set_running_world_mods(ids.clone());
     *running_cell()
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = ids;
@@ -221,7 +261,19 @@ fn last_from(text: &str, enabled_now: &BTreeSet<String>) -> Option<BTreeSet<Stri
 
 /// Writes the next start's request: world `folder` with `content`.
 pub(super) fn request_restart(folder: &str, content: &BTreeSet<String>) -> std::io::Result<()> {
-    let body = serde_json::json!({ "world": folder, "content": content });
+    write_next(serde_json::json!({ "world": folder, "content": content }))
+}
+
+/// Writes the next start's request: a new world `folder` made with `created`, with `content`.
+pub(super) fn request_create(
+    folder: &str,
+    content: &BTreeSet<String>,
+    created: &Created,
+) -> std::io::Result<()> {
+    write_next(serde_json::json!({ "world": folder, "content": content, "create": created }))
+}
+
+fn write_next(body: serde_json::Value) -> std::io::Result<()> {
     let path = next_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -286,6 +338,7 @@ mod tests {
         let next = NextStart {
             world: "w".into(),
             content: create.clone(),
+            create: None,
         };
         assert_eq!(
             decide("w", create.clone(), &none, None, Some(&next), || {}),

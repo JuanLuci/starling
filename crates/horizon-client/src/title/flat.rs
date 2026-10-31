@@ -21,7 +21,7 @@ const HEADER: f32 = 14.0;
 const LAYER_ROW: f32 = 20.0;
 const PRESET_ROW: f32 = 24.0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FlatLayer {
     /// A block id such as `minecraft:dirt`.
     pub block: String,
@@ -31,7 +31,7 @@ pub struct FlatLayer {
 
 /// FlatLevelGeneratorSettings: the layers (bottom to top), the biome and the
 /// decorations CreateFlatWorldScreen edits.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FlatSettings {
     pub biome: String,
     pub features: bool,

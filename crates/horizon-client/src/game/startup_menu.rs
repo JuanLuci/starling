@@ -42,15 +42,9 @@ impl StartupMenu {
                 name: options.player_name(),
                 cookies: None,
             })
-        } else if let Some(next) = super::world_content::next_start() {
-            // Started again for a world's own mods: it opens as the title's Play does.
-            Some(PendingWorldEntry::Local {
-                folder: next.world.clone(),
-                name: None,
-                seed: None,
-                creative: false,
-                create: None,
-            })
+        } else if let Some(entry) = super::world_content::next_entry() {
+            // Started again for a world's own mods.
+            Some(entry)
         } else {
             options
                 .world

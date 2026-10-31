@@ -28,7 +28,7 @@ pub enum Compat {
 fn drop_info(data: bool) -> Text {
     if cfg!(target_os = "android") {
         Text::literal(if data {
-            "Put packs in Starling/datapacks"
+            "Put data packs in Starling/datapacks, mods in Starling/horizon-mods"
         } else {
             "Put packs in Starling/resourcepacks"
         })
@@ -345,7 +345,7 @@ pub struct PackScreen {
     pub changed: bool,
     /// The packs' icons by their [`icon_texture`].
     icons: HashMap<String, Arc<[u8]>>,
-    /// Data packs (Create New World's, `dataPack.title`) rather than resource packs.
+    /// Data packs and world mods (Create New World's) rather than resource packs.
     pub data: bool,
 }
 
@@ -400,11 +400,12 @@ impl PackScreen {
         self
     }
     fn title(&self) -> Text {
-        tr(if self.data {
-            "dataPack.title"
+        if self.data {
+            // Starling: the world's content mods are chosen here too.
+            Text::literal("Select Mods and Data Packs")
         } else {
-            "resourcePack.title"
-        })
+            tr("resourcePack.title")
+        }
     }
     fn info(&self, id: &str) -> Option<&PackInfo> {
         self.packs.iter().find(|p| p.id == id)

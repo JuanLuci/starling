@@ -869,6 +869,34 @@ fn chosen_data_packs_are_copied_into_the_new_world() {
 }
 
 #[test]
+fn the_screen_choice_splits_into_data_packs_and_world_mods() {
+    let (packs, mods) =
+        super::data_packs::split(vec!["mod/create".into(), "file/zipped.zip".into()]);
+    assert_eq!(packs, ["file/zipped.zip"]);
+    assert_eq!(mods, ["create".to_owned()].into());
+}
+
+#[test]
+fn world_options_survive_the_restart_as_json() {
+    let mut options = WorldOptions {
+        hardcore: true,
+        flat: true,
+        flat_settings: Some(FlatSettings::default()),
+        data_packs: vec!["file/zipped.zip".into()],
+        mods: Some(["create".to_owned()].into()),
+        ..WorldOptions::default()
+    };
+    assert!(options.rules.set_string("keep_inventory", "true"));
+    assert!(options.rules.set_string("random_tick_speed", "7"));
+    let json = serde_json::to_value(&options).unwrap();
+    let back: WorldOptions = serde_json::from_value(json).unwrap();
+    assert_eq!(back, options);
+    // An older file without the newer fields reads as their defaults.
+    let old: WorldOptions = serde_json::from_str(r#"{"hardcore":true}"#).unwrap();
+    assert_eq!(old.mods, None);
+}
+
+#[test]
 fn new_world_generation_settings_round_trip() {
     let f = Fixture::new();
     let dir = f.root.join("flat");

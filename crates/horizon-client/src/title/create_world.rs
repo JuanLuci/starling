@@ -19,8 +19,10 @@ const TABS: [&str; 3] = [
 /// Difficulty ids, in the cycle button's order.
 pub const DIFFICULTIES: [&str; 4] = ["peaceful", "easy", "normal", "hard"];
 
-/// WorldCreationUiState beyond the name and seed.
-#[derive(Clone, Debug, PartialEq)]
+/// WorldCreationUiState beyond the name and seed. Kept as JSON when the game starts again to
+/// create the world with other content mods (world_content.rs `request_create`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct WorldOptions {
     /// The open tab: Game, World or More.
     pub tab: usize,
@@ -37,10 +39,42 @@ pub struct WorldOptions {
     pub structures: bool,
     pub bonus_chest: bool,
     /// `getGameRules`: the Game Rules screen's values, saved with the world.
+    #[serde(with = "rules_text")]
     pub rules: crate::gamerules::GameRules,
     /// The Data Packs screen's selection (`file/<name>`, in the game's `datapacks` folder),
     /// copied into the world's `datapacks` when it is created.
     pub data_packs: Vec<String>,
+    /// Starling: the content mods adding blocks or items the world plays with, as that screen
+    /// chose them; none chosen, the ones running now (world_content.rs).
+    pub mods: Option<std::collections::BTreeSet<String>>,
+}
+
+/// The rules by name as their text, set back through [`GameRules::set_string`].
+///
+/// [`GameRules::set_string`]: crate::gamerules::GameRules::set_string
+mod rules_text {
+    use crate::gamerules::{GameRules, rule};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: serde::Serializer>(rules: &GameRules, s: S) -> Result<S::Ok, S::Error> {
+        let text: BTreeMap<String, String> = rules
+            .by_name()
+            .into_keys()
+            .filter_map(|name| {
+                let value = rules.get(&name)?.to_string();
+                Some((name, value))
+            })
+            .collect();
+        serde::Serialize::serialize(&text, s)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<GameRules, D::Error> {
+        let text: BTreeMap<String, String> = serde::Deserialize::deserialize(d)?;
+        let mut rules = GameRules::default();
+        for (name, value) in text.iter().filter(|(name, _)| rule(name).is_some()) {
+            rules.set_string(name, value);
+        }
+        Ok(rules)
+    }
 }
 impl Default for WorldOptions {
     fn default() -> Self {
@@ -55,6 +89,7 @@ impl Default for WorldOptions {
             bonus_chest: false,
             rules: crate::gamerules::GameRules::default(),
             data_packs: Vec::new(),
+            mods: None,
         }
     }
 }
@@ -290,7 +325,8 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 28,
             ),
         ],
-        // Experiments have no screen yet; Data Packs is Starling's (title.rs `packs`).
+        // Experiments have no screen yet; Data Packs is Starling's (title.rs `packs`), with the
+        // world's content mods beside the packs.
         _ => [
             "selectWorld.gameRules",
             "selectWorld.experiments",
@@ -303,7 +339,11 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 gx,
                 gy + 28.0 * i as f32,
                 210.0,
-                tr(key),
+                if i == 2 {
+                    "Mods & Data Packs".to_owned()
+                } else {
+                    tr(key)
+                },
                 i != 1,
                 29 + i as u8,
             )
