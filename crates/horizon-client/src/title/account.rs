@@ -115,8 +115,13 @@ pub(super) fn buttons(w: f32, h: f32) -> Vec<(f32, f32, f32, String, bool, u8)> 
     let left = |y, label: &str, enabled, id| (cx - 100.0, y, 98.0, label.to_owned(), enabled, id);
     let right = |y, label: &str, enabled, id| (cx + 2.0, y, 98.0, label.to_owned(), enabled, id);
     match accounts::state() {
-        State::Offline | State::Failed(_) => vec![
+        State::Offline => vec![
             wide(top, "Sign in with Microsoft", true, SIGN_IN),
+            wide(bottom, "Done", true, DONE),
+        ],
+        State::Failed(_) => vec![
+            wide(top, "Sign in with Microsoft", true, SIGN_IN),
+            wide(h - 52.0, "Continue Offline", true, PLAY_OFFLINE),
             wide(bottom, "Done", true, DONE),
         ],
         State::Resuming => vec![wide(bottom, "Done", true, DONE)],
