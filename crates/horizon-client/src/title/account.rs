@@ -109,7 +109,8 @@ pub(super) fn draw(atlas: &HudAtlas, batch: &mut HudBatch) {
 /// `(x, y, width, label, enabled, id)`: two rows at the bottom.
 pub(super) fn buttons(w: f32, h: f32) -> Vec<(f32, f32, f32, String, bool, u8)> {
     let cx = (w / 2.0).floor();
-    let (top, bottom) = (h - 52.0, h - 28.0);
+    // Three rows on the signed-in screen: game files, offline mode, then account actions.
+    let (top, bottom) = (h - 76.0, h - 28.0);
     let wide = |y, label: &str, enabled, id| (cx - 100.0, y, 200.0, label.to_owned(), enabled, id);
     let left = |y, label: &str, enabled, id| (cx - 100.0, y, 98.0, label.to_owned(), enabled, id);
     let right = |y, label: &str, enabled, id| (cx + 2.0, y, 98.0, label.to_owned(), enabled, id);
