@@ -17,6 +17,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.EditText;
 import android.widget.ScrollView;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -203,107 +204,362 @@ public final class LauncherActivity extends Activity {
         // ".part" is the inbox's mark for a file still arriving.
         return name.endsWith(".part") ? name + "_" : name;
     }
-    /** Main launcher dashboard. Kept nested so the public-tree guard can distinguish app glue
-     * from recovered Minecraft Java sources. The game itself remains the Rust NativeActivity. */
+    /** Native launcher shell. Game rendering and settings remain in the Rust client. */
     public static final class HomeActivity extends Activity {
-        private static final int BG = Color.rgb(12, 15, 22);
-        private static final int PANEL = Color.rgb(24, 29, 40);
-        private static final int PANEL_ALT = Color.rgb(31, 38, 52);
-        private static final int TEXT = Color.rgb(242, 245, 250);
-        private static final int MUTED = Color.rgb(157, 168, 186);
-        private static final int ACCENT = Color.rgb(119, 155, 255);
+        private static final int BG = Color.rgb(12, 15, 23);
+        private static final int SIDEBAR = Color.rgb(17, 22, 33);
+        private static final int PANEL = Color.rgb(25, 32, 46);
+        private static final int PANEL_ALT = Color.rgb(32, 42, 60);
+        private static final int TEXT = Color.rgb(241, 245, 252);
+        private static final int MUTED = Color.rgb(151, 164, 184);
+        private static final int ACCENT = Color.rgb(126, 160, 255);
+        private static final int GREEN = Color.rgb(104, 211, 165);
+        private LinearLayout content;
+        private String page = "home";
 
         @Override protected void onCreate(Bundle state) {
             super.onCreate(state);
             getWindow().setStatusBarColor(BG);
             getWindow().setNavigationBarColor(BG);
             getWindow().getDecorView().setSystemUiVisibility(0);
-            showHome();
+            showShell();
         }
 
-        private void showHome() {
+        private void showShell() {
+            LinearLayout root = new LinearLayout(this);
+            root.setOrientation(LinearLayout.HORIZONTAL);
+            root.setBackgroundColor(BG);
+
+            LinearLayout nav = new LinearLayout(this);
+            nav.setOrientation(LinearLayout.VERTICAL);
+            nav.setPadding(dp(12), dp(22), dp(12), dp(14));
+            nav.setBackgroundColor(SIDEBAR);
+            root.addView(nav, new LinearLayout.LayoutParams(dp(190), -1));
+
+            TextView brand = text("STARLING", 18, TEXT, true);
+            nav.addView(brand);
+            TextView sub = text("HORIZON • ANDROID", 10, ACCENT, true);
+            LinearLayout.LayoutParams subP = params(-1, -2);
+            subP.topMargin = dp(5);
+            nav.addView(sub, subP);
+
+            TextView navLabel = text("WORKSPACE", 10, MUTED, true);
+            LinearLayout.LayoutParams labelP = params(-1, -2);
+            labelP.topMargin = dp(32);
+            labelP.bottomMargin = dp(10);
+            nav.addView(navLabel, labelP);
+            addNav(nav, "⌂", "Home", "home");
+            addNav(nav, "◉", "Accounts", "accounts");
+            addNav(nav, "▣", "Instances", "instances");
+            addNav(nav, "◇", "Mods & packs", "mods");
+            addNav(nav, "⚙", "Settings", "settings");
+            addNav(nav, "ⓘ", "About", "about");
+            View spacer = new View(this);
+            nav.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1));
+            nav.addView(text("STARLING PORT", 9, MUTED, true));
+
+            LinearLayout main = new LinearLayout(this);
+            main.setOrientation(LinearLayout.VERTICAL);
+            main.setPadding(dp(22), dp(18), dp(22), dp(18));
+            root.addView(main, new LinearLayout.LayoutParams(0, -1, 1));
+
+            LinearLayout top = new LinearLayout(this);
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            TextView section = text(pageTitle(page), 20, TEXT, true);
+            top.addView(section, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView status = text("●  READY", 10, GREEN, true);
+            top.addView(status);
+            main.addView(top);
+
+            View line = new View(this);
+            line.setBackgroundColor(0xFF283246);
+            LinearLayout.LayoutParams lineP = params(-1, dp(1));
+            lineP.topMargin = dp(15);
+            lineP.bottomMargin = dp(14);
+            main.addView(line, lineP);
+
             ScrollView scroll = new ScrollView(this);
             scroll.setFillViewport(true);
-            scroll.setBackgroundColor(BG);
-            LinearLayout page = new LinearLayout(this);
-            page.setOrientation(LinearLayout.VERTICAL);
-            page.setPadding(dp(22), dp(28), dp(22), dp(28));
-            scroll.addView(page);
-
-            page.addView(text("HORIZON • ANDROID", 12, ACCENT, true));
-            TextView title = text("Starling", 34, TEXT, true);
-            LinearLayout.LayoutParams titleParams = params(-2, -2);
-            titleParams.topMargin = dp(7);
-            page.addView(title, titleParams);
-            TextView subtitle = text("Minecraft Java, rebuilt for Android with Rust.", 14, MUTED, false);
-            LinearLayout.LayoutParams subParams = params(-1, -2);
-            subParams.topMargin = dp(5);
-            page.addView(subtitle, subParams);
-
-            LinearLayout hero = card(PANEL_ALT);
-            LinearLayout.LayoutParams heroParams = params(-1, -2);
-            heroParams.topMargin = dp(26);
-            page.addView(hero, heroParams);
-            hero.addView(text("READY WHEN YOU ARE", 11, ACCENT, true));
-            TextView heroTitle = text("Your next world is waiting.", 21, TEXT, true);
-            LinearLayout.LayoutParams heroTitleParams = params(-1, -2);
-            heroTitleParams.topMargin = dp(9);
-            hero.addView(heroTitle, heroTitleParams);
-            TextView heroBody = text("Start the Rust game engine. Worlds, packs and game options stay managed by Starling.", 13, MUTED, false);
-            LinearLayout.LayoutParams bodyParams = params(-1, -2);
-            bodyParams.topMargin = dp(7);
-            hero.addView(heroBody, bodyParams);
-            TextView play = action("PLAY STARLING", ACCENT, Color.rgb(15, 22, 38));
-            LinearLayout.LayoutParams playParams = params(-1, dp(54));
-            playParams.topMargin = dp(18);
-            hero.addView(play, playParams);
-            play.setOnClickListener(v -> launchGame());
-
-            TextView section = text("QUICK ACCESS", 12, MUTED, true);
-            LinearLayout.LayoutParams sectionParams = params(-1, -2);
-            sectionParams.topMargin = dp(28);
-            page.addView(section, sectionParams);
-            page.addView(infoCard("Game settings", "Graphics, controls, shaders and gameplay options are handled by the Rust game.", "OPEN GAME SETTINGS", true));
-            page.addView(infoCard("Mods & content", "Open .hmod, .starling, resource packs and shader packs with Starling to import them.", "IMPORT THROUGH FILE MANAGER", false));
-            page.addView(infoCard("Accounts & servers", "Sign-in, offline profiles and multiplayer connection remain in the Rust game flow.", "OPEN STARLING", true));
-
-            TextView footer = text("Unofficial Android port • Powered by Horizon Rust", 11, MUTED, false);
-            footer.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams footerParams = params(-1, -2);
-            footerParams.topMargin = dp(26);
-            page.addView(footer, footerParams);
-            setContentView(scroll);
+            content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(0, 0, 0, dp(20));
+            scroll.addView(content);
+            main.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+            setContentView(root);
+            renderPage();
         }
 
-        private View infoCard(String heading, String description, String action, final boolean openGame) {
-            LinearLayout box = card(PANEL);
-            LinearLayout.LayoutParams boxParams = params(-1, -2);
-            boxParams.topMargin = dp(12);
-            box.setLayoutParams(boxParams);
-            box.addView(text(heading, 17, TEXT, true));
-            TextView body = text(description, 13, MUTED, false);
-            LinearLayout.LayoutParams bodyParams = params(-1, -2);
-            bodyParams.topMargin = dp(6);
-            box.addView(body, bodyParams);
-            TextView link = text(action + (openGame ? "  →" : ""), 11, ACCENT, true);
-            LinearLayout.LayoutParams linkParams = params(-1, -2);
-            linkParams.topMargin = dp(14);
-            box.addView(link, linkParams);
-            if (openGame) {
-                box.setOnClickListener(v -> launchGame());
-                box.setFocusable(true);
-                box.setClickable(true);
+        private void addNav(LinearLayout nav, String glyph, String label, String target) {
+            LinearLayout item = new LinearLayout(this);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(12), 0, dp(8), 0);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(page.equals(target) ? 0xFF293956 : Color.TRANSPARENT);
+            bg.setCornerRadius(dp(13));
+            item.setBackground(bg);
+            TextView icon = text(glyph, 17, page.equals(target) ? ACCENT : MUTED, true);
+            item.addView(icon, params(dp(28), dp(48)));
+            TextView name = text(label, 13, page.equals(target) ? TEXT : MUTED, page.equals(target));
+            item.addView(name);
+            LinearLayout.LayoutParams p = params(-1, dp(48));
+            p.bottomMargin = dp(5);
+            nav.addView(item, p);
+            item.setClickable(true);
+            item.setFocusable(true);
+            item.setOnClickListener(v -> {
+                page = target;
+                showShell();
+            });
+        }
+
+        private String pageTitle(String p) {
+            if ("accounts".equals(p)) return "Accounts";
+            if ("instances".equals(p)) return "Instances";
+            if ("mods".equals(p)) return "Mods & content";
+            if ("settings".equals(p)) return "Settings";
+            if ("about".equals(p)) return "About Starling";
+            return "Dashboard";
+        }
+
+        private void renderPage() {
+            content.removeAllViews();
+            if ("accounts".equals(page)) renderAccounts();
+            else if ("instances".equals(page)) {
+                addHeading("Game instances");
+                addCard("Starling • Default", "The Rust game runtime and current game folder.", "LAUNCH GAME", ACCENT, this::launchGame);
+                addNote("Instance management is not yet wired to a separate Rust profile store. The current Starling game folder remains in use.");
+            } else if ("mods".equals(page)) {
+                addHeading("Mods, shaders & resource packs");
+                addCard("Import content", "Open .hmod, .starling, resource packs, worlds and shader packs with Starling.", "OPEN GAME", ACCENT, this::launchGame);
+                addNote("Use Android's file manager → Open with → Starling to import supported files.");
+            } else if ("settings".equals(page)) {
+                addHeading("Launcher preferences");
+                addCard("Game settings", "Graphics, controls, video, audio and gameplay settings are owned by the Rust client.", "OPEN IN-GAME SETTINGS", ACCENT, this::launchGame);
+                addCard("Storage", "Starling uses its private app folder until shared storage access is granted.", "OPEN GAME", PANEL_ALT, this::launchGame);
+            } else if ("about".equals(page)) {
+                addHeading("Starling for Android");
+                addCard("Powered by Horizon Rust", "Native Rust game runtime with an Android launcher shell. Microsoft authentication remains available inside the game.", "PLAY STARLING", ACCENT, this::launchGame);
+            } else renderHome();
+        }
+
+        private void renderHome() {
+            addHeading("Welcome back");
+            LinearLayout hero = card(PANEL_ALT);
+            addToContent(hero, 18);
+            hero.addView(text("STARLING • ANDROID EDITION", 10, ACCENT, true));
+            TextView headline = text("Your Minecraft Java,\nyour way.", 28, TEXT, true);
+            LinearLayout.LayoutParams hp = params(-1, -2);
+            hp.topMargin = dp(12);
+            hero.addView(headline, hp);
+            TextView body = text("A Rust-powered game runtime with accounts, content and game tools in one place.", 13, MUTED, false);
+            LinearLayout.LayoutParams bp = params(-1, -2);
+            bp.topMargin = dp(9);
+            hero.addView(body, bp);
+            TextView play = action("▶   PLAY STARLING", ACCENT, 0xFF111A2B);
+            LinearLayout.LayoutParams pp = params(-1, dp(52));
+            pp.topMargin = dp(20);
+            hero.addView(play, pp);
+            play.setOnClickListener(v -> launchGame());
+
+            addSection("QUICK ACCESS");
+            addCard("Accounts", "Create and switch local offline profiles, or sign in with Microsoft in-game.", "MANAGE ACCOUNTS", PANEL, () -> { page = "accounts"; showShell(); });
+            addCard("Mods & packs", "Import mods, shaders, worlds and resource packs.", "VIEW CONTENT", PANEL, () -> { page = "mods"; showShell(); });
+            addCard("Game settings", "Open the Rust client's graphics, controls and gameplay settings.", "OPEN SETTINGS", PANEL, () -> { page = "settings"; showShell(); });
+            TextView foot = text("Rust game engine • Android native launcher", 10, MUTED, false);
+            foot.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams fp = params(-1, -2);
+            fp.topMargin = dp(20);
+            content.addView(foot, fp);
+        }
+
+        private void renderAccounts() {
+            addHeading("Offline profiles");
+            addNote("These are local player identities for single-player, LAN and offline-mode servers. They do not authenticate with Microsoft or unlock online-mode servers.");
+            TextView add = action("+   ADD OFFLINE ACCOUNT", ACCENT, 0xFF111A2B);
+            LinearLayout.LayoutParams ap = params(-1, dp(50));
+            ap.topMargin = dp(14);
+            content.addView(add, ap);
+            add.setOnClickListener(v -> addOfflineProfile());
+
+            java.util.List<String> names = readProfiles();
+            String active = readActiveName();
+            if (names.isEmpty()) {
+                addCard("No offline accounts yet", "Create an offline profile and choose the username you want the game to use.", "CREATE PROFILE", PANEL, this::addOfflineProfile);
+            } else {
+                addSection("SAVED PROFILES");
+                for (String name : names) {
+                    final String profile = name;
+                    boolean selected = profile.equals(active);
+                    addCard((selected ? "✓  " : "◉  ") + profile,
+                            selected ? "Currently selected offline identity" : "Saved local profile",
+                            selected ? "ACTIVE" : "USE THIS ACCOUNT",
+                            selected ? PANEL_ALT : PANEL,
+                            () -> selectOfflineProfile(profile));
+                }
             }
-            return box;
+            addCard("Microsoft account", "For online-mode servers and official game ownership features, use the Microsoft sign-in inside Starling.", "OPEN GAME", PANEL, this::launchGame);
+        }
+
+        private java.io.File profileFile() {
+            return new java.io.File(new java.io.File(getFilesDir(), "accounts"), "offline-profiles.txt");
+        }
+
+        private java.util.List<String> readProfiles() {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            java.io.File file = profileFile();
+            if (!file.isFile()) return out;
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
+                for (String line; (line = reader.readLine()) != null;) {
+                    String name = line.trim();
+                    if (validName(name) && !out.contains(name)) out.add(name);
+                }
+            } catch (Exception ignored) { }
+            return out;
+        }
+
+        private String readActiveName() {
+            java.io.File folder = StarlingActivity.sharedFolder(this) == null
+                    ? getFilesDir() : new java.io.File(StarlingActivity.sharedFolder(this));
+            java.io.File file = new java.io.File(folder, "horizon-player.txt");
+            if (!file.isFile()) return "";
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
+                for (String line; (line = reader.readLine()) != null;) {
+                    if (line.startsWith("name:")) return line.substring(5).trim();
+                }
+            } catch (Exception ignored) { }
+            return "";
+        }
+
+        private boolean validName(String name) {
+            return name != null && name.matches("[A-Za-z0-9_]{3,16}");
+        }
+
+        private void addOfflineProfile() {
+            EditText input = new EditText(this);
+            input.setSingleLine(true);
+            input.setTextColor(TEXT);
+            input.setHintTextColor(MUTED);
+            input.setHint("Username (3–16 letters, numbers or _)");
+            input.setPadding(dp(14), dp(12), dp(14), dp(12));
+            input.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+            AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle("Create offline account")
+                    .setMessage("Choose a local player name. This is not a Microsoft account.")
+                    .setView(input)
+                    .setNegativeButton("CANCEL", null)
+                    .setPositiveButton("CREATE", null)
+                    .create();
+            dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String name = input.getText().toString().trim();
+                if (!validName(name)) {
+                    input.setError("Use 3–16 letters, numbers or underscore.");
+                    return;
+                }
+                java.util.List<String> names = readProfiles();
+                if (!names.contains(name)) names.add(name);
+                if (!writeProfiles(names)) {
+                    input.setError("Could not save this profile.");
+                    return;
+                }
+                if (!selectOfflineProfile(name)) return;
+                dialog.dismiss();
+                page = "accounts";
+                showShell();
+            }));
+            dialog.show();
+        }
+
+        private boolean writeProfiles(java.util.List<String> names) {
+            try {
+                java.io.File file = profileFile();
+                java.io.File parent = file.getParentFile();
+                if (parent != null) parent.mkdirs();
+                try (java.io.FileWriter writer = new java.io.FileWriter(file, false)) {
+                    for (String name : names) writer.write(name + "\n");
+                }
+                return true;
+            } catch (Exception e) {
+                android.util.Log.e("starling", "could not save offline profiles", e);
+                return false;
+            }
+        }
+
+        private boolean selectOfflineProfile(String name) {
+            if (!validName(name)) return false;
+            java.io.File privateAccounts = new java.io.File(getFilesDir(), "accounts");
+            java.io.File marker = new java.io.File(privateAccounts, "offline-mode");
+            java.io.File home;
+            String shared = StarlingActivity.sharedFolder(this);
+            home = shared == null ? getFilesDir() : new java.io.File(shared);
+            try {
+                privateAccounts.mkdirs();
+                marker.createNewFile();
+                java.io.File player = new java.io.File(home, "horizon-player.txt");
+                try (java.io.FileWriter writer = new java.io.FileWriter(player, false)) {
+                    writer.write("name:" + name + "\nchosen:true\n");
+                }
+                return true;
+            } catch (Exception e) {
+                android.util.Log.e("starling", "could not activate offline profile", e);
+                new AlertDialog.Builder(this).setMessage("Could not activate offline account: " + e.getMessage()).setPositiveButton("OK", null).show();
+                return false;
+            }
+        }
+
+        private void addHeading(String value) {
+            TextView heading = text(value, 25, TEXT, true);
+            LinearLayout.LayoutParams p = params(-1, -2);
+            p.bottomMargin = dp(14);
+            content.addView(heading, p);
+        }
+
+        private void addSection(String value) {
+            TextView label = text(value, 10, MUTED, true);
+            LinearLayout.LayoutParams p = params(-1, -2);
+            p.topMargin = dp(22);
+            p.bottomMargin = dp(8);
+            content.addView(label, p);
+        }
+
+        private void addNote(String value) {
+            TextView note = text(value, 12, MUTED, false);
+            note.setLineSpacing(dp(3), 1f);
+            LinearLayout.LayoutParams p = params(-1, -2);
+            p.bottomMargin = dp(10);
+            content.addView(note, p);
+        }
+
+        private void addCard(String heading, String description, String actionLabel, int color, Runnable click) {
+            LinearLayout box = card(color);
+            addToContent(box, 10);
+            box.addView(text(heading, 16, TEXT, true));
+            TextView body = text(description, 12, MUTED, false);
+            body.setLineSpacing(dp(2), 1f);
+            LinearLayout.LayoutParams bp = params(-1, -2);
+            bp.topMargin = dp(7);
+            box.addView(body, bp);
+            TextView action = text(actionLabel + "  →", 10, ACCENT, true);
+            LinearLayout.LayoutParams ap = params(-1, -2);
+            ap.topMargin = dp(13);
+            box.addView(action, ap);
+            box.setClickable(true);
+            box.setFocusable(true);
+            box.setOnClickListener(v -> click.run());
+        }
+
+        private void addToContent(View view, int top) {
+            LinearLayout.LayoutParams p = params(-1, -2);
+            p.topMargin = dp(top);
+            content.addView(view, p);
         }
 
         private LinearLayout card(int color) {
             LinearLayout box = new LinearLayout(this);
             box.setOrientation(LinearLayout.VERTICAL);
-            box.setPadding(dp(18), dp(18), dp(18), dp(18));
+            box.setPadding(dp(17), dp(16), dp(17), dp(16));
             GradientDrawable shape = new GradientDrawable();
             shape.setColor(color);
-            shape.setCornerRadius(dp(20));
+            shape.setCornerRadius(dp(18));
             box.setBackground(shape);
             return box;
         }
@@ -312,12 +568,12 @@ public final class LauncherActivity extends Activity {
             TextView view = new TextView(this);
             view.setText(label);
             view.setTextColor(foreground);
-            view.setTextSize(13);
+            view.setTextSize(12);
             view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             view.setGravity(Gravity.CENTER);
             GradientDrawable shape = new GradientDrawable();
             shape.setColor(background);
-            shape.setCornerRadius(dp(15));
+            shape.setCornerRadius(dp(14));
             view.setBackground(shape);
             view.setClickable(true);
             view.setFocusable(true);
@@ -346,4 +602,5 @@ public final class LauncherActivity extends Activity {
         }
     }
 
+}
 }
