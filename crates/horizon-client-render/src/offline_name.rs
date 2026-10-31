@@ -53,8 +53,14 @@ pub fn chosen(dir: &Path) -> Option<String> {
 /// The name single player's worlds open with: the chosen one, else the signed-in account's, else
 /// the kept offline name.
 pub fn for_worlds(dir: &Path) -> String {
+    // A name explicitly chosen in the launcher is the player's identity in every mode.
+    // Previously this was only consulted while a Microsoft session existed, so selecting an
+    // offline profile silently fell back to a generated name when auth was cleared.
+    if let Some(name) = chosen(dir) {
+        return name;
+    }
     match crate::auth::current() {
-        Some(account) => chosen(dir).unwrap_or_else(|| account.name.clone()),
+        Some(account) => account.name.clone(),
         None => load_or_create(dir),
     }
 }
