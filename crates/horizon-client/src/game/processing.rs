@@ -162,12 +162,13 @@ impl Game<'_> {
     // ---- depot ---------------------------------------------------------
 
     /// `DepotBehaviour.insert` (no merging: a depot holds one stack, whatever is left over
-    /// comes back). What did not go in.
+    /// comes back), refused while it holds one or its outputs wait to be taken (`isOccupied`:
+    /// a belt queues behind it). What did not go in.
     pub(super) fn depot_insert(&mut self, pos: [i32; 3], stack: ItemStack) -> Option<ItemStack> {
         let Some((_, mut e)) = self.machine_entity(pos) else {
             return Some(stack);
         };
-        if e.items[DEPOT_HELD].is_some() {
+        if e.items[DEPOT_HELD].is_some() || e.items[DEPOT_OUTPUTS].iter().any(Option::is_some) {
             return Some(stack);
         }
         let max = self.max_stack(&stack);
@@ -493,7 +494,13 @@ impl Game<'_> {
             f64::from(depot[1]) + 1.0,
             f64::from(depot[2]) + 0.5,
         ];
+        // DepotBehaviour.applyToAllItems: the first result held where the pressed one was, if
+        // it was the last, the rest into the outputs.
         for stack in recipe.roll(&mut self.world.random) {
+            if e.items[DEPOT_HELD].is_none() {
+                e.items[DEPOT_HELD] = Some(stack);
+                continue;
+            }
             if let Some(rest) = insert_stacked(&mut e.items[DEPOT_OUTPUTS], stack, 64) {
                 self.spawn_item(rest, at, [0.0; 3], 10);
             }

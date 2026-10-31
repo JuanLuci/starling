@@ -310,7 +310,8 @@ items along its current and water, lava, fire and soul fire in it wash, blast, s
 them (game/processing.rs, basins.rs, fans.rs). A `water_wheel` is a source the water flowing past
 it turns, 8 RPM; a `clutch` breaks and a `gearshift` reverses its axle while powered. `head` and
 `pole` name the models a press or a mixer moves down as it works. A `saw` facing sideways cuts the
-wood, leaves and plants it faces as a drill does and fells the tree above; facing up it is an
+wood, leaves and plants it faces as a drill does and fells the tree above, which tips over away
+from it and breaks where it lands (Starling: Create breaks it standing); facing up it is an
 axle across it (its `axis_along_first`) cutting the items put on it (`create:cutting`, the
 stonecutter's recipes, and the wood recipes Create makes as the game loads), its `models` the
 blade's: sideways running, reversed and still, then upright (game/saws.rs). A `bearing` (a

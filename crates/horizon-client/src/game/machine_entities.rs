@@ -33,6 +33,8 @@ pub(super) struct MachineEntity {
     pub(super) contraption: Option<Tag>,
     /// An arm's points and work (`Arm`; arms.rs).
     pub(super) arm: Option<Tag>,
+    /// The tree a saw felled, falling (`Felling`; falling_trees.rs).
+    pub(super) felling: Option<Tag>,
 }
 
 /// What a machine is, from its block's state: a declared machine or a kinetic part with work.
@@ -135,6 +137,7 @@ impl MachineEntity {
             recipe: int(tag, "RecipeIndex") as i32,
             contraption: tag.get("Contraption").cloned(),
             arm: tag.get("Arm").cloned(),
+            felling: tag.get("Felling").cloned(),
         }
     }
     fn tag(&self, id: &str, pos: [i32; 3]) -> Tag {
@@ -171,6 +174,9 @@ impl MachineEntity {
         }
         if let Some(a) = &self.arm {
             entries.push(("Arm", a.clone()));
+        }
+        if let Some(f) = &self.felling {
+            entries.push(("Felling", f.clone()));
         }
         Tag::compound(entries)
     }
@@ -272,6 +278,7 @@ mod tests {
             recipe: 3,
             contraption: Some(Tag::compound([("Angle", Tag::Float(12.5f32.to_bits()))])),
             arm: None,
+            felling: Some(Tag::compound([("Since", Tag::Long(42))])),
         };
         let tag = entity.tag("create:depot", [1, 64, -3]);
         assert!(is_machine_tag(&tag));

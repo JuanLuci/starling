@@ -66,6 +66,7 @@ mod execution_role;
 mod explosion;
 mod extras;
 mod falling_damage;
+mod falling_trees;
 mod fangs;
 mod fans;
 #[cfg(target_os = "android")]

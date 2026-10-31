@@ -36,7 +36,7 @@ const EASE_TICKS: f64 = 4.0;
 #[derive(Default)]
 pub(super) struct Kinetics {
     /// The parts near the player, by position.
-    parts: HashMap<[i32; 3], (BlockStateId, Arc<Part>)>,
+    pub(super) parts: HashMap<[i32; 3], (BlockStateId, Arc<Part>)>,
     /// The machines with block entities near the player (machine_entities.rs): what they hold
     /// and their moving parts are drawn.
     machines: HashMap<[i32; 3], Kind>,
@@ -317,6 +317,7 @@ impl Game<'_> {
     pub(super) fn kinetic_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         self.machine_item_geometry(camera, out);
         self.belt_item_geometry(camera, out);
+        self.falling_tree_geometry(camera, out);
         if self.kinetics.parts.is_empty() {
             return;
         }
@@ -616,7 +617,8 @@ impl Game<'_> {
                     0.0,
                 ));
                 let segment = chain.position_for(offset.floor() as i32);
-                let light = vertex_light(self.world.light(segment[0], segment[1] + 1, segment[2]));
+                // Lit as its segment is (a belt lets light through; above it may be a funnel).
+                let light = vertex_light(self.world.light(segment[0], segment[1], segment[2]));
                 let pose = base * glam::Mat4::from_translation(place) * tilt * lift;
                 self.depot_item(&item.stack, pose, item.angle as f32, light, out);
             }

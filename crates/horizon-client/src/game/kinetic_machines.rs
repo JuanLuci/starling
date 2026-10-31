@@ -51,6 +51,8 @@ pub(super) struct Machines {
     pub(super) funnels: HashMap<[i32; 3], i32>,
     /// The points marked for the next arm placed (arms.rs).
     pub(super) arm_selection: Vec<super::arms::Point>,
+    /// The trees saws felled, falling (falling_trees.rs).
+    pub(super) falling: Vec<super::falling_trees::Felled>,
     /// Drills, crushing wheels and controllers at the last look, for the log.
     counts: (usize, usize, usize),
 }
@@ -463,6 +465,7 @@ impl Game<'_> {
             .filter_map(|(pos, _)| Some((*pos, *self.machines.speeds.get(pos)?)))
             .filter(|(_, s)| *s != 0.0)
             .collect();
+        self.tick_falling_trees()?;
         for (pos, speed) in drills {
             self.tick_drill(pos, speed)?;
         }

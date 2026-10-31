@@ -315,7 +315,8 @@ impl Game<'_> {
 
     /// `SawBlockEntity.onBlockBroken` after the cut: `TreeCutter.findTree` at `breaking` (cut
     /// from `broken`) by the saw at `saw`, and its blocks broken (attachments, logs, leaves),
-    /// their drops thrown back towards the saw (`dropItemFromCutTree`).
+    /// their drops thrown away from the saw (`dropItemFromCutTree`), or, felled sideways,
+    /// falling over first (Starling).
     pub(super) fn fell_tree(
         &mut self,
         saw: [i32; 3],
@@ -340,13 +341,18 @@ impl Game<'_> {
             .chain(tree.logs.iter().map(|p| (*p, 1.0 / 2.0)))
             .chain(tree.leaves.iter().map(|p| (*p, 1.0 / 8.0)));
         let falls: Vec<([i32; 3], f32)> = falls.collect();
+        // Starling: felled sideways, it falls over first and breaks where it lands
+        // (falling_trees.rs).
+        let falls_over = back[1] == 0.0;
+        let mut fallen = Vec::new();
         for (pos, effect) in falls {
             let state = self.world.block(pos[0], pos[1], pos[2]);
             if state == self.world.air {
                 continue;
             }
             // BlockHelper.destroyBlockAs, with no tool and no player.
-            if self.world.random.next_float() < effect {
+            let burst = self.world.random.next_float() < effect;
+            if burst && !falls_over {
                 self.level_event_at(2001, pos, state.0 as i32);
             }
             let registry = self.pack.assets.registry;
@@ -354,16 +360,29 @@ impl Game<'_> {
                 .res
                 .items()
                 .block_drops(registry, state, None, &mut self.world.random);
-            let d = [0, 1, 2].map(|i| f64::from(pos[i] - breaking[i]));
-            let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            let motion = back.map(|v| v * distance / 20.0);
-            let center = pos.map(|v| f64::from(v) + 0.5);
-            for stack in drops {
-                self.spawn_item(stack, center, motion, 0);
+            if falls_over {
+                fallen.push(super::falling_trees::Fallen {
+                    pos,
+                    state,
+                    drops,
+                    burst,
+                });
+            } else {
+                let d = [0, 1, 2].map(|i| f64::from(pos[i] - breaking[i]));
+                let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let motion = back.map(|v| v * distance / 20.0);
+                let center = pos.map(|v| f64::from(v) + 0.5);
+                for stack in drops {
+                    self.spawn_item(stack, center, motion, 0);
+                }
             }
             let left = self.fluid_left(state);
             let at = BlockPos::new(pos[0], pos[1], pos[2]);
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, left, 3));
+        }
+        if !fallen.is_empty() {
+            let toward = [0, 1, 2].map(|i| breaking[i] - saw[i]);
+            self.start_falling_tree(saw, breaking, toward, fallen);
         }
         self.process_level_events()?;
         Ok(())
