@@ -11,7 +11,7 @@
 use crate::manifest::{Capability, MANIFEST, Manifest};
 use serde::Deserialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
 };
