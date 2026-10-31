@@ -413,7 +413,10 @@ impl FileReader<'_> {
                 Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?)
             }
             (OwnFiles::Memory(files), None) => Box::new(std::io::Cursor::new(
-                files.get(name).ok_or_else(|| format!("{name}: missing"))?.as_slice(),
+                files
+                    .get(name)
+                    .ok_or_else(|| format!("{name}: missing"))?
+                    .as_slice(),
             )),
         };
         let mut out = Vec::new();
@@ -614,7 +617,10 @@ impl Content {
                         return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
                     }
                     let mut bytes = Vec::with_capacity(entry.size() as usize);
-                    entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                    entry
+                        .take(MAX_FILE + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(|e| e.to_string())?;
                     if bytes.len() as u64 > MAX_FILE {
                         return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
                     }
@@ -624,7 +630,9 @@ impl Content {
         }
         let names: BTreeSet<String> = raw.keys().cloned().collect();
         let generated = crate::imod::generate(&file, &names, |name| {
-            raw.get(name).cloned().ok_or_else(|| format!("{name}: missing"))
+            raw.get(name)
+                .cloned()
+                .ok_or_else(|| format!("{name}: missing"))
         })?;
         raw.extend(generated);
         let mut total = 0u64;
