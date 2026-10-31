@@ -192,6 +192,13 @@ pub fn files() -> Files {
 /// The saved account, renewed in the background (at start), then kept fresh: the game plays as
 /// it when ready.
 pub fn resume() {
+    // A player's explicit offline choice survives restarts. Keep the saved Microsoft account,
+    // but do not contact Microsoft until the player chooses Sign in again.
+    if dir().join("offline-mode").is_file() {
+        crate::auth::clear_current();
+        shared().state = State::Offline;
+        return;
+    }
     {
         let mut s = shared();
         if starling_account::Accounts::load(&dir())
@@ -270,6 +277,8 @@ impl Drop for KeepWorking {
 /// Start signing in: the device code arrives in [`state`] as [`State::Code`]; when the player
 /// is done there, the account is kept and the game plays as it.
 pub fn sign_in() {
+    // An explicit sign-in leaves the persistent offline-only choice.
+    let _ = std::fs::remove_file(dir().join("offline-mode"));
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut s = shared();
@@ -328,6 +337,18 @@ pub fn cancel() {
     if matches!(s.state, State::Starting | State::Code { .. }) {
         s.state = State::Offline;
     }
+}
+
+/// Use the offline profile without deleting the saved Microsoft account. The choice persists
+/// across restarts; signing in again explicitly turns it off.
+pub fn play_offline() -> Result<(), String> {
+    cancel();
+    std::fs::create_dir_all(dir()).map_err(|e| format!("could not save offline mode: {e}"))?;
+    std::fs::write(dir().join("offline-mode"), b"offline\n")
+        .map_err(|e| format!("could not save offline mode: {e}"))?;
+    crate::auth::clear_current();
+    shared().state = State::Offline;
+    Ok(())
 }
 
 /// Sign out: the secrets leave the device and the game plays offline.
