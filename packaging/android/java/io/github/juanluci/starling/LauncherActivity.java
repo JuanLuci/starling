@@ -6,6 +6,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.database.Cursor;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,6 +16,8 @@ import android.provider.OpenableColumns;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.TextView;
@@ -198,4 +203,147 @@ public final class LauncherActivity extends Activity {
         // ".part" is the inbox's mark for a file still arriving.
         return name.endsWith(".part") ? name + "_" : name;
     }
+    /** Main launcher dashboard. Kept nested so the public-tree guard can distinguish app glue
+     * from recovered Minecraft Java sources. The game itself remains the Rust NativeActivity. */
+    public static final class HomeActivity extends Activity {
+        private static final int BG = Color.rgb(12, 15, 22);
+        private static final int PANEL = Color.rgb(24, 29, 40);
+        private static final int PANEL_ALT = Color.rgb(31, 38, 52);
+        private static final int TEXT = Color.rgb(242, 245, 250);
+        private static final int MUTED = Color.rgb(157, 168, 186);
+        private static final int ACCENT = Color.rgb(119, 155, 255);
+
+        @Override protected void onCreate(Bundle state) {
+            super.onCreate(state);
+            getWindow().setStatusBarColor(BG);
+            getWindow().setNavigationBarColor(BG);
+            getWindow().getDecorView().setSystemUiVisibility(0);
+            showHome();
+        }
+
+        private void showHome() {
+            ScrollView scroll = new ScrollView(this);
+            scroll.setFillViewport(true);
+            scroll.setBackgroundColor(BG);
+            LinearLayout page = new LinearLayout(this);
+            page.setOrientation(LinearLayout.VERTICAL);
+            page.setPadding(dp(22), dp(28), dp(22), dp(28));
+            scroll.addView(page);
+
+            page.addView(text("HORIZON • ANDROID", 12, ACCENT, true));
+            TextView title = text("Starling", 34, TEXT, true);
+            LinearLayout.LayoutParams titleParams = params(-2, -2);
+            titleParams.topMargin = dp(7);
+            page.addView(title, titleParams);
+            TextView subtitle = text("Minecraft Java, rebuilt for Android with Rust.", 14, MUTED, false);
+            LinearLayout.LayoutParams subParams = params(-1, -2);
+            subParams.topMargin = dp(5);
+            page.addView(subtitle, subParams);
+
+            LinearLayout hero = card(PANEL_ALT);
+            LinearLayout.LayoutParams heroParams = params(-1, -2);
+            heroParams.topMargin = dp(26);
+            page.addView(hero, heroParams);
+            hero.addView(text("READY WHEN YOU ARE", 11, ACCENT, true));
+            TextView heroTitle = text("Your next world is waiting.", 21, TEXT, true);
+            LinearLayout.LayoutParams heroTitleParams = params(-1, -2);
+            heroTitleParams.topMargin = dp(9);
+            hero.addView(heroTitle, heroTitleParams);
+            TextView heroBody = text("Start the Rust game engine. Worlds, packs and game options stay managed by Starling.", 13, MUTED, false);
+            LinearLayout.LayoutParams bodyParams = params(-1, -2);
+            bodyParams.topMargin = dp(7);
+            hero.addView(heroBody, bodyParams);
+            TextView play = action("PLAY STARLING", ACCENT, Color.rgb(15, 22, 38));
+            LinearLayout.LayoutParams playParams = params(-1, dp(54));
+            playParams.topMargin = dp(18);
+            hero.addView(play, playParams);
+            play.setOnClickListener(v -> launchGame());
+
+            TextView section = text("QUICK ACCESS", 12, MUTED, true);
+            LinearLayout.LayoutParams sectionParams = params(-1, -2);
+            sectionParams.topMargin = dp(28);
+            page.addView(section, sectionParams);
+            page.addView(infoCard("Game settings", "Graphics, controls, shaders and gameplay options are handled by the Rust game.", "OPEN GAME SETTINGS", true));
+            page.addView(infoCard("Mods & content", "Open .hmod, .starling, resource packs and shader packs with Starling to import them.", "IMPORT THROUGH FILE MANAGER", false));
+            page.addView(infoCard("Accounts & servers", "Sign-in, offline profiles and multiplayer connection remain in the Rust game flow.", "OPEN STARLING", true));
+
+            TextView footer = text("Unofficial Android port • Powered by Horizon Rust", 11, MUTED, false);
+            footer.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams footerParams = params(-1, -2);
+            footerParams.topMargin = dp(26);
+            page.addView(footer, footerParams);
+            setContentView(scroll);
+        }
+
+        private View infoCard(String heading, String description, String action, final boolean openGame) {
+            LinearLayout box = card(PANEL);
+            LinearLayout.LayoutParams boxParams = params(-1, -2);
+            boxParams.topMargin = dp(12);
+            box.setLayoutParams(boxParams);
+            box.addView(text(heading, 17, TEXT, true));
+            TextView body = text(description, 13, MUTED, false);
+            LinearLayout.LayoutParams bodyParams = params(-1, -2);
+            bodyParams.topMargin = dp(6);
+            box.addView(body, bodyParams);
+            TextView link = text(action + (openGame ? "  →" : ""), 11, ACCENT, true);
+            LinearLayout.LayoutParams linkParams = params(-1, -2);
+            linkParams.topMargin = dp(14);
+            box.addView(link, linkParams);
+            if (openGame) {
+                box.setOnClickListener(v -> launchGame());
+                box.setFocusable(true);
+                box.setClickable(true);
+            }
+            return box;
+        }
+
+        private LinearLayout card(int color) {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(dp(18), dp(18), dp(18), dp(18));
+            GradientDrawable shape = new GradientDrawable();
+            shape.setColor(color);
+            shape.setCornerRadius(dp(20));
+            box.setBackground(shape);
+            return box;
+        }
+
+        private TextView action(String label, int background, int foreground) {
+            TextView view = new TextView(this);
+            view.setText(label);
+            view.setTextColor(foreground);
+            view.setTextSize(13);
+            view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            view.setGravity(Gravity.CENTER);
+            GradientDrawable shape = new GradientDrawable();
+            shape.setColor(background);
+            shape.setCornerRadius(dp(15));
+            view.setBackground(shape);
+            view.setClickable(true);
+            view.setFocusable(true);
+            return view;
+        }
+
+        private TextView text(String value, int size, int color, boolean bold) {
+            TextView view = new TextView(this);
+            view.setText(value);
+            view.setTextSize(size);
+            view.setTextColor(color);
+            view.setTypeface(Typeface.DEFAULT, bold ? Typeface.BOLD : Typeface.NORMAL);
+            return view;
+        }
+
+        private void launchGame() {
+            startActivity(new Intent(this, StarlingActivity.class));
+        }
+
+        private LinearLayout.LayoutParams params(int width, int height) {
+            return new LinearLayout.LayoutParams(width, height);
+        }
+
+        private int dp(int value) {
+            return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+        }
+    }
+
 }

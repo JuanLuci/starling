@@ -28,6 +28,16 @@
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application
+        <activity
+            android:name="io.github.juanluci.starling.LauncherActivity$HomeActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
         android:label="@LABEL@"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="true"
@@ -35,6 +45,7 @@
         android:appCategory="game"
         android:requestLegacyExternalStorage="true"
         android:extractNativeLibs="true">
+        <!-- The home screen is the launcher; file imports still use LauncherActivity and game rendering stays native Rust. -->
         <!-- A task of its own, out of the recents: the game's task stays the game's. -->
         <activity
             android:name="io.github.juanluci.starling.LauncherActivity"
@@ -93,10 +104,6 @@
             <!-- Hands over to a build with native mods when the activity loaded one
                  (android_lib.rs). -->
             <meta-data android:name="android.app.func_name" android:value="starling_on_create" />
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
         </activity>
         <service
             android:name="io.github.juanluci.starling.WorkService"
