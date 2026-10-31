@@ -10,7 +10,7 @@
 //! own files win over generated ones at the same path, except for the
 //! language file and tags, which are merged. Everything then goes through the
 //! same checks and loader as a `.hmod` (`content.rs`, `mod_content.rs`).
-use crate::manifest::{Capability, MANIFEST, Manifest, Side};
+use crate::manifest::{MANIFEST, Manifest};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -383,21 +383,30 @@ fn yes() -> bool {
 pub fn parse(text: &str) -> Result<(Manifest, InoxFile), String> {
     let file: InoxFile = toml::from_str(text).map_err(|e| format!("{IMOD_MANIFEST}: {e}"))?;
     let m = &file.meta;
-    let manifest = Manifest {
-        id: m.id.clone(),
-        name: m.name.clone(),
-        version: m.version.clone(),
-        description: m.description.clone(),
-        authors: m.authors.clone(),
-        api: "0.2".into(),
-        side: Side::Both,
-        capabilities: vec![Capability::Registries],
-        namespaces: m.namespaces.clone(),
-        experimental: Vec::new(),
-    };
-    let manifest = manifest
-        .validated()
-        .map_err(|e| e.replace(MANIFEST, IMOD_MANIFEST))?;
+    // Build the target manifest through its own parser: this branch validates manifests in
+    // Manifest::parse (there is no Manifest::validated method on this revision).
+    let mut fields = toml::map::Map::new();
+    fields.insert("id".into(), toml::Value::String(m.id.clone()));
+    fields.insert("name".into(), toml::Value::String(m.name.clone()));
+    fields.insert("version".into(), toml::Value::String(m.version.clone()));
+    fields.insert("description".into(), toml::Value::String(m.description.clone()));
+    fields.insert(
+        "authors".into(),
+        toml::Value::Array(m.authors.iter().cloned().map(toml::Value::String).collect()),
+    );
+    fields.insert("api".into(), toml::Value::String("0.2".into()));
+    fields.insert("side".into(), toml::Value::String("both".into()));
+    fields.insert(
+        "capabilities".into(),
+        toml::Value::Array(vec![toml::Value::String("registries".into())]),
+    );
+    fields.insert(
+        "namespaces".into(),
+        toml::Value::Array(m.namespaces.iter().cloned().map(toml::Value::String).collect()),
+    );
+    let text = toml::to_string(&toml::Value::Table(fields))
+        .map_err(|e| format!("{IMOD_MANIFEST}: {e}"))?;
+    let manifest = Manifest::parse(&text).map_err(|e| e.replace(MANIFEST, IMOD_MANIFEST))?;
     let names = file.block.keys().chain(file.item.keys());
     let sets = file.armor.keys().chain(file.tools.keys());
     for name in names
