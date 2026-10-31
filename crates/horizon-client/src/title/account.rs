@@ -171,12 +171,10 @@ pub(super) fn click(id: u8) -> bool {
         }
         DOWNLOAD => accounts::download_files(),
         STOP_DOWNLOAD => accounts::cancel_download(),
-        PLAY_OFFLINE => {
-            match accounts::play_offline() {
-                Ok(()) => return true,
-                Err(e) => log::warn!("Horizon: could not switch to offline mode: {e}"),
-            }
-        }
+        PLAY_OFFLINE => match accounts::play_offline() {
+            Ok(()) => return true,
+            Err(e) => log::warn!("Horizon: could not switch to offline mode: {e}"),
+        },
         SIGN_OUT => {
             if let Err(e) = accounts::sign_out() {
                 log::warn!("Horizon: signing out failed: {e}");
