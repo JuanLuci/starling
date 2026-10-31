@@ -515,7 +515,7 @@ impl Game<'_> {
         let flip = !sideways && !diagonal && along_x || sideways && negative;
         let time = (self.world.game_time as f64 + self.clock.fraction())
             * if negative { -1.0 } else { 1.0 };
-        let x = f64::from(if flip { speed } else { -speed }) * time / (31.5 * 16.0);
+        let x = f64::from(if flip { -speed } else { speed }) * time / (31.5 * 16.0);
         let scroll = (x - x.floor()) as f32;
         let sprites = &self.gui.atlas.sprites;
         let rects: Vec<horizon_client::hud::Rect> =
