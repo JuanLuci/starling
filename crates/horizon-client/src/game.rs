@@ -14417,7 +14417,7 @@ impl<'a> Game<'a> {
             last_input: now,
             pad: Default::default(),
             touch: Default::default(),
-            input_mode: horizon_client::input_mode::InputMode::first(cfg!(target_os = "android")),
+            input_mode: horizon_client::input_mode::InputMode::first(false),
             frames: 0,
             item_level_cache: Default::default(),
             world_frames: 0,
