@@ -1,8 +1,8 @@
 //! Android: setting the game up on the phone when its resources are not there (or did not
 //! load), in place of the loading failure. Sign in with the Microsoft account that owns the game
-//! (accounts.rs), the official files fetched, then prepared on the phone (preparer.rs); or the
-//! resources prepared on a computer, picked as before. Drawn with the embedded Horizon font: the
-//! game's own is part of what is missing. While it waits, water to fish in (fishing.rs), and the
+//! (accounts.rs) or play offline, the official files fetched, then prepared on the phone
+//! (preparer.rs); or the resources prepared on a computer, picked as before. Drawn with the
+//! embedded Horizon font: the game's own is part of what is missing. While it waits, water to fish in (fishing.rs), and the
 //! game's settings, drawn in the low-budget skin the app carries (packaging/lowbudget).
 mod fishing;
 
@@ -24,8 +24,10 @@ enum Step {
     /// game's files are where a player can reach them, and a bug report's log with them.
     #[cfg(target_os = "android")]
     Folder(super::files_offer::Stage),
-    /// Nothing under way: sign in, or bring resources from a computer.
+    /// Nothing under way: sign in, play offline, or bring resources from a computer.
     Start,
+    /// Play offline chosen: whether the player is sure (most servers need a sign-in).
+    Offline,
     /// Asking Microsoft (or renewing the saved sign-in).
     Talking,
     /// The player signs in elsewhere with `code`.
@@ -44,6 +46,8 @@ enum Step {
     Done,
     /// The last attempt failed, and why.
     Failed(String),
+    /// The sign-in failed (an account without the game, say): playing offline is offered too.
+    SignInFailed(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -56,6 +60,11 @@ enum Action {
     #[cfg(target_os = "android")]
     FolderLater,
     SignIn,
+    /// Play offline: asks first, then the files are fetched without a sign-in.
+    Offline,
+    PlayOffline,
+    /// Back from the question to the start.
+    NotOffline,
     OpenLink,
     CopyCode,
     /// Pick the resources prepared on a computer (as the loading failure did).
@@ -78,6 +87,8 @@ pub(super) struct Setup {
     /// The Starling folder put off for this start (Later).
     #[cfg(target_os = "android")]
     folder_later: bool,
+    /// Play offline tapped: the question shows.
+    offline_asked: bool,
     /// Prepared once already: what it made did not load either (the failure says why), so it is
     /// not prepared again unasked.
     prepared: bool,
@@ -85,7 +96,7 @@ pub(super) struct Setup {
     /// screen without it draws every letter as an empty box).
     pub(super) starting: bool,
     /// The buttons as last drawn (dp): rectangle and what it does.
-    buttons: Cell<[Option<([f32; 4], Action)>; 2]>,
+    buttons: Cell<[Option<([f32; 4], Action)>; 3]>,
     fishing: fishing::Fishing,
     /// The water as last drawn (dp), while there is a wait to pass.
     pond: Cell<Option<[f32; 4]>>,
@@ -137,6 +148,8 @@ fn step(setup: &Setup, failure: &str) -> Step {
         Files::Missing => {}
     }
     match accounts::state() {
+        // Play offline tapped, at the start or after a failed sign-in: the question.
+        State::Offline | State::Failed(_) if setup.offline_asked => Step::Offline,
         State::Offline => {
             #[cfg(target_os = "android")]
             if let Some(stage) = folder_offer(setup) {
@@ -146,7 +159,7 @@ fn step(setup: &Setup, failure: &str) -> Step {
         }
         State::Resuming | State::Starting | State::SignedIn(_) => Step::Talking,
         State::Code { code, link } => Step::Code { code, link },
-        State::Failed(e) => Step::Failed(e),
+        State::Failed(e) => Step::SignInFailed(e),
     }
 }
 
@@ -182,9 +195,16 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
         }
         Step::Start => (
             "Set up Starling",
-            "Starling plays Minecraft: Java Edition from your own copy of the game. Sign in \
-             with the Microsoft account that owns it: Starling downloads the game from Mojang and \
-             prepares it on this phone, once (about 1.5 GB, a few minutes)."
+            "Sign in with the Microsoft account that owns Minecraft: Java Edition, or play \
+             offline: Starling downloads the game from Mojang and prepares it on this phone, once \
+             (about 1.5 GB, a few minutes)."
+                .into(),
+            None,
+        ),
+        Step::Offline => (
+            "Are you sure?",
+            "You will not be able to play on most servers! We highly recommend signing in with \
+             Microsoft."
                 .into(),
             None,
         ),
@@ -223,7 +243,7 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
             "The game files are ready.".into(),
             None,
         ),
-        Step::Failed(e) => ("Something went wrong", e.clone(), None),
+        Step::Failed(e) | Step::SignInFailed(e) => ("Something went wrong", e.clone(), None),
     }
 }
 
@@ -237,7 +257,8 @@ fn fraction(step: &Step) -> Option<f32> {
     }
 }
 
-fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
+/// The buttons, the main one first (drawn on the right).
+fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 3] {
     match step {
         #[cfg(target_os = "android")]
         Step::Folder(stage) => {
@@ -245,25 +266,40 @@ fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
             [
                 Some((primary, Action::Folder)),
                 Some((other, Action::FolderLater)),
+                None,
             ]
         }
         Step::Start => [
             Some(("Sign in with Microsoft", Action::SignIn)),
+            Some(("Play offline", Action::Offline)),
             Some(("Files from a computer", Action::Pick)),
+        ],
+        Step::Offline => [
+            Some(("Sign in with Microsoft", Action::SignIn)),
+            Some(("Play offline", Action::PlayOffline)),
+            Some(("Back", Action::NotOffline)),
         ],
         Step::Code { .. } => [
             Some(("Open the page", Action::OpenLink)),
             Some(("Copy the code", Action::CopyCode)),
+            None,
         ],
         Step::Failed(_) => [
             Some(("Try again", Action::Retry)),
+            Some(("Files from a computer", Action::Pick)),
+            None,
+        ],
+        Step::SignInFailed(_) => [
+            Some(("Try again", Action::Retry)),
+            Some(("Play offline", Action::Offline)),
             Some(("Files from a computer", Action::Pick)),
         ],
         step if waiting(step) => [
             Some(("Go fishing", Action::Fish)),
             Some(("Settings", Action::Settings)),
+            None,
         ],
-        _ => [None, None],
+        _ => [None, None, None],
     }
 }
 
@@ -368,7 +404,15 @@ impl Loading {
         } else {
             ui.fill(0.0, 0.0, w, h, color::BG);
         }
-        let card_w = (w - 48.0).min(520.0);
+        // Out fishing, the card only says how far it is; Back is in the corner.
+        let actions = if pond.is_some() {
+            [None, None, None]
+        } else {
+            buttons(&step)
+        };
+        // Wider for three buttons, so "Sign in with Microsoft" fits in a third.
+        let three = actions.iter().all(Option::is_some);
+        let card_w = (w - 48.0).min(if three { 660.0 } else { 520.0 });
         let pad = 24.0;
         let inner = card_w - 2.0 * pad;
         let mut lines = wrap(&ui, 14.0, &body, inner);
@@ -382,12 +426,6 @@ impl Loading {
             _ => None,
         };
         let bar = fraction(&step);
-        // Out fishing, the card only says how far it is; Back is in the corner.
-        let actions = if pond.is_some() {
-            [None, None]
-        } else {
-            buttons(&step)
-        };
         let button_h = 40.0;
         let mut card_h = pad + 26.0 + 12.0 + lines.len() as f32 * 21.0;
         if code.is_some() {
@@ -453,7 +491,7 @@ impl Loading {
                 ty += 18.0;
             }
         }
-        let mut drawn = [None, None];
+        let mut drawn = [None, None, None];
         let shown: Vec<_> = actions.iter().flatten().collect();
         if !shown.is_empty() {
             let by = y + card_h - pad - button_h;
@@ -582,7 +620,16 @@ impl Loading {
                 }
                 self.setup.folder_later = true;
             }
-            Action::SignIn => accounts::sign_in(),
+            Action::SignIn => {
+                self.setup.offline_asked = false;
+                accounts::sign_in();
+            }
+            Action::Offline => self.setup.offline_asked = true,
+            Action::PlayOffline => {
+                self.setup.offline_asked = false;
+                accounts::download_files();
+            }
+            Action::NotOffline => self.setup.offline_asked = false,
             Action::OpenLink => {
                 if let State::Code { link, .. } = accounts::state()
                     && !horizon_client::platform::open_link(&link).unwrap_or(false)

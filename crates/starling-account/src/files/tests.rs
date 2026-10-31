@@ -121,13 +121,12 @@ const ALL: Wanted = Wanted {
 };
 
 #[test]
-fn an_owner_gets_the_official_layout_checked_and_resumable() {
+fn the_official_layout_is_checked_and_resumable() {
     let f = fake();
     let root = std::env::temp_dir().join(format!("starling-files-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let last = Mutex::new(Progress::default());
     let got = download(
-        &crate::Owner(()),
         &sources(&f),
         &f.pins,
         &root,
@@ -161,29 +160,11 @@ fn an_owner_gets_the_official_layout_checked_and_resumable() {
     assert_eq!((p.files, p.files_total), (5, 5));
     // Again: everything is there with its hash, so only nothing is fetched.
     let before = f.hits.load(Ordering::Relaxed);
-    download(
-        &crate::Owner(()),
-        &sources(&f),
-        &f.pins,
-        &root,
-        ALL,
-        &|_| {},
-        &|| false,
-    )
-    .unwrap();
+    download(&sources(&f), &f.pins, &root, ALL, &|_| {}, &|| false).unwrap();
     assert_eq!(f.hits.load(Ordering::Relaxed), before);
     // A damaged file is fetched again; no `.part` file stays behind.
     std::fs::write(root.join("libraries/a/a/1/a.jar"), b"damaged").unwrap();
-    download(
-        &crate::Owner(()),
-        &sources(&f),
-        &f.pins,
-        &root,
-        ALL,
-        &|_| {},
-        &|| false,
-    )
-    .unwrap();
+    download(&sources(&f), &f.pins, &root, ALL, &|_| {}, &|| false).unwrap();
     assert_eq!(
         std::fs::read(root.join("libraries/a/a/1/a.jar")).unwrap(),
         b"library a"
@@ -201,16 +182,7 @@ fn a_file_that_is_not_the_listed_one_is_refused() {
         .lock()
         .unwrap()
         .insert("/libs/a.jar".into(), b"something else".to_vec());
-    let err = download(
-        &crate::Owner(()),
-        &sources(&f),
-        &f.pins,
-        &root,
-        ALL,
-        &|_| {},
-        &|| false,
-    )
-    .unwrap_err();
+    let err = download(&sources(&f), &f.pins, &root, ALL, &|_| {}, &|| false).unwrap_err();
     assert_eq!(
         err,
         "a.jar is not the file Mojang lists (its hash differs)."
@@ -221,17 +193,9 @@ fn a_file_that_is_not_the_listed_one_is_refused() {
     other.manifests = vec!["0".repeat(40)];
     let root2 = root.join("other");
     assert!(
-        download(
-            &crate::Owner(()),
-            &sources(&f),
-            &other,
-            &root2,
-            ALL,
-            &|_| {},
-            &|| false
-        )
-        .unwrap_err()
-        .contains("refused")
+        download(&sources(&f), &other, &root2, ALL, &|_| {}, &|| false)
+            .unwrap_err()
+            .contains("refused")
     );
     let _ = std::fs::remove_dir_all(&root);
 }

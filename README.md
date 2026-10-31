@@ -26,7 +26,7 @@
 
 **[Starling v0.1.3](https://github.com/JuanLuci/starling/releases/latest)**: download `starling-0.1.3-arm64-v8a.apk` from [the releases page](https://github.com/JuanLuci/starling/releases) and open it on the phone (Android asks you to allow installing apps from your browser or file manager). Already on v0.1.0.1 or later? Starling offers it on its title screen, downloads it and has Android install it (Update, Tomorrow or No); from v0.1.0, install it over by hand once.
 
-**You need** a 64-bit phone with Android 8 or newer and Vulkan, about 2 GB free, and a Microsoft account that owns Minecraft: Java Edition. No computer: on the first start Starling signs you in, downloads the game's files from Mojang's servers and prepares them on the phone, once (79 seconds on a POCO F6 Pro, longer on slower phones). Go fishing or change the settings while it works.
+**You need** a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free. Sign in with a Microsoft account that owns Minecraft: Java Edition, or play offline (most servers need the sign-in). No computer: on the first start Starling downloads the game's files from Mojang's servers and prepares them on the phone, once (79 seconds on a POCO F6 Pro, longer on slower phones). Go fishing or change the settings while it works.
 
 Builds of every push to the `android` branch are in [GitHub Actions](https://github.com/JuanLuci/starling/actions/workflows/android.yml) (the `starling-apk` artifact of a run; GitHub asks you to sign in to download it). They are signed with another key than the releases: uninstall one before installing the other, after copying your worlds out if they are not in the `Starling` folder. You can also [build it from source](#build-from-source).
 
@@ -90,7 +90,7 @@ python packaging/android/build_apk.py            # the APK lands in target/andro
 
 With [Node.js](https://nodejs.org) installed, the build also makes the JavaScript engine JavaScript mods run in; without it the APK runs the other mods only. The setup's hand-drawn skin is made by `python packaging/lowbudget/make.py` (with Pillow) into `packaging/lowbudget/pack`, which the APK carries as it is.
 
-The APK contains no game files. On the phone, Starling downloads them from Mojang for the Microsoft account that owns the game and prepares them there. To prepare them on a computer instead, it builds its resources from **your own copy** of Minecraft: Java Edition 26.3, verified against the checksums in `research-lock.json`, the same way Horizon does:
+The APK contains no game files. On the phone, Starling downloads them from Mojang's servers and prepares them there. To prepare them on a computer instead, it builds its resources from **your own copy** of Minecraft: Java Edition 26.3, verified against the checksums in `research-lock.json`, the same way Horizon does:
 
 1. **Client:** install Java Edition with the official launcher and play 26.3 once. Horizon reads `versions/26.3/`, `libraries/` and `assets/` from the launcher's game directory. If yours lives elsewhere, pass `--minecraft-dir` or set `HORIZON_MINECRAFT_DIR`.
 2. **Server jar:** the 26.3 server jar, from the `downloads.server.url` in your launcher's `versions/26.3/26.3.json`. Pass it with `--server-jar` or set `HORIZON_SERVER_JAR`.

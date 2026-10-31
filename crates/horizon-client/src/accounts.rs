@@ -1,8 +1,8 @@
 //! Starling's Microsoft account inside the game (crate starling-account; a phone has no
 //! launcher to sign in for it): the secrets sealed by the platform's keystore (the Android
 //! Keystore) in the private folder, the account list beside them, and the session handed to
-//! [`crate::auth`] for online-mode servers, renewed in the background before it runs out. An
-//! owner of the game may also fetch its official files from Mojang's servers here. Without a
+//! [`crate::auth`] for online-mode servers, renewed in the background before it runs out. The
+//! game's official files are fetched from Mojang's servers here too. Without a
 //! keystore (a desktop build, `STARLING_ACCOUNTS=1`) the secrets stay in memory for the run.
 use starling_account::files::{Pins, Progress, Sources, Wanted};
 use starling_account::{Account, Endpoints, MemoryStore, SecretStore, SignIn, SignInState};
@@ -340,9 +340,9 @@ pub fn sign_out() -> Result<(), String> {
 }
 
 /// Fetch the official files of the version Starling plays from Mojang's servers, as the
-/// official launcher does: only for a signed-in owner of the game (the ownership is asked
-/// again), each file checked against its hash, into [`files_root`]. A second call resumes what
-/// an interrupted one left.
+/// official launcher does: after a sign-in, or for a player who chose to play offline, each
+/// file checked against its hash, into [`files_root`]. A second call resumes what an
+/// interrupted one left.
 pub fn download_files() {
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -357,10 +357,6 @@ pub fn download_files() {
     std::thread::spawn(move || {
         let _working = working;
         let result = (|| {
-            let ep = Endpoints::live();
-            let (_, secrets) = starling_account::session(&ep, store().as_ref(), &dir())?
-                .ok_or("Sign in with the Microsoft account that owns Minecraft: Java Edition.")?;
-            let owner = starling_account::verify_owner(&ep, &secrets)?;
             let root = files_root();
             let _ = std::fs::remove_file(root.join(FILES_DONE));
             let progress = |p: Progress| {
@@ -376,7 +372,6 @@ pub fn download_files() {
             };
             let pins = Pins::starling();
             let installed = starling_account::files::download(
-                &owner,
                 &Sources::live(),
                 &pins,
                 &root,

@@ -495,19 +495,6 @@ fn profile(ep: &Endpoints, token: &str) -> Result<Account, String> {
     })
 }
 
-/// Proof that the signed-in account owns Minecraft: Java Edition, asked of the Minecraft
-/// services now: the game's official files are fetched only with one ([`files`]).
-#[derive(Debug)]
-pub struct Owner(());
-
-/// Whether the signed-in account still owns the game, asked again with its saved token.
-pub fn verify_owner(ep: &Endpoints, secrets: &Secrets) -> Result<Owner, String> {
-    match owns_game(ep, &secrets.minecraft_token)? {
-        true => Ok(Owner(())),
-        false => Err("This account doesn't own Minecraft: Java Edition.".into()),
-    }
-}
-
 /// What the secret store keeps for one account.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Secrets {
