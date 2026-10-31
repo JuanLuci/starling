@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 
-APPLICATION_ID = "io.github.juanluci.starling"
+APPLICATION_ID = "com.starlingport.rust"
 LABEL = "Starling"
 # --dev: an app of its own, installed beside the release (which a build signed with another key
 # cannot install over), with its own folder (StarlingActivity.sharedFolder: StarlingDev) and its
