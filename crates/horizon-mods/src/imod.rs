@@ -1215,8 +1215,8 @@ pub fn generate(
 
 #[cfg(test)]
 mod tests {
-    use crate::Capability;
     use super::*;
+    use crate::Capability;
 
     const TOML: &str = r#"
 [mod]
