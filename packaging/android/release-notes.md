@@ -1,23 +1,20 @@
-**Starling 0.1.3: signing in works when your phone cuts background apps off the internet.**
+**Starling 0.1.4: controllers, mouse and keyboard, new touch controls, and content mods per world.**
 
 ## Install
 
 - **On 0.1.0.1 or later:** Starling offers this update on its title screen: tap **Update**, and Android installs it over (it asks you to allow installs from Starling the first time).
-- **On 0.1.0, or new here:** download **`starling-0.1.3-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
+- **New here:** download **`starling-0.1.4-arm64-v8a.apk`** below and open it. New players sign in with the Microsoft account that owns Minecraft: Java Edition, and the game is downloaded and prepared on the phone, once. You need a 64-bit phone with Android 8 or newer and Vulkan, and about 2 GB free.
 
 > Installed a test build from GitHub Actions? Uninstall it first: test builds are signed with another key. Worlds kept in the `Starling` folder stay where they are.
 
-## What's fixed
+## What's new
 
-- **Signing in no longer stops with "Could not reach Microsoft (dns failed ...)"** after you entered the code in the browser. While you sign in there, Starling waits in the background, and many phones cut a background app's internet (battery and data savers, the maker's own restrictions): the first answer it missed ended the sign-in. Now it keeps asking until you come back, and the steps after it (Xbox, Minecraft) are tried again too.
-
-## Known issues
-
-- Setting up with a real account has been tried up to the sign-in; preparing has been tried with the official files copied over. If the setup stops, **Try again** retries the step that failed, and the message says why.
-- Bedrock's buttons show from the start after the one that downloads them.
-- Tested on a POCO F6 Pro (Adreno 740) and by a player on a vivo X200s (Immortalis-G925, a Mali GPU: about 100 fps); other Mali phones are untested so far.
-- Servers that require signed chat (secure chat) refuse messages for now.
-- Starling's own screens are in English only.
+- **Controllers, a mouse and a physical keyboard** play the game as they do on a PC.
+- **Touch controls:** tap to interact as on Bedrock, an option for a fixed joystick, an F3 button with its combinations, Pick Block, the player list, vibration, and aiming with the gyroscope.
+- **Content mods per world:** each world keeps its own set of content mods, a loading line shows while they build, and a mod's art is downloaded from Modrinth on the phone.
+- **Smoother loading:** a backlog of chunks no longer freezes the game while it catches up.
+- **Signing in and the game's download** keep Starling on screen.
+- **Horizon's latest:** hundreds of fixes and improvements from the game Starling is built on.
 
 ## Report a bug
 
