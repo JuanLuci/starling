@@ -9,8 +9,8 @@ pub mod api_level;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;
-pub mod imod;
 pub mod fetch;
+pub mod imod;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod manifest;
