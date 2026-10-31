@@ -15,6 +15,7 @@ use std::{
 
 mod account;
 mod create_world;
+mod data_packs;
 mod flat;
 #[cfg(test)]
 mod tests;
@@ -172,6 +173,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
+    /// Starling: the Data Packs screen, over Create New World while it is open.
+    packs: RefCell<Option<data_packs::DataPacks>>,
 }
 pub(crate) struct Button {
     x: f32,
@@ -284,6 +287,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
+            packs: RefCell::new(None),
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -458,6 +462,9 @@ impl Title {
     }
     /// The pointer moved with the button held (`mouseDragged`).
     pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.drag(cursor.1);
+        }
         if let Some(rules) = self.rules.get_mut() {
             return rules.drag(cursor.1, size.1.ceil());
         }
@@ -477,6 +484,9 @@ impl Title {
     }
     /// The button was released (`onRelease`).
     pub fn release(&mut self) {
+        if let Some(packs) = self.packs.get_mut() {
+            packs.release();
+        }
         if let Some(rules) = self.rules.get_mut() {
             rules.release();
         }
@@ -490,6 +500,9 @@ impl Title {
     }
     /// Mouse wheel over the classic world and server lists.
     pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.wheel(delta, cursor);
+        }
         if let Some(rules) = self.rules.get_mut() {
             return rules.wheel(delta, size.1.ceil());
         }
@@ -668,8 +681,15 @@ impl Title {
         else {
             return Action::None;
         };
+        let folder = self.target_folder(name);
+        // Starling: the Data Packs screen's choice, in place before the world first loads.
+        data_packs::copy_into(
+            &data_packs::folder(),
+            &self.saves.join(&folder),
+            &options.data_packs,
+        );
         Action::Create {
-            folder: self.target_folder(name),
+            folder,
             name: name.clone(),
             seed: parse_seed(seed),
             creative: *creative,
@@ -703,8 +723,8 @@ impl Title {
         folder
     }
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
-        // The game rules draw and press their own.
-        if self.rules.borrow().is_some() {
+        // The game rules and the data packs draw and press their own.
+        if self.rules.borrow().is_some() || self.packs.borrow().is_some() {
             return Vec::new();
         }
         let (w, h) = (w.ceil(), h.ceil());
@@ -998,6 +1018,9 @@ impl Title {
         hide_splash: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
+        if let Some(packs) = self.packs.borrow_mut().as_mut() {
+            return packs.draw(atlas, batch, cursor);
+        }
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
@@ -1419,8 +1442,8 @@ impl Title {
     /// Navigation buttons can return `Action::None` while still sounding.
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
-        // The game rules take the press in `press_rules`, which has the atlas.
-        if self.rules.get_mut().is_some() {
+        // The game rules and the data packs take the press in `press_rules`, which has the atlas.
+        if self.rules.get_mut().is_some() || self.packs.get_mut().is_some() {
             return (Action::None, false);
         }
         let (w, h) = (size.0.ceil(), size.1.ceil());
@@ -1634,6 +1657,11 @@ impl Title {
                 *self.rules.get_mut() = Some(RulesScreen::for_creation(&options.rules));
                 Action::None
             }
+            // CreateWorldScreen.openDataPackSelectionScreen (Starling: the game's own folder).
+            (Mode::Create { options, .. }, Some(31)) => {
+                *self.packs.get_mut() = Some(data_packs::DataPacks::open(&options.data_packs));
+                Action::None
+            }
             (
                 Mode::Create {
                     name,
@@ -1678,7 +1706,7 @@ impl Title {
     }
     /// The focused text field, its id and maximum length (copy and paste).
     pub fn focused_field(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some() || self.packs.get_mut().is_some() {
             return None;
         }
         match &mut self.mode {
@@ -1688,6 +1716,9 @@ impl Title {
     }
     /// Whether the focused field edits at its cursor.
     pub fn has_caret_field(&mut self) -> bool {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.typing();
+        }
         // The game rules' boxes edit themselves (`edit_field`).
         if let Some(rules) = self.rules.get_mut() {
             return rules.typing();
@@ -1714,13 +1745,26 @@ impl Title {
     }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.type_text(text);
+        }
         self.edit_field(|edit| edit.insert_text(text));
     }
     pub fn backspace(&mut self) {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.backspace();
+        }
         self.field_key(winit::keyboard::KeyCode::Backspace, false, false);
     }
     /// EditBox.keyPressed: moving and deleting in the focused field.
     pub fn field_key(&mut self, key: winit::keyboard::KeyCode, ctrl: bool, shift: bool) -> bool {
+        if let Some(packs) = self.packs.get_mut() {
+            if key == winit::keyboard::KeyCode::Backspace && packs.typing() {
+                packs.backspace();
+                return true;
+            }
+            return false;
+        }
         let mut handled = false;
         self.edit_field(|edit| handled = edit.key(key, ctrl, shift));
         handled
@@ -1742,6 +1786,9 @@ impl Title {
     /// Whether `(x, y)` (GUI pixels) is on the focused text field, where a tap asks for an
     /// on-screen keyboard. The server screens are forms: any of their fields counts.
     pub fn text_field_at(&mut self, (x, y): (f32, f32), size: (f32, f32)) -> bool {
+        if let Some(packs) = self.packs.get_mut() {
+            return packs.search_at((x, y));
+        }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             return screen.focused_text().is_some();
         }
@@ -1772,7 +1819,7 @@ impl Title {
         shift: bool,
     ) {
         let (w, h) = (size.0.ceil(), size.1.ceil());
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some() || self.packs.get_mut().is_some() {
             return;
         }
         let Some(rect @ [fx, fy, fw, fh]) = self.focused_rect((w, h)) else {
@@ -1787,7 +1834,7 @@ impl Title {
     }
     /// The pointer moved with the button held (`EditBox.onDrag`).
     pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) {
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some() || self.packs.get_mut().is_some() {
             return;
         }
         if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
@@ -1826,7 +1873,7 @@ impl Title {
         }
     }
     pub fn tab(&mut self) {
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some() || self.packs.get_mut().is_some() {
             return;
         }
         if let Mode::Edit { focused, .. } = &mut self.mode {
@@ -1881,6 +1928,14 @@ impl Title {
     /// A left press on the game rules (they need the atlas for text): whether
     /// it lands on a button, for its sound.
     pub fn press_rules(&mut self, atlas: &HudAtlas, cursor: (f32, f32), size: (f32, f32)) -> bool {
+        // The data packs need the atlas too, and take the press the same way.
+        if let Some(packs) = self.packs.get_mut() {
+            let (sound, done) = packs.press(atlas, cursor, size);
+            if let Some(chosen) = done {
+                self.close_packs(chosen);
+            }
+            return sound;
+        }
         let size = (size.0.ceil(), size.1.ceil());
         let Some(rules) = self.rules.get_mut() else {
             return false;
@@ -1902,7 +1957,18 @@ impl Title {
             }
         }
     }
+    /// The data packs' `onClose`: their choice kept for the world being created.
+    fn close_packs(&mut self, chosen: Vec<String>) {
+        *self.packs.get_mut() = None;
+        if let Mode::Create { options, .. } = &mut self.mode {
+            options.data_packs = chosen;
+        }
+    }
     pub fn escape(&mut self) {
+        if let Some(packs) = self.packs.get_mut() {
+            let chosen = packs.commit();
+            return self.close_packs(chosen);
+        }
         if let Some(rules) = self.rules.get_mut() {
             if let Some(exit) = rules.escape() {
                 self.close_rules(exit);

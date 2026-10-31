@@ -17,6 +17,8 @@ pub fn inbox_dir() -> PathBuf {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     ResourcePack,
+    /// A pack with `data/` and no `assets/`: for `datapacks/`, chosen when a world is created.
+    DataPack,
     ShaderPack,
     World,
     Mod,
@@ -70,7 +72,16 @@ pub fn classify(path: &Path) -> (Kind, String) {
         return (Kind::World, prefix);
     }
     if let Some(prefix) = found("pack.mcmeta") {
-        return (Kind::ResourcePack, prefix);
+        let holds = |top: &str| {
+            let at = format!("{prefix}{top}/");
+            names.iter().any(|n| n.starts_with(&at))
+        };
+        let kind = if holds("data") && !holds("assets") {
+            Kind::DataPack
+        } else {
+            Kind::ResourcePack
+        };
+        return (kind, prefix);
     }
     // OptiFine and Iris packs: a `shaders/` folder.
     if let Some(prefix) = names.iter().find_map(|n| match n.split_once('/') {
@@ -126,11 +137,11 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
     let fail = |e: io::Error| format!("could not import {name}: {e}");
     let mut made = None;
     let message = match kind {
-        Kind::ResourcePack | Kind::ShaderPack => {
-            let (folder, what) = if kind == Kind::ResourcePack {
-                ("resourcepacks", "Resource pack")
-            } else {
-                ("shaderpacks", "Shader pack")
+        Kind::ResourcePack | Kind::DataPack | Kind::ShaderPack => {
+            let (folder, what) = match kind {
+                Kind::ResourcePack => ("resourcepacks", "Resource pack"),
+                Kind::DataPack => ("datapacks", "Data pack"),
+                _ => ("shaderpacks", "Shader pack"),
             };
             let dir = places.game.join(folder);
             fs::create_dir_all(&dir).map_err(fail)?;
@@ -141,10 +152,10 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
             } else {
                 extract_into(path, &prefix, &unique(&dir, &title, ""), &[]).map_err(fail)?;
             }
-            let turn_on = if kind == Kind::ResourcePack {
-                "turn it on in Options > Resource Packs"
-            } else {
-                "pick it in Video Settings > Shader Pack"
+            let turn_on = match kind {
+                Kind::ResourcePack => "turn it on in Options > Resource Packs",
+                Kind::DataPack => "pick it in Create New World > More > Data Packs",
+                _ => "pick it in Video Settings > Shader Pack",
             };
             format!("{what} \"{title}\" added: {turn_on}")
         }
@@ -437,6 +448,25 @@ mod tests {
                 &[("Faithful/pack.mcmeta", b"{}")],
                 Kind::ResourcePack,
                 "Faithful/",
+            ),
+            (
+                "datapack.zip",
+                &[
+                    ("pack.mcmeta", b"{}"),
+                    ("data/show/function/build.mcfunction", b""),
+                ],
+                Kind::DataPack,
+                "",
+            ),
+            (
+                "both.zip",
+                &[
+                    ("Both/pack.mcmeta", b"{}"),
+                    ("Both/data/x/function/f.mcfunction", b""),
+                    ("Both/assets/x/lang/en_us.json", b"{}"),
+                ],
+                Kind::ResourcePack,
+                "Both/",
             ),
             (
                 "world.zip",

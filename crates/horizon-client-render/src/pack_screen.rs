@@ -24,10 +24,14 @@ pub enum Compat {
 }
 
 /// The line under the title: where packs come from. A phone has no window to drop files on;
-/// they go in the game's folder in its shared storage.
-fn drop_info() -> Text {
+/// they go in the game's folder in its shared storage (`datapacks` for data packs).
+fn drop_info(data: bool) -> Text {
     if cfg!(target_os = "android") {
-        Text::literal("Put packs in Starling/resourcepacks")
+        Text::literal(if data {
+            "Put packs in Starling/datapacks"
+        } else {
+            "Put packs in Starling/resourcepacks"
+        })
     } else {
         tr("pack.dropInfo")
     }
@@ -341,6 +345,8 @@ pub struct PackScreen {
     pub changed: bool,
     /// The packs' icons by their [`icon_texture`].
     icons: HashMap<String, Arc<[u8]>>,
+    /// Data packs (Create New World's, `dataPack.title`) rather than resource packs.
+    pub data: bool,
 }
 
 fn tr(key: &str) -> Text {
@@ -380,19 +386,33 @@ impl PackScreen {
             lists: [List::new(false, height - 66), List::new(true, height - 66)],
             confirm: None,
             changed: false,
+            data: false,
         };
         s.reposition(m);
         s.populate(None);
         s.set_focus(Focus::Search);
         s
     }
+    /// The screen for data packs (`CreateWorldScreen.openDataPackSelectionScreen`).
+    pub fn for_data(mut self, m: &Measure) -> Self {
+        self.data = true;
+        self.reposition(m);
+        self
+    }
+    fn title(&self) -> Text {
+        tr(if self.data {
+            "dataPack.title"
+        } else {
+            "resourcePack.title"
+        })
+    }
     fn info(&self, id: &str) -> Option<&PackInfo> {
         self.packs.iter().find(|p| p.id == id)
     }
     /// The header layout: title, drop info and search box, centred.
     fn header(&self, m: &Measure) -> [(i32, i32); 3] {
-        let tw = m.width(&tr("resourcePack.title"));
-        let dw = m.width(&drop_info());
+        let tw = m.width(&self.title());
+        let dw = m.width(&drop_info(self.data));
         let col = tw.max(dw).max(200);
         let frame = self.width.max(col);
         let lx = (0.5 * (frame - col) as f32) as i32;
@@ -850,8 +870,15 @@ impl PackScreen {
             return out;
         }
         let [(tx, ty), (dx, dy), _] = self.header(m);
-        d::string_widget(&mut out, m, &tr("resourcePack.title"), tx, ty, 0);
-        d::string_widget(&mut out, m, &drop_info().with_color(d::GRAY), dx, dy, 0);
+        d::string_widget(&mut out, m, &self.title(), tx, ty, 0);
+        d::string_widget(
+            &mut out,
+            m,
+            &drop_info(self.data).with_color(d::GRAY),
+            dx,
+            dy,
+            0,
+        );
         self.search.draw(&mut out, m, blink_ms, None);
         for side in 0..2 {
             self.draw_list(&mut out, m, side, mouse);

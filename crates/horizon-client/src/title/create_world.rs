@@ -38,6 +38,9 @@ pub struct WorldOptions {
     pub bonus_chest: bool,
     /// `getGameRules`: the Game Rules screen's values, saved with the world.
     pub rules: crate::gamerules::GameRules,
+    /// The Data Packs screen's selection (`file/<name>`, in the game's `datapacks` folder),
+    /// copied into the world's `datapacks` when it is created.
+    pub data_packs: Vec<String>,
 }
 impl Default for WorldOptions {
     fn default() -> Self {
@@ -51,6 +54,7 @@ impl Default for WorldOptions {
             structures: true,
             bonus_chest: false,
             rules: crate::gamerules::GameRules::default(),
+            data_packs: Vec::new(),
         }
     }
 }
@@ -286,7 +290,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 28,
             ),
         ],
-        // Experiments and data packs have no screens yet.
+        // Experiments have no screen yet; Data Packs is Starling's (title.rs `packs`).
         _ => [
             "selectWorld.gameRules",
             "selectWorld.experiments",
@@ -300,7 +304,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 gy + 28.0 * i as f32,
                 210.0,
                 tr(key),
-                i == 0,
+                i != 1,
                 29 + i as u8,
             )
         })

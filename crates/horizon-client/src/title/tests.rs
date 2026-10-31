@@ -822,12 +822,50 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab's Experiments and Data Packs screens don't exist yet.
+    // The More tab's Experiments screen doesn't exist yet; Data Packs is Starling's.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
+    let more = labels(&f);
     assert_eq!(
-        labels(&f)[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, false]
+        more[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
+        [true, false, true]
     );
+    // It opens over Create New World (which draws no buttons of its own then), and Escape
+    // closes it with its choice: vanilla's own only, which is not kept.
+    f.title.click(more[2].1 + 10.0, more[2].2 + 10.0, size);
+    assert!(f.title.packs.borrow().is_some() && f.title.buttons(480.0, 262.0).is_empty());
+    f.title.escape();
+    assert!(f.title.packs.borrow().is_none());
+    let Mode::Create { options, .. } = &f.title.mode else {
+        panic!()
+    };
+    assert!(options.data_packs.is_empty());
+}
+
+#[test]
+fn chosen_data_packs_are_copied_into_the_new_world() {
+    let f = Fixture::new();
+    let from = f.root.join("datapacks");
+    fs::create_dir_all(from.join("folder pack/data/x/function")).unwrap();
+    fs::write(from.join("folder pack/pack.mcmeta"), b"{}").unwrap();
+    fs::write(
+        from.join("folder pack/data/x/function/f.mcfunction"),
+        b"say hi",
+    )
+    .unwrap();
+    fs::write(from.join("zipped.zip"), b"zip").unwrap();
+    fs::write(from.join("left out.zip"), b"zip").unwrap();
+    let world = f.title.saves.join("New World");
+    super::data_packs::copy_into(
+        &from,
+        &world,
+        &["file/folder pack".into(), "file/zipped.zip".into()],
+    );
+    let packs = world.join("datapacks");
+    assert_eq!(
+        fs::read(packs.join("folder pack/data/x/function/f.mcfunction")).unwrap(),
+        b"say hi"
+    );
+    assert!(packs.join("zipped.zip").is_file() && !packs.join("left out.zip").exists());
 }
 
 #[test]

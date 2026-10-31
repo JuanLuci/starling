@@ -12,6 +12,7 @@
 - **Controllers, a mouse and a physical keyboard** play the game as they do on a PC.
 - **Touch controls:** tap to interact as on Bedrock, an option for a fixed joystick, an F3 button with its combinations, Pick Block, the player list, vibration, and aiming with the gyroscope.
 - **Content mods per world:** each world keeps its own set of content mods, a loading line shows while they build, and a mod's art is downloaded from Modrinth on the phone.
+- **Data packs:** choose them when you create a world (**More > Data Packs**); open a data pack's zip with Starling to add it.
 - **Smoother loading:** a backlog of chunks no longer freezes the game while it catches up.
 - **Signing in and the game's download** keep Starling on screen.
 - **Horizon's latest:** hundreds of fixes and improvements from the game Starling is built on.
