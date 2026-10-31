@@ -603,4 +603,3 @@ public final class LauncherActivity extends Activity {
     }
 
 }
-}
