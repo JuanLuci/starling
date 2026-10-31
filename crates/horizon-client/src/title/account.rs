@@ -12,6 +12,7 @@ const COPY_CODE: u8 = 63;
 const DOWNLOAD: u8 = 64;
 const SIGN_OUT: u8 = 65;
 const STOP_DOWNLOAD: u8 = 66;
+const PLAY_OFFLINE: u8 = 67;
 const DONE: u8 = 69;
 
 fn gray() -> u32 {
@@ -29,7 +30,7 @@ pub(super) fn main_label() -> String {
     match accounts::state() {
         State::SignedIn(account) => format!("Account: {}", account.name),
         State::Resuming => "Account: signing in...".into(),
-        _ => "Microsoft Account".into(),
+        _ => "Offline Account".into(),
     }
 }
 
@@ -63,7 +64,7 @@ fn files_line(files: &Files) -> (String, u32) {
 fn lines(state: &State) -> Vec<(String, u32)> {
     match state {
         State::Offline => vec![(
-            "Sign in with the Microsoft account that owns Minecraft: Java Edition to play on online-mode servers and to fetch the game's files from Mojang. The sign-in stays on this device.".into(),
+            "Offline account active. Single-player, LAN and offline-mode servers work without Microsoft. Online-mode servers and official game-file downloads need a Microsoft account. Change your offline player name in Options > Skin Customization.".into(),
             gray(),
         )],
         State::Resuming | State::Starting => vec![("Signing in...".into(), gray())],
@@ -114,7 +115,7 @@ pub(super) fn buttons(w: f32, h: f32) -> Vec<(f32, f32, f32, String, bool, u8)> 
     let right = |y, label: &str, enabled, id| (cx + 2.0, y, 98.0, label.to_owned(), enabled, id);
     match accounts::state() {
         State::Offline | State::Failed(_) => vec![
-            wide(top, "Sign in", true, SIGN_IN),
+            wide(top, "Sign in with Microsoft", true, SIGN_IN),
             wide(bottom, "Done", true, DONE),
         ],
         State::Resuming => vec![wide(bottom, "Done", true, DONE)],
@@ -138,6 +139,7 @@ pub(super) fn buttons(w: f32, h: f32) -> Vec<(f32, f32, f32, String, bool, u8)> 
             };
             vec![
                 first,
+                wide(h - 52.0, "Play Offline", true, PLAY_OFFLINE),
                 left(bottom, "Sign out", true, SIGN_OUT),
                 right(bottom, "Done", true, DONE),
             ]
@@ -163,6 +165,12 @@ pub(super) fn click(id: u8) -> bool {
         }
         DOWNLOAD => accounts::download_files(),
         STOP_DOWNLOAD => accounts::cancel_download(),
+        PLAY_OFFLINE => {
+            match accounts::play_offline() {
+                Ok(()) => return true,
+                Err(e) => log::warn!("Horizon: could not switch to offline mode: {e}"),
+            }
+        }
         SIGN_OUT => {
             if let Err(e) = accounts::sign_out() {
                 log::warn!("Horizon: signing out failed: {e}");
