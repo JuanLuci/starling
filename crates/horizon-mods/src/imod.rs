@@ -389,7 +389,10 @@ pub fn parse(text: &str) -> Result<(Manifest, InoxFile), String> {
     fields.insert("id".into(), toml::Value::String(m.id.clone()));
     fields.insert("name".into(), toml::Value::String(m.name.clone()));
     fields.insert("version".into(), toml::Value::String(m.version.clone()));
-    fields.insert("description".into(), toml::Value::String(m.description.clone()));
+    fields.insert(
+        "description".into(),
+        toml::Value::String(m.description.clone()),
+    );
     fields.insert(
         "authors".into(),
         toml::Value::Array(m.authors.iter().cloned().map(toml::Value::String).collect()),
@@ -402,7 +405,13 @@ pub fn parse(text: &str) -> Result<(Manifest, InoxFile), String> {
     );
     fields.insert(
         "namespaces".into(),
-        toml::Value::Array(m.namespaces.iter().cloned().map(toml::Value::String).collect()),
+        toml::Value::Array(
+            m.namespaces
+                .iter()
+                .cloned()
+                .map(toml::Value::String)
+                .collect(),
+        ),
     );
     let text = toml::to_string(&toml::Value::Table(fields))
         .map_err(|e| format!("{IMOD_MANIFEST}: {e}"))?;
