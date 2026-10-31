@@ -43,6 +43,7 @@ pub(super) enum Kind {
     Mixer,
     Saw,
     Funnel,
+    Chute,
 }
 
 impl Kind {
@@ -53,6 +54,7 @@ impl Kind {
             (Some(Machine::Belt), _) => Kind::Belt,
             (Some(Machine::Burner), _) => Kind::Burner,
             (Some(Machine::Funnel), _) => Kind::Funnel,
+            (Some(Machine::Chute), _) => Kind::Chute,
             (_, Some(KineticPart::Millstone)) => Kind::Millstone,
             (_, Some(KineticPart::Press)) => Kind::Press,
             (_, Some(KineticPart::Mixer)) => Kind::Mixer,
@@ -69,6 +71,7 @@ impl Kind {
             Kind::Basin => 18,
             Kind::Millstone => 10,
             Kind::Saw => super::saws::SLOTS,
+            Kind::Chute => 1,
             Kind::Press | Kind::Mixer | Kind::Belt | Kind::Burner | Kind::Funnel => 0,
         }
     }

@@ -112,6 +112,7 @@ impl Game<'_> {
                 Kind::Burner => self.tick_burner(pos),
                 Kind::Saw => self.tick_saw(pos, speed),
                 Kind::Funnel => self.tick_funnel(pos),
+                Kind::Chute => self.tick_chute(pos),
                 Kind::Belt => {}
             }
         }
@@ -139,6 +140,7 @@ impl Game<'_> {
             Kind::Depot => self.depot_insert(pos, stack.clone()),
             Kind::Millstone => self.millstone_insert(pos, stack.clone()),
             Kind::Saw => self.saw_insert(pos, stack.clone()),
+            Kind::Chute => self.chute_insert(pos, stack.clone()),
             _ => Some(stack.clone()),
         };
         match rest {
@@ -510,6 +512,7 @@ impl Game<'_> {
             Kind::Millstone => Some(self.millstone_insert(at, stack)),
             Kind::Basin => Some(self.basin_insert(at, stack)),
             Kind::Saw => Some(self.saw_insert(at, stack)),
+            Kind::Chute => Some(self.chute_insert(at, stack)),
             _ => None,
         }
     }

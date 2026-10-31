@@ -263,6 +263,10 @@ pub enum Machine {
     /// (its state's `extracting`) takes items out and drops them; `powered` pauses it (Create's
     /// funnels; a `brass` one takes up to a stack at a time).
     Funnel,
+    /// Items fall through it, from the inventory above (or landing on it) to the one below, the
+    /// chute it leads into (its state's `facing`: down, or a diagonal one's way), or dropped
+    /// below (Create's chute).
+    Chute,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +285,8 @@ struct BlockFile {
     states: Option<std::collections::BTreeMap<String, Vec<String>>>,
     #[serde(default)]
     fuel: Option<u32>,
+    #[serde(default)]
+    models: Vec<String>,
 }
 fn yes() -> bool {
     true
@@ -309,6 +315,9 @@ pub struct Block {
     /// How long its item burns in a furnace, in ticks (0: not at all, whatever its template's
     /// does).
     pub fuel: Option<u32>,
+    /// Starling: models (`<ns>:block/<path>`) the game draws for it besides its own, in the
+    /// order its machine names them (a blaze burner's blaze, its rods and its flame).
+    pub models: Vec<String>,
 }
 
 /// The most states a block may declare of its own.
@@ -662,6 +671,7 @@ impl Content {
                 machine: file.machine,
                 states: file.states,
                 fuel: file.fuel,
+                models: file.models,
             });
         }
         for (item, name) in items {
@@ -883,6 +893,7 @@ capabilities = ["registries"]
                 machine: None,
                 states: None,
                 fuel: None,
+                models: Vec::new(),
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");

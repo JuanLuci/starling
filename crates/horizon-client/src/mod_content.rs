@@ -1849,6 +1849,16 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     if !machines.is_empty() {
         overlay.write(MACHINES, &serde_json::to_vec(&machines)?)?;
     }
+    // The models the game draws for blocks besides their own (a blaze burner's blaze).
+    let models: BTreeMap<&str, &Vec<String>> = mods
+        .iter()
+        .flat_map(|m| &m.content.blocks)
+        .filter(|b| !b.models.is_empty())
+        .map(|b| (b.id.as_str(), &b.models))
+        .collect();
+    if !models.is_empty() {
+        overlay.write(BLOCK_MODELS, &serde_json::to_vec(&models)?)?;
+    }
     let mut namespaces: Vec<&str> = mods
         .iter()
         .flat_map(|m| m.content.namespaces.iter().map(String::as_str))
@@ -1948,6 +1958,9 @@ pub const MACHINES: &str = "machines.json";
 /// In a root built by [`build`] with blocks of states of their own: the properties their
 /// templates do not place, by block id (kinetics.rs).
 pub const OWN_STATES: &str = "own-states.json";
+/// In a root built by [`build`] with blocks declaring `models`: those, by block id (kinetics.rs,
+/// and the model catalog bakes them).
+pub const BLOCK_MODELS: &str = "block-models.json";
 
 /// In a root built by [`resource_root`]: what it was built from.
 const STAMP: &str = "horizon-mod-content.stamp";

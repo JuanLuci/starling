@@ -585,6 +585,14 @@ impl Game<'_> {
         Some(self.add_item(None, &view, stack, Some(face)))
     }
 
+    /// Starling (Create's chutes): whether a container (a block entity with slots, or a double
+    /// chest) is at `pos`.
+    pub(super) fn has_container(&self, pos: [i32; 3]) -> bool {
+        self.containers()
+            .view((pos[0], pos[1], pos[2]), false)
+            .is_some()
+    }
+
     /// Starling (Create's funnels): `ItemHelper.extract` up to `max` of the first item the
     /// handler at `pos` gives from `face` (`ExtractionCountMode.UPTO`). None when nothing there
     /// holds items; else what came out, if anything.

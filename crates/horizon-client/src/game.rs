@@ -29,6 +29,7 @@ mod cartography;
 mod cat_spawner;
 mod chat;
 mod chiseled_bookshelf;
+mod chutes;
 mod client_ambient;
 mod clipboard;
 mod code_of_conduct;

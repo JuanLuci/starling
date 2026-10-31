@@ -380,7 +380,7 @@ impl Game<'_> {
             }
             // A belt's segment and pulley (BeltRenderer).
             if part.kind == KineticPart::Belt {
-                self.belt_segment_geometry(*state, part, at, own, light, out);
+                self.belt_segment_geometry(*state, *pos, part, at, own, light, out);
             }
             // A saw's blade (SawRenderer.renderBlade).
             if part.kind == KineticPart::Saw {
@@ -421,6 +421,7 @@ impl Game<'_> {
     fn belt_segment_geometry(
         &self,
         state: BlockStateId,
+        pos: [i32; 3],
         part: &Part,
         at: glam::Mat4,
         own: glam::Mat4,
@@ -486,9 +487,29 @@ impl Game<'_> {
             (false, false, _, true) => 2,
             (false, false, _, _) => 1,
         };
+        // The belt's texture scrolls as it moves (BeltRenderer: the sprite shifted along v by
+        // the turn of its speed over 31.5 blocks; a diagonal one's not here).
+        let speed = self.kinetics.speeds.get(&pos).copied().unwrap_or(0.0);
+        let along_x = f[0] != 0;
+        let negative = f[0] + f[2] < 0;
+        let flip = !sideways && !diagonal && along_x || sideways && negative;
+        let time = (self.world.game_time as f64 + self.clock.fraction())
+            * if negative { -1.0 } else { 1.0 };
+        let x = f64::from(if flip { speed } else { -speed }) * time / (31.5 * 16.0);
+        let scroll = (x - x.floor()) as f32;
+        let sprites = &self.gui.atlas.sprites;
+        let rects: Vec<horizon_client::hud::Rect> =
+            ["create:block/belt", "create:block/belt_offset"]
+                .into_iter()
+                .filter_map(|n| sprites.get(n).copied())
+                .collect();
         for bottom in [true, false] {
             if let Some(m) = model(which(bottom)) {
+                let from = out.len();
                 self.baked_model_vertices(m, at * local, light, false, out);
+                if speed != 0.0 && !diagonal {
+                    scroll_quads(out, from, &rects, scroll);
+                }
             }
             // A diagonal belt has no separate bottom.
             if diagonal {
@@ -629,6 +650,92 @@ impl Game<'_> {
         if let Some(model) = catalog.partial(model, [turns[0], turns[1], 0]) {
             self.baked_model_vertices(model, at, light, false, out);
         }
+    }
+
+    /// `BlazeBurnerRenderer.renderShared`: the blaze in a burner, bobbing and looking at the
+    /// camera, smaller while it only smoulders; round it while it burns its rods, and with a
+    /// basin above it leans in with its flame. Its models (block-models.json): inert, idle,
+    /// active, super, super active, the rods small and large, the superheated ones, the flame.
+    fn burner_geometry(&self, pos: [i32; 3], camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        let corner = glam::DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+        if (corner + glam::DVec3::splat(0.5)).distance(camera) > DRAW_DISTANCE / 2.0 {
+            return;
+        }
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let Some(props) = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .map(|s| &s.properties)
+        else {
+            return;
+        };
+        // HeatLevel: smouldering, fading, kindled, seething (none: no blaze).
+        let heat = match props.get("blaze").map(String::as_str) {
+            Some("smouldering") => 1,
+            Some("fading") => 2,
+            Some("kindled") => 3,
+            Some("seething") => 4,
+            _ => return,
+        };
+        let name = self.res.facts().get(state).name.clone();
+        let models = self.res.kinetics().block_models(&name);
+        if models.len() < 10 {
+            return;
+        }
+        let catalog = &self.pack.render.model_catalog;
+        // headAnimation: up to a basin above while it burns.
+        let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
+        let basin = self.res.facts().get(above).name.ends_with("basin");
+        let animation = if heat >= 2 && basin { 0.175f32 } else { 0.0 };
+        let block_above = animation > 0.125;
+        let time = self.world.game_time as f32 + self.clock.fraction() as f32;
+        let hash = (pos[0].wrapping_mul(31) ^ pos[1].wrapping_mul(17) ^ pos[2]).rem_euclid(13);
+        let tick = time + hash as f32 * 16.0;
+        let mult = if heat >= 2 { 64.0 } else { 16.0 };
+        let bob = |phase: f32| ((tick / 16.0 + phase) % std::f32::consts::TAU).sin() / mult;
+        let head_y = bob(0.0) - animation * 0.75;
+        let blaze = match heat {
+            4 if block_above => 4,
+            4 => 3,
+            3 if block_above => 2,
+            2 | 3 => 1,
+            _ => 0,
+        };
+        // Looking at the camera: AngleHelper.deg(-atan2(dz, dx)) - 90.
+        let (dx, dz) = (camera.x - (corner.x + 0.5), camera.z - (corner.z + 0.5));
+        let angle = (-dz.atan2(dx)).to_degrees() as f32 - 90.0;
+        let center = glam::Mat4::from_translation(glam::Vec3::splat(0.5));
+        let turned = center
+            * glam::Mat4::from_rotation_y(angle.to_radians())
+            * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+        let at = glam::Mat4::from_translation((corner - camera).as_vec3());
+        // LightTexture.FULL_BRIGHT.
+        let light = (15 * 16) | ((15 * 16) << 8);
+        let start = out.len();
+        let mut draw = |i: usize, m: glam::Mat4| {
+            if let Some(model) = catalog.partial(&models[i], [0, 0, 0]) {
+                self.baked_model_vertices(model, m, light, false, out);
+            }
+        };
+        let up = |y: f32| glam::Mat4::from_translation(glam::Vec3::new(0.0, y, 0.0));
+        draw(blaze, at * up(head_y) * turned);
+        if heat >= 2 {
+            let (small, large) = if heat == 4 { (7, 8) } else { (5, 6) };
+            draw(
+                small,
+                at * up(bob(std::f32::consts::PI) + animation + 0.125),
+            );
+            draw(
+                large,
+                at * up(bob(std::f32::consts::FRAC_PI_2) + animation - 3.0 / 16.0),
+            );
+        }
+        if block_above {
+            draw(9, at * turned);
+        }
+        cull_back_faces(out, start);
     }
 
     /// `SawRenderer.renderItems`: what a saw facing up holds, on its way across it as it cuts
@@ -806,6 +913,10 @@ impl Game<'_> {
                 self.saw_item_geometry(*pos, camera, out);
                 continue;
             }
+            if *kind == Kind::Burner {
+                self.burner_geometry(*pos, camera, out);
+                continue;
+            }
             if *kind != Kind::Depot {
                 continue;
             }
@@ -940,6 +1051,78 @@ fn own_way(part: &Part) -> (usize, f32) {
         }
         KineticPart::Saw if part.face != [0; 3] => kinetics::at_face(part.face, 1.0),
         _ => (part.axis, 1.0),
+    }
+}
+
+/// `SuperByteBuffer.shiftUVScrolling` onto a scroll sprite that is its sprite twice over, done
+/// in the sprite itself: each quad of `out[from..]` on one of `rects` has its v moved on by
+/// `scroll` (a fraction of the sprite), and one that then runs past the sprite's end is cut
+/// there, the part past it wrapped to its start.
+fn scroll_quads(
+    out: &mut Vec<Vertex>,
+    from: usize,
+    rects: &[horizon_client::hud::Rect],
+    scroll: f32,
+) {
+    let quads: Vec<[Vertex; 4]> = out[from..].as_chunks::<4>().0.to_vec();
+    out.truncate(from);
+    let lerp = |a: &Vertex, b: &Vertex, t: f32| {
+        let mut v = *a;
+        for i in 0..3 {
+            v.pos[i] = a.pos[i] + (b.pos[i] - a.pos[i]) * t;
+        }
+        for i in 0..2 {
+            v.uv[i] = a.uv[i] + (b.uv[i] - a.uv[i]) * t;
+        }
+        v
+    };
+    for quad in quads {
+        let inside = |r: &horizon_client::hud::Rect| {
+            quad.iter().all(|v| {
+                v.uv[0] >= r.u0 - 1e-6
+                    && v.uv[0] <= r.u1 + 1e-6
+                    && v.uv[1] >= r.v0 - 1e-6
+                    && v.uv[1] <= r.v1 + 1e-6
+            })
+        };
+        let Some(r) = rects.iter().find(|r| inside(r)) else {
+            out.extend(quad);
+            continue;
+        };
+        let h = r.v1 - r.v0;
+        // Each corner's v in the sprite, moved on.
+        let q = quad;
+        let w: Vec<f32> = q.iter().map(|v| (v.uv[1] - r.v0) / h + scroll).collect();
+        // Sutherland-Hodgman against w = 1: the part before and the part past it.
+        let mut parts: [Vec<(Vertex, f32)>; 2] = [Vec::new(), Vec::new()];
+        for i in 0..4 {
+            let (a, b) = ((q[i], w[i]), (q[(i + 1) % 4], w[(i + 1) % 4]));
+            let side = |x: f32| usize::from(x > 1.0);
+            parts[side(a.1)].push(a);
+            if side(a.1) != side(b.1) {
+                let t = (1.0 - a.1) / (b.1 - a.1);
+                let cut = lerp(&a.0, &b.0, t);
+                parts[0].push((cut, 1.0));
+                parts[1].push((cut, 1.0));
+            }
+        }
+        for (wrap, part) in parts.iter().enumerate() {
+            if part.len() < 3 {
+                continue;
+            }
+            let fix = |(mut v, x): (Vertex, f32)| {
+                v.uv[1] = r.v0 + (x - wrap as f32) * h;
+                v
+            };
+            let p: Vec<Vertex> = part.iter().copied().map(fix).collect();
+            // Fanned into quads (a triangle's last corner twice).
+            let mut k = 1;
+            while k + 1 < p.len() {
+                let d = if k + 2 < p.len() { p[k + 2] } else { p[k + 1] };
+                out.extend([p[0], p[k], p[k + 1], d]);
+                k += 2;
+            }
+        }
     }
 }
 

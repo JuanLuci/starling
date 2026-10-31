@@ -206,6 +206,8 @@ pub struct KineticTable {
     machines: Vec<Option<Machine>>,
     /// The properties of blocks' own their templates do not place, by block (own-states.json).
     own: HashMap<String, Vec<String>>,
+    /// The models the game draws for blocks besides their own, by block (block-models.json).
+    models: HashMap<String, Vec<String>>,
 }
 
 impl KineticTable {
@@ -248,6 +250,10 @@ impl KineticTable {
             out.own = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("{}: {e}", crate::mod_content::OWN_STATES))?;
         }
+        if let Some(bytes) = read(crate::mod_content::BLOCK_MODELS) {
+            out.models = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{}: {e}", crate::mod_content::BLOCK_MODELS))?;
+        }
         if let Some(bytes) = read(crate::mod_content::MACHINES) {
             let declared: HashMap<String, Machine> = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("{}: {e}", crate::mod_content::MACHINES))?;
@@ -267,6 +273,10 @@ impl KineticTable {
     /// places the others), if any.
     pub fn own_placement(&self, block: &str) -> Option<&[String]> {
         self.own.get(block).map(Vec::as_slice)
+    }
+    /// The models the game draws for `block` besides its own, in its declared order.
+    pub fn block_models(&self, block: &str) -> &[String] {
+        self.models.get(block).map_or(&[], Vec::as_slice)
     }
     pub fn get(&self, state: BlockStateId) -> Option<&Arc<Part>> {
         self.parts.get(state.0 as usize)?.as_ref()

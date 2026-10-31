@@ -78,11 +78,24 @@ impl Game<'_> {
             flat
         };
         let horizontal = back(flat);
+        let chute = name.ends_with("chute");
         for p in &props {
             let candidates: Vec<&str> = match p.as_str() {
                 "axis" => {
                     let axis = clicked.iter().position(|v| *v != 0).unwrap_or(1);
                     vec![["x", "y", "z"][axis]]
+                }
+                // ChuteBlock.getStateForPlacement and updateChuteState: on a side, not
+                // sneaking, a diagonal one when a chute is below and behind; else straight down.
+                "facing" if chute => {
+                    let behind = [pos[0] - clicked[0], pos[1] - 1, pos[2] - clicked[2]];
+                    let state = self.world.block(behind[0], behind[1], behind[2]);
+                    let below_chute = self.res.facts().get(state).name.ends_with("chute");
+                    if clicked[1] == 0 && !ctx.sneaking && below_chute {
+                        vec![name_of(clicked)]
+                    } else {
+                        vec!["down"]
+                    }
                 }
                 "facing" => {
                     let looked = if ctx.sneaking { look } else { back(look) };
