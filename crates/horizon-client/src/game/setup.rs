@@ -192,13 +192,13 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
         }
         Step::Start => (
             "Set up Starling",
-            "Microsoft sign-in is optional. Create an offline account to play without connecting Microsoft. You still need your own prepared Minecraft Java resources; import them from a computer to finish setup."
+            "Starling needs the game's files before it can start. Sign in with the Microsoft account that owns Minecraft: Java Edition and it downloads them for you. An offline account only picks your player name: the files still come from a Microsoft sign-in or from a computer."
                 .into(),
             None,
         ),
         Step::Offline(name) => (
-            "Offline account ready",
-            format!("Playing as {name}. No Microsoft sign-in is needed for single-player, LAN, or offline-mode servers. Import your prepared Minecraft Java resources from a computer to finish setup."),
+            "Offline account set",
+            format!("Playing as {name}. Offline play needs no Microsoft sign-in, but Starling still needs the game's files. Sign in with the Microsoft account that owns Minecraft: Java Edition to have them downloaded, or import files prepared on a computer."),
             None,
         ),
         Step::Talking => ("Set up Starling", "Talking to Microsoft...".into(), None),
@@ -260,13 +260,15 @@ fn buttons(step: &Step) -> [Option<(&'static str, Action)>; 2] {
                 Some((other, Action::FolderLater)),
             ]
         }
+        // Sign-in first: on a phone it is the way to the game's files without a computer. The
+        // files from a computer are one tap on, on the offline account's card.
         Step::Start => [
-            Some(("Create offline account", Action::OfflineAccount)),
-            Some(("Files from a computer", Action::Pick)),
+            Some(("Sign in with Microsoft", Action::SignIn)),
+            Some(("Use an offline account", Action::OfflineAccount)),
         ],
         Step::Offline(_) => [
-            Some(("Files from a computer", Action::Pick)),
             Some(("Sign in with Microsoft", Action::SignIn)),
+            Some(("Files from a computer", Action::Pick)),
         ],
         Step::Code { .. } => [
             Some(("Open the page", Action::OpenLink)),
