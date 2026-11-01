@@ -131,23 +131,60 @@ fn sha1_file(path: &Path) -> Option<String> {
 }
 
 /// `url`'s body, which must hash to `sha1`; the error names the file, never more of the URL.
+/// How many times one file is asked for before the whole download stops. Thousands of files come
+/// over a phone's connection, which drops for a moment now and then (mobile data, a background
+/// app's network cut): one lost file must not end the run.
+const ATTEMPTS: u32 = 4;
+
+/// The wait after a failed try, times the number of tries so far.
+const BACKOFF: Duration = if cfg!(test) {
+    Duration::from_millis(20)
+} else {
+    Duration::from_millis(1500)
+};
+
+/// `url`'s body, which must hash to `sha1`; the error names the file, never more of the URL. A
+/// network that fails, a busy server (429, 5xx) or a body cut off is asked again, a little later
+/// each time; a refusal (404...) or a file with the wrong hash is final at once.
 fn fetch_checked(url: &str, sha1: &str, name: &str) -> Result<Vec<u8>, String> {
+    let mut tried = 1;
+    loop {
+        match fetch_once(url, sha1, name) {
+            Ok(body) => return Ok(body),
+            Err((_, true)) if tried < ATTEMPTS => {
+                std::thread::sleep(BACKOFF * tried);
+                tried += 1;
+            }
+            Err((error, _)) => return Err(error),
+        }
+    }
+}
+
+/// One try at `url`: the body, or the error and whether asking again may help.
+fn fetch_once(url: &str, sha1: &str, name: &str) -> Result<Vec<u8>, (String, bool)> {
     let response = agent().get(url).call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => format!("Mojang's server refused {name} ({code})."),
-        ureq::Error::Transport(t) => format!(
-            "Could not download {name} ({}). Check your internet connection.",
-            crate::transport_detail(&t)
+        ureq::Error::Status(code, _) => (
+            format!("Mojang's server refused {name} ({code})."),
+            code == 429 || code >= 500,
+        ),
+        ureq::Error::Transport(t) => (
+            format!(
+                "Could not download {name} ({}). Check your internet connection.",
+                crate::transport_detail(&t)
+            ),
+            true,
         ),
     })?;
     let mut body = Vec::new();
     response
         .into_reader()
         .read_to_end(&mut body)
-        .map_err(|_| format!("The download of {name} was cut off."))?;
+        .map_err(|_| (format!("The download of {name} was cut off."), true))?;
     match sha1_hex(&body) {
         actual if actual == sha1 => Ok(body),
-        _ => Err(format!(
-            "{name} is not the file Mojang lists (its hash differs)."
+        _ => Err((
+            format!("{name} is not the file Mojang lists (its hash differs)."),
+            false,
         )),
     }
 }
