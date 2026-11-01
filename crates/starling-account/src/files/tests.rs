@@ -236,6 +236,70 @@ fn a_file_that_is_not_the_listed_one_is_refused() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A server that answers its first `busy` requests with 503 and every later one with `body`.
+fn serve_after(busy: u64, body: Vec<u8>, hits: Arc<AtomicU64>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).is_err() || header.trim_end().is_empty() {
+                    break;
+                }
+            }
+            let n = hits.fetch_add(1, Ordering::Relaxed) + 1;
+            let (status, body) = if n <= busy {
+                (503, Vec::new())
+            } else {
+                (200, body.clone())
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    base
+}
+
+#[test]
+fn a_busy_server_is_asked_again_before_the_download_fails() {
+    let body = b"made-up object".to_vec();
+    let sha1 = sha1_hex(&body);
+    // Two busy answers, then the file: the third try gets it.
+    let hits = Arc::new(AtomicU64::new(0));
+    let base = serve_after(2, body.clone(), hits.clone());
+    assert_eq!(fetch_checked(&base, &sha1, "x.ogg").unwrap(), body);
+    assert_eq!(hits.load(Ordering::Relaxed), 3);
+    // Busy for good: it stops after ATTEMPTS tries, saying what the server answered.
+    let hits = Arc::new(AtomicU64::new(0));
+    let base = serve_after(u64::MAX, body, hits.clone());
+    let err = fetch_checked(&base, &sha1, "x.ogg").unwrap_err();
+    assert_eq!(err, "Mojang's server refused x.ogg (503).");
+    assert_eq!(hits.load(Ordering::Relaxed), u64::from(ATTEMPTS));
+}
+
+#[test]
+fn a_final_answer_is_not_asked_again() {
+    let f = fake();
+    // A file Mojang does not have (404) and a file with the wrong hash are one try each.
+    let err = fetch_checked(&format!("{}/missing", f.base), &"0".repeat(40), "m.jar").unwrap_err();
+    assert_eq!(err, "Mojang's server refused m.jar (404).");
+    assert_eq!(f.hits.load(Ordering::Relaxed), 1);
+    let err =
+        fetch_checked(&format!("{}/client.jar", f.base), &"0".repeat(40), "c.jar").unwrap_err();
+    assert_eq!(
+        err,
+        "c.jar is not the file Mojang lists (its hash differs)."
+    );
+    assert_eq!(f.hits.load(Ordering::Relaxed), 2);
+}
+
 #[test]
 fn starlings_pins_are_the_research_lock() {
     let pins = Pins::starling();
