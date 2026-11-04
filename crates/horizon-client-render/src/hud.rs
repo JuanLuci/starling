@@ -111,6 +111,8 @@ pub const GLYPH_ROWS: u32 = 512;
 pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// Below this a texture at half size stops being worth what it costs to look at.
 const SMALLEST_SHRUNK_SIDE: u32 = 32;
+/// The interface's textures shrink only once the others are down to this side.
+const INTERFACE_WAITS_FOR_SIDE: u32 = 64;
 /// A side of a GPU's largest texture, once the renderer has found the GPU; 0 before.
 static GPU_TEXTURE_SIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// The renderer's word on what the GPU takes, which the atlas is packed within.
@@ -1218,17 +1220,30 @@ impl HudAtlas {
                 Ok(layout) => return Ok(layout),
                 Err(error) => error,
             };
-            let side = images
-                .iter()
-                .filter(|i| shrinks(&i.0))
-                .map(|i| i.1.max(i.2))
-                .max()
-                .unwrap_or(0);
+            let largest = |gui: bool| {
+                images
+                    .iter()
+                    .filter(|i| shrinks(&i.0) && i.0.contains("gui/") == gui)
+                    .map(|i| i.1.max(i.2))
+                    .max()
+                    .unwrap_or(0)
+            };
+            // The interface last, once the rest is down to this: the logo shows it the most.
+            let world = largest(false);
+            let world_first = world > INTERFACE_WAITS_FOR_SIDE;
+            let side = if world_first {
+                world
+            } else {
+                world.max(largest(true))
+            };
             if side < SMALLEST_SHRUNK_SIDE {
                 return Err(error);
             }
             for image in images.iter_mut() {
-                if shrinks(&image.0) && image.1.max(image.2) == side {
+                if shrinks(&image.0)
+                    && image.1.max(image.2) == side
+                    && !(world_first && image.0.contains("gui/"))
+                {
                     full_sizes
                         .entry(image.0.clone())
                         .or_insert((image.1, image.2));
@@ -3831,6 +3846,21 @@ texture=wide",
             HudAtlas::layout_within(&mut slots, &mut animated, &none, &none, 1024, &mut full)
                 .is_err()
         );
+    }
+    #[test]
+    fn the_interface_shrinks_after_the_rest() {
+        let image = |name: &str, side: u32| {
+            let pixels = vec![0; (side * side * 4) as usize];
+            (name.to_owned(), side, side, pixels)
+        };
+        let mut images = vec![image("gui/logo", 600), image("entity/big", 400)];
+        let none = HashSet::new();
+        let mut full = HashMap::new();
+        HudAtlas::layout_within(&mut images, &mut Vec::new(), &none, &none, 1024, &mut full)
+            .unwrap();
+        let sizes: HashMap<_, _> = images.iter().map(|i| (i.0.as_str(), i.1)).collect();
+        assert_eq!(sizes["entity/big"], 50);
+        assert_eq!(sizes["gui/logo"], 300);
     }
     #[test]
     fn half_size_keeps_every_other_texel() {

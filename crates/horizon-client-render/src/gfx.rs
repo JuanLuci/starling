@@ -3897,6 +3897,7 @@ impl Renderer {
             })];
             let info = adapter.get_info();
             let min_sections = if flat::is_broken_intel_vulkan(&info)
+                || flat::is_powervr_vulkan(&info)
                 || std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
             {
                 0

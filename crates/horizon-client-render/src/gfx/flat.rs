@@ -164,6 +164,14 @@ pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
     std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
         || info.backend == wgpu::Backend::Metal
         || is_broken_intel_vulkan(info)
+        || is_powervr_vulkan(info)
+}
+
+/// PowerVR Rogue's Vulkan driver (the GE8320's 1.13) draws terrain in pieces with per-section
+/// draws, without an error: flat frames need neither `first_instance` nor a vertex offset.
+pub fn is_powervr_vulkan(info: &wgpu::AdapterInfo) -> bool {
+    info.backend == wgpu::Backend::Vulkan
+        && (info.vendor == 0x1010 || info.name.contains("PowerVR"))
 }
 
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
