@@ -68,9 +68,52 @@ fn favour() -> bool {
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) != 0 }
 }
 
-#[cfg(not(any(target_vendor = "apple", windows)))]
+#[cfg(target_os = "android")]
+fn favour() -> bool {
+    if !THREAD_BOOST.load(Ordering::Relaxed) {
+        return false;
+    }
+    // Tighten timer slack on the main/render/server thread to 50 us so frame-pacing sleeps
+    // wake crisp on 60/90/120 Hz mobile displays without busy-spinning.
+    // SAFETY: PR_SET_TIMERSLACK takes an unsigned nanosecond value for the calling thread.
+    unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, 50_000usize, 0, 0, 0) == 0 }
+}
+
+#[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
 fn favour() -> bool {
     false
+}
+
+/// Enable or disable Volt's mobile big.LITTLE / timer-slack thread tuning.
+static THREAD_BOOST: AtomicBool = AtomicBool::new(true);
+
+pub fn set_thread_boost(enabled: bool) {
+    THREAD_BOOST.store(enabled, Ordering::Relaxed);
+}
+
+pub fn thread_boost_enabled() -> bool {
+    THREAD_BOOST.load(Ordering::Relaxed)
+}
+
+/// Current process resident memory (RSS) in MiB on Linux and Android (`/proc/self/statm`).
+pub fn resident_ram_mib() -> Option<u64> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let rss_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        // SAFETY: queries kernel page size; no pointers or mutable state.
+        let page_bytes = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page_bytes = if page_bytes > 0 {
+            page_bytes as u64
+        } else {
+            4096
+        };
+        Some(rss_pages.saturating_mul(page_bytes) / (1024 * 1024))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        None
+    }
 }
 
 /// The CPU time the calling thread has used, where only an OS call gives it
@@ -144,6 +187,10 @@ fn behind() -> bool {
     // policy (who 0, pid 0 is the calling thread on Linux and Android); `param` lives
     // across the call.
     unsafe {
+        #[cfg(target_os = "android")]
+        if THREAD_BOOST.load(Ordering::Relaxed) {
+            let _ = libc::prctl(libc::PR_SET_TIMERSLACK, 1_000_000usize, 0, 0, 0);
+        }
         let nice = libc::getpriority(libc::PRIO_PROCESS as _, 0);
         if nice + BEHIND <= 19 {
             libc::setpriority(libc::PRIO_PROCESS as _, 0, nice + BEHIND) == 0
@@ -167,12 +214,18 @@ pub fn idle_current() -> bool {
     idle()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn idle() -> bool {
     let param = libc::sched_param { sched_priority: 0 };
     // SAFETY: sets the calling thread's own policy (pid 0); `param` lives
     // across the call.
-    unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0 }
+    unsafe {
+        #[cfg(target_os = "android")]
+        if THREAD_BOOST.load(Ordering::Relaxed) {
+            let _ = libc::prctl(libc::PR_SET_TIMERSLACK, 2_000_000usize, 0, 0, 0);
+        }
+        libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -190,7 +243,7 @@ fn idle() -> bool {
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) != 0 }
 }
 
-#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows)))]
 fn idle() -> bool {
     false
 }
@@ -295,6 +348,9 @@ pub fn allocator_commit() -> (usize, usize) {
 /// native libraries still use: glibc keeps freed pages in the arena of the
 /// thread that allocated them, and macOS in its zones until memory runs short.
 pub fn release_free_memory() {
+    // Android uses Bionic's Scudo/jemalloc global allocator rather than mimalloc;
+    // calling `mi_collect` on Android would lazily map unused mimalloc segments per thread.
+    #[cfg(not(target_os = "android"))]
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
         libmimalloc_sys::mi_collect(true);

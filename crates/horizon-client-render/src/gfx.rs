@@ -1195,6 +1195,13 @@ pub struct Renderer {
     oit: Option<oit::Oit>,
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
+    /// Tick stride for animated sprite uploads (1 = vanilla 20 Hz, 2 = Volt Boost 10 Hz throttle).
+    pub animation_step_ticks: u64,
+    /// Skip animated block sprite blending/uploads when no visible section uses that layer.
+    pub active_anim_cull: bool,
+    /// Distance-adaptive hysteresis for translucent water/glass re-sorting.
+    pub fast_translucency: bool,
+    last_animated_tick: Option<u64>,
     present_modes: Vec<wgpu::PresentMode>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
@@ -4231,6 +4238,10 @@ impl Renderer {
             oit: None,
             fullbright: false,
             animated_textures: true,
+            animation_step_ticks: 1,
+            active_anim_cull: false,
+            fast_translucency: false,
+            last_animated_tick: None,
             present_modes,
         })
     }
@@ -4372,6 +4383,10 @@ impl Renderer {
         self.suspended = false;
         self.detached = false;
         Ok(())
+    }
+    /// Poll the GPU device without blocking so completed fences retire early (Volt Reflex).
+    pub fn poll_gpu(&self) {
+        let _ = self.device.poll(wgpu::PollType::Poll);
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
@@ -6690,7 +6705,12 @@ impl Renderer {
             // Visibility is collected before terrain draw commands are recorded,
             // so upload the current mask here and keep animation updates ahead
             // of every draw in this command buffer.
-            self.animate(&mut encoder, frame.ticks, !frame.title);
+            let step = self.animation_step_ticks.max(1);
+            let anim_tick = frame.ticks / step * step;
+            if self.last_animated_tick != Some(anim_tick) {
+                self.last_animated_tick = Some(anim_tick);
+                self.animate(&mut encoder, anim_tick, !frame.title || self.active_anim_cull);
+            }
         }
         self.drawn_sections = visible.len() + visible_lods.len();
         let instances = self.drawn_sections + shadow_visible.len();
@@ -6894,14 +6914,20 @@ impl Renderer {
         // (at least 15) of the visible list. Cached views avoid needless sorts.
         self.translucent_draws.clear();
         let count = visible.len() + visible_lods.len();
-        let budget = (count / 8).max(15).min(count);
+        let fast_trans = self.fast_translucency;
+        let budget = if fast_trans {
+            (count / 16).max(6).min(count)
+        } else {
+            (count / 8).max(15).min(count)
+        };
+        let near_radius = if fast_trans { 1 } else { 2 };
         self.translucency_cursor %= count.max(1);
         for (i, v) in visible.iter().enumerate().rev() {
             let s = self.sections.get_mut(v.slot);
             if let Some((index_page, index_start)) = s.sorted_indices {
-                let nearby = (v.key.0 - camera_section.0).abs() <= 2
-                    && (v.key.1 - camera_section.1).abs() <= 2
-                    && (v.key.2 - camera_section.2).abs() <= 2;
+                let nearby = (v.key.0 - camera_section.0).abs() <= near_radius
+                    && (v.key.1 - camera_section.1).abs() <= near_radius
+                    && (v.key.2 - camera_section.2).abs() <= near_radius;
                 let scheduled = (i + count - self.translucency_cursor) % count < budget;
                 let origin = [
                     v.key.0 * 16,
@@ -6909,9 +6935,12 @@ impl Renderer {
                     v.key.2 * 16,
                 ];
                 if (!s.sort.is_sorted() || nearby || scheduled)
-                    && let Some(indices) =
-                        s.sort
-                            .update(camera.to_array(), origin, &mut self.translucent_sorter)
+                    && let Some(indices) = s.sort.update_adaptive(
+                        camera.to_array(),
+                        origin,
+                        &mut self.translucent_sorter,
+                        fast_trans && !nearby,
+                    )
                 {
                     self.uploads.buffer(
                         &mut encoder,

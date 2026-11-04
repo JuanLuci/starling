@@ -387,10 +387,22 @@ impl Game<'_> {
             _ => (false, false),
         };
         let at = camera.to_array().map(|v| v.floor() as i32);
-        let eligible = self.settings.horizon.entity_culling
-            != horizon_client::graphics::EntityCullingMode::Off
+        let volt_cull_active = self.settings.extras.entity_cap
+            != horizon_client::volt_features::EntityCap::Unlimited
+            || self.settings.extras.block_entity_cap
+                != horizon_client::volt_features::BlockEntityCap::Unlimited;
+        let mode = if self.settings.horizon.entity_culling
+            == horizon_client::graphics::EntityCullingMode::Off
+            && volt_cull_active
+        {
+            horizon_client::graphics::EntityCullingMode::Synchronous
+        } else {
+            self.settings.horizon.entity_culling
+        };
+        let budget = if volt_cull_active { 16_384 } else { 8_192 };
+        let eligible = mode != horizon_client::graphics::EntityCullingMode::Off
             // Packs can replace an opaque block's model or texture.
-            && self.model_packs_are_vanilla()
+            && (volt_cull_active || self.model_packs_are_vanilla())
             && self.player.is_some()
             && !self.spectator()
             && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));
@@ -401,14 +413,14 @@ impl Game<'_> {
             return;
         }
 
-        match self.settings.horizon.entity_culling {
+        match mode {
             horizon_client::graphics::EntityCullingMode::Off => {
                 self.entity_culler = None;
                 self.async_entity_culler = None;
                 self.async_entity_culling_failed = false;
             }
             horizon_client::graphics::EntityCullingMode::Synchronous => {
-                self.entity_culler = Some(Culler::new(camera.to_array(), 8_192));
+                self.entity_culler = Some(Culler::new(camera.to_array(), budget));
                 self.async_entity_culler = None;
                 self.async_entity_culling_failed = false;
             }
@@ -427,7 +439,7 @@ impl Game<'_> {
                     culler.begin_frame(camera, &self.world);
                 } else {
                     // If the worker cannot start, use the existing same-frame path.
-                    self.entity_culler = Some(Culler::new(camera.to_array(), 8_192));
+                    self.entity_culler = Some(Culler::new(camera.to_array(), budget));
                 }
             }
         }

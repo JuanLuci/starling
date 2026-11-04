@@ -385,10 +385,17 @@ impl Game<'_> {
     /// The glint clock, options and sprite for this frame: read once per
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
+        let alpha = if self.settings.extras.glint_mode
+            == horizon_client::volt_features::GlintTrimMode::Off
+        {
+            0.0
+        } else {
+            self.settings.file.double("glintStrength") as f32
+        };
         item_render::GlintFrame {
             millis: self.started.elapsed().as_secs_f32() * 1000.0,
             speed: self.settings.file.double("glintSpeed") as f32,
-            alpha: self.settings.file.double("glintStrength") as f32,
+            alpha,
             sprite: self
                 .gui
                 .atlas
@@ -422,11 +429,19 @@ impl Game<'_> {
         lights: (glam::Vec3, glam::Vec3),
         out: &mut Vec<Vertex>,
     ) {
+        let glint = if self.settings.extras.glint_mode
+            == horizon_client::volt_features::GlintTrimMode::NearbyOnly
+            && pose.w_axis.truncate().length_squared() > 144.0
+        {
+            None
+        } else {
+            self.glint()
+        };
         let mut sink = WorldSink {
             out,
             light: item_hdr_light(state, light),
             lights: (state.hdr_light == 0).then_some(lights),
-            glint: self.glint(),
+            glint,
             tier: state.hdr_tier,
         };
         state.submit(
@@ -534,14 +549,37 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
-        let live = self.dropped.iter().map(|item| {
+        let (max_items, max_dist_sq) = self
+            .settings
+            .extras
+            .item_render_cap
+            .limit_and_dist_sq()
+            .unwrap_or((usize::MAX, f64::INFINITY));
+        let at_of = |item: &super::ItemEntity| {
             let (p, q) = (item.previous, item.position);
-            let at = [
+            [
                 p.x + (q.x - p.x) * alpha,
                 p.y + (q.y - p.y) * alpha,
                 p.z + (q.z - p.z) * alpha,
-            ];
-            (item, at, alpha as f32, true)
+            ]
+        };
+        let live_indices: Vec<usize> = if max_items < usize::MAX && self.dropped.len() > max_items {
+            let mut ordered: Vec<(usize, f64)> = Vec::with_capacity(self.dropped.len());
+            for (idx, item) in self.dropped.iter().enumerate() {
+                let d_sq = (glam::DVec3::from_array(at_of(item)) - camera).length_squared();
+                if d_sq <= max_dist_sq {
+                    ordered.push((idx, d_sq));
+                }
+            }
+            ordered.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            ordered.truncate(max_items);
+            ordered.into_iter().map(|(idx, _)| idx).collect()
+        } else {
+            (0..self.dropped.len()).collect()
+        };
+        let live = live_indices.into_iter().map(|idx| {
+            let item = &self.dropped[idx];
+            (item, at_of(item), alpha as f32, true)
         });
         // ItemPickupParticle: the render state extracted at partial tick 1.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
@@ -557,17 +595,22 @@ impl Game<'_> {
             super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
         let skinning = self.skinning();
         let lights = diffuse_lights(self.dim == Dim::Nether);
+        let mut rendered = 0usize;
         for (item, at, partial, entity) in live.chain(taken) {
+            if rendered >= max_items {
+                break;
+            }
             let entity_start = out.len();
             self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
+            let dist_sq = pos.length_squared();
             let far = if entity {
                 (glam::DVec3::new(q.x, q.y, q.z) - camera).length_squared() >= range * range
             } else {
-                pos.length_squared() > 64.0 * 64.0
+                dist_sq > 64.0 * 64.0
             };
-            if far {
+            if far || dist_sq > max_dist_sq {
                 continue;
             }
             // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
@@ -592,7 +635,9 @@ impl Game<'_> {
             if state.is_empty() {
                 continue;
             }
-            let age = item.age as f32 + partial;
+            rendered += 1;
+            let far_static = max_items < usize::MAX && dist_sq > 144.0;
+            let age = if far_static { 0.0 } else { item.age as f32 + partial };
             let (lo, _) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
             let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;

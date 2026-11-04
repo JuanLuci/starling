@@ -15,7 +15,6 @@ use horizon_client::{
 use std::time::Duration;
 use winit::event::MouseButton;
 
-#[derive(Default)]
 pub(super) struct ExtrasState {
     fps: FpsCounter,
     /// Left and right mouse buttons: held, and their clicks.
@@ -26,6 +25,42 @@ pub(super) struct ExtrasState {
     minimap_dim: Option<Dim>,
     /// Auto-reconnect's attempts at the current server.
     reconnect: Tracker,
+    /// Volt Boost rolling 48-frame times (ms) for Perf HUD sparkline, Auto-DRS & Thermal Guard.
+    pub(super) frame_ms_ring: [f32; 48],
+    pub(super) frame_ms_head: usize,
+    pub(super) ema_frame_ms: f32,
+    pub(super) drs_scale: f32,
+    pub(super) last_drs_apply_at: f64,
+    pub(super) cached_rss_mib: (f64, u64),
+    pub(super) last_mem_trim_at: f64,
+    pub(super) drawn_entities: std::sync::atomic::AtomicU32,
+}
+
+impl Default for ExtrasState {
+    fn default() -> Self {
+        Self {
+            fps: FpsCounter::default(),
+            mouse: [false; 2],
+            cps: Default::default(),
+            minimap: Minimap::default(),
+            minimap_dim: None,
+            reconnect: Tracker::default(),
+            frame_ms_ring: [0.0; 48],
+            frame_ms_head: 0,
+            ema_frame_ms: 16.0,
+            drs_scale: 1.0,
+            last_drs_apply_at: 0.0,
+            cached_rss_mib: (-10.0, 0),
+            last_mem_trim_at: 0.0,
+            drawn_entities: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+}
+
+impl ExtrasState {
+    pub(super) fn effective_drs_scale(&self) -> f32 {
+        self.drs_scale.clamp(0.50, 1.0)
+    }
 }
 /// CPU time the minimap's tiles may take per frame.
 const MINIMAP_BUDGET: Duration = Duration::from_micros(300);
@@ -60,7 +95,80 @@ impl Game<'_> {
         self.update_minimap();
         // For mods (`render.frame-stats`, `native_frame_rate`).
         let now = self.extras_now();
-        self.extras.fps.record(now, elapsed.as_secs_f32() * 1000.0);
+        let ms = (elapsed.as_secs_f32() * 1000.0).clamp(0.1, 250.0);
+        self.extras.fps.record(now, ms);
+        let head = self.extras.frame_ms_head;
+        self.extras.frame_ms_ring[head] = ms;
+        self.extras.frame_ms_head = (head + 1) % 48;
+        self.extras.ema_frame_ms = self.extras.ema_frame_ms * 0.90 + ms * 0.10;
+
+        if now - self.extras.cached_rss_mib.0 >= 1.0
+            && (self.settings.extras.perf_hud != horizon_client::volt_features::PerfHudMode::Off
+                || self.settings.extras.memory_saver)
+        {
+            self.extras.cached_rss_mib = (now, horizon_threads::resident_ram_mib().unwrap_or(0));
+        }
+
+        if self.settings.extras.memory_saver && now - self.extras.last_mem_trim_at >= 30.0 {
+            self.extras.last_mem_trim_at = now;
+            self.particles.trim_memory();
+            self.pending_uploads.shrink_to_fit();
+            horizon_threads::release_free_memory();
+        }
+        if self.settings.extras.purge_ram_requested {
+            self.settings.extras.purge_ram_requested = false;
+            self.particles.trim_memory();
+            self.pending_uploads.shrink_to_fit();
+            horizon_threads::release_free_memory();
+            let rss = horizon_threads::resident_ram_mib().unwrap_or(0);
+            self.extras.cached_rss_mib = (now, rss);
+            self.titles.set_overlay(
+                horizon_client::text::Text::literal(format!(
+                    "Volt Boost: Purged unused RAM ({rss} MiB resident)"
+                ))
+                .with_color(horizon_client::text::GREEN),
+                false,
+            );
+        }
+
+        // Auto-DRS & Mobile Thermal Guard dynamic 3D resolution controller
+        let drs_cfg = self.settings.extras.auto_drs.target_and_floor();
+        let thermal_on = self.settings.extras.thermal_guard;
+        let desired_drs = if playing && (drs_cfg.is_some() || thermal_on) {
+            let (target_fps, floor) = drs_cfg.unwrap_or((60.0, 0.72));
+            let target_ms = 1000.0 / target_fps;
+            let mut s = self.extras.drs_scale;
+            if self.extras.ema_frame_ms > target_ms * 1.12 {
+                s = (s - 0.04).max(floor);
+            } else if thermal_on && self.extras.ema_frame_ms > 24.0 {
+                s = (s - 0.05).max(0.70);
+            } else if self.extras.ema_frame_ms < target_ms * 0.80 {
+                s = (s + 0.02).min(1.0);
+            }
+            s
+        } else {
+            1.0
+        };
+        if (desired_drs - self.extras.drs_scale).abs() >= 0.035
+            && now - self.extras.last_drs_apply_at >= 0.45
+        {
+            self.extras.drs_scale = desired_drs;
+            self.extras.last_drs_apply_at = now;
+            if let Some(r) = self.renderer.as_mut() {
+                let base = self.settings.horizon.resolution_scale as f32 / 100.0;
+                r.set_world_post(
+                    (base * desired_drs).clamp(0.25, 2.0),
+                    self.settings.horizon.fxaa,
+                    self.settings.horizon.taa,
+                    self.settings.horizon.upscaling.ratio(),
+                );
+            }
+        }
+        if thermal_on && playing && self.extras.ema_frame_ms > 28.0 {
+            self.particles.max_particles = self.particles.max_particles.min(1024);
+        } else {
+            self.particles.max_particles = self.settings.extras.particle_budget.max_particles();
+        }
         self.native_frame(elapsed);
         self.recipes_received_now();
     }
@@ -240,6 +348,38 @@ impl Game<'_> {
         let visible = |corner| !(self.debug && corner == Corner::TopLeft);
         let mut corners = Corners::new(batch.width, batch.height, self.effect_rows_height());
         let atlas = &self.gui.atlas;
+        if self.settings.extras.perf_hud != horizon_client::volt_features::PerfHudMode::Off
+            && visible(self.settings.extras.perf_hud_corner)
+        {
+            let reading = self.extras.fps.reading();
+            let base_pct = self.settings.horizon.resolution_scale as f32;
+            let scale_pct = (base_pct * self.extras.effective_drs_scale()).round() as u32;
+            let total_ent = (self.mobs.len()
+                + self.dropped.len()
+                + self.armor_stands.len()
+                + self.orbs.len()) as u32;
+            let perf_data = extras_hud::VoltPerfHudData {
+                full: self.settings.extras.perf_hud
+                    == horizon_client::volt_features::PerfHudMode::Full,
+                corner: self.settings.extras.perf_hud_corner,
+                fps: reading.fps,
+                low_1pct: reading.low,
+                frame_ms: self.extras.ema_frame_ms,
+                ram_mib: self.extras.cached_rss_mib.1,
+                scale_pct,
+                entities_drawn: self
+                    .extras
+                    .drawn_entities
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                entities_total: total_ent,
+                particles: self.particles.active_count() as u32,
+                chunks: self.world.chunks.len() as u32,
+                active_boosts: self.settings.extras.active_volt_optimizations(),
+                samples_ms: &self.extras.frame_ms_ring,
+                sample_head: self.extras.frame_ms_head,
+            };
+            extras_hud::draw_volt_perf_hud(batch, atlas, &mut corners, &perf_data);
+        }
         if let Some((map_corner, map_size, view)) = map
             && visible(map_corner)
             && !self.extras.minimap.image.is_empty()

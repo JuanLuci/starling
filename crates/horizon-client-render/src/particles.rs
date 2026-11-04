@@ -1095,6 +1095,14 @@ pub struct ParticleEngine {
     /// The item particles' sprites (`BreakingItemParticle`'s slime ball, snowball
     /// and cobweb models, resolved for the ground), one per model layer.
     pub item_sprites: HashMap<ParticleType, Vec<String>>,
+    /// Dynamic active particle budget (`16_384` = vanilla; `0` = completely disabled).
+    pub max_particles: usize,
+    /// Optional squared render distance cutoff (`None` = vanilla full distance).
+    pub max_render_distance_sq: Option<f64>,
+    /// Caps explosion debris, hub firework bursts, and block-break spray spikes.
+    pub burst_shield: bool,
+    /// Rejects off-screen particles behind the camera before sprite/light lookups.
+    pub frustum_cull: bool,
 }
 /// `ParticleGroup.MAX_PARTICLES` (per render group; one group here).
 const MAX_PARTICLES: usize = 16384;
@@ -1169,6 +1177,10 @@ impl ParticleEngine {
             sounds: Vec::new(),
             made: Default::default(),
             item_sprites: HashMap::new(),
+            max_particles: MAX_PARTICLES,
+            max_render_distance_sq: None,
+            burst_shield: false,
+            frustum_cull: false,
         };
         engine.reload(root, atlas, translucent);
         engine
@@ -3161,6 +3173,9 @@ impl ParticleEngine {
         let twinkle = explosions.iter().any(|e| e.twinkle);
         let lifetime = explosions.len() as i32 * 2 - 1 + if twinkle { 15 } else { 0 };
         let far = (0..3).map(|i| (at[i] - camera[i]).powi(2)).sum::<f64>() >= 256.0;
+        if self.burst_shield && (far || self.starters.len() >= 4) {
+            return;
+        }
         self.starters.push(Starter {
             at,
             v,
@@ -3320,7 +3335,25 @@ impl ParticleEngine {
             }
         }
     }
+    pub fn active_count(&self) -> usize {
+        self.particles.len()
+    }
+    pub fn trim_memory(&mut self) {
+        self.particles.shrink_to_fit();
+        self.pending.shrink_to_fit();
+        self.emitters.shrink_to_fit();
+        self.starters.shrink_to_fit();
+        self.sounds.shrink_to_fit();
+    }
     pub fn tick(&mut self, level: &ParticleLevel) {
+        let cap = self.max_particles.min(MAX_PARTICLES);
+        if cap == 0 {
+            self.starters.clear();
+            self.emitters.clear();
+            self.particles.clear();
+            self.pending.clear();
+            return;
+        }
         self.tick_starters();
         self.tick_explosions(level);
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
@@ -3334,7 +3367,12 @@ impl ParticleEngine {
             self.tick_particle(p, level);
         }
         particles.retain(|p| !p.removed);
+        if particles.len() > cap {
+            particles.truncate(cap);
+        }
         self.particles = particles;
+        let soft_cap = (cap * 3) / 4;
+        let tail_span = (cap - soft_cap).max(1) as f32;
         let pending = std::mem::take(&mut self.pending);
         for mut p in pending {
             if p.pre_tick {
@@ -3344,11 +3382,11 @@ impl ParticleEngine {
             }
             // ParticleGroup.add: the last quarter fills with decreasing probability.
             let size = self.particles.len();
-            if size >= MAX_PARTICLES {
+            if size >= cap {
                 continue;
             }
-            if size >= 12288 {
-                let free = (MAX_PARTICLES - size) as f32 / 4096.0;
+            if size >= soft_cap {
+                let free = (cap - size) as f32 / tail_span;
                 if self.random.next_float() >= free * free {
                     continue;
                 }
@@ -3366,14 +3404,15 @@ impl ParticleEngine {
             return;
         }
         let explosions = std::mem::take(&mut self.tracked_explosions);
-        if self.particle_level != 0 {
+        if self.particle_level != 0 || self.max_particles == 0 {
             return;
         }
         let total_blocks: usize = explosions.iter().map(|e| e.block_count).sum();
         if total_blocks == 0 {
             return;
         }
-        let total_particles = total_blocks.min(512);
+        let debris_cap = if self.burst_shield { 24 } else { 512 };
+        let total_particles = total_blocks.min(debris_cap);
         for _ in 0..total_particles {
             // `WeightedRandom.getRandomItem` draws its `nextInt(totalWeight)`
             // even when one explosion is tracked.
@@ -4234,8 +4273,17 @@ impl ParticleEngine {
         out: &mut Vec<Vertex>,
     ) {
         // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
-        let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
-            * Quat::from_rotation_x(-pitch.to_radians());
+        let (yaw_rad, pitch_rad) = (yaw.to_radians(), pitch.to_radians());
+        let base = Quat::from_rotation_y(std::f32::consts::PI - yaw_rad)
+            * Quat::from_rotation_x(-pitch_rad);
+        let forward = glam::Vec3::new(
+            -yaw_rad.sin() * pitch_rad.cos(),
+            -pitch_rad.sin(),
+            yaw_rad.cos() * pitch_rad.cos(),
+        );
+        let frustum_cull = self.frustum_cull;
+        let max_dist_sq = self.max_render_distance_sq;
+        let a = f64::from(partial);
         let mut light_cache = ParticleLightCache::default();
         for p in &self.particles {
             if p.no_render {
@@ -4246,6 +4294,21 @@ impl ParticleEngine {
                 && p.age >= p.lifetime / 3
                 && ((p.age + p.lifetime) / 3) % 2 != 0
             {
+                continue;
+            }
+            let pos = DVec3::new(
+                p.previous[0] + (p.position[0] - p.previous[0]) * a,
+                p.previous[1] + (p.position[1] - p.previous[1]) * a,
+                p.previous[2] + (p.position[2] - p.previous[2]) * a,
+            ) - camera;
+            let dist_sq = pos.length_squared();
+            if let Some(limit_sq) = max_dist_sq
+                && dist_sq > limit_sq
+            {
+                continue;
+            }
+            let center = pos.as_vec3();
+            if frustum_cull && dist_sq > 9.0 && center.dot(forward) < -2.5 {
                 continue;
             }
             // `SubmitNodeCollection.submitQuadParticleGroup`: the translucent
@@ -4262,13 +4325,6 @@ impl ParticleEngine {
                 },
             };
             let Some(r) = rect else { continue };
-            let a = f64::from(partial);
-            let pos = DVec3::new(
-                p.previous[0] + (p.position[0] - p.previous[0]) * a,
-                p.previous[1] + (p.position[1] - p.previous[1]) * a,
-                p.previous[2] + (p.position[2] - p.previous[2]) * a,
-            ) - camera;
-            let center = pos.as_vec3();
             let rotation = if p.roll != 0.0 {
                 base * Quat::from_rotation_z(p.o_roll + (p.roll - p.o_roll) * partial)
             } else {

@@ -6458,7 +6458,40 @@ impl Game<'_> {
                 == super::perspective::CameraType::ThirdPersonFront,
             ..Default::default()
         });
-        for mob in &self.mobs {
+        let max_entities = self
+            .settings
+            .extras
+            .entity_cap
+            .limit()
+            .unwrap_or(usize::MAX);
+        let hub_shield = self.settings.extras.hub_lag_shield && self.mobs.len() > 24;
+        let throttle_distant = self.settings.extras.distant_mob_throttle;
+        let indices: Vec<usize> = if max_entities < usize::MAX && self.mobs.len() > max_entities {
+            let mut sorted: Vec<(usize, f64)> = Vec::with_capacity(self.mobs.len());
+            for (idx, mob) in self.mobs.iter().enumerate() {
+                if self.hides_as_camera(mob.id) {
+                    continue;
+                }
+                let d_sq = (glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z)
+                    - camera)
+                    .length_squared();
+                if hub_shield && d_sq > 18.0 * 18.0 && &*mob.kind.id == "minecraft:player" {
+                    continue;
+                }
+                sorted.push((idx, d_sq));
+            }
+            sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            sorted.truncate(max_entities);
+            sorted.into_iter().map(|(idx, _)| idx).collect()
+        } else {
+            (0..self.mobs.len()).collect()
+        };
+        let mut drawn_count = 0usize;
+        for idx in indices {
+            if drawn_count >= max_entities {
+                break;
+            }
+            let mob = &self.mobs[idx];
             let entity_start = out.len();
             self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             let outline = self.mob_outline(mob);
@@ -6477,6 +6510,13 @@ impl Game<'_> {
                 continue;
             }
             let d = glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z) - camera;
+            let d_sq = d.length_squared();
+            if hub_shield && is_player && d_sq > 18.0 * 18.0 {
+                continue;
+            }
+            if throttle_distant && d_sq > 24.0 * 24.0 {
+                continue;
+            }
             // Entity.shouldRenderAtSqrDistance: 64 times the bounding box's
             // mean edge, scaled by the view scale. RemotePlayer's box counts
             // ten times.
@@ -6506,6 +6546,7 @@ impl Game<'_> {
             }
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
+            drawn_count += 1;
             let light = self.world.light(
                 mob.position.x.floor() as i32,
                 (mob.position.y + mob.eye_height()).floor() as i32,
@@ -6729,6 +6770,9 @@ impl Game<'_> {
                 );
             }
         }
+        self.extras
+            .drawn_entities
+            .store(drawn_count as u32, std::sync::atomic::Ordering::Relaxed);
         // What follows isn't a tracked mob: close the last one's span.
         self.mark_motion(out.len(), 0);
         self.elder_apparition_geometry(alpha, out);

@@ -75,8 +75,26 @@ impl SortState {
         origin: [i32; 3],
         sorter: &'a mut Sorter,
     ) -> Option<&'a [u32]> {
-        let block = camera.map(|v| v.floor() as i32);
-        let pov = std::array::from_fn(|i| ((block[i] >> 4) - (origin[i] >> 4)).clamp(-1, 1));
+        self.update_adaptive(camera, origin, sorter, false)
+    }
+
+    /// Distance-adaptive translucent sort: when `coarse_grid` is true for
+    /// non-adjacent sections, camera block coordinates are quantized to 4-block
+    /// cells so small movement does not re-sort or re-upload distant water.
+    pub fn update_adaptive<'a>(
+        &mut self,
+        camera: [f64; 3],
+        origin: [i32; 3],
+        sorter: &'a mut Sorter,
+        coarse_grid: bool,
+    ) -> Option<&'a [u32]> {
+        let raw_block = camera.map(|v| v.floor() as i32);
+        let block = if coarse_grid {
+            raw_block.map(|b| b & !3)
+        } else {
+            raw_block
+        };
+        let pov = std::array::from_fn(|i| ((raw_block[i] >> 4) - (origin[i] >> 4)).clamp(-1, 1));
         if let Some((last_block, last_pov)) = self.last
             && last_pov == pov
             && (last_block == block || !pov.contains(&0))

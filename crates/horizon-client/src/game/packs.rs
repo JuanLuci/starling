@@ -164,12 +164,20 @@ impl Game<'_> {
     }
     /// The leaf mode that is safe for the current local and server packs.
     pub(super) fn effective_leaf_culling(&self) -> horizon_client::graphics::LeafCullingMode {
-        self.settings
+        let mode = self
+            .settings
             .horizon
             .leaf_culling_effective_with_server_packs(
                 self.settings.resource_packs.iter().map(String::as_str),
                 self.server_packs.active.iter().map(|pack| pack.id.as_str()),
-            )
+            );
+        if self.settings.extras.cull_leaves
+            && mode == horizon_client::graphics::LeafCullingMode::Off
+        {
+            horizon_client::graphics::LeafCullingMode::Hollow
+        } else {
+            mode
+        }
     }
     /// The packs the pack screen offers and the current selection
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).

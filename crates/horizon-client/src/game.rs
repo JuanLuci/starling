@@ -3884,7 +3884,13 @@ impl Game<'_> {
             return;
         };
         let boxes = self.particle_shape(pos, state);
+        let shield = self.settings.extras.chaos_particle_shield;
+        let mut idx = 0u32;
         horizon_client::particles::destroy_positions(pos, &boxes, |p, v| {
+            idx = idx.wrapping_add(1);
+            if shield && (idx & 3) != 1 {
+                return;
+            }
             let particle = Particle::terrain(self.particles.random(), p, v, sprite.clone(), tint);
             self.particles.push(particle);
         });
@@ -10890,10 +10896,15 @@ impl Game<'_> {
         // the round blob would be a second one. The Nether and the End have no sun to cast them.
         let pack_shadows =
             self.dim == Dim::Overworld && self.renderer.as_ref().is_some_and(|r| r.native_shadow());
-        let shadow_sprite = (self.settings.entity_shadows && !pack_shadows)
+        let shadow_mode = self.settings.extras.fast_shadows;
+        let shadow_sprite = (self.settings.entity_shadows
+            && !pack_shadows
+            && shadow_mode != horizon_client::volt_features::FastShadowMode::Off)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
+            let nearby_only =
+                shadow_mode == horizon_client::volt_features::FastShadowMode::Nearby16;
             // DimensionType.ambientLight: the_nether 0.1, the_end 0.25.
             let ambient = match self.dim {
                 Dim::Nether => 0.1,
@@ -10910,19 +10921,25 @@ impl Game<'_> {
                 )
             };
             let mut casters: Vec<(glam::DVec3, f32, f32)> =
-                horizon_client::shadows::mob_casters(&self.mobs, a).collect();
-            let item = horizon_client::shadows::shadow_params("minecraft:item");
-            casters.extend(
-                self.dropped
-                    .iter()
-                    .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
-            );
-            let orb = horizon_client::shadows::shadow_params("minecraft:experience_orb");
-            casters.extend(
-                self.orbs
-                    .iter()
-                    .map(|o| (lerp(o.previous, o.position), orb.0, orb.1)),
-            );
+                horizon_client::shadows::mob_casters(&self.mobs, a)
+                    .filter(|(pos, _, _)| {
+                        !nearby_only || (*pos - camera).length_squared() <= 256.0
+                    })
+                    .collect();
+            if !nearby_only {
+                let item = horizon_client::shadows::shadow_params("minecraft:item");
+                casters.extend(
+                    self.dropped
+                        .iter()
+                        .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
+                );
+                let orb = horizon_client::shadows::shadow_params("minecraft:experience_orb");
+                casters.extend(
+                    self.orbs
+                        .iter()
+                        .map(|o| (lerp(o.previous, o.position), orb.0, orb.1)),
+                );
+            }
             // Text, block and item displays (DisplayRenderer's shadow radius).
             casters.extend(self.text_displays.values().filter_map(|d| d.shadow(a)));
             for (pos, radius, strength) in casters {
@@ -10969,9 +10986,19 @@ impl Game<'_> {
                 atlas_revision: self.gui.atlas.revision,
                 nether: self.dim == Dim::Nether,
                 lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
+                sign: &|p| {
+                    if self.settings.extras.cull_sign_text {
+                        let dx = f64::from(p[0]) + 0.5 - camera.x;
+                        let dy = f64::from(p[1]) + 0.5 - camera.y;
+                        let dz = f64::from(p[2]) + 0.5 - camera.z;
+                        if dx * dx + dy * dy + dz * dz > 256.0 {
+                            return None;
+                        }
+                    }
+                    match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                        Some(BlockEntity::Sign(sign)) => Some(sign),
+                        _ => None,
+                    }
                 },
                 banner: &|p| self.banner_layers_at(p),
                 skull: &|p| self.skull_skin_at(p),
@@ -11004,7 +11031,13 @@ impl Game<'_> {
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
             };
-            let visible = r
+            let (max_be, max_be_dist_sq) = self
+                .settings
+                .extras
+                .block_entity_cap
+                .limit_and_dist_sq()
+                .unwrap_or((usize::MAX, f64::INFINITY));
+            let mut visible_vec: Vec<_> = r
                 .visible_block_entities_in_frustum(
                     self.settings.chunk_fade,
                     camera,
@@ -11014,10 +11047,45 @@ impl Game<'_> {
                 )
                 .filter(|(block, section_inside)| {
                     let (pos, state) = **block;
-                    self.res.block_entity_render().renders(state)
-                        && (off_screen(state) || *section_inside || in_view(&pos))
+                    if !self.res.block_entity_render().renders(state) {
+                        return false;
+                    }
+                    if off_screen(state) {
+                        return true;
+                    }
+                    let rel = glam::DVec3::new(
+                        f64::from(pos[0]),
+                        f64::from(pos[1]),
+                        f64::from(pos[2]),
+                    ) - camera;
+                    rel.length_squared() <= max_be_dist_sq
+                        && (*section_inside || in_view(&pos))
                 })
-                .map(|(block, _)| block);
+                .map(|(block, _)| block)
+                .collect();
+            if max_be < usize::MAX && visible_vec.len() > max_be {
+                visible_vec.sort_unstable_by(|a, b| {
+                    let oa = off_screen(a.1);
+                    let ob = off_screen(b.1);
+                    if oa != ob {
+                        return ob.cmp(&oa);
+                    }
+                    let da = (glam::DVec3::new(
+                        f64::from(a.0[0]) + 0.5,
+                        f64::from(a.0[1]) + 0.5,
+                        f64::from(a.0[2]) + 0.5,
+                    ) - camera)
+                        .length_squared();
+                    let db = (glam::DVec3::new(
+                        f64::from(b.0[0]) + 0.5,
+                        f64::from(b.0[1]) + 0.5,
+                        f64::from(b.0[2]) + 0.5,
+                    ) - camera)
+                        .length_squared();
+                    da.total_cmp(&db)
+                });
+                visible_vec.truncate(max_be);
+            }
             let block_entity_cache = CacheOptions {
                 shulker_boxes: self.settings.horizon.cache_shulker_boxes,
                 signs: self.settings.horizon.cache_signs,
@@ -11039,7 +11107,7 @@ impl Game<'_> {
                     .block_entity_render()
                     .render_with_cache_options_and_callbacks(
                         &scene,
-                        visible,
+                        visible_vec.iter().copied(),
                         block_entity_cache,
                         r.block_entity_revision(),
                         Some(&section_revision),
@@ -11052,7 +11120,7 @@ impl Game<'_> {
             {
                 // Entity Culling on and no model cache: a block entity hidden
                 // behind a wall stays culled, as it was before the caches.
-                for block in visible {
+                for block in visible_vec {
                     let start = out.len();
                     self.res
                         .block_entity_render()
@@ -11081,7 +11149,7 @@ impl Game<'_> {
                     .block_entity_render()
                     .render_with_gpu_cache_options(
                         &scene,
-                        visible,
+                        visible_vec.iter().copied(),
                         cache_candidates,
                         block_entity_cache,
                         r.block_entity_revision(),
@@ -12326,6 +12394,11 @@ impl Game<'_> {
         self.title = None;
         self.clear_lod();
         self.pending_uploads.clear();
+        if self.settings.extras.memory_saver {
+            self.particles.trim_memory();
+            self.pending_uploads.shrink_to_fit();
+            horizon_threads::release_free_memory();
+        }
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
         }
@@ -12560,6 +12633,11 @@ impl Game<'_> {
         self.screen = Screen::Playing;
         self.clear_lod();
         self.pending_uploads.clear();
+        if self.settings.extras.memory_saver {
+            self.particles.trim_memory();
+            self.pending_uploads.shrink_to_fit();
+            horizon_threads::release_free_memory();
+        }
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
         }
@@ -12609,6 +12687,11 @@ impl Game<'_> {
         self.riding = None;
         self.persist = Default::default();
         self.entity_attachments.clear();
+        if self.settings.extras.memory_saver {
+            self.particles.trim_memory();
+            self.pending_uploads.shrink_to_fit();
+            horizon_threads::release_free_memory();
+        }
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
     fn apply_equipment(&mut self) {
@@ -14232,7 +14315,11 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
-        self.streaming.radius = self.render_distance_in_use();
+        self.streaming.radius = if self.settings.extras.distant_lod_boost {
+            self.render_distance_in_use().min(8)
+        } else {
+            self.render_distance_in_use()
+        };
         // Options.biomeBlendRadius, ambientOcclusion, cutoutLeaves and the
         // leaf-culling mode: LevelExtractor.allChanged when they change.
         let leaf_culling = self.effective_leaf_culling();
@@ -14252,6 +14339,7 @@ impl Game<'_> {
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
         self.streaming.leaf_culling = leaf_culling;
+        self.streaming.cull_leaves = self.settings.extras.cull_leaves;
         if remesh {
             self.all_sections_changed();
         }
@@ -14333,7 +14421,12 @@ impl Game<'_> {
             camera.z.floor() as i32,
         );
         // The 32x32 direction table supports at most a 15-block radius.
-        let radius = self.settings.weather_radius.clamp(0, 15);
+        let base_radius = self.settings.weather_radius.clamp(0, 15);
+        let radius = if self.settings.extras.fast_weather {
+            base_radius.min(4)
+        } else {
+            base_radius
+        };
         let eye = camera.to_array();
         let mut rain = Vec::new();
         let mut snow_vertices = Vec::new();
@@ -15973,9 +16066,20 @@ impl Game<'_> {
             self.dragon_fireball_geometry(camera, alpha, &mut dragon);
             entities.extend(dragon);
         }
+        let cave_sealed = !title
+            && self.settings.extras.cave_sky_cull
+            && self.dim == Dim::Overworld
+            && camera.y < 52.0
+            && (self.world.light(
+                camera.x.floor() as i32,
+                camera.y.floor() as i32,
+                camera.z.floor() as i32,
+            ) >> 4)
+                == 0;
         let (celestial, stars) = if title {
             (Vec::new(), None)
         } else if self.dim == Dim::Overworld
+            && !cave_sealed
             && self.potions.effects.get("darkness").is_none()
             && self.potions.effects.get("blindness").is_none()
         {
@@ -16011,7 +16115,11 @@ impl Game<'_> {
         if !title {
             self.end_geometry(camera, &mut entities);
         }
-        let weather = if !title && self.dim == Dim::Overworld && self.settings.horizon.weather {
+        let weather = if !title
+            && !cave_sealed
+            && self.dim == Dim::Overworld
+            && self.settings.horizon.weather
+        {
             horizon_client::spans::time("weather", || self.weather_geometry(camera, alpha))
         } else {
             Vec::new()
@@ -16082,7 +16190,7 @@ impl Game<'_> {
                     ),
                     horizon_client::fog::FogType::Lava | horizon_client::fog::FogType::PowderSnow
                 ),
-            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky,
+            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky && !cave_sealed,
             end_sky: self.dim == Dim::End && self.settings.horizon.sky,
             end_sky_sprite: self
                 .gui
@@ -16137,12 +16245,12 @@ impl Game<'_> {
             additive: &additive,
             see_through: &see_through,
             shadow_only: &shadow_only,
-            celestial: if self.settings.horizon.sky || title {
+            celestial: if (self.settings.horizon.sky && !cave_sealed) || title {
                 &celestial
             } else {
                 &[]
             },
-            stars: stars.filter(|_| self.settings.horizon.sky || title),
+            stars: stars.filter(|_| (self.settings.horizon.sky && !cave_sealed) || title),
             hand: &hand,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
             screen: &screen,
@@ -16264,6 +16372,11 @@ impl Game<'_> {
     /// `Screen.extractBlurredBackground` over the panorama or the world and
     /// HUD, when `menuBackgroundBlurriness` is at least 1.
     fn menu_blur(&self) -> Option<f32> {
+        if self.settings.extras.menu_bg_mode
+            == horizon_client::volt_features::MenuBgMode::FastDark
+        {
+            return None;
+        }
         let blurred = self.remote_loading()
             || self.title.as_ref().is_some_and(|t| {
                 matches!(self.screen, Screen::Options | Screen::Win)
@@ -16621,9 +16734,12 @@ impl Game<'_> {
     /// distance no farther than a server sampling far terrain for us allows.
     fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
-        let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
+        let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced
+            || self.settings.extras.distant_lod_boost;
         let distance = if self.ram_limit.far_off() {
             0
+        } else if self.settings.extras.distant_lod_boost && g.lod_distance == 0 {
+            ((self.settings.render_distance.max(4) as u32) * 2).clamp(16, 48)
         } else {
             match self.server_far_terrain() {
                 Some(offer) => g.lod_distance.min(offer.distance),
@@ -16826,6 +16942,17 @@ impl Game<'_> {
                 (p.position.x.floor() as i32) >> 4,
                 (p.position.z.floor() as i32) >> 4,
             );
+            if self.settings.extras.lookahead_stream {
+                let yaw = p.yaw.to_radians();
+                let vx = (p.velocity.x as f32) * 4.0 - yaw.sin();
+                let vz = (p.velocity.z as f32) * 4.0 + yaw.cos();
+                let len = (vx * vx + vz * vz).sqrt();
+                self.streaming.lookahead_dir = (len > 1e-3).then_some([vx / len, vz / len]);
+            } else {
+                self.streaming.lookahead_dir = None;
+            }
+        } else {
+            self.streaming.lookahead_dir = None;
         }
         self.tick_pregen();
         // A headless game has nothing to draw sections with: like a server's, they aren't
@@ -16904,9 +17031,19 @@ impl Game<'_> {
         let has = |column: (i32, i32)| self.world.chunks.contains_key(&column);
         let now = Instant::now();
         let arriving = self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0;
+        let look_dir = self.forward();
+        let cam_pos = self.player.as_ref().map(|p| p.position);
         if let Some(renderer) = self.renderer.as_mut() {
             let g = &self.settings.horizon;
-            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
+            let volt_cap = self
+                .settings
+                .extras
+                .chunk_upload_cap
+                .max_uploads()
+                .unwrap_or(usize::MAX);
+            let frustum_prio = self.settings.extras.frustum_priority_mesh;
+            let budgeted =
+                g.chunk_updates > 0 || g.upload_budget_kib > 0 || volt_cap != usize::MAX;
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
             if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
             {
@@ -16937,13 +17074,32 @@ impl Game<'_> {
                     }
                 }
                 let centre = self.streaming.center;
-                let far = |k: &(i32, i32, i32)| (k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2);
-                pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
+                let score = |k: &(i32, i32, i32)| -> i64 {
+                    let dist2 = i64::from((k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2));
+                    if !frustum_prio {
+                        return dist2;
+                    }
+                    if let Some(p) = cam_pos {
+                        let sx = f64::from(k.0 * 16 + 8) - p.x;
+                        let sy = f64::from(k.1 * 16 + 8) - p.y;
+                        let sz = f64::from(k.2 * 16 + 8) - p.z;
+                        let len = (sx * sx + sy * sy + sz * sz).sqrt().max(1.0);
+                        let dot =
+                            (sx * look_dir[0] + sy * look_dir[1] + sz * look_dir[2]) / len;
+                        if dot < -0.25 && dist2 > 4 {
+                            return dist2 + 10_000;
+                        }
+                    }
+                    dist2
+                };
+                pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(score(k)));
                 let (limit, budget) = if budgeted {
-                    (
-                        g.chunk_updates as usize,
-                        u64::from(g.upload_budget_kib) * 1024,
-                    )
+                    let limit = if g.chunk_updates > 0 {
+                        (g.chunk_updates as usize).min(volt_cap)
+                    } else {
+                        volt_cap
+                    };
+                    (limit, u64::from(g.upload_budget_kib) * 1024)
                 } else {
                     (0, 0)
                 };

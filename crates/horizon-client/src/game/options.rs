@@ -545,7 +545,12 @@ impl Game<'_> {
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
-        let scale = self.world_scale();
+        if self.settings.extras.auto_drs == horizon_client::volt_features::AutoDrsMode::Off
+            && !self.settings.extras.thermal_guard
+        {
+            self.extras.drs_scale = 1.0;
+        }
+        let scale = self.world_scale() * self.extras.effective_drs_scale();
         if horizon_client_render::mipmap::set_dither_cutouts(
             self.settings.horizon.dither_cutout_mips,
         ) {
@@ -559,6 +564,9 @@ impl Game<'_> {
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
+            r.animation_step_ticks = if s.extras.anim_throttle { 2 } else { 1 };
+            r.active_anim_cull = s.extras.active_anim_cull;
+            r.fast_translucency = s.extras.fast_translucency;
             r.screenshot_quality = s.horizon.screenshot_quality;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
             r.set_texture_filtering(
@@ -583,6 +591,13 @@ impl Game<'_> {
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
         }
+        self.particles.max_particles = s.extras.particle_budget.max_particles();
+        self.particles.max_render_distance_sq = s.extras.particle_budget.max_distance_sq();
+        self.particles.burst_shield = s.extras.chaos_particle_shield;
+        self.particles.frustum_cull = s.extras.particle_frustum_cull;
+        horizon_threads::set_thread_boost(s.extras.thread_boost);
+        #[cfg(target_os = "android")]
+        crate::android::set_keep_screen_awake(s.extras.keep_screen_awake);
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
         // Splitscreen: the speakers are P1's, and so are their volumes.
@@ -674,10 +689,25 @@ impl Game<'_> {
             has_overlay: false,
         };
         let limit = framerate_limit(self.settings.max_fps as i32, context);
-        let limit = self
+        let mut limit = self
             .settings
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused);
+        if let Some(idle_cap) = self.settings.extras.dynamic_fps.cap_fps() {
+            let cap = idle_cap as i32;
+            let now_ms = self.started.elapsed().as_millis() as i64;
+            let latest_input_ms = self
+                .last_input
+                .saturating_duration_since(self.started)
+                .as_millis() as i64;
+            if !self.focused {
+                limit = limit.min(cap.min(15));
+            } else if self.title.is_some() || self.screen != super::Screen::Playing {
+                limit = limit.min(cap);
+            } else if now_ms.saturating_sub(latest_input_ms) > 45_000 {
+                limit = limit.min(cap);
+            }
+        }
         // A native mod may only lower it (`native_framerate_limit`).
         let mut hooked = limit;
         self.native_framerate_limit(
@@ -699,8 +729,19 @@ impl Game<'_> {
         if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
+        if self.settings.extras.volt_reflex
+            && self.title.is_none()
+            && let Some(r) = self.renderer.as_ref()
+        {
+            r.poll_gpu();
+        }
         let limit = self.framerate_limit();
-        match self.settings.horizon.pacing {
+        let pacing = if self.settings.extras.volt_reflex {
+            horizon_client::graphics::Pacing::Precise
+        } else {
+            self.settings.horizon.pacing
+        };
+        match pacing {
             horizon_client::graphics::Pacing::Precise => {
                 horizon_client::window::end_frame(&mut self.limiter, limit, &mut self.frame_clock)
             }

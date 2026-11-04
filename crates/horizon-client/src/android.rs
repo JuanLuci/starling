@@ -111,6 +111,19 @@ fn open_folder(dir: &Path) -> bool {
     .unwrap_or(false)
 }
 
+/// Keep the screen on during play (`WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON`).
+pub fn set_keep_screen_awake(awake: bool) {
+    let _ = with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "setKeepScreenOn",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(u8::from(awake))],
+        )?;
+        Ok(())
+    });
+}
+
 fn pick_file() -> bool {
     with_activity(|env, activity| env.call_method(activity, "pickFile", "()Z", &[])?.z())
         .unwrap_or(false)

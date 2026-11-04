@@ -942,6 +942,7 @@ impl Game<'_> {
     ) {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
+        let hub_shield = self.settings.extras.hub_lag_shield;
         for a in &self.armor_stands {
             let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
@@ -957,7 +958,12 @@ impl Game<'_> {
             // which is 0.0 (reverse Z; the bytecode is `dconst_0`): an empty
             // marker box falls back to 4, so a visible marker stand draws.
             // Holograms stay hidden through the invisible flag instead.
-            let range = if edge == 0.0 { 4.0 } else { edge } * 64.0;
+            let base_range: f64 = if edge == 0.0 { 4.0 } else { edge } * 64.0;
+            let range = if hub_shield {
+                base_range.min(16.0)
+            } else {
+                base_range
+            };
             let dragon = a.equipment[5]
                 .as_ref()
                 .is_some_and(|i| &*i.item == "minecraft:dragon_head");

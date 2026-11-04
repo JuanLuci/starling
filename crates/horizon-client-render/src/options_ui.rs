@@ -1507,6 +1507,8 @@ pub enum Page {
     /// Horizon Settings: every page Horizon adds, as a mod's settings
     /// screen hangs off vanilla's Options.
     Horizon,
+    /// Volt Boost: the performance and optimization suite (Tiers 1, 2 & 3).
+    VoltBoost,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
     /// SkinCustomizationScreen: the skin layers and Main Hand, and in the game's own options
@@ -2057,6 +2059,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
         Page::Extras => "horizon.pages.extras.tooltip",
+        Page::VoltBoost => "horizon.pages.volt_boost.tooltip",
         Page::Agent => "horizon.pages.agent.tooltip",
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
@@ -2718,6 +2721,7 @@ impl OptionsUi {
             Page::Controller => "horizon.pages.controller",
             Page::PadBinds => "horizon.pages.controller_binds",
             Page::Extras => "horizon.pages.extras",
+            Page::VoltBoost => "horizon.pages.volt_boost",
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
@@ -2878,8 +2882,9 @@ impl OptionsUi {
                     ),
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.mods", Page::Mods)),
+                        Some(open("horizon.pages.open.volt_boost", Page::VoltBoost)),
                     ),
+                    Row::Buttons(open("horizon.pages.open.mods", Page::Mods), None),
                     Row::Buttons(
                         open(
                             "horizon.pages.open.split_setup",
@@ -2916,6 +2921,47 @@ impl OptionsUi {
                     }),
                 )
                 .collect()
+            }
+            Page::VoltBoost => {
+                let extra = |item: crate::extras::Item| {
+                    let value = format!("{}: {}", item.caption_text(), item.value(&s.extras));
+                    let label = if item.key_name().is_some() && self.selected_key == item.key_name()
+                    {
+                        Text::literal(format!("> {value} <")).with_color(text::YELLOW)
+                    } else {
+                        Text::literal(value)
+                    };
+                    let widget = button(0.0, 0.0, 150.0, label, Act::Extra(item));
+                    if item
+                        .parent()
+                        .is_some_and(|parent| parent.switch(&s.extras) == Some(false))
+                    {
+                        inactive(widget)
+                    } else {
+                        widget
+                    }
+                };
+                let mut rows = Vec::new();
+                let mut section = Vec::new();
+                let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
+                    rows.extend(
+                        section
+                            .chunks(2)
+                            .map(|c| Row::Buttons(extra(c[0]), c.get(1).map(|&b| extra(b)))),
+                    );
+                    section.clear();
+                };
+                for row in crate::extras::volt_boost_rows() {
+                    match row {
+                        Err(header) => {
+                            flush(&mut rows, &mut section);
+                            rows.push(Row::Header(header));
+                        }
+                        Ok(item) => section.push(item),
+                    }
+                }
+                flush(&mut rows, &mut section);
+                rows
             }
             Page::Agent => {
                 let mut rows = vec![Row::Buttons(
