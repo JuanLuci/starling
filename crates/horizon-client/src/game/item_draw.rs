@@ -637,7 +637,11 @@ impl Game<'_> {
             }
             rendered += 1;
             let far_static = max_items < usize::MAX && dist_sq > 144.0;
-            let age = if far_static { 0.0 } else { item.age as f32 + partial };
+            let age = if far_static {
+                0.0
+            } else {
+                item.age as f32 + partial
+            };
             let (lo, _) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
             let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;

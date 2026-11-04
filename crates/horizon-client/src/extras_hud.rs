@@ -165,7 +165,14 @@ pub fn draw_volt_perf_hud(
         let h = 14.0;
         let (x, y) = corners.place(d.corner, w, h);
         batch.fill(atlas, x, y, w, h, rgba(220, 20, 60, 210));
-        batch.fill(atlas, x + 1.0, y + 1.0, w - 2.0, h - 2.0, rgba(11, 11, 16, 232));
+        batch.fill(
+            atlas,
+            x + 1.0,
+            y + 1.0,
+            w - 2.0,
+            h - 2.0,
+            rgba(11, 11, 16, 232),
+        );
         batch.text(atlas, &line, x + 4.0, y + 3.0, fps_col, true);
         return;
     }
@@ -192,10 +199,31 @@ pub fn draw_volt_perf_hud(
     let (x, y) = corners.place(d.corner, w, h);
 
     batch.fill(atlas, x, y, w, h, rgba(220, 20, 60, 220));
-    batch.fill(atlas, x + 1.0, y + 1.0, w - 2.0, h - 2.0, rgba(10, 10, 15, 236));
+    batch.fill(
+        atlas,
+        x + 1.0,
+        y + 1.0,
+        w - 2.0,
+        h - 2.0,
+        rgba(10, 10, 15, 236),
+    );
     batch.text(atlas, &l1, x + 5.0, y + 4.0, fps_col, true);
-    batch.text(atlas, &l2, x + 5.0, y + 14.0, rgba(228, 228, 238, 255), true);
-    batch.text(atlas, &l3, x + 5.0, y + 24.0, rgba(176, 176, 196, 255), true);
+    batch.text(
+        atlas,
+        &l2,
+        x + 5.0,
+        y + 14.0,
+        rgba(228, 228, 238, 255),
+        true,
+    );
+    batch.text(
+        atlas,
+        &l3,
+        x + 5.0,
+        y + 24.0,
+        rgba(176, 176, 196, 255),
+        true,
+    );
 
     let gx = x + 5.0;
     let gy = y + 35.0;
@@ -221,7 +249,14 @@ pub fn draw_volt_perf_hud(
         };
         let bx = gx + i as f32 * bar_step;
         if bx + bar_step <= gx + gw + 0.5 {
-            batch.fill(atlas, bx, gy + graph_h - bh, (bar_step - 0.5).max(1.0), bh, col);
+            batch.fill(
+                atlas,
+                bx,
+                gy + graph_h - bh,
+                (bar_step - 0.5).max(1.0),
+                bh,
+                col,
+            );
         }
     }
 }

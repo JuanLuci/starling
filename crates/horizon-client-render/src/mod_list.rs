@@ -19,8 +19,7 @@ pub const NATIVE_DIR: &str = "horizon-native-mods";
 #[cfg(not(target_os = "android"))]
 pub const NOT_BUILT: &str = "Installed, not built into this game: build the game with it in the launcher (Settings > Native mods), then play the instance that build is in.";
 #[cfg(target_os = "android")]
-pub const NOT_BUILT: &str =
-    "Installed, not in this game yet: Compile builds the game with it on Rezyth Launcher's build server.";
+pub const NOT_BUILT: &str = "Installed, not in this game yet: Compile builds the game with it on Rezyth Launcher's build server.";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModList {

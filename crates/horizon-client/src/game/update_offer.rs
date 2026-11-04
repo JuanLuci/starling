@@ -236,7 +236,9 @@ impl Game<'_> {
                             .unwrap_or_else(PoisonError::into_inner)
                             .release = release;
                     }
-                    Err(e) => log::info!("Horizon: could not look for a newer Rezyth Launcher: {e}"),
+                    Err(e) => {
+                        log::info!("Horizon: could not look for a newer Rezyth Launcher: {e}")
+                    }
                 });
             return;
         }

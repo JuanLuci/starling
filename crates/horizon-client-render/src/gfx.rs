@@ -6709,7 +6709,11 @@ impl Renderer {
             let anim_tick = frame.ticks / step * step;
             if self.last_animated_tick != Some(anim_tick) {
                 self.last_animated_tick = Some(anim_tick);
-                self.animate(&mut encoder, anim_tick, !frame.title || self.active_anim_cull);
+                self.animate(
+                    &mut encoder,
+                    anim_tick,
+                    !frame.title || self.active_anim_cull,
+                );
             }
         }
         self.drawn_sections = visible.len() + visible_lods.len();

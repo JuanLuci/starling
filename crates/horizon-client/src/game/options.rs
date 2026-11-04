@@ -689,10 +689,10 @@ impl Game<'_> {
             has_overlay: false,
         };
         let limit = framerate_limit(self.settings.max_fps as i32, context);
-        let mut limit = self
-            .settings
-            .horizon
-            .battery_limit(limit, self.title.is_none(), self.focused);
+        let mut limit =
+            self.settings
+                .horizon
+                .battery_limit(limit, self.title.is_none(), self.focused);
         if let Some(idle_cap) = self.settings.extras.dynamic_fps.cap_fps() {
             let cap = idle_cap as i32;
             let now_ms = self.started.elapsed().as_millis() as i64;

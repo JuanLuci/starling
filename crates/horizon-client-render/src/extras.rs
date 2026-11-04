@@ -381,9 +381,7 @@ impl Extras {
                         e.perf_hud = v;
                     }
                 }
-                "voltPerfHudCorner" => {
-                    e.perf_hud_corner = Corner::parse(value, e.perf_hud_corner)
-                }
+                "voltPerfHudCorner" => e.perf_hud_corner = Corner::parse(value, e.perf_hud_corner),
                 "voltCullLeaves" => e.cull_leaves = flag(e.cull_leaves),
                 "voltFrustumMesh" => e.frustum_priority_mesh = flag(e.frustum_priority_mesh),
                 "voltCaveSkyCull" => e.cave_sky_cull = flag(e.cave_sky_cull),
@@ -415,9 +413,7 @@ impl Extras {
                         e.fast_shadows = v;
                     }
                 }
-                "voltDistantMobThrottle" => {
-                    e.distant_mob_throttle = flag(e.distant_mob_throttle)
-                }
+                "voltDistantMobThrottle" => e.distant_mob_throttle = flag(e.distant_mob_throttle),
                 "voltHubLagShield" => e.hub_lag_shield = flag(e.hub_lag_shield),
                 "voltParticleBudget" => {
                     if let Some(v) = ParticleBudget::parse(value) {
@@ -823,14 +819,14 @@ impl Extras {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let chosen = if cfg!(target_pointer_width = "32") || total_ram_mib.is_some_and(|m| m <= 4200)
-        {
-            VoltBoostPreset::LowRam
-        } else if total_ram_mib.is_some_and(|m| m <= 6400) || cores <= 6 {
-            VoltBoostPreset::UltraFps
-        } else {
-            VoltBoostPreset::Balanced
-        };
+        let chosen =
+            if cfg!(target_pointer_width = "32") || total_ram_mib.is_some_and(|m| m <= 4200) {
+                VoltBoostPreset::LowRam
+            } else if total_ram_mib.is_some_and(|m| m <= 6400) || cores <= 6 {
+                VoltBoostPreset::UltraFps
+            } else {
+                VoltBoostPreset::Balanced
+            };
         self.apply_volt_preset(chosen);
         if self.perf_hud == PerfHudMode::Off {
             self.perf_hud = PerfHudMode::Compact;
@@ -1304,10 +1300,58 @@ impl Item {
             VoltPerfHudCorner => VoltPerfHud,
             SortKey => Sort,
             ChatIndicator => ChatAnimation,
-            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
-            | ChatAnimation | WheelCyclesSettings | MusicPage | CosmeticsMine | CosmeticsOthers
-            | VoltPreset | VoltAutoOptimize | VoltPurgeRam | VoltPerfHud | VoltCullLeaves | VoltFrustumMesh | VoltCaveSkyCull | VoltChunkUploadCap | VoltFastWeather | VoltDistantLod | VoltEntityCap | VoltItemCap | VoltBlockEntityCap | VoltCullSignText | VoltFastShadows | VoltDistantMobThrottle | VoltHubLagShield | VoltParticleBudget | VoltChaosShield | VoltAnimThrottle | VoltGlintMode | VoltAutoDrs | VoltDynamicFps | VoltMenuBg | VoltThermalGuard | VoltReflex | VoltThreadBoost | VoltPrewarm | VoltAudioCap | VoltMemorySaver | VoltKeepAwake | VoltActiveAnimCull | VoltLookaheadStream | VoltFastTranslucency | VoltParticleFrustum => {
+            Fullbright
+            | DynamicLights
+            | OwnNameTag
+            | HideBlockParticles
+            | MouseTweaks
+            | Sort
+            | AutoReconnect
+            | NoAi
+            | AgentControl
+            | ReproKeys
+            | DiscordPresence
+            | Splitscreen
+            | ChatAnimation
+            | WheelCyclesSettings
+            | MusicPage
+            | CosmeticsMine
+            | CosmeticsOthers
+            | VoltPreset
+            | VoltAutoOptimize
+            | VoltPurgeRam
+            | VoltPerfHud
+            | VoltCullLeaves
+            | VoltFrustumMesh
+            | VoltCaveSkyCull
+            | VoltChunkUploadCap
+            | VoltFastWeather
+            | VoltDistantLod
+            | VoltEntityCap
+            | VoltItemCap
+            | VoltBlockEntityCap
+            | VoltCullSignText
+            | VoltFastShadows
+            | VoltDistantMobThrottle
+            | VoltHubLagShield
+            | VoltParticleBudget
+            | VoltChaosShield
+            | VoltAnimThrottle
+            | VoltGlintMode
+            | VoltAutoDrs
+            | VoltDynamicFps
+            | VoltMenuBg
+            | VoltThermalGuard
+            | VoltReflex
+            | VoltThreadBoost
+            | VoltPrewarm
+            | VoltAudioCap
+            | VoltMemorySaver
+            | VoltKeepAwake
+            | VoltActiveAnimCull
+            | VoltLookaheadStream
+            | VoltFastTranslucency
+            | VoltParticleFrustum => {
                 return None;
             }
         })

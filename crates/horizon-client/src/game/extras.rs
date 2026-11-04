@@ -354,10 +354,9 @@ impl Game<'_> {
             let reading = self.extras.fps.reading();
             let base_pct = self.settings.horizon.resolution_scale as f32;
             let scale_pct = (base_pct * self.extras.effective_drs_scale()).round() as u32;
-            let total_ent = (self.mobs.len()
-                + self.dropped.len()
-                + self.armor_stands.len()
-                + self.orbs.len()) as u32;
+            let total_ent =
+                (self.mobs.len() + self.dropped.len() + self.armor_stands.len() + self.orbs.len())
+                    as u32;
             let perf_data = extras_hud::VoltPerfHudData {
                 full: self.settings.extras.perf_hud
                     == horizon_client::volt_features::PerfHudMode::Full,

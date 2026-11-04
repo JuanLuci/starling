@@ -10922,9 +10922,7 @@ impl Game<'_> {
             };
             let mut casters: Vec<(glam::DVec3, f32, f32)> =
                 horizon_client::shadows::mob_casters(&self.mobs, a)
-                    .filter(|(pos, _, _)| {
-                        !nearby_only || (*pos - camera).length_squared() <= 256.0
-                    })
+                    .filter(|(pos, _, _)| !nearby_only || (*pos - camera).length_squared() <= 256.0)
                     .collect();
             if !nearby_only {
                 let item = horizon_client::shadows::shadow_params("minecraft:item");
@@ -11053,13 +11051,10 @@ impl Game<'_> {
                     if off_screen(state) {
                         return true;
                     }
-                    let rel = glam::DVec3::new(
-                        f64::from(pos[0]),
-                        f64::from(pos[1]),
-                        f64::from(pos[2]),
-                    ) - camera;
-                    rel.length_squared() <= max_be_dist_sq
-                        && (*section_inside || in_view(&pos))
+                    let rel =
+                        glam::DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]))
+                            - camera;
+                    rel.length_squared() <= max_be_dist_sq && (*section_inside || in_view(&pos))
                 })
                 .map(|(block, _)| block)
                 .collect();
@@ -16372,8 +16367,7 @@ impl Game<'_> {
     /// `Screen.extractBlurredBackground` over the panorama or the world and
     /// HUD, when `menuBackgroundBlurriness` is at least 1.
     fn menu_blur(&self) -> Option<f32> {
-        if self.settings.extras.menu_bg_mode
-            == horizon_client::volt_features::MenuBgMode::FastDark
+        if self.settings.extras.menu_bg_mode == horizon_client::volt_features::MenuBgMode::FastDark
         {
             return None;
         }
@@ -17042,8 +17036,7 @@ impl Game<'_> {
                 .max_uploads()
                 .unwrap_or(usize::MAX);
             let frustum_prio = self.settings.extras.frustum_priority_mesh;
-            let budgeted =
-                g.chunk_updates > 0 || g.upload_budget_kib > 0 || volt_cap != usize::MAX;
+            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0 || volt_cap != usize::MAX;
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
             if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
             {
@@ -17084,8 +17077,7 @@ impl Game<'_> {
                         let sy = f64::from(k.1 * 16 + 8) - p.y;
                         let sz = f64::from(k.2 * 16 + 8) - p.z;
                         let len = (sx * sx + sy * sy + sz * sz).sqrt().max(1.0);
-                        let dot =
-                            (sx * look_dir[0] + sy * look_dir[1] + sz * look_dir[2]) / len;
+                        let dot = (sx * look_dir[0] + sy * look_dir[1] + sz * look_dir[2]) / len;
                         if dot < -0.25 && dist2 > 4 {
                             return dist2 + 10_000;
                         }

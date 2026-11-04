@@ -615,10 +615,9 @@ impl Game<'_> {
             .audio_voice_cap
             .max_per_tick()
             .unwrap_or(usize::MAX);
-        for (idx, (name, at, volume, pitch, delayed)) in
-            std::mem::take(&mut self.particles.sounds)
-                .into_iter()
-                .enumerate()
+        for (idx, (name, at, volume, pitch, delayed)) in std::mem::take(&mut self.particles.sounds)
+            .into_iter()
+            .enumerate()
         {
             if idx >= max_voices {
                 break;

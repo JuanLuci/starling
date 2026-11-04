@@ -97,7 +97,8 @@ pub fn start(resources: PathBuf) {
 fn run(resources: &Path) -> Result<(), String> {
     let server_jar = crate::accounts::server_jar()
         .ok_or("The game files are not all there: download them again.")?;
-    let library = crate::platform::library_dir().ok_or("Rezyth Launcher cannot find its own files.")?;
+    let library =
+        crate::platform::library_dir().ok_or("Rezyth Launcher cannot find its own files.")?;
     let home = home();
     let jre = home.join("jre25");
     starling_account::java::install(
