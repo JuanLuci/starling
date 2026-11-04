@@ -2882,9 +2882,8 @@ impl OptionsUi {
                     ),
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.volt_boost", Page::VoltBoost)),
+                        Some(open("horizon.pages.open.mods", Page::Mods)),
                     ),
-                    Row::Buttons(open("horizon.pages.open.mods", Page::Mods), None),
                     Row::Buttons(
                         open(
                             "horizon.pages.open.split_setup",
@@ -3861,6 +3860,9 @@ impl OptionsUi {
                         (!self.split_guest).then_some(Page::Packs),
                     ),
                     ("options.accessibility", Some(Page::Accessibility)),
+                    // Volt Boost's performance suite lives here rather than
+                    // behind the Horizon submenu.
+                    ("horizon.pages.open.volt_boost", Some(Page::VoltBoost)),
                     // Vanilla's Telemetry Data and Credits slots: Horizon's
                     // settings and its mods, as a mod adds its button here.
                     // Credits & Attribution (WinScreen's credits) follows them.
@@ -8512,6 +8514,10 @@ mod tests {
             &main[main.len() - 3..],
             [Page::Horizon, Page::Mods, Page::Credits]
         );
+        assert!(
+            main.contains(&Page::VoltBoost),
+            "Optimization lives on the main options screen"
+        );
         ui.push(Page::Horizon);
         assert_eq!(
             pushes(&mut ui),
@@ -8521,7 +8527,6 @@ mod tests {
                 Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
-                Page::VoltBoost,
                 Page::Mods,
                 Page::SplitSetup,
                 Page::Agent,

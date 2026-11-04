@@ -1416,10 +1416,10 @@ impl Item {
                 "Shows the cosmetics other Horizon players wear. Off, the game never asks what they wear."
             }
             Item::VoltPreset => {
-                "Applies a curated one-tap Volt Boost profile (OFF, Balanced, Competitive PvP, Ultra FPS, Battery Saver or Low-RAM Rescue)."
+                "Applies a curated one-tap Optimization profile (OFF, Balanced, Competitive PvP, Ultra FPS, Battery Saver or Low-RAM Rescue)."
             }
             Item::VoltAutoOptimize => {
-                "Inspects your device's CPU core count, 32/64-bit ABI and system RAM to automatically configure the optimal Volt Boost profile."
+                "Inspects your device's CPU core count, 32/64-bit ABI and system RAM to automatically configure the optimal Optimization profile."
             }
             Item::VoltPurgeRam => {
                 "Immediately compacts transient caches, particle buffers and unused OS heap pages to reclaim resident RAM."
@@ -1428,7 +1428,7 @@ impl Item {
                 "Shows a sleek crimson telemetry overlay with live FPS, 1% lows, frame pacing, active entities, chunks and resident RAM."
             }
             Item::VoltPerfHudCorner => {
-                "Screen corner where the live Volt Boost performance HUD docks."
+                "Screen corner where the live Optimization performance HUD docks."
             }
             Item::VoltCullLeaves => {
                 "Skips hidden interior leaf-to-leaf faces inside dense jungles and forests while keeping outer tree canopies crisp."
