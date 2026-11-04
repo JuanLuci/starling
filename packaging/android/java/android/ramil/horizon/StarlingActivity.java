@@ -1,4 +1,4 @@
-package io.github.juanluci.starling;
+package android.ramil.horizon;
 
 import android.Manifest;
 import android.app.NativeActivity;
@@ -47,7 +47,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /**
  * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
- * tells the game where its folder is (Starling in shared storage once the player allows it), hides the
+ * tells the game where its folder is (Rezyth Launcher in shared storage once the player allows it), hides the
  * system bars, keeps the screen on while the game is in front, tells the game how tall the
  * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
  * process with the activity, since the game's event loop cannot start twice in one process.
@@ -103,14 +103,14 @@ public final class StarlingActivity extends NativeActivity {
     /** The game has drawn: the window may show (firstFrame). */
     private volatile boolean drawn;
 
-    /** Shared storage's Starling folder when the player allowed the app to use it, else null:
-     *  StarlingDev for Starling Dev (build_apk.py --dev), which keeps out of the release's. */
+    /** Shared storage's RezythLauncher folder when the player allowed the app to use it, else null:
+     *  RezythLauncherDev for Rezyth Launcher Dev (build_apk.py --dev), which keeps out of the release's. */
     static String sharedFolder(Context context) {
         boolean allowed = Build.VERSION.SDK_INT >= 30
                 ? Environment.isExternalStorageManager()
                 : context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                         == PackageManager.PERMISSION_GRANTED;
-        String name = context.getPackageName().endsWith(".dev") ? "StarlingDev" : "Starling";
+        String name = context.getPackageName().endsWith(".dev") ? "RezythLauncherDev" : "RezythLauncher";
         return allowed
                 ? new File(Environment.getExternalStorageDirectory(), name).getPath()
                 : null;
@@ -448,13 +448,13 @@ public final class StarlingActivity extends NativeActivity {
         });
     }
 
-    /** Whether the player allowed the Starling folder (they may have just come back from it). */
+    /** Whether the player allowed the RezythLauncher folder (they may have just come back from it). */
     public boolean fileAccessAllowed() {
         return sharedFolder(this) != null;
     }
 
     /**
-     * Android's setting that allows the Starling folder, in a task of its own: home and Starling's
+     * Android's setting that allows the RezythLauncher folder, in a task of its own: home and Rezyth Launcher's
      * icon bring the player back to the game, not to the setting.
      */
     public void openFileAccessSettings() {
@@ -605,7 +605,7 @@ public final class StarlingActivity extends NativeActivity {
         if (clipboard == null) {
             return false;
         }
-        clipboard.setPrimaryClip(ClipData.newPlainText("Starling", text));
+        clipboard.setPrimaryClip(ClipData.newPlainText("Rezyth Launcher", text));
         return true;
     }
 
@@ -645,7 +645,7 @@ public final class StarlingActivity extends NativeActivity {
 
     /**
      * Android's package installer on an update the game downloaded to files/updates/: it asks the
-     * player to allow installing from Starling the first time, then to update; once installed it
+     * player to allow installing from Rezyth Launcher the first time, then to update; once installed it
      * offers to open the game again. False where no installer takes it.
      */
     public boolean installUpdate(String name) {

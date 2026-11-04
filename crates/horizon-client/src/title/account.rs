@@ -1,6 +1,6 @@
-//! Starling's account screen (`Mode::Account`): signing in with a Microsoft account by its
+//! Rezyth Launcher's account screen (`Mode::Account`): signing in with a Microsoft account by its
 //! device code, signing out, and fetching the game's official files as an owner of the game
-//! (`crate::accounts`). Starling's own screen, in vanilla's look: no vanilla screen does this.
+//! (`crate::accounts`). Rezyth Launcher's own screen, in vanilla's look: no vanilla screen does this.
 use super::{centered, wrapped};
 use crate::accounts::{self, Files, State};
 use crate::hud::{HudAtlas, HudBatch, rgba};
@@ -73,7 +73,7 @@ fn lines(state: &State) -> Vec<(String, u32)> {
             (code.clone(), yellow()),
             (String::new(), 0),
             (
-                "Starling carries on by itself once you have signed in there.".into(),
+                "Rezyth Launcher carries on by itself once you have signed in there.".into(),
                 gray(),
             ),
         ],

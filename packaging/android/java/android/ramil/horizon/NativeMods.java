@@ -1,4 +1,4 @@
-package io.github.juanluci.starling;
+package android.ramil.horizon;
 
 import android.content.Context;
 import java.io.File;
@@ -48,7 +48,7 @@ final class NativeMods {
         }
         if (count >= TRIES) {
             setAside(dir, "The build with native mods closed twice before it showed, so "
-                    + "Starling started without it.");
+                    + "Rezyth Launcher started without it.");
             return null;
         }
         write(starts, Integer.toString(count + 1));
@@ -63,7 +63,7 @@ final class NativeMods {
     /** The build could not be loaded: set aside, saying why. */
     static void failed(Context context, String why) {
         setAside(dir(context), "The build with native mods could not be loaded (" + why
-                + "), so Starling started without it.");
+                + "), so Rezyth Launcher started without it.");
     }
 
     private static void setAside(File dir, String notice) {

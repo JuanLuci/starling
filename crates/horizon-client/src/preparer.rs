@@ -97,7 +97,7 @@ pub fn start(resources: PathBuf) {
 fn run(resources: &Path) -> Result<(), String> {
     let server_jar = crate::accounts::server_jar()
         .ok_or("The game files are not all there: download them again.")?;
-    let library = crate::platform::library_dir().ok_or("Starling cannot find its own files.")?;
+    let library = crate::platform::library_dir().ok_or("Rezyth Launcher cannot find its own files.")?;
     let home = home();
     let jre = home.join("jre25");
     starling_account::java::install(
@@ -185,7 +185,7 @@ fn copy_sounds(kit: &Path) -> Result<(), String> {
     .map(drop)
 }
 
-/// Starling before 0.1.6 prepared the game without its sounds: once the fetched files are
+/// Rezyth Launcher before 0.1.6 prepared the game without its sounds: once the fetched files are
 /// there, they are added to the prepared `resources`, before the game reads its sounds.
 pub fn complete_sounds(resources: &Path) {
     if !crate::platform::registered()
@@ -300,7 +300,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// The kit the app carries, over `dir` (its sources replaced, horizon-prepare's work kept).
 fn unpack_kit(dir: &Path) -> Result<(), String> {
     let bytes = crate::platform::asset("prepare-kit.zip")
-        .ok_or("Starling's preparer is missing from the app: install it again.")?;
+        .ok_or("Rezyth Launcher's preparer is missing from the app: install it again.")?;
     unpack(&bytes, dir)
 }
 

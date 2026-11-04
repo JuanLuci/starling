@@ -135,7 +135,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" target/android/starling-*.apk \
             target/android/StarlingVisuals.zip \
-            --title "Starling $GITHUB_REF_NAME" --notes-file packaging/android/release-notes.md \
+            --title "Rezyth Launcher $GITHUB_REF_NAME" --notes-file packaging/android/release-notes.md \
             --latest
       # The release's game with the sets of native-mods/prebuilt.txt (a release made with this token
       # starts no other workflow by itself; a dispatch does).

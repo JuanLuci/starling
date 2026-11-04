@@ -1,4 +1,4 @@
-package io.github.juanluci.starling;
+package android.ramil.horizon;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;

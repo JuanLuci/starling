@@ -28,9 +28,9 @@ pub enum Compat {
 fn drop_info(data: bool) -> Text {
     if cfg!(target_os = "android") {
         Text::literal(if data {
-            "Put data packs in Starling/datapacks, mods in Starling/horizon-mods"
+            "Put data packs in RezythLauncher/datapacks, mods in RezythLauncher/horizon-mods"
         } else {
-            "Put packs in Starling/resourcepacks"
+            "Put packs in RezythLauncher/resourcepacks"
         })
     } else {
         tr("pack.dropInfo")
@@ -405,7 +405,7 @@ impl PackScreen {
     }
     fn title(&self) -> Text {
         if self.data {
-            // Starling: the world's content mods are chosen here too.
+            // Rezyth Launcher: the world's content mods are chosen here too.
             Text::literal("Select Mods and Data Packs")
         } else {
             self.title.clone()

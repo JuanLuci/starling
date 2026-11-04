@@ -1,7 +1,7 @@
-//! Android: the prompt, over the title screen, when GitHub has a newer Starling release than this
+//! Android: the prompt, over the title screen, when GitHub has a newer Rezyth Launcher release than this
 //! one (github.com/JuanLuci/starling/releases/latest). Update downloads its APK and hands it to
 //! Android's installer, which asks the player (and, the first time, to allow installing from
-//! Starling) and offers to open the game again once it is in; Tomorrow asks again in a day; No,
+//! Rezyth Launcher) and offers to open the game again once it is in; Tomorrow asks again in a day; No,
 //! at the next start. Only a release asks: a test build is signed with another key, and the
 //! release could not install over it (`STARLING_UPDATE_TEST=<version>` makes one ask as that
 //! version, to try the prompt).
@@ -93,7 +93,7 @@ fn newer(latest: &str, current: &str) -> bool {
 /// The latest release on GitHub, when it is newer than `current` and has an APK.
 fn check(current: &str) -> Result<Option<Release>, String> {
     let text = ureq::get(LATEST)
-        .set("User-Agent", &format!("Starling/{current}"))
+        .set("User-Agent", &format!("RezythLauncher/{current}"))
         .set("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(15))
         .call()
@@ -227,7 +227,7 @@ impl Game<'_> {
                     Ok(release) => {
                         if let Some(r) = &release {
                             log::info!(
-                                "Horizon: Starling {} is out (this is {current})",
+                                "Horizon: Rezyth Launcher {} is out (this is {current})",
                                 r.version
                             );
                         }
@@ -236,7 +236,7 @@ impl Game<'_> {
                             .unwrap_or_else(PoisonError::into_inner)
                             .release = release;
                     }
-                    Err(e) => log::info!("Horizon: could not look for a newer Starling: {e}"),
+                    Err(e) => log::info!("Horizon: could not look for a newer Rezyth Launcher: {e}"),
                 });
             return;
         }
@@ -258,7 +258,7 @@ impl Game<'_> {
         }
     }
 
-    /// Over the title only, and not over the offer of the Starling folder.
+    /// Over the title only, and not over the offer of the RezythLauncher folder.
     fn update_offer_shown(&self) -> Option<Stage> {
         if self.title.is_none() || self.files_offer_shown().is_some() {
             return None;
@@ -295,23 +295,23 @@ impl Game<'_> {
         let version = &release.version;
         let (title, body, buttons): (String, String, &[&str]) = match &stage {
             Stage::Ask => (
-                format!("Starling {version} is out"),
+                format!("Rezyth Launcher {version} is out"),
                 format!(
-                    "Update now? Starling downloads it ({} MB) and Android installs it over this \
+                    "Update now? Rezyth Launcher downloads it ({} MB) and Android installs it over this \
                      one: your worlds and settings stay.",
                     mb(release.size)
                 ),
                 &["Update", "Tomorrow", "No"],
             ),
             Stage::Downloading => (
-                format!("Downloading Starling {version}"),
+                format!("Downloading Rezyth Launcher {version}"),
                 format!("{} of {} MB", mb(done), mb(total)),
                 &["Cancel"],
             ),
             Stage::Installing => (
-                format!("Install Starling {version}"),
+                format!("Install Rezyth Launcher {version}"),
                 "Android asks to install the update (the first time, to allow installs from \
-                 Starling). Once it is in, open Starling again."
+                 Rezyth Launcher). Once it is in, open Rezyth Launcher again."
                     .into(),
                 &["Install", "Later"],
             ),

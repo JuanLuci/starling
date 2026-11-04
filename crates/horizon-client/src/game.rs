@@ -2939,7 +2939,7 @@ struct Game<'a> {
     stats_overlay: perf::Perf,
     /// Files handed to the game from outside (game/imports.rs).
     imports: imports::Imports,
-    /// The offer of the Starling folder in shared storage (game/files_offer.rs).
+    /// The offer of the RezythLauncher folder in shared storage (game/files_offer.rs).
     #[cfg(target_os = "android")]
     files_offer: files_offer::FilesOffer,
     #[cfg(target_os = "android")]
@@ -8275,7 +8275,7 @@ impl Game<'_> {
         self.draw_link_prompt(&mut batch);
         self.draw_touch(&mut batch);
         self.draw_chat_bar(&mut batch);
-        // Starling: the kinetic part looked at, its speed and stress (kinetics.rs).
+        // Rezyth Launcher: the kinetic part looked at, its speed and stress (kinetics.rs).
         self.draw_kinetic_info(&mut batch);
         self.draw_command_prompt(&mut batch);
         // The ToastManager draws over every screen, the title and the
@@ -21667,8 +21667,8 @@ impl Loading {
         let detail = if horizon_client::platform::registered() {
             // Android: the prepared folder, zipped, comes in through "Open with" or the picker.
             format!(
-                "{failure}\n\nStarling needs the Minecraft resources horizon-prepare makes from your \
-                 own copy of the game. Zip that folder, then open the zip with Starling from your \
+                "{failure}\n\nRezyth Launcher needs the Minecraft resources horizon-prepare makes from your \
+                 own copy of the game. Zip that folder, then open the zip with Rezyth Launcher from your \
                  file manager, or tap anywhere here to pick it."
             )
         } else {
@@ -21915,7 +21915,7 @@ fn run_loading(
     let sound_registry = options.dedicated.is_none().then(|| {
         let root = vanilla_root.clone();
         std::thread::spawn(move || {
-            // Starling: a phone's setup before 0.1.6 left the sounds out.
+            // Rezyth Launcher: a phone's setup before 0.1.6 left the sounds out.
             horizon_client::preparer::complete_sounds(&root);
             horizon_client::sound_events::SoundRegistry::load(&root)
         })
@@ -22124,7 +22124,7 @@ pub fn run_with() -> Result<()> {
     )?;
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
-    // Starling: a phone's setup before 0.1.6 left the sounds out.
+    // Rezyth Launcher: a phone's setup before 0.1.6 left the sounds out.
     horizon_client::preparer::complete_sounds(&vanilla_root);
     let audio = if !options.execution_role.is_client() || options.headless {
         Audio::silent(&options.resources)

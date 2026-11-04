@@ -144,7 +144,7 @@ fn get(url: &str, version: &str) -> Result<ureq::Response, String> {
         .timeout_read(Duration::from_secs(30))
         .build()
         .get(url)
-        .set("User-Agent", &format!("Starling/{version}"))
+        .set("User-Agent", &format!("RezythLauncher/{version}"))
         .call()
         .map_err(|e| e.to_string())
 }
@@ -201,7 +201,7 @@ fn download(build: &Build, version: &str, shared: &Mutex<Shared>) -> Result<Stri
         .map_err(|e| e.to_string())?;
     let about: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if about["version"].as_str() != Some(version) {
-        return Err(format!("That build is not for Starling {version}."));
+        return Err(format!("That build is not for Rezyth Launcher {version}."));
     }
     let want = about["sha256"].as_str().unwrap_or_default().to_owned();
     if want.len() != 64 {
@@ -676,7 +676,7 @@ impl Game<'_> {
                     "Native mods".to_owned(),
                     format!(
                         "{playing}{found} Native mods run with the game's full access. To add \
-                         one, open its .hnmod with Starling and press Compile on its row."
+                         one, open its .hnmod with Rezyth Launcher and press Compile on its row."
                     ),
                 )
             }
@@ -696,7 +696,7 @@ impl Game<'_> {
                     } else {
                         format!("{} is ready", label(name))
                     },
-                    "It plays from the next start. If it closes before it shows, Starling starts \
+                    "It plays from the next start. If it closes before it shows, Rezyth Launcher starts \
                      without it the time after."
                         .into(),
                 )
@@ -710,10 +710,10 @@ impl Game<'_> {
                 (
                     format!("Compile {id}?"),
                     "A native mod runs with the game's full access: it can do anything the game \
-                     can on this phone, so only compile mods you trust. It is sent to Starling's \
+                     can on this phone, so only compile mods you trust. It is sent to Rezyth Launcher's \
                      build server, which compiles the game with your native mods in a few \
                      minutes; then the game restarts with them. If it closes before it shows, \
-                     Starling starts without it the time after."
+                     Rezyth Launcher starts without it the time after."
                         .to_owned(),
                 )
             }

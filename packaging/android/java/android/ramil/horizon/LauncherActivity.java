@@ -1,4 +1,4 @@
-package io.github.juanluci.starling;
+package android.ramil.horizon;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -23,14 +23,14 @@ import java.io.OutputStream;
 
 /**
  * What runs before the game (StarlingActivity) when it is handed something, in a process and a
- * task of its own: a file opened with Starling or shared to it (a resource pack, a world, a mod,
+ * task of its own: a file opened with Rezyth Launcher or shared to it (a resource pack, a world, a mod,
  * the prepared resources) is copied into the game's import inbox, which the game installs from
  * (crates/horizon-client/src/import.rs); and a restart the game asked for starts it again once
  * its old process has ended.
  */
 public final class LauncherActivity extends Activity {
     /** The game's process id: start the game again once it has ended. */
-    static final String AFTER = "io.github.juanluci.starling.AFTER";
+    static final String AFTER = "android.ramil.horizon.AFTER";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -62,7 +62,7 @@ public final class LauncherActivity extends Activity {
         } else if (file != null) {
             final AlertDialog copying =
                     new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                            .setMessage("Handing the file to Starling...")
+                            .setMessage("Handing the file to Rezyth Launcher...")
                             .setCancelable(false)
                             .show();
             receive(this, file, new Runnable() {

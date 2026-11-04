@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Starling's arm64-v8a Android APK (Horizon on Android): horizon-android as a
+"""Build Rezyth Launcher's arm64-v8a Android APK (Horizon on Android): horizon-android as a
 NativeActivity library.
 
 The APK holds the game library, the launcher icon, Starling Visuals and what prepares the game
@@ -11,7 +11,7 @@ horizon-prepare makes from the player's own copy are made on the phone, or copie
     python3 packaging/android/build_apk.py --no-build      # package the library built last
     python3 packaging/android/build_apk.py --install       # and adb install it
     python3 packaging/android/build_apk.py --zip           # and a zip of it to send
-    python3 packaging/android/build_apk.py --dev           # Starling Dev, beside the release
+    python3 packaging/android/build_apk.py --dev           # Rezyth Launcher Dev, beside the release
 
 Needs the Android SDK (ANDROID_HOME, else the default folder) with the build-tools, platform and
 NDK pinned below, the aarch64-linux-android Rust target, cargo-ndk and a JDK (javac, keytool,
@@ -29,10 +29,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 
-APPLICATION_ID = "io.github.juanluci.starling"
-LABEL = "Starling"
+APPLICATION_ID = "android.ramil.horizon"
+LABEL = "Rezyth Launcher"
 # --dev: an app of its own, installed beside the release (which a build signed with another key
-# cannot install over), with its own folder (StarlingActivity.sharedFolder: StarlingDev) and its
+# cannot install over), with its own folder (StarlingActivity.sharedFolder: RezythLauncherDev) and its
 # own sign-in and game files.
 DEV_SUFFIX = ".dev"
 VERSION_NAME = "0.2.1"
@@ -255,7 +255,7 @@ def main():
     )
     parser.add_argument(
         "--dev", action="store_true",
-        help=f"Starling Dev ({APPLICATION_ID}{DEV_SUFFIX}), installed beside the release",
+        help=f"Rezyth Launcher Dev ({APPLICATION_ID}{DEV_SUFFIX}), installed beside the release",
     )
     args = parser.parse_args()
 

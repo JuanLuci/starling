@@ -425,7 +425,7 @@ pub const COMMANDS: &[Cmd] = &[
         "PORT 0 or none picks one; commands lets guests use cheats; force forces the game mode. Only when the player asks.",
         ["horizon-ctl lan open", "horizon-ctl lan status", "horizon-ctl lan close"],
         &[p("action", Ty::Enum(&["open", "close", "status"]), "what to do"), opt("port", Ty::Int, "port for open"), opt("commands", Ty::Bool, "allow cheats"), opt("force", Ty::Bool, "force the game mode")], mcp: true, local: false),
-    cmd!("account", Multiplayer, "account status|sign-in|cancel|sign-out|files|stop-files", "Starling's Microsoft account: sign in by device code, sign out, fetch the official game files",
+    cmd!("account", Multiplayer, "account status|sign-in|cancel|sign-out|files|stop-files", "Rezyth Launcher's Microsoft account: sign in by device code, sign out, fetch the official game files",
         "sign-in gives a code the player types at the link (only the player signs in); files needs a signed-in owner of the game. The status never shows a token.",
         ["horizon-ctl account status", "horizon-ctl account sign-in", "horizon-ctl account files"],
         &[p("action", Ty::Enum(&["status", "sign-in", "cancel", "sign-out", "files", "stop-files"]), "what to do")], mcp: true, local: false),

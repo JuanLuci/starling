@@ -1,4 +1,4 @@
-package io.github.juanluci.starling;
+package android.ramil.horizon;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -56,7 +56,7 @@ public final class WorkService extends Service {
 
     private static String line() {
         synchronized (REASONS) {
-            String last = "Starling is working";
+            String last = "Rezyth Launcher is working";
             for (String line : REASONS.values()) {
                 last = line;
             }
@@ -72,7 +72,7 @@ public final class WorkService extends Service {
                     (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
                 manager.createNotificationChannel(new NotificationChannel(
-                        CHANNEL, "Starling at work", NotificationManager.IMPORTANCE_LOW));
+                        CHANNEL, "Rezyth Launcher at work", NotificationManager.IMPORTANCE_LOW));
             }
             builder = new Notification.Builder(this, CHANNEL);
         } else {
@@ -80,7 +80,7 @@ public final class WorkService extends Service {
         }
         Notification notification = builder
                 .setSmallIcon(getApplicationInfo().icon)
-                .setContentTitle("Starling")
+                .setContentTitle("Rezyth Launcher")
                 .setContentText(line())
                 .setOngoing(true)
                 .build();

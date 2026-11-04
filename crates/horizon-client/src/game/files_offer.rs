@@ -1,5 +1,5 @@
 //! Android: the offer, over the title screen, to keep the game folder in shared storage (a
-//! Starling folder any file manager opens). Android's "all files" setting does the allowing, in a
+//! RezythLauncher folder any file manager opens). Android's "all files" setting does the allowing, in a
 //! task of its own; once allowed, a restart moves the player's files (android.rs
 //! `game_folder`). Turned down, it comes back from the folder buttons (Open Pack Folder...).
 use super::Game;
@@ -46,7 +46,7 @@ pub(super) fn texts(stage: Stage) -> [&'static str; 4] {
     match stage {
         Stage::Ask => [
             "Keep your files where you can reach them",
-            "Starling can keep your worlds, packs, mods and screenshots in a Starling folder on \
+            "Rezyth Launcher can keep your worlds, packs, mods and screenshots in a RezythLauncher folder on \
              your phone's storage, which any file manager (and a computer over USB) opens. \
              Android will ask you to allow access to files for that.",
             "Set up",
@@ -54,13 +54,13 @@ pub(super) fn texts(stage: Stage) -> [&'static str; 4] {
         ],
         Stage::Waiting => [
             "Allow access to files",
-            "Turn on the switch for Starling in the screen that opened, then come back here.",
+            "Turn on the switch for Rezyth Launcher in the screen that opened, then come back here.",
             "Open it again",
             "Not now",
         ],
         Stage::Restart => [
             "All set",
-            "Restart Starling to move your worlds, packs and settings into the Starling folder. \
+            "Restart Rezyth Launcher to move your worlds, packs and settings into the RezythLauncher folder. \
              It copies them first: nothing is lost.",
             "Restart now",
             "Later",

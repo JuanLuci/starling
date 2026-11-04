@@ -20,7 +20,7 @@ use winit::event::{Touch, TouchPhase};
 /// What the screen offers now.
 #[derive(Clone, Debug, PartialEq)]
 enum Step {
-    /// Before anything: the Starling folder the title screen offers too (files_offer.rs), so the
+    /// Before anything: the RezythLauncher folder the title screen offers too (files_offer.rs), so the
     /// game's files are where a player can reach them, and a bug report's log with them.
     #[cfg(target_os = "android")]
     Folder(super::files_offer::Stage),
@@ -52,7 +52,7 @@ enum Step {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
-    /// The Starling folder: Android's setting that allows it, or, allowed, the restart that moves
+    /// The RezythLauncher folder: Android's setting that allows it, or, allowed, the restart that moves
     /// the files.
     #[cfg(target_os = "android")]
     Folder,
@@ -81,10 +81,10 @@ enum Action {
 pub(super) struct Setup {
     /// The saved sign-in renewed, once.
     resumed: bool,
-    /// The Starling folder's setting opened, waiting for the player to come back from it.
+    /// The RezythLauncher folder's setting opened, waiting for the player to come back from it.
     #[cfg(target_os = "android")]
     folder_asked: bool,
-    /// The Starling folder put off for this start (Later).
+    /// The RezythLauncher folder put off for this start (Later).
     #[cfg(target_os = "android")]
     folder_later: bool,
     /// Play offline tapped: the question shows.
@@ -163,7 +163,7 @@ fn step(setup: &Setup, failure: &str) -> Step {
     }
 }
 
-/// The Starling folder's offer where it stands, while the game folder is still the app's own
+/// The RezythLauncher folder's offer where it stands, while the game folder is still the app's own
 /// files and the player has not turned it down.
 #[cfg(target_os = "android")]
 fn folder_offer(setup: &Setup) -> Option<super::files_offer::Stage> {
@@ -194,9 +194,9 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
             (title, body.into(), None)
         }
         Step::Start => (
-            "Set up Starling",
+            "Set up Rezyth Launcher",
             "Sign in with the Microsoft account that owns Minecraft: Java Edition, or play \
-             offline: Starling downloads the game from Mojang and prepares it on this phone, once \
+             offline: Rezyth Launcher downloads the game from Mojang and prepares it on this phone, once \
              (about 1.5 GB, a few minutes)."
                 .into(),
             None,
@@ -208,11 +208,11 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
                 .into(),
             None,
         ),
-        Step::Talking => ("Set up Starling", "Talking to Microsoft...".into(), None),
+        Step::Talking => ("Set up Rezyth Launcher", "Talking to Microsoft...".into(), None),
         Step::Code { link, .. } => (
             "Sign in with Microsoft",
             format!("On {link}, enter this code:"),
-            Some("Starling goes on by itself once you have signed in.".into()),
+            Some("Rezyth Launcher goes on by itself once you have signed in.".into()),
         ),
         Step::Download([files, files_total, bytes, bytes_total]) => (
             "Downloading the game",
@@ -235,11 +235,11 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
         Step::Unpacking => ("Preparing the game", "Unpacking Java.".into(), None),
         Step::Preparing(line) => (
             "Preparing the game",
-            "This takes a few minutes. Keep Starling open.".into(),
+            "This takes a few minutes. Keep Rezyth Launcher open.".into(),
             Some(line.clone()),
         ),
         Step::Done => (
-            "Starting Starling",
+            "Starting Rezyth Launcher",
             "The game files are ready.".into(),
             None,
         ),

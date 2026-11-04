@@ -37,7 +37,7 @@
         android:extractNativeLibs="true">
         <!-- A task of its own, out of the recents: the game's task stays the game's. -->
         <activity
-            android:name="io.github.juanluci.starling.LauncherActivity"
+            android:name="android.ramil.horizon.LauncherActivity"
             android:exported="true"
             android:process=":launcher"
             android:taskAffinity="@APPLICATION_ID@.launcher"
@@ -85,7 +85,7 @@
             </intent-filter>
         </activity>
         <activity
-            android:name="io.github.juanluci.starling.StarlingActivity"
+            android:name="android.ramil.horizon.StarlingActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
@@ -102,12 +102,12 @@
             </intent-filter>
         </activity>
         <service
-            android:name="io.github.juanluci.starling.WorkService"
+            android:name="android.ramil.horizon.WorkService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <!-- The downloaded update, for the installer only (UpdateProvider). -->
         <provider
-            android:name="io.github.juanluci.starling.UpdateProvider"
+            android:name="android.ramil.horizon.UpdateProvider"
             android:authorities="@APPLICATION_ID@.updates"
             android:exported="false"
             android:grantUriPermissions="true" />

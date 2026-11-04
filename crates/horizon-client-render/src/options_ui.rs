@@ -29,7 +29,7 @@ fn clipped(text: &str, chars: usize) -> String {
     format!("{}...", cut.trim_end())
 }
 /// Where the Shader Packs page's folder is, as a player finds it: on a phone, from the storage's
-/// root (`Starling/shaderpacks`), or in the app's own files, which Open Pack Folder sets up a
+/// root (`RezythLauncher/shaderpacks`), or in the app's own files, which Open Pack Folder sets up a
 /// reachable folder for.
 fn shader_folder_note() -> String {
     let dir = std::env::current_dir()
