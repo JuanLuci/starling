@@ -55,16 +55,16 @@ CHANGED = (
     (r"crate::game::Game::tooltip_box\(batch, atlas, ", "game.tooltip_box(batch, None, "),
     (r"= self\.guest_hit\(\) \{", "= None::<(u32, _)> {"),
     (r"game\.native_is_multiplayer\(\)", "game.server_address().is_some()"),
-    (r"game\.native_server_address\(\)", "game.server_address()"),
-    (r"game\.native_world_folder\(\)", "game.native_world_dir()"),
+    (r"game\.native_server_address\(\)", "game.server_address().map(|a| a.to_string())"),
+    (r"game\.native_world_folder\(\)", "game.native_world_dir().map(|d| d.display().to_string())"),
     (
-        r"(lava_flow: from\.lava_flow,)(\s*\}\)\)\);)",
+        r"(lava_flow: from\.lava_flow,)(\s*\}\)\);)",
         r"\1 animated_layers: from.animated_layers.clone(), full_faces: from.full_faces.clone(),"
         r" solid: from.solid.clone(),\2",
     ),
     (
         r"d\.custom_name = Some\(bc::ITEM_NAME\.to_owned\(\)\);",
-        "d.custom_name = Some(horizon_world::nbt::Tag::String(bc::ITEM_NAME.to_owned()));",
+        "d.custom_name = Some(horizon_world::nbt::Tag::String(bc::ITEM_NAME.to_owned().into()));",
     ),
 )
 
@@ -126,6 +126,8 @@ def adapt(text, source, modules):
             path = next((p for p in moved if (source / p).exists()), path)
         return f'{match[1]}{path}"'
 
+    # A mob's extra parts gained a flag; a binding spells the type as its helper does (CHANGED).
+    text = re.sub(r"(\[f32;\s*4\],\s*u32,\s*u32)\)\]", r"\1, bool)]", text)
     text = re.sub(r'^(\s*target\s*=\s*")([^"]*)"', target, text, flags=re.M)
     return re.sub(r'^(\s*file\s*=\s*")([^"]*)"', file, text, flags=re.M)
 
