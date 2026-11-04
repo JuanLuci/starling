@@ -3984,7 +3984,11 @@ impl Renderer {
         // broke now and then left most of the terrain out of a frame, or a chunk out for longer.
         let cull_on = cull.is_some() && (!cfg!(target_os = "android") || cull_env.is_ok());
         let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
+        let world_post = world_post::Post::new(
+            &device,
+            config.format.remove_srgb_suffix(),
+            &adapter.get_info().name,
+        );
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, config.format.remove_srgb_suffix());

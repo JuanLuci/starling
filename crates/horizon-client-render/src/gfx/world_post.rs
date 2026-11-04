@@ -60,6 +60,8 @@ pub struct Post {
     /// The world drawn below the screen's size, sharper than the bilinear copy.
     /// `HORIZON_WORLD_UPSCALE=off` keeps the copy.
     sharp: Option<wgpu::RenderPipeline>,
+    /// Whether the vanilla world goes up with `sharp` (`upscales_sharply`). A shader pack's always does.
+    sharp_world: bool,
     format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
@@ -80,7 +82,12 @@ pub struct Post {
 }
 
 impl Post {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, gpu: &str) -> Self {
+        let sharp_world = upscales_sharply(gpu);
+        log::info!(
+            "Horizon renderer: a world below the window's size goes up {}",
+            if sharp_world { "sharp" } else { "simple" }
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon post"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../world_post.wgsl").into()),
@@ -242,6 +249,7 @@ impl Post {
             fxaa: pipeline("fs_fxaa", &pipeline_layout, format),
             sharp: (std::env::var("HORIZON_WORLD_UPSCALE").as_deref() != Ok("off"))
                 .then(|| pipeline("fs_upscale", &pipeline_layout, format)),
+            sharp_world,
             layout,
             sampler,
             format,
@@ -567,7 +575,7 @@ impl Post {
         } else {
             self.sharp
                 .as_ref()
-                .filter(|_| self.scale < 1.0)
+                .filter(|_| self.scale < 1.0 && self.sharp_world)
                 .unwrap_or(&self.copy)
         };
         self.draw(encoder, screen, group, pipeline, timing);
@@ -599,6 +607,31 @@ impl Post {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// Whether a vanilla world drawn below the window's size goes up with the sharp filter. It takes five
+/// filtered samples for every pixel of the window, which on Mali costs about what the lower resolution
+/// saved: at 50% a Mali-G68 went from 70-80 fps with the copy to 55 with it. There, and on PowerVR, the
+/// copy's one sample stays. `HORIZON_WORLD_UPSCALE`: `on` and `off` choose on any GPU.
+fn upscales_sharply(gpu: &str) -> bool {
+    match std::env::var("HORIZON_WORLD_UPSCALE").as_deref() {
+        Ok("on") => true,
+        Ok("off") => false,
+        _ => !gpu.contains("Mali") && !gpu.contains("PowerVR"),
+    }
+}
+
+#[cfg(test)]
+mod upscale_tests {
+    use super::upscales_sharply;
+
+    #[test]
+    fn only_tiled_mobile_gpus_too_weak_for_it_skip_the_sharp_filter() {
+        assert!(!upscales_sharply("Mali-G68 MC4"));
+        assert!(!upscales_sharply("PowerVR Rogue GE8320"));
+        assert!(upscales_sharply("Adreno (TM) 740"));
+        assert!(upscales_sharply("NVIDIA GeForce RTX 4070"));
     }
 }
 
