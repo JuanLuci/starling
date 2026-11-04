@@ -153,6 +153,19 @@ fn gpu_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> bool {
 /// Frames drawn flat (Metal, Intel Gen11/Gen12's Vulkan driver) take it too: their
 /// translucent calls then come one per page of its arena rather than about one per section.
 fn translucent_batchable(info: &wgpu::AdapterInfo, multi_draw: bool) -> bool {
+    translucent_batchable_on(info, multi_draw)
+}
+
+/// Two solid passes only where a discard costs the GPU its hidden surface removal: Apple's tiled
+/// GPUs, behind Metal, and phones' (Vasysik's Android fork measured 25-27% less GPU time on an
+/// Adreno 710). Elsewhere the second pass would double the solid draw calls and vertex work for
+/// nothing.
+fn splits_solid(info: &wgpu::AdapterInfo) -> bool {
+    info.backend == wgpu::Backend::Metal
+        || (cfg!(target_os = "android") && info.backend == wgpu::Backend::Vulkan)
+}
+
+fn translucent_batchable_on(info: &wgpu::AdapterInfo, multi_draw: bool) -> bool {
     multi_draw && info.backend != wgpu::Backend::Gl
 }
 
@@ -3878,9 +3891,9 @@ impl Renderer {
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
         let flat_wanted = flat::wanted(&adapter, &device);
-        // Metal draws solid terrain in two passes (`split_solid`): meshes put all
+        // Metal and phones draw solid terrain in two passes (`splits_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
-        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
+        crate::mesher::group_parts(splits_solid(&adapter.get_info()));
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
             &device,
@@ -6792,10 +6805,10 @@ impl Renderer {
         self.phase2_pages.clear();
         self.solid_runs.clear();
         self.phase2_runs.clear();
-        // On Metal, phase 1 goes the opaque quads of every list, then the cutout
-        // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
+        // On Metal and phones, phase 1 goes the opaque quads of every list, then the
+        // cutout ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
         // then the rest. A fading list's quads all draw in the cutout pass.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = splits_solid(&self.info);
         let parts = |fading: bool| -> &'static [(u8, Quads)] {
             match (split_solid, fading) {
                 (false, _) => &[(0, Quads::All)],
@@ -8064,10 +8077,7 @@ impl Renderer {
             .filter(|_| !frame.title)
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         let solid_pipeline = material.map_or(&self.solid, |(m, _)| &m.solid);
-        // Two solid passes only where a discard costs the GPU its hidden surface
-        // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
-        // would double the solid draw calls and vertex work for nothing.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = splits_solid(&self.info);
         let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
