@@ -8521,6 +8521,7 @@ mod tests {
                 Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
+                Page::VoltBoost,
                 Page::Mods,
                 Page::SplitSetup,
                 Page::Agent,
