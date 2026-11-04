@@ -182,10 +182,13 @@ class PublicationTests(unittest.TestCase):
             self.assertFalse(check_public_tree.prohibited(path), path)
         self.assertTrue(check_public_tree.prohibited("mods/horizon/src/main/java/net/minecraft/Client.java"))
         for path in ["tools/JfrSummary.java", "tests/java/JfrFixture.java",
+                     "packaging/android/java/android/ramil/horizon/StarlingActivity.java",
+                     "packaging/android/java/android/ramil/horizon/LauncherActivity.java",
                      "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
                      "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java"]:
             self.assertFalse(check_public_tree.prohibited(path), path)
         for path in ["tools/Minecraft.java", "tests/java/Client.java", ".local/tools/JfrSummary.java",
+                     "packaging/android/java/android/ramil/horizon/Client.java",
                      "packaging/android/java/io/github/juanluci/starling/Client.java"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
 

@@ -11,6 +11,13 @@ PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The Android app's own classes (packaging/android/build_apk.py), Horizon's code like the above.
 ORIGINAL_ANDROID = {
+    "packaging/android/java/android/ramil/horizon/StarlingActivity.java",
+    "packaging/android/java/android/ramil/horizon/LauncherActivity.java",
+    "packaging/android/java/android/ramil/horizon/TextMirror.java",
+    "packaging/android/java/android/ramil/horizon/UpdateProvider.java",
+    "packaging/android/java/android/ramil/horizon/NativeMods.java",
+    "packaging/android/java/android/ramil/horizon/WorkService.java",
+    # The same classes under the app's earlier package, in the history.
     "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
     "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java",
     "packaging/android/java/io/github/juanluci/starling/TextMirror.java",
@@ -19,6 +26,7 @@ ORIGINAL_ANDROID = {
     "packaging/android/java/io/github/juanluci/starling/WorkService.java",
     # The same activity before the app was named Starling, in the history.
     "packaging/android/java/dev/horizon/android/HorizonActivity.java",
+    "packaging/android/java/dev/horizon/android/HorizonDocumentsProvider.java",
 }
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"horizon-data.bin"}
