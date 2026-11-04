@@ -115,7 +115,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `disconnect` | `disconnect` | Leave the server, back to the server list | none |
 | `servers` | `servers` | The Multiplayer screen's server list: name and address | none |
 | `lan open [PORT] [commands] [force] \| lan close \| lan status` | `lan` (network) | Open the world to LAN (Open to LAN), stop, or see the guests | `action` (open, close, status, required): what to do<br>`port` (integer): port for open<br>`commands` (boolean): allow cheats<br>`force` (boolean): force the game mode |
-| `account status\|sign-in\|cancel\|sign-out\|files\|stop-files` | `account` | Starling's Microsoft account: sign in by device code, sign out, fetch the official game files | `action` (status, sign-in, cancel, sign-out, files, stop-files, required): what to do |
+| `account status\|sign-in\|cancel\|sign-out\|files\|stop-files` | `account` | Rezyth Launcher's Microsoft account: sign in by device code, sign out, fetch the official game files | `action` (status, sign-in, cancel, sign-out, files, stop-files, required): what to do |
 | `friends host\|stop\|status` | `friends` (network) | Play with Friends: share the open world behind an invite code, stop, or see who joined | `action` (host, stop, status, required): what to do |
 
 ## World and cheats
