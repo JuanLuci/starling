@@ -702,9 +702,10 @@ impl Game<'_> {
                 .as_millis() as i64;
             if !self.focused {
                 limit = limit.min(cap.min(15));
-            } else if self.title.is_some() || self.screen != super::Screen::Playing {
-                limit = limit.min(cap);
-            } else if now_ms.saturating_sub(latest_input_ms) > 45_000 {
+            } else if self.title.is_some()
+                || self.screen != super::Screen::Playing
+                || now_ms.saturating_sub(latest_input_ms) > 45_000
+            {
                 limit = limit.min(cap);
             }
         }
