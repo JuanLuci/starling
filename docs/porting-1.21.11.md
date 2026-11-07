@@ -18,6 +18,21 @@ This document is a port plan, not a claim that the game engine already supports 
 
 The 1.21.11 values must be checked against Mojang's version manifest and the target client/server `version.json` during implementation. Do not infer compatibility from the version string alone.
 
+## Vanilla resource acquisition and preparation
+
+- Use Mojang's official version manifest to resolve the exact 1.21.11 version JSON, client jar, server jar, asset index, and asset-object hashes. Verify every downloaded file against its published SHA-1 before using it.
+- Prepare the game data from the user's own legitimate Minecraft Java installation or a local development copy. Do not commit, mirror, bundle, or publish Mojang's client jar, textures, sounds, fonts, language assets, or other proprietary game files in this repository or in the APK.
+- Keep all downloaded inputs and generated outputs outside Git (for example under `.local/minecraft/1.21.11` and `.local/horizon-client/1.21.11`). The prepared manifest must identify 1.21.11 and data version 4671; it must never be accepted by the current 26.3 renderer, which checks for data version 5023.
+- Run the matching vanilla data generator and Horizon exporters with Java 21. Export the registries, block and item definitions, tags, recipes, world-generation data, models, blockstates, textures, sounds, fonts, and language resources needed by Horizon. Record the exact manifest JSON hash, jar hashes, asset-index id/hash, exporter version, and output digest so the preparation is reproducible.
+- The existing `tools/version_port.py prepare` currently stops when it sees `client_mappings` because its class-diff pipeline was built for unobfuscated releases. 1.21.11 needs a deliberate obfuscated-version path or a verified official unobfuscated development artifact before that pipeline can be used; do not remove the guard blindly or treat obfuscated class names as stable source symbols.
+- The normal Android release workflow currently builds the native app and does not ship Minecraft game files. Preserve that model: users prepare/import their own game resources through the launcher.
+
+## Horizon settings parity
+
+The 1.21.11 target should use the same Horizon Android settings and UX as 26.3 wherever the setting is engine-independent. This includes graphics/render scale, FPS and performance controls, HUD, touch layout, keyboard/mouse, controller mappings, audio, accessibility, language, and mod/shader management. Keep the settings UI and saved preferences shared; do not fork a second 1.21.11-only settings screen.
+
+Only settings whose meaning or supported range genuinely differs between Minecraft versions should be version-scoped. Store those values under the selected version profile, validate them against that version's capabilities, and leave the other version's settings untouched. Switching versions must not reset common Horizon preferences or silently copy incompatible world/resource settings.
+
 ## Architecture constraints
 
 - Keep the current 26.3 implementation and its generated version constants intact.
@@ -61,6 +76,7 @@ The 1.21.11 values must be checked against Mojang's version manifest and the tar
 - 1.21.11 can create, save, and reopen a world and connect to a matching 1.21.11 server.
 - 26.3 continues to build, launch, create/open worlds, and connect to matching 26.3 servers.
 - Switching targets never mixes world folders, caches, prepared assets, or native libraries.
+- Common Horizon Android settings persist when switching versions; version-specific options remain isolated.
 - CI builds and tests both targets independently and reports failures separately.
 
 ## Important scope note
