@@ -1,0 +1,64 @@
+name: Horizon 1.21.11 port analysis
+
+on:
+  push:
+    branches: [android-1.21.11]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horizon-port-1-21-11
+  cancel-in-progress: true
+
+jobs:
+  compare-versions:
+    name: Prepare official data and compare 1.21.11 with 26.3
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      HORIZON_VERSIONS: ${{ runner.temp }}/horizon-versions
+    steps:
+      - name: Check out port branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java 21 for 1.21.11 data generation
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download and prepare official unobfuscated 1.21.11
+        run: python tools/prepare_unobfuscated_1_21_11.py --jobs 2
+
+      - name: Set up Java 25 for the 26.3 baseline
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Prepare the existing 26.3 baseline
+        run: python tools/version_port.py prepare 26.3 --download --jobs 2
+
+      - name: Compare game classes, registries, packets, assets and data
+        run: |
+          python tools/version_port.py diff 26.3 1.21.11
+          python tools/version_port.py report 26.3 1.21.11 --lines 100
+
+      - name: Upload the port compatibility report
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-1.21.11-port-analysis
+          path: |
+            ${{ runner.temp }}/horizon-versions/diff-26.3-1.21.11/report.md
+            ${{ runner.temp }}/horizon-versions/diff-26.3-1.21.11/report.json
+            ${{ runner.temp }}/horizon-versions/diff-26.3-1.21.11/diff.json
+            ${{ runner.temp }}/horizon-versions/diff-26.3-1.21.11/vanilla_map.json
+          if-no-files-found: error
+          retention-days: 14
